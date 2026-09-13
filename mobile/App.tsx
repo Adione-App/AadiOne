@@ -6,21 +6,21 @@
  * screen that silently fails every request.
  */
 
-import { useEffect, useState } from 'react';
-import { StatusBar } from 'expo-status-bar';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { NavigationContainer } from '@react-navigation/native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { onSessionExpired } from '@/lib/api';
-import { useAuth, useLocation } from '@/lib/store';
-import { Loading } from '@/components/ui';
-import SplashScreen from '@/screens/auth/SplashScreen';
-import MobileEntryScreen from '@/screens/auth/MobileEntryScreen';
-import OtpVerifyScreen from '@/screens/auth/OtpVerifyScreen';
-import LocationScreen from '@/screens/location/LocationScreen';
-import { MainTabs } from '@/navigation/MainTabs';
-import type { AuthStackParamList } from '@/navigation/types';
+import { useEffect, useState } from "react";
+import { StatusBar } from "expo-status-bar";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import { NavigationContainer } from "@react-navigation/native";
+import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onSessionExpired } from "@/lib/api";
+import { useAuth, useLocation } from "@/lib/store";
+import { StartupLoading } from "@/components/ui";
+import SplashScreen from "@/screens/auth/SplashScreen";
+import MobileEntryScreen from "@/screens/auth/MobileEntryScreen";
+import OtpVerifyScreen from "@/screens/auth/OtpVerifyScreen";
+import LocationScreen from "@/screens/location/LocationScreen";
+import { MainTabs } from "@/navigation/MainTabs";
+import type { AuthStackParamList } from "@/navigation/types";
 
 const Stack = createNativeStackNavigator<AuthStackParamList>();
 
@@ -42,12 +42,13 @@ function AuthStack() {
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="Splash">
         {({ navigation }) => (
-          <SplashScreen onGetStarted={() => navigation.navigate('MobileEntry')} />
+          <SplashScreen
+            onGetStarted={() => navigation.navigate("MobileEntry")}
+          />
         )}
       </Stack.Screen>
       <Stack.Screen name="MobileEntry" component={MobileEntryScreen} />
       <Stack.Screen name="OtpVerify" component={OtpVerifyScreen} />
-     
     </Stack.Navigator>
   );
 }
@@ -80,9 +81,9 @@ export default function App() {
       <QueryClientProvider client={queryClient}>
         <StatusBar style="dark" />
         <NavigationContainer>
-          {status === 'loading' ? (
-            <Loading />
-          ) : status === 'authenticated' ? (
+          {status === "loading" ? (
+            <StartupLoading />
+          ) : status === "authenticated" ? (
             <MainFlow />
           ) : (
             <AuthStack />

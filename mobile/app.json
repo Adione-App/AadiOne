@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "AdiOne",
+    "name": "AadiOne",
     "slug": "adione",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -9,7 +9,7 @@
     "newArchEnabled": true,
     "icon": "./assets/adione-icon.png",
     "splash": {
-      "image": "./assets/adione-icon.png",
+      "image": "./assets/adione-start-logo.png",
       "backgroundColor": "#FFFFFF",
       "resizeMode": "contain"
     },
@@ -40,14 +40,14 @@
       "bundleIdentifier": "in.adione.app",
       "supportsTablet": false,
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "AdiOne uses your location to check whether we deliver to your area and to estimate your delivery time."
+        "NSLocationWhenInUseUsageDescription": "AadiOne uses your location to check whether we deliver to your area and to estimate your delivery time."
       }
     },
     "plugins": [
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "AdiOne uses your location to check whether we deliver to your area and to estimate your delivery time."
+          "locationWhenInUsePermission": "AadiOne uses your location to check whether we deliver to your area and to estimate your delivery time."
         }
       ],
       "expo-secure-store",

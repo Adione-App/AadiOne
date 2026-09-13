@@ -1,43 +1,51 @@
-/**
- * Order tracking (Task 14.11).
- *
- * The timeline comes from the server already mapped to the mockup's five
- * customer steps — the app never switches on a raw order status. That mapping
- * lives in one place (`toCustomerTimelineStep`) precisely so twelve internal
- * states can exist without leaking into the UI.
- *
- * IMPORTANT:
- *
- * PENDING_PAYMENT is an exception state.
- *
- * It must NOT be displayed as if the order is progressing through:
- * Order Placed → Order Confirmed → Order Packed → ...
- *
- * While payment is pending, the customer sees a dedicated payment-pending
- * message instead of the normal delivery timeline.
- *
- * Live updates arrive over the socket, but the screen ALSO polls. A tracking
- * screen that silently stops updating is worse than one costing a request
- * every 30 seconds.
- */
-
 import { useEffect, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import {
+  Alert,
+  Image,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Text } from "react-native";
+import {
+  ArrowLeft,
+  Bike,
+  CalendarDays,
+  Check,
+  ChefHat,
+  Clock3,
+  Home,
+  Info,
+  MapPin,
+  MoreVertical,
+  Package,
+  PackageCheck,
+  Phone,
+  ShoppingBag,
+  Store,
+  UserRound,
+  XCircle,
+} from "lucide-react-native";
 
 import { api, ApiRequestError } from "@/lib/api";
+
 import { OrderStatus, TERMINAL_ORDER_STATUSES } from "@shared";
+
 import { formatPaise } from "@shared/money";
 import { formatDateTimeInZone } from "@shared/datetime";
+
 import { colors, radius, spacing } from "@shared/theme";
+
 import { keys, useOrder } from "@/lib/queries";
+
 import { useOrderSocket } from "@/lib/socket";
 
 import {
   AppText,
   Button,
-  Card,
   ErrorState,
   Loading,
   NoticeStrip,
@@ -45,23 +53,120 @@ import {
   StatusBadge,
 } from "@/components/ui";
 
+/*
+|--------------------------------------------------------------------------
+| PAYMENT VERIFICATION BANNER — COLORS
+|--------------------------------------------------------------------------
+|
+| The banner is now built entirely from code (no image asset). These are
+| the warm cream/brown tones from the approved design — kept as local
+| constants rather than theme tokens since they're specific to this one
+| "pending" state and aren't part of the app's general color system.
+|
+*/
+
+const PAYMENT_PENDING_BG = "#FCF0DC";
+const PAYMENT_PENDING_BORDER = "#F2DFB8";
+const PAYMENT_PENDING_ICON_BG = "#F5DDA8";
+const PAYMENT_PENDING_ICON_COLOR = "#6B3A0E";
+const PAYMENT_PENDING_HEADING_COLOR = "#6B3A0E";
+const PAYMENT_PENDING_DESCRIPTION_COLOR = "#5B6B7C";
+
+/*
+|--------------------------------------------------------------------------
+| Shared "card" shadow
+|--------------------------------------------------------------------------
+|
+| Every card on this screen (banner, order/store, address, summary, OTP,
+| partner, already-paid) uses the same soft elevation so the page reads
+| as one consistent system instead of flat, disconnected boxes.
+|
+*/
+
+const cardShadow = {
+  shadowColor: "#0F172A",
+  shadowOffset: { width: 0, height: 2 },
+  shadowOpacity: 0.05,
+  shadowRadius: 10,
+  elevation: 2,
+};
+
+/*
+|--------------------------------------------------------------------------
+| TIMELINE ICONS
+|--------------------------------------------------------------------------
+|
+| Maps a step label to a representative icon so the progress tracker
+| feels like a real journey instead of plain dots.
+|
+*/
+
+function getTimelineIcon(label: string) {
+  const key = label.toLowerCase();
+
+  if (key.includes("placed")) return CalendarDays;
+  if (key.includes("confirm")) return PackageCheck;
+  if (key.includes("prepar") || key.includes("pack")) return ChefHat;
+  if (
+    key.includes("delivery") ||
+    key.includes("transit") ||
+    key.includes("way")
+  )
+    return Bike;
+  if (key.includes("delivered")) return Home;
+
+  return Package;
+}
+
+/*
+|--------------------------------------------------------------------------
+| SCREEN
+|--------------------------------------------------------------------------
+*/
+
 export default function OrderTrackingScreen({
   orderId,
   onBack,
+  onChangeAddress,
 }: {
   orderId: string;
   onBack: () => void;
+  // Wire this to whatever screen/flow already handles changing the
+  // delivery address in the rest of the app (e.g. navigation.navigate
+  // to an address picker). Left optional so this file compiles even
+  // before it's wired up — the button just won't do anything until it is.
+  onChangeAddress?: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
 
+  /*
+  |--------------------------------------------------------------------------
+  | ORDER QUERY
+  |--------------------------------------------------------------------------
+  */
+
   const { data: order, isLoading, isError, refetch } = useOrder(orderId, true);
+
+  /*
+  |--------------------------------------------------------------------------
+  | CANCEL ERROR
+  |--------------------------------------------------------------------------
+  */
 
   const [cancelError, setCancelError] = useState<string | null>(null);
 
+  /*
+  |--------------------------------------------------------------------------
+  | CANCEL ORDER
+  |--------------------------------------------------------------------------
+  */
+
   const cancelOrder = useMutation({
     mutationFn: (reason: string) =>
-      api.post(`/orders/${orderId}/cancel`, { reason }),
+      api.post(`/orders/${orderId}/cancel`, {
+        reason,
+      }),
 
     onSuccess: () => {
       setCancelError(null);
@@ -74,19 +179,25 @@ export default function OrderTrackingScreen({
         queryKey: keys.orders,
       });
 
-      // Stock goes back on the shelf server-side, so the catalogue is stale.
       void queryClient.invalidateQueries({
         queryKey: ["home"],
       });
     },
 
-    onError: (err: Error) =>
+    onError: (err: Error) => {
       setCancelError(
         err instanceof ApiRequestError
           ? err.message
           : "Could not cancel this order.",
-      ),
+      );
+    },
   });
+
+  /*
+  |--------------------------------------------------------------------------
+  | SOCKET LIVE UPDATE
+  |--------------------------------------------------------------------------
+  */
 
   const isLive = order ? !TERMINAL_ORDER_STATUSES.includes(order.status) : true;
 
@@ -100,6 +211,12 @@ export default function OrderTrackingScreen({
     },
   });
 
+  /*
+  |--------------------------------------------------------------------------
+  | REFRESH ORDER LIST WHEN TERMINAL
+  |--------------------------------------------------------------------------
+  */
+
   useEffect(() => {
     if (!isLive) {
       void queryClient.invalidateQueries({
@@ -108,9 +225,21 @@ export default function OrderTrackingScreen({
     }
   }, [isLive, queryClient]);
 
+  /*
+  |--------------------------------------------------------------------------
+  | LOADING
+  |--------------------------------------------------------------------------
+  */
+
   if (isLoading) {
     return <Loading label="Loading your order…" />;
   }
+
+  /*
+  |--------------------------------------------------------------------------
+  | ERROR
+  |--------------------------------------------------------------------------
+  */
 
   if (isError || !order) {
     return (
@@ -121,173 +250,419 @@ export default function OrderTrackingScreen({
     );
   }
 
-  /**
-   * PENDING_PAYMENT is NOT a normal order timeline.
-   *
-   * Do not show:
-   *   Order Placed
-   *   Order Confirmed
-   *   Order Packed
-   *
-   * as if the order is progressing.
-   *
-   * Payment must be verified before the store starts preparing the order.
-   */
+  /*
+  |--------------------------------------------------------------------------
+  | STATES
+  |--------------------------------------------------------------------------
+  */
+
   const paymentPending = order.status === OrderStatus.PENDING_PAYMENT;
 
-  /**
-   * Other terminal states remain exception states and do not use the normal
-   * progress timeline.
-   */
   const exception =
     TERMINAL_ORDER_STATUSES.includes(order.status) &&
     order.status !== OrderStatus.DELIVERED;
 
+  const delivered = order.status === OrderStatus.DELIVERED;
+
+  /*
+  |--------------------------------------------------------------------------
+  | ORDER PLACED DATE
+  |--------------------------------------------------------------------------
+  |
+  | Do not use order.createdAt because OrderDetailDto
+  | does not contain that field.
+  |
+  | The existing server timeline already contains the
+  | timestamp for "Order Placed".
+  |
+  */
+
+  const orderPlacedEntry = order.timeline.find(
+    (entry) => entry.label.toLowerCase() === "order placed",
+  );
+
+  const orderPlacedAt = orderPlacedEntry?.at;
+
+  /*
+  |--------------------------------------------------------------------------
+  | PRODUCT IMAGE HELPER
+  |--------------------------------------------------------------------------
+  |
+  | We don't assume a particular backend image field.
+  |
+  | It checks several common fields safely.
+  |
+  */
+
+  const getProductImage = (item: unknown): string | null => {
+    const product = item as {
+      imageUrl?: string;
+      productImage?: string;
+      image?: string;
+      thumbnail?: string;
+      image_url?: string;
+      product?: {
+        image?: string;
+        imageUrl?: string;
+        thumbnail?: string;
+        images?: string[];
+      };
+    };
+
+    return (
+      product.imageUrl ||
+      product.productImage ||
+      product.image ||
+      product.thumbnail ||
+      product.image_url ||
+      product.product?.image ||
+      product.product?.imageUrl ||
+      product.product?.thumbnail ||
+      product.product?.images?.[0] ||
+      null
+    );
+  };
+
+  /*
+  |--------------------------------------------------------------------------
+  | HEADER STATUS
+  |--------------------------------------------------------------------------
+  */
+
+  const getStatusTitle = () => {
+    if (paymentPending) {
+      return "Payment Pending";
+    }
+
+    if (exception) {
+      return order.statusLabel;
+    }
+
+    if (delivered) {
+      return "Delivered";
+    }
+
+    if (order.etaMinutes) {
+      return `${order.etaMinutes} mins`;
+    }
+
+    return order.statusLabel;
+  };
+
+  /*
+  |--------------------------------------------------------------------------
+  | STATUS COLOR
+  |--------------------------------------------------------------------------
+  */
+
+  const statusColor = paymentPending
+    ? "#B66A00"
+    : exception
+      ? "#C94B4B"
+      : colors.primary;
+
+  /*
+  |--------------------------------------------------------------------------
+  | MAIN UI
+  |--------------------------------------------------------------------------
+  */
+
   return (
     <Screen>
+      {/* ======================================================
+          HEADER
+      ====================================================== */}
+
       <View
         style={[
           styles.header,
           {
-            paddingTop: insets.top + spacing.sm,
+            paddingTop: insets.top + spacing.xs,
           },
         ]}
       >
-        <Pressable onPress={onBack} hitSlop={12} style={styles.back}>
-          <AppText variant="h2">←</AppText>
+        <Pressable onPress={onBack} hitSlop={12} style={styles.headerButton}>
+          <ArrowLeft size={25} strokeWidth={2.2} color={colors.textPrimary} />
         </Pressable>
 
-        <AppText variant="h3">Order Tracking</AppText>
+        <View style={styles.headerTitle}>
+          <AppText variant="h3">Order Details</AppText>
+
+          <AppText variant="caption" color={colors.textSecondary}>
+            Track your order and view details
+          </AppText>
+        </View>
+
+        <Pressable hitSlop={10} style={styles.headerButton}>
+          <MoreVertical
+            size={23}
+            strokeWidth={2.2}
+            color={colors.textPrimary}
+          />
+        </Pressable>
       </View>
 
       <ScrollView
-        contentContainerStyle={{
-          padding: spacing.base,
-          paddingBottom: insets.bottom + spacing.xxl,
-        }}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[
+          styles.scrollContent,
+          {
+            paddingBottom: insets.bottom + spacing.xxl,
+          },
+        ]}
       >
-        <Card
-          style={{
-            backgroundColor: colors.primarySurface,
-          }}
-        >
-          <View style={styles.summaryRow}>
-            <View>
+        {/* ====================================================
+            PAYMENT VERIFICATION PENDING
+        ==================================================== */}
+
+        {paymentPending && (
+          <>
+            {/* ------------------------------------------------
+                PAYMENT BANNER — built from code, no image asset
+            ------------------------------------------------ */}
+
+            <View style={styles.paymentBanner}>
+              <View style={styles.paymentBannerIconWrap}>
+                <Clock3
+                  size={22}
+                  strokeWidth={2}
+                  color={PAYMENT_PENDING_ICON_COLOR}
+                />
+              </View>
+
+              <View style={styles.paymentBannerContent}>
+                <View style={styles.paymentBannerTopRow}>
+                  <AppText
+                    variant="h3"
+                    color={PAYMENT_PENDING_HEADING_COLOR}
+                    style={styles.paymentBannerHeading}
+                  >
+                    Payment Verification Pending
+                  </AppText>
+
+                  <View style={styles.paymentBannerOrderId}>
+                    <AppText variant="caption" color={colors.textSecondary}>
+                      Order ID
+                    </AppText>
+
+                    <AppText
+                      variant="bodyStrong"
+                      color={colors.textPrimary}
+                      numberOfLines={1}
+                    >
+                      #{order.orderNumber}
+                    </AppText>
+                  </View>
+                </View>
+
+                <AppText
+                  variant="body"
+                  color={PAYMENT_PENDING_DESCRIPTION_COLOR}
+                  style={styles.paymentBannerDescription}
+                >
+                  Your payment has been submitted. The store will verify your
+                  payment before preparing your order.
+                </AppText>
+              </View>
+            </View>
+
+            {/* ------------------------------------------------
+                ORDER PLACED + STORE
+            ------------------------------------------------ */}
+
+            <View style={styles.orderStoreCard}>
+              {/* ORDER PLACED */}
+
+              <View style={styles.orderStoreColumn}>
+                <View style={styles.greenCircle}>
+                  <CalendarDays
+                    size={24}
+                    strokeWidth={2}
+                    color={colors.primary}
+                  />
+                </View>
+
+                <View style={styles.orderStoreText}>
+                  <AppText variant="body" color={colors.textPrimary}>
+                    Order Placed
+                  </AppText>
+
+                  <AppText
+                    variant="body"
+                    color={colors.textSecondary}
+                    style={styles.dateText}
+                  >
+                    {orderPlacedAt
+                      ? formatDateTimeInZone(
+                          new Date(orderPlacedAt),
+                          "Asia/Kolkata",
+                        )
+                      : "Order placed"}
+                  </AppText>
+                </View>
+              </View>
+
+              {/* DIVIDER */}
+
+              <View style={styles.verticalDivider} />
+
+              {/* STORE */}
+
+              <View style={styles.orderStoreColumn}>
+                <View style={styles.greenCircle}>
+                  <Store size={24} strokeWidth={2} color={colors.primary} />
+                </View>
+
+                <View style={styles.orderStoreText}>
+                  <AppText variant="body" color={colors.textPrimary}>
+                    Store
+                  </AppText>
+
+                  <AppText
+                    variant="bodyStrong"
+                    color={colors.textPrimary}
+                    style={styles.storeName}
+                  >
+                    AadiOne
+                  </AppText>
+
+                  <AppText variant="caption" color={colors.textSecondary}>
+                    Railmagra
+                  </AppText>
+                </View>
+              </View>
+            </View>
+          </>
+        )}
+
+        {/* ====================================================
+            NORMAL / REJECTED / DELIVERED HEADER
+        ==================================================== */}
+
+        {!paymentPending && (
+          <View
+            style={[styles.statusHero, exception && styles.statusHeroException]}
+          >
+            <View style={styles.statusHeroLeft}>
               <AppText variant="caption" color={colors.textSecondary}>
-                {paymentPending
-                  ? "Payment status"
-                  : isLive
-                    ? "Estimated delivery"
-                    : "Order"}
+                {exception || delivered ? "Order" : "Estimated delivery"}
               </AppText>
 
-              <AppText variant="display" color={colors.primary}>
-                {paymentPending
-                  ? "Payment Pending"
-                  : isLive && order.etaMinutes
-                    ? `${order.etaMinutes} mins`
-                    : order.statusLabel}
+              <AppText
+                variant="display"
+                color={statusColor}
+                style={styles.statusHeroTitle}
+              >
+                {getStatusTitle()}
               </AppText>
             </View>
 
-            <View style={{ alignItems: "flex-end" }}>
+            <View style={styles.statusHeroRight}>
               <AppText variant="caption" color={colors.textSecondary}>
                 Order ID
               </AppText>
 
-              <AppText variant="bodyStrong">#{order.orderNumber}</AppText>
+              <AppText
+                variant="bodyStrong"
+                color={colors.textPrimary}
+                numberOfLines={1}
+              >
+                #{order.orderNumber}
+              </AppText>
             </View>
           </View>
-        </Card>
-
-        {paymentPending && (
-          <Card
-            style={{
-              marginTop: spacing.base,
-              backgroundColor: colors.primarySurface,
-            }}
-          >
-            <AppText variant="h3">Payment Pending</AppText>
-
-            <AppText
-              variant="body"
-              color={colors.textSecondary}
-              style={{
-                marginTop: spacing.sm,
-              }}
-            >
-              Your order is waiting for payment verification.
-            </AppText>
-
-            <AppText
-              variant="body"
-              color={colors.textSecondary}
-              style={{
-                marginTop: spacing.sm,
-              }}
-            >
-              The store will confirm your payment before preparing your order.
-            </AppText>
-          </Card>
         )}
 
+        {/* ====================================================
+            REJECTED / CANCELLED
+        ==================================================== */}
+
         {!paymentPending && exception && (
-          <View
-            style={{
-              marginTop: spacing.base,
-            }}
-          >
-            {/*
-             * Exception states get a banner INSTEAD of a progress timeline —
-             * showing "step 2 of 5" on a cancelled order is nonsense.
-             */}
-            <NoticeStrip
-              message={
-                order.cancellationReason
-                  ? `${order.statusLabel}: ${order.cancellationReason}`
-                  : order.statusLabel
-              }
-            />
+          <View style={styles.exceptionCard}>
+            <View style={styles.exceptionIcon}>
+              <XCircle size={24} strokeWidth={2} color="#C94B4B" />
+            </View>
+
+            <View style={styles.exceptionContent}>
+              <AppText variant="h3">{order.statusLabel}</AppText>
+
+              <AppText
+                variant="body"
+                color={colors.textSecondary}
+                style={styles.descriptionSpacing}
+              >
+                {order.cancellationReason || "This order cannot be processed."}
+              </AppText>
+            </View>
           </View>
         )}
 
-        {!paymentPending && !exception && (
-          <Card
-            style={{
-              marginTop: spacing.base,
-            }}
-          >
-            <AppText variant="h3">Order Status</AppText>
+        {/* ====================================================
+            NORMAL ORDER TRACKING
+        ==================================================== */}
 
-            <View
-              style={{
-                marginTop: spacing.base,
-              }}
-            >
+        {!paymentPending && !exception && (
+          <View style={styles.trackingCard}>
+            <View style={styles.trackingHeader}>
+              <View>
+                <AppText variant="h3">Order Status</AppText>
+
+                <AppText
+                  variant="caption"
+                  color={colors.textSecondary}
+                  style={styles.trackingSubtitle}
+                >
+                  Track your order progress
+                </AppText>
+              </View>
+
+              <StatusBadge status={order.status} />
+            </View>
+
+            <View style={styles.timeline}>
               {order.timeline.map((entry, index) => {
                 const done = entry.status === "COMPLETED";
+
                 const active = entry.status === "IN_PROGRESS";
+
                 const last = index === order.timeline.length - 1;
+
+                const StepIcon = getTimelineIcon(entry.label);
 
                 return (
                   <View key={entry.step} style={styles.timelineRow}>
-                    <View style={{ alignItems: "center" }}>
+                    {/* LEFT RAIL */}
+
+                    <View style={styles.timelineRail}>
                       <View
                         style={[
-                          styles.timelineDot,
-                          (done || active) && {
-                            backgroundColor: colors.primary,
-                            borderColor: colors.primary,
-                          },
-                          active && {
-                            backgroundColor: colors.surface,
-                          },
+                          styles.timelineCircle,
+                          (done || active) && styles.timelineCircleActive,
+                          active && styles.timelineCircleCurrent,
                         ]}
                       >
                         {done && (
-                          <AppText variant="caption" color={colors.onPrimary}>
-                            ✓
-                          </AppText>
+                          <Check
+                            size={15}
+                            strokeWidth={3}
+                            color={colors.onPrimary}
+                          />
+                        )}
+
+                        {active && (
+                          <StepIcon
+                            size={15}
+                            strokeWidth={2.4}
+                            color={colors.primary}
+                          />
+                        )}
+
+                        {!done && !active && (
+                          <StepIcon
+                            size={13}
+                            strokeWidth={2}
+                            color={colors.textMuted}
+                          />
                         )}
                       </View>
 
@@ -295,20 +670,15 @@ export default function OrderTrackingScreen({
                         <View
                           style={[
                             styles.timelineLine,
-                            done && {
-                              backgroundColor: colors.primary,
-                            },
+                            done && styles.timelineLineDone,
                           ]}
                         />
                       )}
                     </View>
 
-                    <View
-                      style={{
-                        flex: 1,
-                        paddingBottom: spacing.lg,
-                      }}
-                    >
+                    {/* CONTENT */}
+
+                    <View style={styles.timelineContent}>
                       <AppText
                         variant="bodyStrong"
                         color={
@@ -319,7 +689,11 @@ export default function OrderTrackingScreen({
                       </AppText>
 
                       {entry.at && (
-                        <AppText variant="caption" color={colors.textSecondary}>
+                        <AppText
+                          variant="caption"
+                          color={colors.textSecondary}
+                          style={styles.timelineDate}
+                        >
                           {formatDateTimeInZone(
                             new Date(entry.at),
                             "Asia/Kolkata",
@@ -328,113 +702,265 @@ export default function OrderTrackingScreen({
                       )}
 
                       {active && (
-                        <AppText variant="caption" color={colors.primary}>
-                          In progress
-                        </AppText>
+                        <View style={styles.inProgressPill}>
+                          <View style={styles.inProgressDot} />
+                          <AppText
+                            variant="caption"
+                            color={colors.primary}
+                            style={styles.inProgressLabel}
+                          >
+                            In progress
+                          </AppText>
+                        </View>
                       )}
                     </View>
                   </View>
                 );
               })}
             </View>
-          </Card>
+          </View>
         )}
+
+        {/* ====================================================
+            DELIVERY OTP
+        ==================================================== */}
 
         {order.deliveryOtp && (
-          <Card
-            style={{
-              marginTop: spacing.base,
-              backgroundColor: colors.primarySurface,
-            }}
-          >
-            <AppText variant="bodyStrong">Delivery OTP</AppText>
+          <View style={styles.otpCard}>
+            <View style={styles.smallGreenIcon}>
+              <Package size={22} strokeWidth={2} color={colors.primary} />
+            </View>
 
-            <AppText variant="displayLarge" color={colors.primary}>
-              {order.deliveryOtp}
-            </AppText>
+            <View style={styles.otpContent}>
+              <AppText variant="h3">Delivery OTP</AppText>
 
-            <AppText variant="caption" color={colors.textSecondary}>
-              Share this with the delivery partner when your order arrives.
-            </AppText>
-          </Card>
+              <AppText
+                variant="caption"
+                color={colors.textSecondary}
+                style={styles.otpDescription}
+              >
+                Share this with the delivery partner when your order arrives.
+              </AppText>
+
+              <AppText
+                variant="displayLarge"
+                color={colors.primary}
+                style={styles.otpNumber}
+              >
+                {order.deliveryOtp}
+              </AppText>
+            </View>
+          </View>
         )}
+
+        {/* ====================================================
+            DELIVERY PARTNER
+        ==================================================== */}
 
         {order.deliveryAgent && (
-          <Card
-            style={{
-              marginTop: spacing.base,
-            }}
-          >
-            <AppText variant="bodyStrong">{order.deliveryAgent.name}</AppText>
+          <View style={styles.partnerCard}>
+            <AppText variant="h3">Delivery Partner</AppText>
 
-            <AppText variant="body" color={colors.textSecondary}>
-              {order.deliveryAgent.mobile}
-            </AppText>
-          </Card>
+            <View style={styles.partnerRow}>
+              <View style={styles.partnerAvatar}>
+                <UserRound size={21} strokeWidth={2} color={colors.primary} />
+              </View>
+
+              <View style={styles.partnerInfo}>
+                <AppText variant="bodyStrong">
+                  {order.deliveryAgent.name}
+                </AppText>
+
+                <View style={styles.phoneRow}>
+                  <Phone
+                    size={14}
+                    strokeWidth={2}
+                    color={colors.textSecondary}
+                  />
+
+                  <AppText variant="caption" color={colors.textSecondary}>
+                    {order.deliveryAgent.mobile}
+                  </AppText>
+                </View>
+              </View>
+            </View>
+          </View>
         )}
 
-        <Card
-          style={{
-            marginTop: spacing.base,
-          }}
-        >
-          <AppText variant="h3">Delivery Address</AppText>
+        {/* ====================================================
+            DELIVERY ADDRESS
+        ==================================================== */}
 
-          <AppText
-            variant="body"
-            color={colors.textSecondary}
-            style={{
-              marginTop: spacing.xs,
-            }}
-          >
-            {order.deliveryAddress.area}
-          </AppText>
+        <View style={styles.addressCard}>
+          <View style={styles.addressIcon}>
+            <MapPin size={24} strokeWidth={2} color={colors.primary} />
+          </View>
 
-          <AppText variant="body" color={colors.textSecondary}>
-            {order.deliveryAddress.city}, {order.deliveryAddress.state}{" "}
-            {order.deliveryAddress.pincode}
-          </AppText>
-        </Card>
+          <View style={styles.addressContent}>
+            <View style={styles.addressHeaderRow}>
+              <AppText variant="h3">Delivery Address</AppText>
 
-        <Card
-          style={{
-            marginTop: spacing.base,
-          }}
-        >
-          <View style={styles.summaryRow}>
-            <AppText variant="h3">Order Summary</AppText>
+              {onChangeAddress && (
+                <Pressable
+                  onPress={onChangeAddress}
+                  hitSlop={8}
+                  style={styles.changeAddressButton}
+                >
+                  <AppText
+                    variant="caption"
+                    color={colors.primary}
+                    style={styles.changeAddressLabel}
+                  >
+                    Change
+                  </AppText>
+                </Pressable>
+              )}
+            </View>
+
+            <AppText
+              variant="body"
+              color={colors.textSecondary}
+              style={styles.addressText}
+            >
+              {order.deliveryAddress.area}, {order.deliveryAddress.city},{" "}
+              {order.deliveryAddress.state} {order.deliveryAddress.pincode}
+            </AppText>
+          </View>
+        </View>
+
+        {/* ====================================================
+            ORDER SUMMARY
+        ==================================================== */}
+
+        <View style={styles.summaryCard}>
+          <View style={styles.summaryHeader}>
+            <View style={styles.summaryTitle}>
+              <View style={styles.bagIcon}>
+                <ShoppingBag size={23} strokeWidth={2} color={colors.primary} />
+              </View>
+
+              <AppText variant="h3">Order Summary</AppText>
+            </View>
 
             <StatusBadge status={order.status} />
           </View>
 
-          {order.items.map((item) => (
-            <View key={item.id} style={styles.itemRow}>
-              <View style={{ flex: 1 }}>
-                <AppText variant="body">{item.productName}</AppText>
+          {/* PRODUCTS */}
 
-                <AppText variant="caption" color={colors.textSecondary}>
-                  {item.variantName} · Qty {item.qty}
-                </AppText>
-              </View>
+          <View style={styles.products}>
+            {order.items.map((item, index) => {
+              const productImage = getProductImage(item);
 
-              <AppText variant="body">
-                {formatPaise(item.lineTotalPaise)}
-              </AppText>
-            </View>
-          ))}
+              const isLastItem = index === order.items.length - 1;
+
+              return (
+                <View
+                  key={item.id}
+                  style={[
+                    styles.productRow,
+                    isLastItem && styles.productRowLast,
+                  ]}
+                >
+                  {/* IMAGE */}
+
+                  <View style={styles.productImageBox}>
+                    {productImage ? (
+                      <Image
+                        source={{
+                          uri: productImage,
+                        }}
+                        resizeMode="contain"
+                        style={styles.productImage}
+                      />
+                    ) : (
+                      <ShoppingBag
+                        size={22}
+                        strokeWidth={1.7}
+                        color={colors.textSecondary}
+                      />
+                    )}
+                  </View>
+
+                  {/* NAME */}
+
+                  <View style={styles.productDetails}>
+                    <AppText variant="body" numberOfLines={2}>
+                      {item.productName}
+                    </AppText>
+
+                    <AppText
+                      variant="caption"
+                      color={colors.textSecondary}
+                      style={styles.productMeta}
+                    >
+                      {item.variantName} · Qty {item.qty}
+                    </AppText>
+                  </View>
+
+                  {/* PRICE */}
+
+                  <AppText variant="bodyStrong" color={colors.textPrimary}>
+                    {formatPaise(item.lineTotalPaise)}
+                  </AppText>
+                </View>
+              );
+            })}
+          </View>
+
+          {/* TOTAL */}
 
           <View style={styles.totalRow}>
-            <AppText variant="h3">Total</AppText>
+            <AppText variant="h3">Total Amount</AppText>
 
             <AppText variant="h3">{formatPaise(order.bill.totalPaise)}</AppText>
           </View>
 
-          <AppText variant="caption" color={colors.textSecondary}>
+          {/* PAYMENT */}
+
+          <AppText
+            variant="caption"
+            color={colors.textSecondary}
+            style={styles.paymentStatus}
+          >
             Paid by{" "}
             {order.paymentMethod === "COD" ? "Cash on Delivery" : "Online"} ·{" "}
             {order.paymentStatus}
           </AppText>
-        </Card>
+        </View>
+
+        {/* ====================================================
+            ALREADY PAID
+        ==================================================== */}
+
+        {paymentPending && (
+          <View style={styles.alreadyPaidCard}>
+            <View style={styles.alreadyPaidIcon}>
+              <Info size={27} strokeWidth={2} color="#0879B4" />
+            </View>
+
+            <View style={styles.alreadyPaidContent}>
+              <AppText variant="h3" color="#0879B4">
+                Already paid?
+              </AppText>
+
+              <AppText
+                variant="body"
+                color={colors.textSecondary}
+                style={styles.alreadyPaidText}
+              >
+                If you have completed the payment, please wait.
+              </AppText>
+
+              <AppText variant="body" color={colors.textSecondary}>
+                The store will verify your payment soon.
+              </AppText>
+            </View>
+          </View>
+        )}
+
+        {/* ====================================================
+            CANCEL ORDER
+        ==================================================== */}
 
         {order.canCancel && (
           <Button
@@ -450,24 +976,20 @@ export default function OrderTrackingScreen({
                 {
                   text: "Cancel order",
                   style: "destructive",
-                  // A reason is required by the API and is what the store
-                  // sees on its board, so it is sent rather than left blank.
                   onPress: () => cancelOrder.mutate("Cancelled by customer"),
                 },
               ])
             }
-            style={{
-              marginTop: spacing.lg,
-            }}
+            style={styles.cancelButton}
           />
         )}
 
+        {/* ====================================================
+            CANCEL ERROR
+        ==================================================== */}
+
         {cancelError && (
-          <View
-            style={{
-              marginTop: spacing.md,
-            }}
-          >
+          <View style={styles.errorContainer}>
             <NoticeStrip message={cancelError} />
           </View>
         )}
@@ -476,67 +998,638 @@ export default function OrderTrackingScreen({
   );
 }
 
+/*
+|--------------------------------------------------------------------------
+| STYLES
+|--------------------------------------------------------------------------
+*/
+
 const styles = StyleSheet.create({
+  /*
+  |--------------------------------------------------------------------------
+  | HEADER
+  |--------------------------------------------------------------------------
+  */
+
   header: {
+    minHeight: 66,
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.md,
     paddingHorizontal: spacing.base,
-    paddingBottom: spacing.sm,
+    paddingBottom: spacing.xs,
+    backgroundColor: colors.surface,
     borderBottomWidth: 1,
     borderBottomColor: colors.divider,
-    backgroundColor: colors.surface,
   },
 
-  back: {
-    width: 40,
-    height: 40,
+  headerButton: {
+    width: 33,
+    height: 33,
+    alignItems: "center",
     justifyContent: "center",
   },
 
-  summaryRow: {
+  headerTitle: {
+    flex: 1,
+    paddingLeft: spacing.xs,
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | CONTENT
+  |--------------------------------------------------------------------------
+  */
+
+  scrollContent: {
+    paddingHorizontal: spacing.base,
+    paddingTop: spacing.sm,
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | PAYMENT BANNER (coded, no image asset)
+  |--------------------------------------------------------------------------
+  */
+
+  paymentBanner: {
     flexDirection: "row",
-    justifyContent: "space-between",
+    alignItems: "flex-start",
+    padding: spacing.md,
+    borderRadius: 18,
+    backgroundColor: PAYMENT_PENDING_BG,
+    borderWidth: 1,
+    borderColor: PAYMENT_PENDING_BORDER,
+    marginBottom: spacing.sm,
+    ...cardShadow,
+  },
+
+  paymentBannerIconWrap: {
+    width: 33,
+    height: 33,
+    borderRadius: 16.5,
+    backgroundColor: PAYMENT_PENDING_ICON_BG,
     alignItems: "center",
+    justifyContent: "center",
+    marginRight: spacing.sm,
+  },
+
+  paymentBannerContent: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  paymentBannerTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+  },
+
+  paymentBannerHeading: {
+    flex: 1,
+    paddingRight: spacing.sm,
+    fontSize: 15,
+  },
+
+  paymentBannerOrderId: {
+    alignItems: "flex-end",
+  },
+
+  paymentBannerDescription: {
+    marginTop: 4,
+    lineHeight: 20,
+    fontSize: 12,
+  },
+
+  orderIdLabel: {
+    fontSize: 10, // "Order ID" label ka size
+  },
+
+  orderIdValue: {
+    fontSize: 10, // #AD260907... number ka size
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | ORDER + STORE
+  |--------------------------------------------------------------------------
+  */
+
+  orderStoreCard: {
+    minHeight: 105,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: spacing.md,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    marginBottom: spacing.sm,
+    ...cardShadow,
+  },
+
+  orderStoreColumn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    minWidth: 0,
+  },
+
+  greenCircle: {
+    width: 33,
+    height: 33,
+    borderRadius: 16.5,
+    backgroundColor: colors.primarySurface,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: spacing.sm,
+  },
+
+  orderStoreText: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  dateText: {
+    marginTop: 3,
+  },
+
+  storeName: {
+    marginTop: 2,
+  },
+
+  verticalDivider: {
+    width: 1,
+    height: 62,
+    backgroundColor: colors.divider,
+    marginHorizontal: spacing.sm,
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | STATUS HERO
+  |--------------------------------------------------------------------------
+  */
+
+  statusHero: {
+    minHeight: 105,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: spacing.md,
+    borderRadius: 17,
+    backgroundColor: colors.primarySurface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: spacing.sm,
+    ...cardShadow,
+  },
+
+  statusHeroException: {
+    backgroundColor: colors.surface,
+  },
+
+  statusHeroLeft: {
+    flex: 1,
+  },
+
+  statusHeroTitle: {
+    marginTop: 1,
+  },
+
+  statusHeroRight: {
+    maxWidth: "43%",
+    alignItems: "flex-end",
+    paddingLeft: spacing.sm,
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | EXCEPTION
+  |--------------------------------------------------------------------------
+  */
+
+  exceptionCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    padding: spacing.md,
+    borderRadius: 17,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: spacing.sm,
+    ...cardShadow,
+  },
+
+  exceptionIcon: {
+    width: 33,
+    height: 33,
+    borderRadius: 16.5,
+    backgroundColor: "#FFF1F1",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: spacing.sm,
+  },
+
+  exceptionContent: {
+    flex: 1,
+  },
+
+  descriptionSpacing: {
+    marginTop: 4,
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | TRACKING
+  |--------------------------------------------------------------------------
+  */
+
+  trackingCard: {
+    padding: spacing.md,
+    borderRadius: 17,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: spacing.sm,
+    ...cardShadow,
+  },
+
+  trackingHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  trackingSubtitle: {
+    marginTop: 2,
+  },
+
+  timeline: {
+    marginTop: spacing.md,
   },
 
   timelineRow: {
     flexDirection: "row",
-    gap: spacing.md,
+    minHeight: 54,
   },
 
-  timelineDot: {
-    width: 24,
-    height: 24,
-    borderRadius: radius.circle,
+  timelineRail: {
+    width: 32,
+    alignItems: "center",
+  },
+
+  timelineCircle: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     borderWidth: 2,
     borderColor: colors.border,
     backgroundColor: colors.surface,
     alignItems: "center",
     justifyContent: "center",
+    zIndex: 2,
+  },
+
+  timelineCircleActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+
+  timelineCircleCurrent: {
+    backgroundColor: colors.primarySurface,
+    borderColor: colors.primary,
   },
 
   timelineLine: {
     width: 2,
     flex: 1,
+    minHeight: 26,
     backgroundColor: colors.border,
-    minHeight: 28,
   },
 
-  itemRow: {
+  timelineLineDone: {
+    backgroundColor: colors.primary,
+  },
+
+  timelineContent: {
+    flex: 1,
+    paddingLeft: spacing.sm,
+    paddingBottom: spacing.sm,
+  },
+
+  timelineDate: {
+    marginTop: 2,
+  },
+
+  inProgressPill: {
     flexDirection: "row",
+    alignItems: "center",
+    marginTop: 4,
+    alignSelf: "flex-start",
+    backgroundColor: colors.primarySurface,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+
+  inProgressDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.primary,
+    marginRight: 5,
+  },
+
+  inProgressLabel: {
+    fontWeight: "600",
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | OTP
+  |--------------------------------------------------------------------------
+  */
+
+  otpCard: {
+    flexDirection: "row",
+    padding: spacing.md,
+    borderRadius: 17,
+    backgroundColor: colors.primarySurface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: spacing.sm,
+    ...cardShadow,
+  },
+
+  smallGreenIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: spacing.sm,
+  },
+
+  otpContent: {
+    flex: 1,
+  },
+
+  otpDescription: {
+    marginTop: 3,
+  },
+
+  otpNumber: {
+    marginTop: 2,
+    letterSpacing: 5,
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | DELIVERY PARTNER
+  |--------------------------------------------------------------------------
+  */
+
+  partnerCard: {
+    padding: spacing.md,
+    borderRadius: 17,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: spacing.sm,
+    ...cardShadow,
+  },
+
+  partnerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: spacing.sm,
+  },
+
+  partnerAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.primarySurface,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: spacing.sm,
+  },
+
+  partnerInfo: {
+    flex: 1,
+  },
+
+  phoneRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 3,
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | DELIVERY ADDRESS
+  |--------------------------------------------------------------------------
+  */
+
+  addressCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    padding: spacing.md,
+    borderRadius: 17,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: spacing.sm,
+    ...cardShadow,
+  },
+
+  addressIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 23,
+    backgroundColor: colors.primarySurface,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: spacing.sm,
+  },
+
+  addressContent: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 14,
+  },
+
+  addressHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: spacing.sm,
+
+  },
+
+  changeAddressButton: {
+    backgroundColor: colors.primarySurface,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 999,
+    marginLeft: spacing.sm,
+  },
+
+  changeAddressLabel: {
+    fontWeight: "600",
+  },
+
+  addressText: {
+    marginTop: 4,
+    lineHeight: 22,
+    fontSize: 13,
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | ORDER SUMMARY
+  |--------------------------------------------------------------------------
+  */
+
+  summaryCard: {
+    padding: spacing.md,
+    borderRadius: 17,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: spacing.sm,
+    ...cardShadow,
+  },
+
+  summaryHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  summaryTitle: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
+
+  bagIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: colors.primarySurface,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: spacing.sm,
+  },
+
+  products: {
+    marginTop: spacing.xs,
+  },
+
+  productRow: {
+    minHeight: 65,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 6,
     borderBottomWidth: 1,
     borderBottomColor: colors.divider,
   },
 
+  productRowLast: {
+    borderBottomWidth: 0,
+  },
+
+  productImageBox: {
+    width: 50,
+    height: 50,
+    borderRadius: 9,
+    backgroundColor: "#F5F5F5",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    marginRight: spacing.sm,
+  },
+
+  productImage: {
+    width: "90%",
+    height: "90%",
+  },
+
+  productDetails: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: spacing.sm,
+  },
+
+  productMeta: {
+    marginTop: 2,
+  },
+
   totalRow: {
     flexDirection: "row",
+    alignItems: "center",
     justifyContent: "space-between",
-    marginTop: spacing.md,
     paddingTop: spacing.md,
+    marginTop: spacing.xs,
     borderTopWidth: 1,
     borderTopColor: colors.divider,
+  },
+
+  paymentStatus: {
+    marginTop: 3,
+    fontSize: 13,
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | ALREADY PAID
+  |--------------------------------------------------------------------------
+  */
+
+  alreadyPaidCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    padding: spacing.md,
+    borderRadius: 17,
+    backgroundColor: "#EFF8FF",
+    borderWidth: 1,
+    borderColor: "#CBE9FA",
+    marginBottom: spacing.sm,
+    ...cardShadow,
+  },
+
+  alreadyPaidIcon: {
+    width: 45,
+    height: 45,
+    borderRadius: 23,
+    backgroundColor: colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: spacing.sm,
+  },
+
+  alreadyPaidContent: {
+    flex: 1,
+  },
+
+  alreadyPaidText: {
+    marginTop: 3,
+    fontSize: 13,
+  },
+
+  /*
+  |--------------------------------------------------------------------------
+  | CANCEL
+  |--------------------------------------------------------------------------
+  */
+
+  cancelButton: {
+    marginTop: spacing.xs,
+  },
+
+  errorContainer: {
+    marginTop: spacing.sm,
   },
 });

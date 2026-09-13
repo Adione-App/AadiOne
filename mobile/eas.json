@@ -17,7 +17,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://flavored-record-thaw.ngrok-free.dev/api/v1"
+        "EXPO_PUBLIC_API_URL": "https://api.adione.in/api/v1"
       }
     },
     "production": {

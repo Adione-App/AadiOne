@@ -56,7 +56,7 @@
       "expo-router"
     ],
     "extra": {
-      "apiBaseUrl": "http://10.0.2.2:4000/api/v1",
+      "apiBaseUrl": "https://api.adione.in/api/v1",
       "eas": {
         "projectId": "562833a4-d096-4c49-9bed-54b634bf6d80"
       }

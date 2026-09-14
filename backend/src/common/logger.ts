@@ -1,23 +1,18 @@
 /**
  * Structured logging.
  *
- * Two rules that matter more than anything else here:
+ * Production uses plain JSON logs so Railway and other log aggregators
+ * can parse them reliably.
  *
- *   1. EVERY log line carries the request id, so a customer's "something went
- *      wrong" screenshot maps to exact server logs.
- *   2. NO personal data or secret ever reaches a log. Mobile numbers are
- *      masked, OTPs / tokens / passwords / signatures are redacted outright.
- *      This is enforced by the redaction config below rather than by asking
- *      developers to remember.
+ * Sensitive fields are redacted before being written to logs.
  */
 
 import pino, { type Logger, type LoggerOptions } from "pino";
-import { env, isProduction } from "../config/env";
+import { env } from "../config/env";
 import { getRequestContext } from "./request-context";
 
 /**
- * Paths pino removes before serialising.
- * Covers the usual header and body locations for sensitive fields.
+ * Sensitive fields that must never appear in logs.
  */
 const REDACT_PATHS = [
   "req.headers.authorization",
@@ -63,7 +58,6 @@ const options: LoggerOptions = {
     env: env.NODE_ENV,
   },
 
-  // ISO timestamps are easy for log aggregators and humans to read.
   timestamp: pino.stdTimeFunctions.isoTime,
 
   formatters: {
@@ -73,7 +67,7 @@ const options: LoggerOptions = {
   },
 
   /**
-   * Inject request-scoped fields into every log line automatically.
+   * Add request-scoped information automatically.
    */
   mixin() {
     const context = getRequestContext();
@@ -101,33 +95,15 @@ const options: LoggerOptions = {
 };
 
 /**
- * Production:
- *   - JSON logs
- *   - No pino-pretty transport
- *   - Better compatibility with Railway/log aggregators
- *
- * Development:
- *   - Human-readable pretty logs using pino-pretty
+ * Production-safe logger.
  *
  * IMPORTANT:
- * pino-pretty is loaded only when running in development.
+ * Do NOT use pino-pretty here.
+ *
+ * Railway expects standard JSON logs and this avoids the
+ * "unable to determine transport target for pino-pretty" error.
  */
-export const logger: Logger = isProduction
-  ? pino(options)
-  : pino({
-      ...options,
-
-      transport: {
-        target: "pino-pretty",
-
-        options: {
-          colorize: true,
-          translateTime: "HH:MM:ss",
-          ignore: "pid,hostname,service,env",
-          singleLine: false,
-        },
-      },
-    });
+export const logger: Logger = pino(options);
 
 /**
  * Child logger tagged with a module name,

@@ -9,9 +9,9 @@
     "newArchEnabled": true,
     "icon": "./assets/adione-icon.png",
     "splash": {
-      "image": "./assets/adione-start-logo.png",
-      "backgroundColor": "#FFFFFF",
-      "resizeMode": "contain"
+      "image": "./assets/splash-transparent.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FFFFFF"
     },
     "notification": {
       "icon": "./assets/adione-icon.png",

@@ -10,6 +10,7 @@
  */
 
 import type { ReactNode } from "react";
+
 import {
   ActivityIndicator,
   Animated,
@@ -347,66 +348,33 @@ export function Loading({ label }: { label?: string }) {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Startup loading screen.
- *
- * Used only while the application is restoring the customer session.
- *
- * This is intentionally separate from the generic Loading component so
- * normal loading states throughout the app are not affected.
+ * AadiOne Startup Loading
  *
  * IMPORTANT:
- * - Uses adione-start-logo.png
- * - The image itself contains the icon + AadiOne name
- * - No separate AadiOne text is rendered
- * - Logo has a small fade/scale entrance animation
- * - Loading bar continuously animates
+ * - Uses the COMPLETE adione-start-logo.png.
+ * - No opacity animation.
+ * - No scale animation.
+ * - Logo is immediately fully visible.
+ * - Loading bar is displayed below the logo.
+ * - The image is contained so it is never cropped.
  */
 
 export function StartupLoading() {
-  const opacity = useRef(new Animated.Value(0)).current;
-
-  const scale = useRef(new Animated.Value(0.88)).current;
-
   const progress = useRef(new Animated.Value(0.35)).current;
 
   useEffect(() => {
-    /*
-     * Logo entrance animation
-     */
-    Animated.parallel([
-      Animated.timing(opacity, {
-        toValue: 1,
-        duration: 650,
-        easing: Easing.out(Easing.ease),
-        useNativeDriver: true,
-      }),
-
-      Animated.spring(scale, {
-        toValue: 1,
-        friction: 7,
-        tension: 55,
-        useNativeDriver: true,
-      }),
-    ]).start();
-
-    /*
-     * Loading progress animation
-     *
-     * useNativeDriver MUST be false because width
-     * is being animated.
-     */
     const progressAnimation = Animated.loop(
       Animated.sequence([
         Animated.timing(progress, {
           toValue: 1,
-          duration: 1000,
+          duration: 900,
           easing: Easing.inOut(Easing.ease),
           useNativeDriver: false,
         }),
 
         Animated.timing(progress, {
           toValue: 0.35,
-          duration: 1000,
+          duration: 900,
           easing: Easing.inOut(Easing.ease),
           useNativeDriver: false,
         }),
@@ -418,11 +386,8 @@ export function StartupLoading() {
     return () => {
       progressAnimation.stop();
     };
-  }, [opacity, scale, progress]);
+  }, [progress]);
 
-  /*
-   * Convert progress value to percentage width.
-   */
   const progressWidth = progress.interpolate({
     inputRange: [0.35, 1],
     outputRange: ["35%", "100%"],
@@ -430,32 +395,17 @@ export function StartupLoading() {
 
   return (
     <View style={styles.startupScreen}>
-      {/* ---------------------------------------------------------------- */}
-      {/* AadiOne combined startup logo                                   */}
-      {/* Icon + AadiOne name are already inside this image               */}
-      {/* ---------------------------------------------------------------- */}
-
-      <Animated.View
-        style={[
-          styles.startupLogoContainer,
-          {
-            opacity,
-            transform: [{ scale }],
-          },
-        ]}
-      >
+      {/* Complete AadiOne logo */}
+      <View style={styles.startupLogoContainer}>
         <Image
           source={require("../../assets/adione-start-logo.png")}
           style={styles.startupLogo}
           resizeMode="contain"
           accessibilityLabel="AadiOne"
         />
-      </Animated.View>
+      </View>
 
-      {/* ---------------------------------------------------------------- */}
-      {/* Animated loading bar                                             */}
-      {/* ---------------------------------------------------------------- */}
-
+      {/* Loading bar */}
       <View style={styles.startupLoadingContainer}>
         <View style={styles.startupLoadingTrack}>
           <Animated.View
@@ -509,7 +459,7 @@ export function NoticeStrip({
 
 const styles = StyleSheet.create({
   /* ---------------------------------------------------------------------- */
-  /* Existing design-system styles                                           */
+  /* Existing design-system styles                                          */
   /* ---------------------------------------------------------------------- */
 
   screen: {
@@ -580,7 +530,7 @@ const styles = StyleSheet.create({
   },
 
   /* ---------------------------------------------------------------------- */
-  /* AadiOne Startup Loading                                                */
+  /* AadiOne Startup Loading                                               */
   /* ---------------------------------------------------------------------- */
 
   startupScreen: {
@@ -591,31 +541,32 @@ const styles = StyleSheet.create({
   },
 
   startupLogoContainer: {
+    width: "100%",
     alignItems: "center",
     justifyContent: "center",
   },
 
   startupLogo: {
-    width: 270,
-    height: 270,
+    width: 300,
+    height: 300,
   },
 
   startupLoadingContainer: {
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 22,
+    marginTop: 10,
   },
 
   startupLoadingTrack: {
     width: 150,
-    height: 6,
+    height: 5,
     borderRadius: 999,
     backgroundColor: "#E2E7E4",
     overflow: "hidden",
   },
 
   startupLoadingProgress: {
-    height: 6,
+    height: 5,
     borderRadius: 999,
     backgroundColor: colors.primary,
   },

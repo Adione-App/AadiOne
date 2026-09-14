@@ -1,151 +1,305 @@
-/**
- * OTP generation, storage and verification.
- *
- * Security properties, all deliberate:
- *
- *  - The code is generated with `crypto.randomInt`, never `Math.random`. A
- *    six-digit code from a predictable PRNG is guessable, which would defeat
- *    the entire login mechanism.
- *  - Only `HMAC-SHA256(code, OTP_PEPPER)` is stored. A bare hash of a 6-digit
- *    code is trivially reversible — there are only a million possibilities —
- *    so the server-side pepper is what makes cache access useless to an
- *    attacker.
- *  - Attempts are counted server-side and the code is destroyed after
- *    OTP_MAX_ATTEMPTS, so an attacker gets a handful of guesses, not a million.
- *  - Verification uses a constant-time comparison.
- *  - A successful verification consumes the code immediately: an OTP is
- *    single-use even within its validity window.
- */
+import { createHmac, randomInt } from "node:crypto";
 
-import { ErrorCode } from '../../shared';
-import { AppError } from '../../common/errors';
-import { hmacSha256, randomNumericCode, safeEqual } from '../../common/crypto';
-import { cache, CacheKey } from '../../infra/cache';
-import { env, isProduction } from '../../config/env';
-import { otpProvider } from '../../infra/otp';
-import { moduleLogger } from '../../common/logger';
-import { maskMobile } from '../../shared/phone';
+import { AppError } from "../../common/errors";
+import { moduleLogger } from "../../common/logger";
+import { safeEqual } from "../../common/crypto";
+import { cache, CacheKey } from "../../infra/cache";
+import { env, isProduction } from "../../config/env";
+import { otpProvider } from "../../infra/otp";
+import { maskMobile } from "../../shared/phone";
 
-const log = moduleLogger('auth:otp');
+const log = moduleLogger("otp");
 
 export interface SendOtpOutcome {
   resendAfterSeconds: number;
   expiresInSeconds: number;
-  /** Non-production only, so local and automated testing can log in. */
   devOtp?: string;
 }
 
+/**
+ * Hash OTP before storing it.
+ *
+ * The plaintext OTP is never stored in cache.
+ */
 function hashCode(code: string): string {
-  return hmacSha256(code, env.OTP_PEPPER);
+  return createHmac("sha256", env.OTP_PEPPER).update(code).digest("hex");
 }
 
 /**
- * Generates, stores and sends a code.
+ * Generate a cryptographically secure numeric OTP.
+ */
+function generateOtp(length: number): string {
+  const min = 10 ** (length - 1);
+  const max = 10 ** length;
+
+  return randomInt(min, max).toString();
+}
+
+function otpKey(mobile: string): string {
+  return CacheKey.otp(mobile);
+}
+
+function attemptsKey(mobile: string): string {
+  return CacheKey.otpAttempts(mobile);
+}
+
+function cooldownKey(mobile: string): string {
+  return CacheKey.otpResendCooldown(mobile);
+}
+
+/**
+ * Send OTP to a mobile number.
  *
- * A resend cooldown is enforced separately from the hourly rate limit: the
- * rate limit stops abuse over time, the cooldown stops a customer
- * double-tapping "Resend" and burning two SMS credits for one login.
+ * Normal users:
+ *   - Generate random OTP
+ *   - Store only OTP hash
+ *   - Send through configured OTP provider
+ *
+ * Google Play reviewer:
+ *   - Use fixed OTP from environment
+ *   - Store only OTP hash
+ *   - Do NOT call SMS provider
+ *   - Still uses TTL, cooldown and attempt limits
  */
 export async function sendOtp(mobile: string): Promise<SendOtpOutcome> {
-  const cooldownKey = CacheKey.otpResendCooldown(mobile);
+  /*
+   * Dedicated Google Play reviewer account.
+   *
+   * This only activates when the requested mobile number exactly matches
+   * PLAY_REVIEW_MOBILE configured in the environment.
+   */
+  const isPlayReviewAccount =
+    Boolean(env.PLAY_REVIEW_MOBILE) && mobile === env.PLAY_REVIEW_MOBILE;
 
-  const cooldownRemaining = await cache.ttl(cooldownKey);
-  if (cooldownRemaining > 0) {
-    throw new AppError(ErrorCode.OTP_RESEND_TOO_SOON, {
-      message: `Please wait ${cooldownRemaining} seconds before requesting another OTP.`,
-      retryAfterSeconds: cooldownRemaining,
-      internalMessage: `resend cooldown active for ${maskMobile(mobile)}`,
+  /*
+   * Resend cooldown applies to every account, including
+   * the Google Play reviewer account.
+   */
+  const existingCooldown = await cache.get(cooldownKey(mobile));
+
+  if (existingCooldown) {
+    throw new AppError("OTP_RESEND_TOO_SOON" as never, {
+      message: "Please wait before requesting another OTP.",
+      internalMessage: `OTP resend too soon for ${maskMobile(mobile)}`,
     });
   }
 
-  const code = randomNumericCode(env.OTP_LENGTH);
+  /*
+   * Normal users receive a cryptographically random OTP.
+   *
+   * The dedicated Play reviewer receives the configured reusable OTP.
+   */
+  const code = isPlayReviewAccount
+    ? env.PLAY_REVIEW_OTP!
+    : generateOtp(env.OTP_LENGTH);
 
-  // Store before sending. If the SMS fails the customer simply retries; if we
-  // sent first and the write failed, a delivered code would not verify.
-  await cache.set(CacheKey.otp(mobile), hashCode(code), env.OTP_TTL_SECONDS);
-  // A fresh code resets the attempt counter — otherwise a previous failed
-  // attempt would eat into the new code's allowance.
-  await cache.delete(CacheKey.otpAttempts(mobile));
+  const expiresInSeconds = env.OTP_TTL_SECONDS;
+  const expiresInMinutes = Math.ceil(expiresInSeconds / 60);
+
+  /*
+   * IMPORTANT:
+   * Never store the plaintext OTP.
+   */
+  await cache.set(otpKey(mobile), hashCode(code), expiresInSeconds);
+
+  /*
+   * A new OTP starts with a fresh attempt counter.
+   */
+  await cache.delete(attemptsKey(mobile));
 
   try {
+    /*
+     * Google Play reviewer:
+     *
+     * Do not send an SMS.
+     * The reusable OTP is supplied to Google Play in the
+     * App Access / reviewer instructions.
+     */
+    if (isPlayReviewAccount) {
+      await cache.set(
+        cooldownKey(mobile),
+        "1",
+        env.OTP_RESEND_COOLDOWN_SECONDS,
+      );
+
+      log.info(
+        {
+          mobile: maskMobile(mobile),
+        },
+        "Play review OTP prepared",
+      );
+
+      return {
+        resendAfterSeconds: env.OTP_RESEND_COOLDOWN_SECONDS,
+        expiresInSeconds,
+      };
+    }
+
+    /*
+     * Normal customer:
+     * Send OTP through the configured provider.
+     */
     const result = await otpProvider.send({
       mobile,
       code,
-      expiresInMinutes: Math.ceil(env.OTP_TTL_SECONDS / 60),
+      expiresInMinutes,
     });
 
-    await cache.set(cooldownKey, '1', env.OTP_RESEND_COOLDOWN_SECONDS);
-
     log.info(
-      { mobile: maskMobile(mobile), provider: otpProvider.name, messageId: result.messageId },
-      'otp sent',
+      {
+        mobile: maskMobile(mobile),
+        provider: otpProvider.name,
+        messageId: result.messageId,
+      },
+      "OTP sent",
     );
+
+    /*
+     * Development console provider may return the OTP.
+     *
+     * NEVER expose it in production.
+     */
+    const devOtp = !isProduction && result.devCode ? result.devCode : undefined;
+
+    /*
+     * Start resend cooldown only after the provider succeeds.
+     */
+    await cache.set(cooldownKey(mobile), "1", env.OTP_RESEND_COOLDOWN_SECONDS);
 
     return {
       resendAfterSeconds: env.OTP_RESEND_COOLDOWN_SECONDS,
-      expiresInSeconds: env.OTP_TTL_SECONDS,
-      // Guarded twice: the provider only sets devCode outside production, and
-      // this refuses to pass it through in production regardless.
-      ...(result.devCode && !isProduction ? { devOtp: result.devCode } : {}),
+      expiresInSeconds,
+
+      ...(devOtp ? { devOtp } : {}),
     };
   } catch (error) {
-    // Delivery failed, so the stored code is unreachable — remove it rather
-    // than leaving a code nobody has blocking the next request.
-    await cache.delete(CacheKey.otp(mobile));
+    /*
+     * If SMS delivery/provider fails, do not leave an OTP
+     * that the customer never received.
+     */
+    await cache.delete(otpKey(mobile));
+    await cache.delete(attemptsKey(mobile));
+    await cache.delete(cooldownKey(mobile));
+
     throw error;
   }
 }
 
 /**
- * Verifies a submitted code. Throws on any failure; returns nothing on success.
- * The caller decides what a successful verification means (create user, log in).
+ * Verify OTP.
+ *
+ * Both normal users and the Google Play reviewer use exactly
+ * the same verification mechanism:
+ *
+ * plaintext submitted OTP
+ *        ↓
+ * HMAC hash
+ *        ↓
+ * constant-time comparison
+ *        ↓
+ * single-use OTP
  */
-export async function verifyOtp(mobile: string, submittedCode: string): Promise<void> {
-  const otpKey = CacheKey.otp(mobile);
-  const attemptsKey = CacheKey.otpAttempts(mobile);
+export async function verifyOtp(
+  mobile: string,
+  submittedCode: string,
+): Promise<void> {
+  const storedHash = await cache.get(otpKey(mobile));
 
-  const storedHash = await cache.get(otpKey);
+  /*
+   * No OTP exists or it has expired.
+   */
   if (!storedHash) {
-    // Expired and never-requested are deliberately indistinguishable, so the
-    // endpoint cannot be used to probe which numbers have a login in flight.
-    throw new AppError(ErrorCode.OTP_EXPIRED, {
-      internalMessage: `no active otp for ${maskMobile(mobile)}`,
+    throw new AppError("OTP_EXPIRED" as never, {
+      message: "This OTP has expired. Please request a new one.",
+      internalMessage: `OTP expired for ${maskMobile(mobile)}`,
     });
   }
 
-  const attempts = await cache.increment(attemptsKey, env.OTP_TTL_SECONDS);
-  if (attempts > env.OTP_MAX_ATTEMPTS) {
-    // Destroy the code: an attacker must request a new one, which the
-    // per-mobile rate limit then throttles.
-    await cache.delete(otpKey);
-    await cache.delete(attemptsKey);
-    log.warn({ mobile: maskMobile(mobile), attempts }, 'otp max attempts exceeded');
-    throw new AppError(ErrorCode.OTP_MAX_ATTEMPTS, {
-      internalMessage: `otp attempts exceeded for ${maskMobile(mobile)}`,
+  /*
+   * Read current incorrect-attempt count.
+   */
+  const attemptsRaw = await cache.get(attemptsKey(mobile));
+
+  const attempts = attemptsRaw ? Number.parseInt(attemptsRaw, 10) : 0;
+
+  /*
+   * Hard attempt limit.
+   */
+  if (attempts >= env.OTP_MAX_ATTEMPTS) {
+    await cache.delete(otpKey(mobile));
+    await cache.delete(attemptsKey(mobile));
+
+    throw new AppError("OTP_MAX_ATTEMPTS" as never, {
+      message: "Too many incorrect attempts. Please request a new OTP.",
+      internalMessage: `OTP max attempts reached for ${maskMobile(mobile)}`,
     });
   }
 
-  if (!safeEqual(hashCode(submittedCode), storedHash)) {
-    const remaining = Math.max(0, env.OTP_MAX_ATTEMPTS - attempts);
-    throw new AppError(ErrorCode.OTP_INVALID, {
-      message:
-        remaining > 0
-          ? `Incorrect OTP. ${remaining} ${remaining === 1 ? 'attempt' : 'attempts'} remaining.`
-          : 'Incorrect OTP.',
-      internalMessage: `otp mismatch for ${maskMobile(mobile)} (attempt ${attempts})`,
+  /*
+   * Hash the submitted OTP and compare it with the stored hash.
+   *
+   * This also handles the Play reviewer OTP because sendOtp()
+   * stored its hash in exactly the same way.
+   */
+  const submittedHash = hashCode(submittedCode);
+
+  const valid = safeEqual(submittedHash, storedHash);
+
+  /*
+   * Invalid OTP.
+   */
+  if (!valid) {
+    const nextAttempts = attempts + 1;
+
+    await cache.set(
+      attemptsKey(mobile),
+      String(nextAttempts),
+      env.OTP_TTL_SECONDS,
+    );
+
+    /*
+     * Delete OTP after maximum failed attempts.
+     */
+    if (nextAttempts >= env.OTP_MAX_ATTEMPTS) {
+      await cache.delete(otpKey(mobile));
+      await cache.delete(attemptsKey(mobile));
+
+      throw new AppError("OTP_MAX_ATTEMPTS" as never, {
+        message: "Too many incorrect attempts. Please request a new OTP.",
+        internalMessage: `OTP max attempts reached for ${maskMobile(mobile)}`,
+      });
+    }
+
+    throw new AppError("OTP_INVALID" as never, {
+      message: "The OTP you entered is incorrect.",
+      internalMessage: `invalid OTP for ${maskMobile(mobile)}`,
     });
   }
 
-  // Single use: consume on success so a replayed request cannot log in again.
-  await cache.delete(otpKey);
-  await cache.delete(attemptsKey);
+  /*
+   * OTP verified successfully.
+   *
+   * Delete it immediately so it cannot be reused.
+   */
+  await cache.delete(otpKey(mobile));
+  await cache.delete(attemptsKey(mobile));
+  await cache.delete(cooldownKey(mobile));
+
+  log.info(
+    {
+      mobile: maskMobile(mobile),
+    },
+    "OTP verified",
+  );
 }
 
-/** Clears OTP state for a number. Used by tests and by admin support actions. */
+/**
+ * Clear all OTP-related state for a mobile number.
+ */
 export async function clearOtpState(mobile: string): Promise<void> {
   await Promise.all([
-    cache.delete(CacheKey.otp(mobile)),
-    cache.delete(CacheKey.otpAttempts(mobile)),
-    cache.delete(CacheKey.otpResendCooldown(mobile)),
+    cache.delete(otpKey(mobile)),
+    cache.delete(attemptsKey(mobile)),
+    cache.delete(cooldownKey(mobile)),
   ]);
 }

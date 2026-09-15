@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 720">
+  <defs>
+    <linearGradient id="scr" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F3FAF3"/>
+      <stop offset="1" stop-color="#DFF1E1"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="344" height="704" rx="46" fill="#0E2E22"/>
+  <rect x="18" y="18" width="324" height="684" rx="38" fill="url(#scr)"/>
+  <rect x="140" y="26" width="80" height="18" rx="9" fill="#0E2E22"/>
+
+  <!-- status/header -->
+  <text x="42" y="86" font-family="Manrope, sans-serif" font-size="13" fill="#5C7A6C">Deliver to</text>
+  <text x="42" y="108" font-family="Manrope, sans-serif" font-size="17" font-weight="700" fill="#0E2E22">Home · 12 min</text>
+
+  <!-- search bar -->
+  <rect x="42" y="132" width="276" height="46" rx="23" fill="#ffffff"/>
+  <circle cx="66" cy="155" r="6" fill="none" stroke="#8FAE9C" stroke-width="2.5"/>
+  <line x1="71" y1="160" x2="78" y2="167" stroke="#8FAE9C" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="90" y="149" width="150" height="10" rx="5" fill="#DCE9DF"/>
+
+  <!-- banner -->
+  <rect x="42" y="196" width="276" height="90" rx="20" fill="#1F7A3B"/>
+  <text x="62" y="232" font-family="Manrope, sans-serif" font-size="15" font-weight="700" fill="#ffffff">Free delivery</text>
+  <text x="62" y="254" font-family="Manrope, sans-serif" font-size="12" fill="#DDEFDF">on orders above ₹200</text>
+  <circle cx="278" cy="241" r="26" fill="#57AC66"/>
+
+  <!-- category chips -->
+  <rect x="42" y="306" width="70" height="30" rx="15" fill="#EAF4EA"/>
+  <rect x="120" y="306" width="70" height="30" rx="15" fill="#ffffff"/>
+  <rect x="198" y="306" width="70" height="30" rx="15" fill="#ffffff"/>
+
+  <!-- product grid -->
+  <g>
+    <rect x="42" y="356" width="128" height="150" rx="18" fill="#ffffff"/>
+    <rect x="58" y="372" width="96" height="80" rx="12" fill="#E4F1E6"/>
+    <rect x="58" y="464" width="80" height="10" rx="5" fill="#0E2E22" opacity="0.75"/>
+    <rect x="58" y="480" width="50" height="9" rx="4.5" fill="#8FAE9C"/>
+    <circle cx="146" cy="486" r="14" fill="#1F7A3B"/>
+
+    <rect x="190" y="356" width="128" height="150" rx="18" fill="#ffffff"/>
+    <rect x="206" y="372" width="96" height="80" rx="12" fill="#FCEBCF"/>
+    <rect x="206" y="464" width="80" height="10" rx="5" fill="#0E2E22" opacity="0.75"/>
+    <rect x="206" y="480" width="50" height="9" rx="4.5" fill="#8FAE9C"/>
+    <circle cx="294" cy="486" r="14" fill="#1F7A3B"/>
+  </g>
+
+  <g>
+    <rect x="42" y="522" width="128" height="150" rx="18" fill="#ffffff"/>
+    <rect x="58" y="538" width="96" height="80" rx="12" fill="#DCEEFB"/>
+    <rect x="58" y="630" width="80" height="10" rx="5" fill="#0E2E22" opacity="0.75"/>
+    <rect x="58" y="646" width="50" height="9" rx="4.5" fill="#8FAE9C"/>
+    <circle cx="146" cy="652" r="14" fill="#1F7A3B"/>
+
+    <rect x="190" y="522" width="128" height="150" rx="18" fill="#ffffff"/>
+    <rect x="206" y="538" width="96" height="80" rx="12" fill="#F6E0E4"/>
+    <rect x="206" y="630" width="80" height="10" rx="5" fill="#0E2E22" opacity="0.75"/>
+    <rect x="206" y="646" width="50" height="9" rx="4.5" fill="#8FAE9C"/>
+    <circle cx="294" cy="652" r="14" fill="#1F7A3B"/>
+  </g>
+</svg>

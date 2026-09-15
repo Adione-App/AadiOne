@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 720">
+  <defs>
+    <linearGradient id="scr2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0E3D20"/>
+      <stop offset="1" stop-color="#124D28"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="344" height="704" rx="46" fill="#0E2E22"/>
+  <rect x="18" y="18" width="324" height="684" rx="38" fill="url(#scr2)"/>
+  <rect x="140" y="26" width="80" height="18" rx="9" fill="#0E2E22"/>
+
+  <text x="42" y="92" font-family="Manrope, sans-serif" font-size="13" fill="#9FC5AC">Order #A1042</text>
+  <text x="42" y="118" font-family="Manrope, sans-serif" font-size="19" font-weight="700" fill="#ffffff">Arriving in 9 minutes</text>
+
+  <!-- map placeholder -->
+  <rect x="42" y="150" width="276" height="220" rx="22" fill="#0B2E1E"/>
+  <path d="M62 320 C 120 260, 180 300, 240 220 S 300 180, 300 180" fill="none" stroke="#57AC66" stroke-width="3" stroke-dasharray="2 10" stroke-linecap="round"/>
+  <circle cx="62" cy="320" r="7" fill="#F0A63C"/>
+  <circle cx="300" cy="180" r="9" fill="#57AC66"/>
+  <circle cx="300" cy="180" r="16" fill="none" stroke="#57AC66" stroke-width="2" opacity="0.5"/>
+
+  <!-- status steps -->
+  <g font-family="Manrope, sans-serif">
+    <circle cx="58" cy="410" r="9" fill="#57AC66"/>
+    <text x="80" y="415" font-size="14" fill="#ffffff">Order confirmed</text>
+
+    <circle cx="58" cy="450" r="9" fill="#57AC66"/>
+    <text x="80" y="455" font-size="14" fill="#ffffff">Packed by store</text>
+
+    <circle cx="58" cy="490" r="9" fill="#F0A63C"/>
+    <text x="80" y="495" font-size="14" fill="#ffffff">Out for delivery</text>
+
+    <circle cx="58" cy="530" r="9" fill="none" stroke="#4E7160" stroke-width="2.5"/>
+    <text x="80" y="535" font-size="14" fill="#9FC5AC">Delivered</text>
+
+    <line x1="58" y1="419" x2="58" y2="441" stroke="#4E7160" stroke-width="2"/>
+    <line x1="58" y1="459" x2="58" y2="481" stroke="#4E7160" stroke-width="2"/>
+    <line x1="58" y1="499" x2="58" y2="521" stroke="#4E7160" stroke-width="2"/>
+  </g>
+
+  <rect x="42" y="580" width="276" height="64" rx="20" fill="#123A26"/>
+  <text x="62" y="608" font-family="Manrope, sans-serif" font-size="13" fill="#9FC5AC">Delivery partner</text>
+  <text x="62" y="628" font-family="Manrope, sans-serif" font-size="15" font-weight="700" fill="#ffffff">On the way with your order</text>
+</svg>

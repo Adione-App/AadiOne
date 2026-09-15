@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+::selection {
+  background-color: #C7E9CB;
+  color: #0E3D20;
+}
+
+/* Visible keyboard focus ring across the site */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid #1F7A3B;
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.text-balance {
+  text-wrap: balance;
+}
+
+.prose-legal h2 {
+  @apply mt-10 mb-3 font-display text-2xl text-ink;
+}
+.prose-legal h3 {
+  @apply mt-6 mb-2 font-display text-lg text-ink;
+}
+.prose-legal p {
+  @apply mb-4 leading-relaxed text-ink-light/90;
+}
+.prose-legal ul {
+  @apply mb-4 ml-5 list-disc space-y-2 text-ink-light/90;
+}
+.prose-legal a {
+  @apply text-leaf-700 underline underline-offset-2 hover:text-leaf-800;
+}

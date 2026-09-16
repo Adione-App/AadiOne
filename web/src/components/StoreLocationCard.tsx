@@ -21,6 +21,13 @@ export default function StoreLocationCard() {
   const queryClient = useQueryClient();
   const [lat, setLat] = useState('');
   const [lng, setLng] = useState('');
+  const [name, setName] = useState('');
+  const [addressLine, setAddressLine] = useState('');
+  const [city, setCity] = useState('');
+  const [state, setState] = useState('');
+  const [pincode, setPincode] = useState('');
+  const [phone, setPhone] = useState('');
+  const [seeded, setSeeded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [locating, setLocating] = useState(false);
@@ -38,19 +45,33 @@ export default function StoreLocationCard() {
 
   // Seed the inputs once the store loads, without clobbering typing afterwards.
   useEffect(() => {
-    if (store.data && lat === '' && lng === '') {
+    if (store.data && !seeded) {
       setLat(String(store.data.latitude));
       setLng(String(store.data.longitude));
+      setName(store.data.name);
+      setAddressLine(store.data.addressLine);
+      setCity(store.data.city);
+      setState(store.data.state);
+      setPincode(store.data.pincode);
+      setPhone(store.data.phone ?? '');
+      setSeeded(true);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store.data]);
+  }, [store.data, seeded]);
 
   const save = useMutation({
-    mutationFn: (input: { latitude: number; longitude: number }) =>
-      api.patch('/admin/store', input),
+    mutationFn: (input: {
+      latitude: number;
+      longitude: number;
+      name?: string;
+      addressLine?: string;
+      city?: string;
+      state?: string;
+      pincode?: string;
+      phone?: string;
+    }) => api.patch('/admin/store', input),
     onSuccess: () => {
       setError(null);
-      setNote('Store location saved. The app will use it on the next check.');
+      setNote('Store details saved. The app will use them on the next check.');
       void queryClient.invalidateQueries({ queryKey: ['store'] });
       window.setTimeout(() => setNote(null), 4000);
     },
@@ -95,12 +116,21 @@ export default function StoreLocationCard() {
 
   const parsedLat = Number(lat);
   const parsedLng = Number(lng);
-  const valid =
+  const coordsValid =
     Number.isFinite(parsedLat) &&
     Number.isFinite(parsedLng) &&
     Math.abs(parsedLat) <= 90 &&
     Math.abs(parsedLng) <= 180 &&
     !(parsedLat === 0 && parsedLng === 0);
+
+  const detailsValid =
+    name.trim().length >= 2 &&
+    addressLine.trim().length >= 2 &&
+    city.trim().length >= 2 &&
+    state.trim().length >= 2 &&
+    /^\d{6}$/.test(pincode);
+
+  const valid = coordsValid && detailsValid;
 
   // How far the entered point is from where the store currently sits — the
   // sanity check that catches a swapped lat/lng or a stray decimal point.
@@ -165,6 +195,67 @@ export default function StoreLocationCard() {
           </Field>
         </div>
 
+        {/* Coordinates are what serviceability is measured from — this is the
+            store name and address text shown to customers throughout the app
+            (About screen, receipts, legal pages). Both need to match reality,
+            not just one. */}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Store name" required>
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              className={inputClass}
+              placeholder="Aadione Store — Railmagra"
+            />
+          </Field>
+          <Field label="Phone">
+            <input
+              value={phone}
+              onChange={(event) => setPhone(event.target.value)}
+              className={inputClass}
+              inputMode="tel"
+              placeholder="9876543210"
+            />
+          </Field>
+        </div>
+
+        <Field label="Address line" required>
+          <input
+            value={addressLine}
+            onChange={(event) => setAddressLine(event.target.value)}
+            className={inputClass}
+            placeholder="Dhan Mandi, Nathdwara Road"
+          />
+        </Field>
+
+        <div className="grid gap-4 sm:grid-cols-3">
+          <Field label="City" required>
+            <input
+              value={city}
+              onChange={(event) => setCity(event.target.value)}
+              className={inputClass}
+              placeholder="Railmagra"
+            />
+          </Field>
+          <Field label="State" required>
+            <input
+              value={state}
+              onChange={(event) => setState(event.target.value)}
+              className={inputClass}
+              placeholder="Rajasthan"
+            />
+          </Field>
+          <Field label="Pincode" required>
+            <input
+              value={pincode}
+              onChange={(event) => setPincode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+              className={inputClass}
+              inputMode="numeric"
+              placeholder="313329"
+            />
+          </Field>
+        </div>
+
         {movingBy != null && movingBy > 0.05 && (
           <p className="text-sm text-gray-600">
             This moves the store <span className="font-semibold">{movingBy.toFixed(1)} km</span>{' '}
@@ -180,13 +271,29 @@ export default function StoreLocationCard() {
 
         <div className="flex flex-wrap items-center gap-3">
           <Button
-            onClick={() => save.mutate({ latitude: parsedLat, longitude: parsedLng })}
+            onClick={() =>
+              save.mutate({
+                latitude: parsedLat,
+                longitude: parsedLng,
+                name: name.trim(),
+                addressLine: addressLine.trim(),
+                city: city.trim(),
+                state: state.trim(),
+                pincode,
+                ...(phone.trim() ? { phone: phone.trim() } : {}),
+              })
+            }
             disabled={!valid || save.isPending}
           >
-            {save.isPending ? 'Saving…' : 'Save store location'}
+            {save.isPending ? 'Saving…' : 'Save store details'}
           </Button>
-          {!valid && lat !== '' && (
+          {!coordsValid && lat !== '' && (
             <span className="text-sm text-danger-500">Those coordinates are not valid.</span>
+          )}
+          {coordsValid && !detailsValid && (
+            <span className="text-sm text-danger-500">
+              Fill in name, address, city, state and a 6-digit pincode.
+            </span>
           )}
         </div>
 

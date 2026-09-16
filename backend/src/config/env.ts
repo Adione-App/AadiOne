@@ -182,7 +182,14 @@ const envSchema = z
 
     FCM_CLIENT_EMAIL: z.string().optional(),
 
-    FCM_PRIVATE_KEY: z.string().optional(),
+    // Service-account private keys are stored in .env as a single line with
+    // literal `\n` escapes (real newlines can't survive a .env file), so this
+    // is the one place that turns them back into an actual PEM before
+    // anything tries to use it for signing.
+    FCM_PRIVATE_KEY: z
+      .string()
+      .optional()
+      .transform((v) => v?.replace(/\\n/g, "\n")),
 
     // Storage
     STORAGE_PROVIDER: z.enum(["local", "s3"]).default("local"),
@@ -293,6 +300,31 @@ const envSchema = z
         fail(
           "RAZORPAY_WEBHOOK_SECRET",
           "required when PAYMENT_PROVIDER=razorpay",
+        );
+      }
+    }
+
+    /*
+     * ------------------------------------------------------------------------
+     * Notifications
+     * ------------------------------------------------------------------------
+     */
+
+    if (env.NOTIFICATION_PROVIDER === "fcm") {
+      if (!env.FCM_PROJECT_ID) {
+        fail("FCM_PROJECT_ID", "required when NOTIFICATION_PROVIDER=fcm");
+      }
+
+      if (!env.FCM_CLIENT_EMAIL) {
+        fail("FCM_CLIENT_EMAIL", "required when NOTIFICATION_PROVIDER=fcm");
+      }
+
+      if (!env.FCM_PRIVATE_KEY) {
+        fail("FCM_PRIVATE_KEY", "required when NOTIFICATION_PROVIDER=fcm");
+      } else if (!env.FCM_PRIVATE_KEY.includes("BEGIN PRIVATE KEY")) {
+        fail(
+          "FCM_PRIVATE_KEY",
+          "does not look like a PEM private key — check it was copied in full from the Firebase service account JSON",
         );
       }
     }

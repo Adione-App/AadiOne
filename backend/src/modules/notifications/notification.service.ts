@@ -11,9 +11,10 @@
  * push provider can never roll back an order.
  */
 
+import jwt from 'jsonwebtoken';
 import { NotificationChannel, NotificationStatus, NotificationType } from '../../shared';
 import { formatPaise } from '../../shared/money';
-import { env, isProduction } from '../../config/env';
+import { env } from '../../config/env';
 import { prisma } from '../../infra/db/prisma';
 import { moduleLogger } from '../../common/logger';
 
@@ -39,8 +40,16 @@ class ConsoleNotificationProvider implements NotificationProvider {
   }
 }
 
+const FCM_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const FCM_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging';
+
 class FcmNotificationProvider implements NotificationProvider {
   readonly name = 'fcm';
+
+  // Cached across sends: the token is valid for an hour, and requesting a
+  // fresh one per push would mean two Google round-trips for every single
+  // notification instead of one.
+  private cachedToken: { accessToken: string; expiresAt: number } | null = null;
 
   async send(message: PushMessage): Promise<{ messageId: string | null }> {
     // Kept deliberately thin: obtaining an OAuth token from the service
@@ -73,16 +82,62 @@ class FcmNotificationProvider implements NotificationProvider {
     return { messageId: body.name ?? null };
   }
 
+  /**
+   * Exchanges the service-account credentials for a short-lived OAuth access
+   * token, via the standard Google JWT-bearer flow (RFC 7523): a JWT signed
+   * with the service account's own private key, asserting the scope we want,
+   * traded in for an access token at Google's token endpoint. No Firebase
+   * SDK needed for this — it's two HTTP-adjacent steps.
+   */
   private async accessToken(): Promise<string> {
-    // Implemented when FCM credentials are provisioned; until then the console
-    // provider is used and this path is never reached.
-    throw new Error('FCM service-account token exchange not configured');
+    if (this.cachedToken && this.cachedToken.expiresAt > Date.now() + 60_000) {
+      return this.cachedToken.accessToken;
+    }
+
+    if (!env.FCM_CLIENT_EMAIL || !env.FCM_PRIVATE_KEY) {
+      throw new Error(
+        'FCM_CLIENT_EMAIL / FCM_PRIVATE_KEY are not configured — cannot obtain an FCM access token',
+      );
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const assertion = jwt.sign(
+      {
+        iss: env.FCM_CLIENT_EMAIL,
+        scope: FCM_SCOPE,
+        aud: FCM_TOKEN_URL,
+        iat: nowSeconds,
+        exp: nowSeconds + 3600,
+      },
+      env.FCM_PRIVATE_KEY,
+      { algorithm: 'RS256' },
+    );
+
+    const response = await fetch(FCM_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (!response.ok) {
+      throw new Error(`fcm token exchange ${response.status}: ${await response.text()}`);
+    }
+
+    const body = (await response.json()) as { access_token: string; expires_in: number };
+    this.cachedToken = {
+      accessToken: body.access_token,
+      expiresAt: Date.now() + body.expires_in * 1000,
+    };
+    return body.access_token;
   }
 }
 
-const provider: NotificationProvider = isProduction && env.NOTIFICATION_PROVIDER === 'fcm'
-  ? new FcmNotificationProvider()
-  : new ConsoleNotificationProvider();
+const provider: NotificationProvider =
+  env.NOTIFICATION_PROVIDER === 'fcm' ? new FcmNotificationProvider() : new ConsoleNotificationProvider();
 
 log.info({ provider: provider.name }, 'notification provider initialised');
 

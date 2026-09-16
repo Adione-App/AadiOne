@@ -38,6 +38,14 @@ export const listProductsQuerySchema = z.object({
 
 export const productParamsSchema = z.object({ id: uuid });
 
+export const railParamsSchema = z.object({
+  key: z.enum(['POPULAR', 'DAILY_ESSENTIALS', 'BEST_SELLERS', 'RECENTLY_ADDED', 'OFFERS']),
+});
+
+export const railQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(PAGINATION_MAX_LIMIT).default(60),
+});
+
 export const variantParamsSchema = z.object({ variantId: uuid });
 
 export const searchQuerySchema = z.object({
@@ -52,3 +60,5 @@ export const searchQuerySchema = z.object({
 export type ListProductsQuery = z.infer<typeof listProductsQuerySchema>;
 export type SearchQuery = z.infer<typeof searchQuerySchema>;
 export type ListCategoriesQuery = z.infer<typeof listCategoriesQuerySchema>;
+export type RailParams = z.infer<typeof railParamsSchema>;
+export type RailQuery = z.infer<typeof railQuerySchema>;

@@ -13,6 +13,7 @@ import type { ProductSummaryDto } from '@shared';
 import { colors, radius, spacing } from '@shared/theme';
 import { useSearch } from '@/lib/queries';
 import { useCartActions } from '@/lib/useCartActions';
+import { useGridColumns } from '@/lib/useGridColumns';
 import { AppText, EmptyState, Loading, NoticeStrip, Screen } from '@/components/ui';
 import { ProductCard } from '@/components/ProductCard';
 
@@ -25,6 +26,7 @@ export default function SearchScreen({
   const [term, setTerm] = useState('');
   const results = useSearch(term);
   const cart = useCartActions();
+  const columns = useGridColumns();
 
   const renderItem = ({ item }: { item: ProductSummaryDto }) => (
     <ProductCard
@@ -69,10 +71,11 @@ export default function SearchScreen({
         />
       ) : (
         <FlatList
+          key={`grid-${columns}`}
           data={results.data?.items ?? []}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
-          numColumns={2}
+          numColumns={columns}
           contentContainerStyle={{ padding: spacing.sm, paddingBottom: spacing.xxl }}
           keyboardShouldPersistTaps="handled"
         />

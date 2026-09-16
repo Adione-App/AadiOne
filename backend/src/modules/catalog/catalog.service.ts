@@ -560,3 +560,26 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
     rails: rails.filter((rail) => rail.products.length > 0),
   };
 }
+
+/**
+ * The full contents of one Home rail — what "See All" opens.
+ *
+ * Reuses the exact same ranking as the Home feed's preview of this rail, just
+ * without the 10-item cap, so the two never disagree about order.
+ */
+export async function listRailProducts(
+  key: (typeof RAILS)[number]["key"],
+  limit: number,
+): Promise<{ title: string; products: HomeFeedDto["rails"][number]["products"] }> {
+  const store = await storeService.getActiveStore();
+  const context = await mappingContext();
+  const rail = RAILS.find((entry) => entry.key === key)!;
+
+  const ids = await repository.listRailProductIds(store.id, key, limit);
+  const products = await repository.hydrateProducts(ids, store.id);
+
+  return {
+    title: rail.title,
+    products: await Promise.all(products.map((product) => toSummaryDto(product, context))),
+  };
+}

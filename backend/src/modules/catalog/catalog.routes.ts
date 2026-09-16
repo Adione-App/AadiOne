@@ -8,6 +8,8 @@ import {
   listCategoriesQuerySchema,
   listProductsQuerySchema,
   productParamsSchema,
+  railParamsSchema,
+  railQuerySchema,
   searchQuerySchema,
   variantParamsSchema,
 } from './catalog.validation';
@@ -47,6 +49,15 @@ catalogRouter.get(
   '/products',
   validate({ query: listProductsQuerySchema }),
   asyncHandler(controller.listProducts),
+);
+
+// Registered before `/products/:id` for the same reason as `/products/search`
+// above — Express matches by path shape only, but keeping the fixed segments
+// together here avoids ever having to reason about it again.
+catalogRouter.get(
+  '/products/rail/:key',
+  validate({ params: railParamsSchema, query: railQuerySchema }),
+  asyncHandler(controller.listRailProducts),
 );
 
 catalogRouter.get(

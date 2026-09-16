@@ -30,7 +30,11 @@ export type CatalogStackParamList = {
   Search: undefined;
   ProductDetail: { productId: string };
   SelectLocation: undefined;
-  AddressForm: undefined;
+  AddressForm: { addressId?: string } | undefined;
+  RailProducts: {
+    key: "POPULAR" | "DAILY_ESSENTIALS" | "BEST_SELLERS" | "RECENTLY_ADDED" | "OFFERS";
+    title: string;
+  };
 };
 
 export type CartStackParamList = {
@@ -39,7 +43,7 @@ export type CartStackParamList = {
   UpiPayment: { orderId: string };
   OrderTracking: { orderId: string };
   Addresses: undefined;
-  AddressForm: undefined;
+  AddressForm: { addressId?: string } | undefined;
   ProductDetail: { productId: string };
 };
 
@@ -48,7 +52,7 @@ export type AccountStackParamList = {
   Orders: undefined;
   OrderTracking: { orderId: string };
   Addresses: undefined;
-  AddressForm: undefined;
+  AddressForm: { addressId?: string } | undefined;
   PersonalInfo: undefined;
   Help: undefined;
   About: undefined;

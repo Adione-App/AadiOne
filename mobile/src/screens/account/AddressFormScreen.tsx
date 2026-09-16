@@ -24,11 +24,11 @@
  * the current GPS fix is now only a last-resort fallback, never a default.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AddressDto, ServiceabilityResult } from '@shared';
 import { isValidPincode, normalizeIndianMobile } from '@shared/phone';
 import { formatDistance } from '@shared/distance';
@@ -54,10 +54,29 @@ interface CheckResult {
   message: string;
 }
 
-export default function AddressFormScreen({ onBack }: { onBack: () => void }) {
+export default function AddressFormScreen({
+  addressId,
+  onBack,
+}: {
+  addressId?: string;
+  onBack: () => void;
+}) {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
   const location = useLocation((state) => state.location);
+  const isEditing = addressId !== undefined;
+
+  // Reuses the same cached list AddressesScreen already fetched — editing
+  // opens instantly instead of waiting on a network round trip for data the
+  // app already has.
+  const addresses = useQuery({
+    queryKey: ['addresses'],
+    queryFn: () => api.get<AddressDto[]>('/addresses'),
+    enabled: isEditing,
+  });
+  const existing = addressId
+    ? addresses.data?.find((item) => item.id === addressId)
+    : undefined;
 
   const [fullName, setFullName] = useState('');
   const [mobile, setMobile] = useState('');
@@ -77,6 +96,32 @@ export default function AddressFormScreen({ onBack }: { onBack: () => void }) {
     longitude: number;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [seeded, setSeeded] = useState(false);
+
+  // Prefill once the address to edit has loaded, without clobbering typing
+  // afterwards — mirrors the pattern used by the admin Store location card.
+  useEffect(() => {
+    if (!existing || seeded) return;
+
+    const line1 = existing.houseNo ?? existing.area;
+    const line2 = existing.landmark ?? (existing.area !== line1 ? existing.area : '');
+
+    setFullName(existing.fullName);
+    setMobile(existing.mobile);
+    setPincode(existing.pincode);
+    setAddressLine1(line1);
+    setAddressLine2(line2);
+    setCity(existing.city);
+    setState(existing.state);
+    setAddressType(
+      ADDRESS_TYPES.includes(existing.label as AddressType)
+        ? (existing.label as AddressType)
+        : 'Other',
+    );
+    setIsDefault(existing.isDefault);
+    setAddressCoords({ latitude: existing.latitude, longitude: existing.longitude });
+    setSeeded(true);
+  }, [existing, seeded]);
 
   /** The address text changed since the last "Check" — its coordinates are stale. */
   function clearCheck(): void {
@@ -182,7 +227,7 @@ export default function AddressFormScreen({ onBack }: { onBack: () => void }) {
         );
       }
 
-      return api.post<AddressDto>('/addresses', {
+      const body = {
         label: addressType,
         fullName: fullName.trim(),
         mobile,
@@ -202,7 +247,11 @@ export default function AddressFormScreen({ onBack }: { onBack: () => void }) {
         latitude: coords.latitude,
         longitude: coords.longitude,
         isDefault,
-      });
+      };
+
+      return isEditing
+        ? api.patch<AddressDto>(`/addresses/${addressId}`, body)
+        : api.post<AddressDto>('/addresses', body);
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['addresses'] });
@@ -226,12 +275,20 @@ export default function AddressFormScreen({ onBack }: { onBack: () => void }) {
           <AppText variant="h2">←</AppText>
         </Pressable>
         <View>
-          <AppText variant="h3">Add New Address</AppText>
+          <AppText variant="h3">{isEditing ? 'Edit Address' : 'Add New Address'}</AppText>
           <AppText variant="caption" color={colors.textSecondary}>
-            Enter your address details
+            {isEditing ? 'Update your address details' : 'Enter your address details'}
           </AppText>
         </View>
       </View>
+
+      {isEditing && !existing && (
+        <View style={{ padding: spacing.base }}>
+          <AppText variant="body" color={colors.textSecondary}>
+            Loading address…
+          </AppText>
+        </View>
+      )}
 
       <ScrollView
         contentContainerStyle={{
@@ -413,7 +470,7 @@ export default function AddressFormScreen({ onBack }: { onBack: () => void }) {
         </Pressable>
 
         <Button
-          label="Save Address"
+          label={isEditing ? 'Save Changes' : 'Save Address'}
           onPress={() => save.mutate()}
           loading={save.isPending}
           disabled={!complete}

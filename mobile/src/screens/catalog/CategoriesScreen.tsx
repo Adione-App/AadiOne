@@ -21,6 +21,7 @@ import { formatPaise } from '@shared/money';
 import { colors, radius, spacing } from '@shared/theme';
 import { useCategories, useProducts } from '@/lib/queries';
 import { useCartActions } from '@/lib/useCartActions';
+import { useGridColumns } from '@/lib/useGridColumns';
 import { AppText, EmptyState, Loading, NoticeStrip, Screen } from '@/components/ui';
 import { ProductCard } from '@/components/ProductCard';
 import CategoryIcon from '@/components/CategoryIcon';
@@ -45,6 +46,7 @@ export default function CategoriesScreen({
   // what is left, or names break mid-word and the price is squeezed out of the
   // card entirely. ~26% puts a 360dp screen at 94dp rail / 266dp grid.
   const railWidth = Math.round(Math.max(80, Math.min(104, width * 0.26)));
+  const columns = useGridColumns(spacing.xs * 2 + railWidth);
 
   const leaves = (categories.data ?? []).flatMap((category) => category.children ?? [category]);
 
@@ -121,10 +123,11 @@ export default function CategoriesScreen({
             <EmptyState title="Nothing here yet" hint="Try another category." />
           ) : (
             <FlatList
+              key={`grid-${columns}`}
               data={products.data?.items ?? []}
               keyExtractor={(item) => item.id}
               renderItem={renderItem}
-              numColumns={2}
+              numColumns={columns}
               contentContainerStyle={{
                 padding: spacing.xs,
                 paddingBottom: cartCount > 0 ? 96 : spacing.xxl,

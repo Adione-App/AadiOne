@@ -10,9 +10,11 @@ import { AppText, Button, EmptyState, Loading, Screen } from "@/components/ui";
 export default function AddressesScreen({
   onBack,
   onAddAddress,
+  onEditAddress,
 }: {
   onBack: () => void;
   onAddAddress: () => void;
+  onEditAddress: (addressId: string) => void;
 }) {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
@@ -103,6 +105,7 @@ export default function AddressesScreen({
           renderItem={({ item }) => (
             <AddressCard
               address={item}
+              onEdit={() => onEditAddress(item.id)}
               onDelete={() => remove.mutate(item.id)}
               onSetDefault={() => setDefault.mutate(item.id)}
             />
@@ -133,10 +136,12 @@ export default function AddressesScreen({
 
 function AddressCard({
   address,
+  onEdit,
   onDelete,
   onSetDefault,
 }: {
   address: AddressDto;
+  onEdit: () => void;
   onDelete: () => void;
   onSetDefault: () => void;
 }) {
@@ -179,6 +184,12 @@ function AddressCard({
             </View>
           )}
         </View>
+
+        <Pressable onPress={onEdit} hitSlop={8} style={styles.editButton}>
+          <AppText variant="bodyStrong" color={colors.primary}>
+            Edit
+          </AppText>
+        </Pressable>
       </View>
 
       {/* Name */}
@@ -288,6 +299,11 @@ const styles = StyleSheet.create({
 
   addNewButton: {
     marginLeft: "auto",
+  },
+
+  editButton: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
   },
 
   card: {

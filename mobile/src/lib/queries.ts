@@ -24,6 +24,7 @@ export const keys = {
   products: (params: string) => ["products", params] as const,
   product: (id: string) => ["product", id] as const,
   search: (term: string) => ["search", term] as const,
+  rail: (key: string) => ["rail", key] as const,
   cart: ["cart"] as const,
   orders: ["orders"] as const,
   order: (id: string) => ["order", id] as const,
@@ -68,6 +69,17 @@ export function useProduct(id: string) {
   return useQuery({
     queryKey: keys.product(id),
     queryFn: () => api.get<ProductDetailDto>(`/products/${id}`),
+  });
+}
+
+/** The full rail a Home "See All" opens — same ranking as the preview, no cap. */
+export function useRailProducts(key: HomeFeedDto["rails"][number]["key"]) {
+  return useQuery({
+    queryKey: keys.rail(key),
+    queryFn: () =>
+      api.get<{ title: string; products: ProductSummaryDto[] }>(
+        `/products/rail/${key}?limit=60`,
+      ),
   });
 }
 

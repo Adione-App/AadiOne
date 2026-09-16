@@ -12,7 +12,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { ArrowRight, ChevronRight } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import type { ProductSummaryDto } from "@shared";
+import type { HomeFeedDto, ProductSummaryDto } from "@shared";
+
+type RailKey = HomeFeedDto["rails"][number]["key"];
 import { colors, radius, shadow, spacing } from "@shared/theme";
 import { formatDistance } from "@shared/distance";
 
@@ -40,12 +42,16 @@ import adioneHomeBanner from "../../../assets/adione-homebar.png";
 export default function HomeScreen({
   onOpenProduct,
   onOpenCategory,
+  onOpenAllCategories,
+  onOpenRail,
   onOpenSearch,
   onOpenLocation,
   onOpenProfile,
 }: {
   onOpenProduct: (productId: string) => void;
   onOpenCategory: (categoryId: string) => void;
+  onOpenAllCategories: () => void;
+  onOpenRail: (key: RailKey, title: string) => void;
   onOpenSearch: () => void;
   onOpenLocation: () => void;
   onOpenProfile: () => void;
@@ -328,7 +334,7 @@ export default function HomeScreen({
             CATEGORIES
         ======================================================== */}
 
-        <SectionHeader title="Categories" onSeeAll={() => undefined} />
+        <SectionHeader title="Categories" onSeeAll={onOpenAllCategories} />
 
         <ScrollView
           horizontal
@@ -370,7 +376,10 @@ export default function HomeScreen({
 
         {feed.data.rails.map((rail) => (
           <View key={rail.key} style={styles.rail}>
-            <SectionHeader title={rail.title} onSeeAll={() => undefined} />
+            <SectionHeader
+              title={rail.title}
+              onSeeAll={() => onOpenRail(rail.key, rail.title)}
+            />
 
             <FlatList
               horizontal
@@ -380,8 +389,8 @@ export default function HomeScreen({
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.productRow}
               getItemLayout={(_data, index) => ({
-                length: 162,
-                offset: 162 * index,
+                length: 140,
+                offset: 140 * index,
                 index,
               })}
             />
@@ -637,7 +646,18 @@ const styles = StyleSheet.create({
 
     marginTop: spacing.md,
 
-    height: 124,
+    // Matches the source banner's own proportions (1653x569) so `cover`
+    // crops the same small sliver on every screen width instead of an
+    // ever-larger chunk as the device gets wider than a phone — on a
+    // tablet, a fixed height here forced a wide, short crop that sliced
+    // most of the artwork away.
+    aspectRatio: 1653 / 569,
+
+    maxWidth: 640,
+
+    alignSelf: "center",
+
+    width: "100%",
 
     borderRadius: radius.lg,
 
@@ -853,6 +873,6 @@ const styles = StyleSheet.create({
   },
 
   productWrapper: {
-    width: 154,
+    width: 132,
   },
 });

@@ -20,6 +20,7 @@ import SelectLocationScreen from "@/screens/location/SelectLocationScreen";
 import CategoriesScreen from "@/screens/catalog/CategoriesScreen";
 import SearchScreen from "@/screens/catalog/SearchScreen";
 import ProductDetailScreen from "@/screens/catalog/ProductDetailScreen";
+import RailProductsScreen from "@/screens/catalog/RailProductsScreen";
 
 import CartScreen from "@/screens/cart/CartScreen";
 import CheckoutScreen from "@/screens/checkout/CheckoutScreen";
@@ -74,6 +75,15 @@ export function HomeStack() {
                 },
               })
             }
+            onOpenAllCategories={() =>
+              navigation.getParent()?.navigate("Categories", {
+                screen: "Categories",
+                params: undefined,
+              })
+            }
+            onOpenRail={(key, title) =>
+              navigation.navigate("RailProducts", { key, title })
+            }
             onOpenSearch={() => navigation.getParent()?.navigate("Search")}
             /*
              * FIX:
@@ -124,8 +134,28 @@ export function HomeStack() {
       --------------------------------------------------------------- */}
 
       <CatalogStack.Screen name="AddressForm">
-        {({ navigation }) => (
-          <AddressFormScreen onBack={() => navigation.goBack()} />
+        {({ navigation, route }) => (
+          <AddressFormScreen
+            addressId={route.params?.addressId}
+            onBack={() => navigation.goBack()}
+          />
+        )}
+      </CatalogStack.Screen>
+
+      {/* ---------------------------------------------------------------
+          RAIL "SEE ALL"
+      --------------------------------------------------------------- */}
+
+      <CatalogStack.Screen name="RailProducts">
+        {({ navigation, route }) => (
+          <RailProductsScreen
+            railKey={route.params.key}
+            fallbackTitle={route.params.title}
+            onBack={() => navigation.goBack()}
+            onOpenProduct={(productId) =>
+              navigation.navigate("ProductDetail", { productId })
+            }
+          />
         )}
       </CatalogStack.Screen>
     </CatalogStack.Navigator>
@@ -296,6 +326,9 @@ export function CartStack() {
           <AddressesScreen
             onBack={() => navigation.goBack()}
             onAddAddress={() => navigation.navigate("AddressForm")}
+            onEditAddress={(addressId) =>
+              navigation.navigate("AddressForm", { addressId })
+            }
           />
         )}
       </CartNav.Screen>
@@ -305,8 +338,11 @@ export function CartStack() {
       --------------------------------------------------------------- */}
 
       <CartNav.Screen name="AddressForm">
-        {({ navigation }) => (
-          <AddressFormScreen onBack={() => navigation.goBack()} />
+        {({ navigation, route }) => (
+          <AddressFormScreen
+            addressId={route.params?.addressId}
+            onBack={() => navigation.goBack()}
+          />
         )}
       </CartNav.Screen>
     </CartNav.Navigator>
@@ -403,6 +439,9 @@ export function AccountStack() {
           <AddressesScreen
             onBack={() => navigation.goBack()}
             onAddAddress={() => navigation.navigate("AddressForm")}
+            onEditAddress={(addressId) =>
+              navigation.navigate("AddressForm", { addressId })
+            }
           />
         )}
       </AccountNav.Screen>
@@ -412,8 +451,11 @@ export function AccountStack() {
       --------------------------------------------------------------- */}
 
       <AccountNav.Screen name="AddressForm">
-        {({ navigation }) => (
-          <AddressFormScreen onBack={() => navigation.goBack()} />
+        {({ navigation, route }) => (
+          <AddressFormScreen
+            addressId={route.params?.addressId}
+            onBack={() => navigation.goBack()}
+          />
         )}
       </AccountNav.Screen>
 

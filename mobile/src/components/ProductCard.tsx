@@ -261,7 +261,7 @@ const styles = StyleSheet.create({
 
     width: "100%",
 
-    height: 220,
+    height: 190,
 
     backgroundColor: colors.surface,
 
@@ -271,7 +271,7 @@ const styles = StyleSheet.create({
 
     borderColor: colors.border,
 
-    padding: spacing.sm,
+    padding: spacing.xs,
 
     overflow: "hidden",
   },
@@ -283,7 +283,7 @@ const styles = StyleSheet.create({
   imageBox: {
     width: "100%",
 
-    height: 88,
+    height: 70,
 
     alignItems: "center",
 
@@ -343,9 +343,9 @@ const styles = StyleSheet.create({
   ================================================================ */
 
   nameContainer: {
-    height: 36,
+    height: 32,
 
-    marginTop: 6,
+    marginTop: 4,
 
     justifyContent: "flex-start",
   },
@@ -365,7 +365,7 @@ const styles = StyleSheet.create({
   ================================================================ */
 
   variantContainer: {
-    height: 18,
+    height: 16,
 
     marginTop: 2,
 
@@ -385,7 +385,7 @@ const styles = StyleSheet.create({
   ================================================================ */
 
   bottomSection: {
-    height: 36,
+    height: 32,
 
     marginTop: "auto",
 
@@ -407,7 +407,7 @@ const styles = StyleSheet.create({
 
     minWidth: 0,
 
-    height: 36,
+    height: 32,
 
     justifyContent: "center",
   },
@@ -437,9 +437,9 @@ const styles = StyleSheet.create({
   ================================================================ */
 
   actionContainer: {
-    width: 70,
+    width: 62,
 
-    height: 34,
+    height: 30,
 
     alignItems: "flex-end",
 
@@ -451,9 +451,9 @@ const styles = StyleSheet.create({
   ================================================================ */
 
   addButton: {
-    width: 68,
+    width: 62,
 
-    height: 34,
+    height: 30,
 
     borderRadius: radius.pill,
 
@@ -497,9 +497,9 @@ const styles = StyleSheet.create({
   ================================================================ */
 
   outOfStockTag: {
-    width: 70,
+    width: 62,
 
-    height: 34,
+    height: 30,
 
     paddingHorizontal: 4,
 
@@ -525,9 +525,9 @@ const styles = StyleSheet.create({
   ================================================================ */
 
   stepper: {
-    width: 70,
+    width: 62,
 
-    height: 34,
+    height: 30,
 
     flexDirection: "row",
 
@@ -547,9 +547,9 @@ const styles = StyleSheet.create({
   },
 
   stepperButton: {
-    width: 21,
+    width: 20,
 
-    height: 30,
+    height: 26,
 
     alignItems: "center",
 

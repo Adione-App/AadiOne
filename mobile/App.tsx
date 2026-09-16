@@ -18,6 +18,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import * as Notifications from "expo-notifications";
 
 import { onSessionExpired } from "@/lib/api";
 import { useAuth, useLocation } from "@/lib/store";
@@ -120,6 +121,35 @@ export default function App() {
    */
   const [startupReady, setStartupReady] = useState(false);
 
+  /* ------------------------------------------------------------------------ */
+  /* FCM Push Notification Token                                              */
+  /* ------------------------------------------------------------------------ */
+
+  useEffect(() => {
+    const registerForPushNotifications = async () => {
+      try {
+        const { status } = await Notifications.requestPermissionsAsync();
+
+        if (status !== "granted") {
+          console.log("Notification permission denied");
+          return;
+        }
+
+        const token = await Notifications.getDevicePushTokenAsync();
+
+        console.log("FCM TOKEN:", token.data);
+      } catch (error) {
+        console.error("FCM token error:", error);
+      }
+    };
+
+    void registerForPushNotifications();
+  }, []);
+
+  /* ------------------------------------------------------------------------ */
+  /* Restore authentication session                                           */
+  /* ------------------------------------------------------------------------ */
+
   useEffect(() => {
     let mounted = true;
 
@@ -163,11 +193,10 @@ export default function App() {
     };
   }, [restore, clear]);
 
-  /*
-   * Hide the Android native splash as soon as React Native is ready.
-   *
-   * After this point StartupLoading is the actual visible startup screen.
-   */
+  /* ------------------------------------------------------------------------ */
+  /* Hide Android native splash                                               */
+  /* ------------------------------------------------------------------------ */
+
   useEffect(() => {
     if (status !== "loading") {
       void ExpoSplashScreen.hideAsync().catch(() => {
@@ -176,12 +205,10 @@ export default function App() {
     }
   }, [status]);
 
-  /*
-   * Native splash is hidden once React is ready.
-   *
-   * While authentication is being restored, show our custom
-   * AadiOne StartupLoading screen.
-   */
+  /* ------------------------------------------------------------------------ */
+  /* App UI                                                                    */
+  /* ------------------------------------------------------------------------ */
+
   return (
     <SafeAreaProvider>
       <QueryClientProvider client={queryClient}>

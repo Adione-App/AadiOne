@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "807363742130",
+    "project_id": "aadione-1e21b",
+    "storage_bucket": "aadione-1e21b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:807363742130:android:b7aabaca6920c6cc6a7cab",
+        "android_client_info": {
+          "package_name": "in.adione.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBURSbGFVGa5PCdf2gdvUVo-8wgJjYdrMQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

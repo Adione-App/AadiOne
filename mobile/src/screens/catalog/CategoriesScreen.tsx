@@ -60,7 +60,7 @@ export default function CategoriesScreen({
     <ProductCard
       product={item}
       qtyInCart={item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0}
-      busy={cart.busy}
+      busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
       onPress={() => onOpenProduct(item.id)}
       onAdd={() => item.defaultVariant && void cart.add(item.defaultVariant.id)}
       onIncrement={() => item.defaultVariant && void cart.increment(item.defaultVariant.id)}

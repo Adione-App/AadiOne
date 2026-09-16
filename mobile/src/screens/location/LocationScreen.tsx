@@ -41,6 +41,25 @@ export default function LocationScreen({
         return;
       }
 
+      // A fresh GPS fix can take several seconds — long enough that this
+      // screen was the single biggest "why is this app slow" complaint. A
+      // cached fix is near-instant and, at the kilometre scale serviceability
+      // cares about, just as useful, so show it immediately and let the
+      // accurate fix refine things quietly in the background rather than
+      // leaving the customer staring at a spinner.
+      const cached = await Location.getLastKnownPositionAsync({
+        maxAge: 5 * 60_000,
+      }).catch(() => null);
+
+      if (cached) {
+        await setLocation({
+          latitude: cached.coords.latitude,
+          longitude: cached.coords.longitude,
+          label: 'Current location',
+        });
+        setPhase('done');
+      }
+
       const position = await Location.getCurrentPositionAsync({
         // Balanced, not Highest: high accuracy costs seconds and battery for
         // precision serviceability does not need at kilometre scale.

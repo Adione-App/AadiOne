@@ -5,11 +5,10 @@
     "resolveJsonModule": true,
     "esModuleInterop": true,
     "noUncheckedIndexedAccess": true,
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"],
-      "@shared": ["src/shared/index.ts"],
-      "@shared/*": ["src/shared/*"]
+      "@/*": ["./src/*"],
+      "@shared": ["./src/shared/index.ts"],
+      "@shared/*": ["./src/shared/*"]
     }
   },
   "include": [

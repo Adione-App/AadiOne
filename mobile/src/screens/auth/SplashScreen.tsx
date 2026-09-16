@@ -361,7 +361,7 @@ const styles = StyleSheet.create({
   },
 
   backgroundLightOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
 
     backgroundColor: "rgba(255,255,255,0.28)",
   },

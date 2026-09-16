@@ -4,7 +4,7 @@ The customer-facing app: browse, cart, checkout, pay, track. Built for the
 network it actually runs on — rural 3G, mid-range Android, and users for whom
 this may be the first delivery app they have installed.
 
-React Native 0.76 · Expo SDK 52 · TypeScript · React Navigation 7 · TanStack Query · Zustand · Socket.IO
+React Native 0.86 · Expo SDK 57 · TypeScript · React Navigation 7 · TanStack Query · Zustand · Socket.IO
 
 - **Technical documentation:** [../docs/07-mobile-technical.md](../docs/07-mobile-technical.md)
 - **API reference:** [../docs/04-api-reference.md](../docs/04-api-reference.md)

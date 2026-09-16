@@ -9,10 +9,11 @@ import {
 import React, { useEffect } from "react";
 
 import { Ionicons } from "@expo/vector-icons";
+import { ArrowRight, ChevronRight } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { ProductSummaryDto } from "@shared";
-import { colors, radius, spacing } from "@shared/theme";
+import { colors, radius, shadow, spacing } from "@shared/theme";
 import { formatDistance } from "@shared/distance";
 
 import { useHomeFeed } from "@/lib/queries";
@@ -102,7 +103,7 @@ export default function HomeScreen({
         qtyInCart={
           item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0
         }
-        busy={cart.busy}
+        busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
         onPress={() => onOpenProduct(item.id)}
         onAdd={() =>
           item.defaultVariant && void cart.add(item.defaultVariant.id)
@@ -314,6 +315,7 @@ export default function HomeScreen({
               accessibilityLabel="Shop now"
             >
               <AppText style={styles.shopNowText}>Shop Now</AppText>
+              <ArrowRight size={13} color="#FFFFFF" strokeWidth={2.5} />
             </Pressable>
           </View>
 
@@ -410,6 +412,7 @@ function SectionHeader({
       <Pressable
         onPress={onSeeAll}
         hitSlop={8}
+        style={styles.seeAllButton}
         accessibilityRole="button"
         accessibilityLabel={`See all ${title}`}
       >
@@ -420,6 +423,7 @@ function SectionHeader({
         >
           See All
         </AppText>
+        <ChevronRight size={16} color={colors.primary} strokeWidth={2.5} />
       </Pressable>
     </View>
   );
@@ -717,9 +721,13 @@ const styles = StyleSheet.create({
 
     backgroundColor: colors.primary,
 
+    flexDirection: "row",
+
     alignItems: "center",
 
     justifyContent: "center",
+
+    gap: 4,
 
     alignSelf: "flex-start",
   },
@@ -762,6 +770,14 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
   },
 
+  seeAllButton: {
+    flexDirection: "row",
+
+    alignItems: "center",
+
+    gap: 1,
+  },
+
   seeAll: {
     fontSize: 14,
 
@@ -795,11 +811,17 @@ const styles = StyleSheet.create({
 
     borderRadius: 32,
 
-    backgroundColor: colors.primarySurface,
+    backgroundColor: colors.surface,
+
+    borderWidth: 1,
+
+    borderColor: colors.border,
 
     alignItems: "center",
 
     justifyContent: "center",
+
+    ...shadow.sm,
   },
 
   categoryName: {
@@ -810,6 +832,8 @@ const styles = StyleSheet.create({
     fontSize: 12,
 
     lineHeight: 17,
+
+    fontWeight: "600",
 
     color: colors.textPrimary,
   },

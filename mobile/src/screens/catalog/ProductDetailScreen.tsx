@@ -206,7 +206,7 @@ export default function ProductDetailScreen({
                     <ProductCard
                       product={item}
                       qtyInCart={item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0}
-                      busy={cart.busy}
+                      busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
                       onPress={() => onOpenProduct(item.id)}
                       onAdd={() => item.defaultVariant && void cart.add(item.defaultVariant.id)}
                       onIncrement={() =>
@@ -232,7 +232,7 @@ export default function ProductDetailScreen({
               <QuantityStepper
                 qty={qtyInCart}
                 max={variant.maxQtyPerOrder}
-                busy={cart.busy}
+                busy={cart.isBusy(variant.id)}
                 onIncrement={() => void cart.increment(variant.id)}
                 onDecrement={() => void cart.decrement(variant.id)}
               />

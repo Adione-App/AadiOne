@@ -7,15 +7,31 @@
  *
  * Registration is best-effort. A customer who declines notifications must
  * still be able to shop, so nothing here throws into the caller.
+ *
+ * WHY `expo-notifications` IS LOADED LAZILY, NOT IMPORTED NORMALLY:
+ * as of SDK 53, Android push is removed from Expo Go entirely — and the
+ * module throws the instant it is imported there, as a side effect deep
+ * inside its own auto-registration code (`DevicePushTokenAutoRegistration.fx`
+ * calls `addPushTokenListener` at module scope, unconditionally). That
+ * happens during module evaluation, before any of our own code runs, so no
+ * try/catch around a function call here can ever catch it — only *not
+ * importing the module at all* in Expo Go avoids the crash. Push works
+ * normally in a real development or production build.
  */
 
 import { Platform } from "react-native";
 import Constants from "expo-constants";
-import * as Notifications from "expo-notifications";
+import { isRunningInExpoGo } from "expo";
 import { api } from "./api";
 
+type NotificationsModule = typeof import("expo-notifications");
+
+const Notifications: NotificationsModule | null = isRunningInExpoGo()
+  ? null
+  : (require("expo-notifications") as NotificationsModule);
+
 /** Banner + sound while the app is open, so a live order update is noticed. */
-Notifications.setNotificationHandler({
+Notifications?.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowBanner: true,
     shouldShowList: true,
@@ -27,6 +43,10 @@ Notifications.setNotificationHandler({
 let registeredToken: string | null = null;
 
 export async function registerForPush(): Promise<void> {
+  // Expo Go: push is unavailable by design (see note above) — shopping still
+  // works, order updates are just not pushed until a real build is installed.
+  if (!Notifications) return;
+
   try {
     // A simulator has no push service; asking would only produce an error.
     if (!Constants.isDevice) return;

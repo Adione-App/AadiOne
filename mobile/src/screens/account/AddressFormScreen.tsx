@@ -7,16 +7,27 @@
  * Serviceability is decided by DISTANCE FROM THE STORE, using coordinates.
  * An Indian PIN code routinely spans 10+ km, so a pincode alone cannot answer
  * "do we deliver here". Check therefore validates the pincode's format and
- * runs the real serviceability call against the customer's detected
- * coordinates, reporting distance and the configured radius. If no location
- * has been detected it says so rather than inventing an answer — and the
- * server re-checks at checkout regardless, so this is guidance, never
- * permission.
+ * geocodes the address text the customer just typed — via the device's own
+ * forward geocoder — to get coordinates for THIS address, then runs the real
+ * serviceability call against those. If no location has been detected it
+ * says so rather than inventing an answer — and the server re-checks at
+ * checkout regardless, so this is guidance, never permission.
+ *
+ * WHY GEOCODE THE TYPED ADDRESS RATHER THAN REUSE THE APP'S CURRENT GPS FIX:
+ * the customer's live location and the address they are typing are often two
+ * different places — a work address filled in from home, an address saved
+ * for someone else, or GPS drifting after they've walked around a store.
+ * Silently substituting "wherever the phone currently is" for "wherever this
+ * address actually is" produced a wrong, sometimes wildly wrong, distance —
+ * and when no GPS fix existed at all, it defaulted to (0, 0), off the coast
+ * of Africa. Resolving coordinates from the address text itself is the fix;
+ * the current GPS fix is now only a last-resort fallback, never a default.
  */
 
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Location from 'expo-location';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { AddressDto, ServiceabilityResult } from '@shared';
 import { isValidPincode, normalizeIndianMobile } from '@shared/phone';
@@ -61,7 +72,47 @@ export default function AddressFormScreen({ onBack }: { onBack: () => void }) {
   const [statePickerOpen, setStatePickerOpen] = useState(false);
   const [checking, setChecking] = useState(false);
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
+  const [addressCoords, setAddressCoords] = useState<{
+    latitude: number;
+    longitude: number;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  /** The address text changed since the last "Check" — its coordinates are stale. */
+  function clearCheck(): void {
+    setCheckResult(null);
+    setAddressCoords(null);
+  }
+
+  /**
+   * Resolves coordinates for THIS address from the text the customer has
+   * typed so far, using the device's forward geocoder. Falls back to the
+   * app's last detected GPS fix only when geocoding is unavailable (some
+   * devices ship without a geocoder service) — never to (0, 0).
+   */
+  async function resolveAddressCoordinates(): Promise<{
+    latitude: number;
+    longitude: number;
+  } | null> {
+    const fullAddress = [addressLine1, addressLine2, city, state, pincode, 'India']
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join(', ');
+
+    if (fullAddress.length > 0) {
+      try {
+        const [geocoded] = await Location.geocodeAsync(fullAddress);
+        if (geocoded) {
+          return { latitude: geocoded.latitude, longitude: geocoded.longitude };
+        }
+      } catch {
+        // No geocoder service on this device, or the address text did not
+        // resolve — fall through to the GPS fallback below.
+      }
+    }
+
+    return location ? { latitude: location.latitude, longitude: location.longitude } : null;
+  }
 
   async function checkPincode(): Promise<void> {
     setCheckResult(null);
@@ -71,20 +122,32 @@ export default function AddressFormScreen({ onBack }: { onBack: () => void }) {
       return;
     }
 
-    if (!location) {
-      // Honest rather than optimistic: without coordinates there is nothing to
-      // measure, and claiming "we deliver here" would be a guess.
+    if (addressLine1.trim().length === 0 || city.trim().length === 0 || !state) {
       setCheckResult({
         ok: false,
-        message: 'Turn on location to check delivery for this address.',
+        message: 'Fill in the address, city and state above, then check.',
       });
       return;
     }
 
     setChecking(true);
     try {
+      const coords = await resolveAddressCoordinates();
+
+      if (!coords) {
+        // Honest rather than optimistic: without coordinates there is nothing
+        // to measure, and claiming "we deliver here" would be a guess.
+        setCheckResult({
+          ok: false,
+          message: 'Turn on location to check delivery for this address.',
+        });
+        return;
+      }
+
+      setAddressCoords(coords);
+
       const result = await api.get<ServiceabilityResult>(
-        `/store/serviceability?lat=${location.latitude}&lng=${location.longitude}`,
+        `/store/serviceability?lat=${coords.latitude}&lng=${coords.longitude}`,
       );
       setCheckResult(
         result.serviceable
@@ -108,8 +171,18 @@ export default function AddressFormScreen({ onBack }: { onBack: () => void }) {
   }
 
   const save = useMutation({
-    mutationFn: () =>
-      api.post<AddressDto>('/addresses', {
+    mutationFn: async () => {
+      // Reuse coordinates from a prior "Check" if the address text hasn't
+      // changed since; otherwise resolve fresh ones for what's on screen now.
+      const coords = addressCoords ?? (await resolveAddressCoordinates());
+
+      if (!coords) {
+        throw new Error(
+          "We couldn't determine this address's location. Tap Check above, or turn on location, and try again.",
+        );
+      }
+
+      return api.post<AddressDto>('/addresses', {
         label: addressType,
         fullName: fullName.trim(),
         mobile,
@@ -124,18 +197,18 @@ export default function AddressFormScreen({ onBack }: { onBack: () => void }) {
         city: city.trim(),
         state,
         pincode,
-        // Coordinates decide serviceability, so the detected fix is carried
-        // through rather than derived from the typed text.
-        latitude: location?.latitude ?? 0,
-        longitude: location?.longitude ?? 0,
+        // Coordinates decide serviceability — always tied to the address just
+        // resolved above, never a stale or default value.
+        latitude: coords.latitude,
+        longitude: coords.longitude,
         isDefault,
-      }),
+      });
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['addresses'] });
       onBack();
     },
-    onError: (err: Error) =>
-      setError(err instanceof ApiRequestError ? err.message : 'Could not save the address.'),
+    onError: (err: Error) => setError(err.message || 'Could not save the address.'),
   });
 
   const complete =
@@ -191,7 +264,7 @@ export default function AddressFormScreen({ onBack }: { onBack: () => void }) {
                 value={pincode}
                 onChangeText={(value) => {
                   setPincode(value.replace(/\D/g, ''));
-                  setCheckResult(null);
+                  clearCheck();
                 }}
                 placeholder="Enter pincode"
                 keyboardType="number-pad"
@@ -219,7 +292,10 @@ export default function AddressFormScreen({ onBack }: { onBack: () => void }) {
         <Field label="Address Line 1">
           <Input
             value={addressLine1}
-            onChangeText={setAddressLine1}
+            onChangeText={(value) => {
+              setAddressLine1(value);
+              clearCheck();
+            }}
             placeholder="House / Building / Street"
           />
         </Field>
@@ -227,13 +303,23 @@ export default function AddressFormScreen({ onBack }: { onBack: () => void }) {
         <Field label="Address Line 2" hint="Optional">
           <Input
             value={addressLine2}
-            onChangeText={setAddressLine2}
+            onChangeText={(value) => {
+              setAddressLine2(value);
+              clearCheck();
+            }}
             placeholder="Area, Locality, Landmark"
           />
         </Field>
 
         <Field label="City">
-          <Input value={city} onChangeText={setCity} placeholder="Enter city" />
+          <Input
+            value={city}
+            onChangeText={(value) => {
+              setCity(value);
+              clearCheck();
+            }}
+            placeholder="Enter city"
+          />
         </Field>
 
         <View style={{ flexDirection: 'row', gap: spacing.md }}>
@@ -276,6 +362,7 @@ export default function AddressFormScreen({ onBack }: { onBack: () => void }) {
                 key={item}
                 onPress={() => {
                   setState(item);
+                  clearCheck();
                   setStatePickerOpen(false);
                 }}
                 style={styles.stateItem}

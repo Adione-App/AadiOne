@@ -5,15 +5,21 @@
     "lib": ["ES2022"],
     "module": "CommonJS",
     "moduleResolution": "Node",
+    // "Node" is the deprecated node10 strategy. Node16/NodeNext would fix
+    // the warning but starts enforcing extension/exports-map rules that
+    // would break the extensionless relative imports used throughout this
+    // backend; "Bundler" isn't correct either since this runs under Node,
+    // not a bundler. Silencing (not changing) the deprecation is correct
+    // until Node resolution actually needs revisiting.
+    "ignoreDeprecations": "5.0",
     "types": ["node"],
 
     "rootDir": "./src",
     "outDir": "./dist",
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"],
-      "@shared": ["src/shared/index.ts"],
-      "@shared/*": ["src/shared/*"]
+      "@/*": ["./src/*"],
+      "@shared": ["./src/shared/index.ts"],
+      "@shared/*": ["./src/shared/*"]
     },
 
     "strict": true,

@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { Image, Pressable, StyleSheet, View } from "react-native";
-import { ShoppingCart } from "lucide-react-native";
+import { Info, ShoppingCart } from "lucide-react-native";
 
 import type { ProductSummaryDto } from "@shared";
 import { formatPaise } from "@shared/money";
@@ -102,10 +102,13 @@ function ProductCardImpl({
 }: {
   product: ProductSummaryDto;
   qtyInCart: number;
-  onPress: () => void;
-  onAdd: () => void;
-  onIncrement: () => void;
-  onDecrement: () => void;
+  /** Called with the PRODUCT id — from the image, or the More Details icon. */
+  onPress: (productId: string) => void;
+  /** Called with the VARIANT id — same stable function for every card, so
+   * changing one product's quantity doesn't recreate props for the rest. */
+  onAdd: (variantId: string) => void;
+  onIncrement: (variantId: string) => void;
+  onDecrement: (variantId: string) => void;
   busy?: boolean;
 }) {
   const variant = product.defaultVariant;
@@ -114,60 +117,79 @@ function ProductCardImpl({
 
   const imageUrl = resolveImageUrl(product.thumbUrl);
 
+  const openDetails = () => onPress(product.id);
+
   return (
-    // Plain View, not Pressable: navigation belongs to the image alone (see
-    // below), never to the card as a whole. A Pressable here previously
-    // wrapped everything, including the Add/stepper buttons — and a DISABLED
-    // nested Pressable (mid-request) doesn't claim the touch, so the tap fell
-    // through to this outer Pressable's onPress and opened Product Details
-    // instead of doing nothing. Removing the outer handler entirely closes
-    // that hole rather than working around it.
+    // Plain View, not Pressable: navigation belongs to the image and the
+    // More Details icon alone (see below), never to the card as a whole. A
+    // Pressable here previously wrapped everything, including the
+    // Add/stepper buttons — and a DISABLED nested Pressable (mid-request)
+    // doesn't claim the touch, so the tap fell through to this outer
+    // Pressable's onPress and opened Product Details instead of doing
+    // nothing. Removing the outer handler entirely closes that hole rather
+    // than working around it.
     <View style={styles.card}>
       {/* =============================================================
-          IMAGE — the ONLY part of the card that opens Product Details.
+          IMAGE + MORE DETAILS — the only two things that open Product
+          Details. Siblings, not nested: the icon is its own independent
+          Pressable layered on top of the image's corner, not a Pressable
+          inside a Pressable, so neither can ever intercept the other's
+          touch or accidentally disable itself against the image beneath.
       ============================================================= */}
 
-      <Pressable
-        onPress={onPress}
-        style={styles.imageBox}
-        accessibilityRole="button"
-        accessibilityLabel={`Open ${product.name}`}
-      >
-        {imageUrl ? (
-          <Image
-            source={{ uri: imageUrl }}
-            style={[styles.image, outOfStock && styles.imageFaded]}
-            resizeMode="contain"
-          />
-        ) : (
-          <View style={styles.imagePlaceholder} />
-        )}
+      <View style={styles.imageWrap}>
+        <Pressable
+          onPress={openDetails}
+          style={styles.imageBox}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${product.name}`}
+        >
+          {imageUrl ? (
+            <Image
+              source={{ uri: imageUrl }}
+              style={[styles.image, outOfStock && styles.imageFaded]}
+              resizeMode="contain"
+            />
+          ) : (
+            <View style={styles.imagePlaceholder} />
+          )}
 
-        {outOfStock ? (
-          <View style={styles.outOfStockBadge}>
-            <AppText
-              variant="overline"
-              color={colors.textSecondary}
-              style={styles.badgeText}
-            >
-              Out of Stock
-            </AppText>
-          </View>
-        ) : (
-          variant &&
-          variant.discountPercent > 0 && (
-            <View style={styles.discountBadge}>
+          {outOfStock ? (
+            <View style={styles.outOfStockBadge}>
               <AppText
                 variant="overline"
-                color={colors.discountBadgeText}
+                color={colors.textSecondary}
                 style={styles.badgeText}
               >
-                {variant.discountPercent}% OFF
+                Out of Stock
               </AppText>
             </View>
-          )
-        )}
-      </Pressable>
+          ) : (
+            variant &&
+            variant.discountPercent > 0 && (
+              <View style={styles.discountBadge}>
+                <AppText
+                  variant="overline"
+                  color={colors.discountBadgeText}
+                  style={styles.badgeText}
+                >
+                  {variant.discountPercent}% OFF
+                </AppText>
+              </View>
+            )
+          )}
+        </Pressable>
+
+        <Pressable
+          onPress={openDetails}
+          style={styles.detailsButton}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel={`View details for ${product.name}`}
+        >
+          <Info size={13} color={colors.textSecondary} strokeWidth={2.2} />
+        </Pressable>
+      </View>
 
       {/* =============================================================
           PRODUCT NAME
@@ -243,14 +265,14 @@ function ProductCardImpl({
         <QuantityStepper
           qty={qtyInCart}
           max={variant?.maxQtyPerOrder ?? 10}
-          onIncrement={onIncrement}
-          onDecrement={onDecrement}
+          onIncrement={() => variant && onIncrement(variant.id)}
+          onDecrement={() => variant && onDecrement(variant.id)}
           busy={busy}
           fullWidth
         />
       ) : (
         <Pressable
-          onPress={onAdd}
+          onPress={() => variant && onAdd(variant.id)}
           style={styles.addButton}
           accessibilityRole="button"
           accessibilityLabel={`Add ${product.name} to cart`}
@@ -316,6 +338,10 @@ const styles = StyleSheet.create({
      IMAGE
   ================================================================ */
 
+  imageWrap: {
+    position: "relative",
+  },
+
   imageBox: {
     width: "100%",
 
@@ -326,6 +352,33 @@ const styles = StyleSheet.create({
     justifyContent: "center",
 
     position: "relative",
+  },
+
+  /* ================================================================
+     MORE DETAILS — its own Pressable, layered over the image's corner,
+     not nested inside the image's Pressable (see file header).
+  ================================================================ */
+
+  detailsButton: {
+    position: "absolute",
+
+    top: 4,
+
+    right: 4,
+
+    width: 22,
+
+    height: 22,
+
+    borderRadius: radius.circle,
+
+    backgroundColor: "rgba(255,255,255,0.85)",
+
+    alignItems: "center",
+
+    justifyContent: "center",
+
+    zIndex: 3,
   },
 
   image: {

@@ -109,6 +109,12 @@ export default function HomeScreen({
      PRODUCT CARD
   ================================================================ */
 
+  // `cart.add`/`increment`/`decrement`/`onOpenProduct` are stable across
+  // renders (see useCartActions), and ProductCard only calls them with a
+  // real variant id once its own `variant &&` guard passes — so they can be
+  // handed to every card directly, instead of a fresh per-item closure on
+  // every render. That's what lets React.memo actually skip re-rendering
+  // product B's card when product A's quantity changes.
   const renderProduct = ({ item }: { item: ProductSummaryDto }) => (
     <View style={styles.productWrapper}>
       <ProductCard
@@ -117,16 +123,10 @@ export default function HomeScreen({
           item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0
         }
         busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
-        onPress={() => onOpenProduct(item.id)}
-        onAdd={() =>
-          item.defaultVariant && void cart.add(item.defaultVariant.id)
-        }
-        onIncrement={() =>
-          item.defaultVariant && void cart.increment(item.defaultVariant.id)
-        }
-        onDecrement={() =>
-          item.defaultVariant && void cart.decrement(item.defaultVariant.id)
-        }
+        onPress={onOpenProduct}
+        onAdd={cart.add}
+        onIncrement={cart.increment}
+        onDecrement={cart.decrement}
       />
     </View>
   );

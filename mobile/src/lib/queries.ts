@@ -200,6 +200,25 @@ export function useCartMutations() {
     },
   });
 
+  const clearCart = useMutation({
+    mutationFn: (input: { distanceKm?: number | null } = {}) => {
+      const distanceKm = input.distanceKm ?? null;
+
+      const query =
+        distanceKm !== null
+          ? `?distanceKm=${encodeURIComponent(distanceKm)}`
+          : "";
+
+      // The backend already offers one atomic bulk clear (DELETE /cart) —
+      // one round trip instead of one DELETE per line.
+      return api.delete<CartDto>(`/cart${query}`);
+    },
+
+    onSuccess: (data) => {
+      write(data);
+    },
+  });
+
   const applyCoupon = useMutation({
     mutationFn: (input: { code: string; distanceKm?: number | null }) => {
       const distanceKm = input.distanceKm ?? null;
@@ -223,6 +242,7 @@ export function useCartMutations() {
     addItem,
     updateQty,
     removeItem,
+    clearCart,
     applyCoupon,
   };
 }

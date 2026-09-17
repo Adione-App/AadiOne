@@ -58,15 +58,17 @@ export default function CategoriesScreen({
 
   if (categories.isLoading) return <Loading label="Loading categories…" />;
 
+  // Stable references — see HomeScreen's renderProduct for why these are
+  // passed directly rather than wrapped in a fresh per-item closure.
   const renderItem = ({ item }: { item: ProductSummaryDto }) => (
     <ProductCard
       product={item}
       qtyInCart={item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0}
       busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
-      onPress={() => onOpenProduct(item.id)}
-      onAdd={() => item.defaultVariant && void cart.add(item.defaultVariant.id)}
-      onIncrement={() => item.defaultVariant && void cart.increment(item.defaultVariant.id)}
-      onDecrement={() => item.defaultVariant && void cart.decrement(item.defaultVariant.id)}
+      onPress={onOpenProduct}
+      onAdd={cart.add}
+      onIncrement={cart.increment}
+      onDecrement={cart.decrement}
     />
   );
 

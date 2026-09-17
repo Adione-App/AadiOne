@@ -11,29 +11,34 @@ import { Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import Constants from 'expo-constants';
+import { Headphones, ShieldCheck, Tag, Zap, type LucideIcon } from 'lucide-react-native';
 import type { PublicConfig } from '@shared';
 import { colors, radius, spacing } from '@shared/theme';
 import { api } from '@/lib/api';
 import { AppText, Card, Screen } from '@/components/ui';
+import BrandMark from '@/components/BrandMark';
 
-const FEATURES = [
+// Vector icons, not emoji — emoji render inconsistently across Android OEM
+// fonts (the same reason CategoryIcon moved off them); this keeps the About
+// page's icon language consistent with the rest of the app.
+const FEATURES: { icon: LucideIcon; title: string; body: (promise: string) => string }[] = [
   {
-    icon: '⚡',
+    icon: Zap,
     title: 'Fast Delivery',
     body: (promise: string) => `Get your order delivered to your doorstep ${promise}.`,
   },
   {
-    icon: '🛡',
+    icon: ShieldCheck,
     title: 'Trusted & Safe',
     body: () => 'We ensure quality products and safe delivery every time.',
   },
   {
-    icon: '🏅',
+    icon: Tag,
     title: 'Best Prices',
     body: () => 'Quality products at the best prices.',
   },
   {
-    icon: '🎧',
+    icon: Headphones,
     title: 'Customer Support',
     body: () => 'We are always here to help you.',
   },
@@ -69,11 +74,7 @@ export default function AboutScreen({ onBack }: { onBack: () => void }) {
       >
         <View style={{ alignItems: 'center' }}>
           <View style={styles.logoRing}>
-            <View style={styles.logoMark}>
-              <AppText variant="display" color={colors.onPrimary}>
-                A
-              </AppText>
-            </View>
+            <BrandMark size={88} />
           </View>
 
           <AppText variant="displayLarge" style={{ marginTop: spacing.md }}>
@@ -109,7 +110,7 @@ export default function AboutScreen({ onBack }: { onBack: () => void }) {
               style={[styles.featureRow, index === FEATURES.length - 1 && { borderBottomWidth: 0 }]}
             >
               <View style={styles.featureIcon}>
-                <AppText variant="h3">{feature.icon}</AppText>
+                <feature.icon size={22} color={colors.primary} strokeWidth={2} />
               </View>
               <View style={{ flex: 1 }}>
                 <AppText variant="bodyStrong">{feature.title}</AppText>
@@ -201,14 +202,6 @@ const styles = StyleSheet.create({
     height: 120,
     borderRadius: radius.circle,
     backgroundColor: colors.primarySurface,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  logoMark: {
-    width: 72,
-    height: 72,
-    borderRadius: radius.xl,
-    backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },

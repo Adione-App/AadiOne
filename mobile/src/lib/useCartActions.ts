@@ -23,16 +23,39 @@
  *    that and means a stale response can never land after a newer one —
  *    there's only ever one response to receive at a time.
  *
- * 3. `knownLineRef` — tracks each variant's cart-line id (or null) from the
- *    MUTATION RESPONSE ITSELF, not from the `cart` query data. That data only
- *    updates once React re-renders this hook with the new cache contents,
- *    which can lag behind a same-tick chained re-dispatch (see point 2) by a
- *    render. Reading the response directly means a decrement-to-zero that
- *    lands the instant an add's response comes back always sees the line
- *    that add just created, never a stale "doesn't exist yet".
+ * 3. KNOWING WHETHER A LINE ALREADY EXISTS — a fresh dispatch (a real tap)
+ *    reads this from `linesRef.current`, i.e. the live `cart` query data,
+ *    never from a value cached on a previous tap. That data is shared across
+ *    every screen (see queries.ts's `write()`), so it's correct regardless
+ *    of which screen last touched the cart — this used to be cached in a
+ *    ref that persisted for the hook's whole lifetime, which is exactly what
+ *    broke: add a product from Home, clear the cart from the Cart screen,
+ *    then tap Add on that product from Home again — Home's cache still
+ *    "remembered" the line id the clear had just deleted, so it sent a PATCH
+ *    to a cart item that no longer existed and the server correctly said
+ *    "Cart item not found." A CHAINED re-dispatch (point 2, same synchronous
+ *    continuation as the response it's reacting to) is the one place a fresh
+ *    read would still be one render behind, so that case alone passes the
+ *    just-confirmed line through as an explicit argument instead.
+ *
+ * 4. CLEAR ALL vs PER-ITEM TAPS — `clearInFlightRef` holds the in-progress
+ *    clear's promise. A per-item dispatch that starts while a clear is
+ *    running awaits it first, then re-reads pending/known state fresh. This
+ *    is what stops "Delete B, then Clear All, then Add A" from racing: the
+ *    Add's actual request can never be answered by a clear response that was
+ *    computed before the add happened.
+ *
+ * 5. STABLE FUNCTION IDENTITIES — every function this hook returns is
+ *    `useCallback`'d with an empty dependency array and reads all changing
+ *    values (cart lines, distanceKm, the mutation objects) through refs kept
+ *    current on every render. That makes `cart.add`/`cart.increment`/etc.
+ *    referentially stable across renders, which is what lets a screen wrap
+ *    its own per-item handlers in `useCallback` too and actually get
+ *    `React.memo` to skip re-rendering an unrelated ProductCard when a
+ *    different product's quantity changes.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CartDto } from "@shared";
 import { ApiRequestError } from "./api";
 import { useCart, useCartMutations } from "./queries";
@@ -51,7 +74,8 @@ export function useCartActions() {
 
   const { data: cart } = useCart(distanceKm);
 
-  const { addItem, updateQty, removeItem } = useCartMutations();
+  const mutations = useCartMutations();
+  const { addItem, updateQty, removeItem, clearCart } = mutations;
 
   const [error, setError] = useState<string | null>(null);
 
@@ -70,17 +94,21 @@ export function useCartActions() {
     return map;
   }, [cart]);
 
-  // Read by dispatch()/the unmount flush without needing either in their own
-  // dependency lists — plain functions defined once, not per render.
+  // Read by dispatch()/clear()/the unmount flush without needing any of
+  // these in their own dependency lists — see file header, point 5.
   const linesRef = useRef(linesByVariant);
   linesRef.current = linesByVariant;
   const distanceKmRef = useRef(distanceKm);
   distanceKmRef.current = distanceKm;
+  const cartRef = useRef(cart);
+  cartRef.current = cart;
+  const mutationsRef = useRef(mutations);
+  mutationsRef.current = mutations;
 
-  const qtyFor = (variantId: string): number =>
+  const qtyForImpl = (variantId: string): number =>
     variantId in pendingQtyRef.current
       ? pendingQtyRef.current[variantId]!
-      : (linesByVariant.get(variantId)?.qty ?? 0);
+      : (linesRef.current.get(variantId)?.qty ?? 0);
 
   const setPending = (variantId: string, qty: number): void => {
     pendingQtyRef.current = { ...pendingQtyRef.current, [variantId]: qty };
@@ -96,7 +124,7 @@ export function useCartActions() {
   };
 
   const busyVariants = useRef<Set<string>>(new Set());
-  const knownLineRef = useRef<Record<string, KnownLine>>({});
+  const clearInFlightRef = useRef<Promise<void> | null>(null);
   // Debug-only, per variant — logged as [Cart] lines so the exact sequence
   // of taps/requests/responses can be read back during testing.
   const mutationSeqRef = useRef<Record<string, number>>({});
@@ -104,7 +132,8 @@ export function useCartActions() {
   const busy =
     addItem.isPending ||
     updateQty.isPending ||
-    removeItem.isPending;
+    removeItem.isPending ||
+    clearCart.isPending;
 
   const log = (...args: unknown[]): void => {
     if (__DEV__) console.log("[Cart]", ...args);
@@ -115,17 +144,21 @@ export function useCartActions() {
    * any number of times — it no-ops if a request for this variant is
    * already running or if there is nothing pending.
    */
-  const dispatch = async (variantId: string): Promise<void> => {
+  const dispatch = async (variantId: string, chainedKnown?: KnownLine): Promise<void> => {
+    // A Clear All is in progress — its response must land and be applied
+    // before this variant's own request is allowed to go out, or a clear
+    // response computed before this tap could later overwrite it.
+    if (clearInFlightRef.current) await clearInFlightRef.current;
+
     if (busyVariants.current.has(variantId)) return;
     const targetQty = pendingQtyRef.current[variantId];
     if (targetQty === undefined) return;
 
-    // undefined = never touched this session, fall back to the real cart;
-    // explicit null (a prior request confirmed no line) must NOT fall back.
+    // `chainedKnown` is only passed by the same-tick re-dispatch below, right
+    // after applying its own response — for every other (i.e. real, fresh)
+    // call this always reads the live, shared cart data. See file header.
     const known: KnownLine =
-      knownLineRef.current[variantId] !== undefined
-        ? knownLineRef.current[variantId]!
-        : (linesRef.current.get(variantId) ?? null);
+      chainedKnown !== undefined ? chainedKnown : (linesRef.current.get(variantId) ?? null);
 
     const seq = (mutationSeqRef.current[variantId] ?? 0) + 1;
     mutationSeqRef.current[variantId] = seq;
@@ -144,11 +177,19 @@ export function useCartActions() {
     busyVariants.current.add(variantId);
     forceRender((n) => n + 1);
 
+    const { addItem: add_, updateQty: update_ } = mutationsRef.current;
+    // Set on success to the line this response just confirmed (or null), so
+    // a same-tick chained re-dispatch (below) hands it straight through
+    // instead of reading `cart` data that won't catch up until next render.
+    // Left undefined on failure — a failed request confirmed nothing, so a
+    // chained re-dispatch after one reads fresh from `cart` instead.
+    let confirmedKnown: KnownLine | undefined;
+
     try {
       const response = known
         ? // Absolute-set — and the server deletes the row itself when
           // qty <= 0, so zero and a normal decrement take the same path.
-          await updateQty.mutateAsync({
+          await update_.mutateAsync({
             cartItemId: known.id,
             qty: Math.max(0, targetQty),
             distanceKm: distanceKmRef.current,
@@ -156,14 +197,14 @@ export function useCartActions() {
         : // Additive server-side. Safe ONLY because busyVariants guarantees
           // this is the sole in-flight request for this variant, so "0 +
           // targetQty" is exactly the qty the user asked for.
-          await addItem.mutateAsync({
+          await add_.mutateAsync({
             variantId,
             qty: targetQty,
             distanceKm: distanceKmRef.current,
           });
 
       const line = response.items.find((item) => item.variantId === variantId);
-      knownLineRef.current[variantId] = line ? { id: line.id, qty: line.qty } : null;
+      confirmedKnown = line ? { id: line.id, qty: line.qty } : null;
       log(variantId, "mutation", seq, "response applied, server qty", line?.qty ?? 0);
     } catch (err) {
       log(variantId, "mutation", seq, "failed", err);
@@ -184,7 +225,7 @@ export function useCartActions() {
         // the response we just got settle the UI — it's already stale.
         // Continue straight to the latest target; no delay.
         log(variantId, "mutation", seq, "superseded by newer tap, re-dispatching");
-        void dispatch(variantId);
+        void dispatch(variantId, confirmedKnown);
       }
     }
   };
@@ -200,10 +241,7 @@ export function useCartActions() {
         const targetQty = pendingQtyRef.current[variantId];
         if (targetQty === undefined) continue;
 
-        const known =
-          knownLineRef.current[variantId] !== undefined
-            ? knownLineRef.current[variantId]
-            : (linesRef.current.get(variantId) ?? null);
+        const known = linesRef.current.get(variantId) ?? null;
 
         if (known) {
           updateQty.mutate({
@@ -219,66 +257,74 @@ export function useCartActions() {
     };
   }, []);
 
-  const add = (variantId: string, qty = 1): void => {
-    setPending(variantId, qtyFor(variantId) + qty);
-    void dispatch(variantId);
-  };
+  // Stable across every render (empty dep arrays) — see file header, point 5.
+  // Everything each closure needs comes from a ref, never from render scope.
+  const qtyFor = useCallback((variantId: string): number => qtyForImpl(variantId), []);
 
-  const increment = (variantId: string): void => {
-    setPending(variantId, qtyFor(variantId) + 1);
-    void dispatch(variantId);
-  };
+  const isBusy = useCallback(
+    (variantId: string): boolean => busyVariants.current.has(variantId),
+    [],
+  );
 
-  const decrement = (variantId: string): void => {
-    setPending(variantId, Math.max(0, qtyFor(variantId) - 1));
+  const add = useCallback((variantId: string, qty = 1): void => {
+    setPending(variantId, qtyForImpl(variantId) + qty);
     void dispatch(variantId);
-  };
+  }, []);
 
-  const remove = (variantId: string): void => {
+  const increment = useCallback((variantId: string): void => {
+    setPending(variantId, qtyForImpl(variantId) + 1);
+    void dispatch(variantId);
+  }, []);
+
+  const decrement = useCallback((variantId: string): void => {
+    setPending(variantId, Math.max(0, qtyForImpl(variantId) - 1));
+    void dispatch(variantId);
+  }, []);
+
+  const remove = useCallback((variantId: string): void => {
+    // Instant, unconditional: whatever this variant was showing, it's gone
+    // from the list the moment this runs — see CartScreen's displayItems.
     setPending(variantId, 0);
     void dispatch(variantId);
-  };
+  }, []);
 
-  const clear = async (): Promise<void> => {
-    const items = cart?.items ?? [];
-
-    if (items.length === 0) {
-      return;
-    }
+  const clear = useCallback(async (): Promise<void> => {
+    const items = cartRef.current?.items ?? [];
+    if (items.length === 0) return;
 
     setError(null);
 
     for (const item of items) {
       // A per-item request mid-flight or one that's about to fire from a
       // just-set pending qty would otherwise land after the clear and put
-      // the item right back.
+      // the item right back. clearInFlightRef (below) additionally holds
+      // off any NEW tap's request until this clear has fully settled.
       clearPending(item.variantId);
-      knownLineRef.current[item.variantId] = null;
       busyVariants.current.add(item.variantId);
     }
+    forceRender((n) => n + 1);
 
-    try {
-      // Each deletion targets its own line and is independent of the others,
-      // so firing them together turns an N-item cart from N sequential round
-      // trips (seconds, on the rural 3G this app targets) into one.
-      await Promise.all(
-        items.map((item) =>
-          removeItem.mutateAsync({
-            cartItemId: item.id,
-            distanceKm,
-          }),
-        ),
-      );
-    } catch (err) {
-      setError(
-        err instanceof ApiRequestError
-          ? err.message
-          : "Could not clear your cart.",
-      );
-    } finally {
-      for (const item of items) busyVariants.current.delete(item.variantId);
-    }
-  };
+    const run = (async () => {
+      try {
+        // One atomic bulk delete instead of one request per line — both
+        // faster and immune to the per-request ordering issues N separate
+        // deletes would have.
+        await mutationsRef.current.clearCart.mutateAsync({ distanceKm: distanceKmRef.current });
+      } catch (err) {
+        setError(
+          err instanceof ApiRequestError
+            ? err.message
+            : "Could not clear your cart.",
+        );
+      } finally {
+        for (const item of items) busyVariants.current.delete(item.variantId);
+      }
+    })();
+
+    clearInFlightRef.current = run;
+    await run;
+    if (clearInFlightRef.current === run) clearInFlightRef.current = null;
+  }, []);
 
   return {
     cart,
@@ -288,9 +334,7 @@ export function useCartActions() {
     clearError: () => setError(null),
 
     qtyFor,
-
-    /** Only the tapped product is disabled while its own update is in flight. */
-    isBusy: (variantId: string) => busyVariants.current.has(variantId),
+    isBusy,
 
     add,
     increment,

@@ -86,10 +86,31 @@ export default function CartScreen({
   }
 
   /* ==============================================================
+   * DISPLAYED ITEMS
+   *
+   * A deleted / decremented-to-zero line must vanish from the list the
+   * instant the tap happens, not once the server confirms it — rendering
+   * `cart.items` directly left the row on screen until that round trip
+   * landed. Filtering by the optimistic qty here is the fix: the same
+   * `qtyFor` the stepper already reads decides list membership too.
+   * ============================================================== */
+
+  const displayItems = cart.items.filter((item) => actions.qtyFor(item.variantId) > 0);
+
+  // Sum of the same optimistic quantities the list and the stepper already
+  // show — matches `itemCount`'s server definition (total units, not line
+  // count) without waiting on the server for the header text to agree with
+  // what the list below it is currently displaying.
+  const displayItemCount = displayItems.reduce(
+    (sum, item) => sum + actions.qtyFor(item.variantId),
+    0,
+  );
+
+  /* ==============================================================
    * EMPTY CART
    * ============================================================== */
 
-  if (cart.items.length === 0) {
+  if (displayItems.length === 0) {
     return (
       <EmptyState
         title="Your cart is empty"
@@ -242,17 +263,16 @@ export default function CartScreen({
             color={colors.textSecondary}
             style={styles.headerSubtitle}
           >
-            {cart.bill.itemCount} {cart.bill.itemCount === 1 ? "item" : "items"}{" "}
+            {displayItemCount} {displayItemCount === 1 ? "item" : "items"}{" "}
             in your cart
           </AppText>
         </View>
 
         {/* ========================================================
-         * CLEAR CART
-         *
-         * There is currently no clearCart action in the supplied
-         * useCartActions implementation, so this is intentionally
-         * visual only. No unverified API call is introduced.
+         * CLEAR CART — instant: every line is optimistically zeroed
+         * before the bulk DELETE /cart request is even sent (see
+         * useCartActions' clear()), so the list empties on tap, not
+         * once the network round trip finishes.
          * ======================================================== */}
 
         <Pressable
@@ -278,7 +298,7 @@ export default function CartScreen({
        * ========================================================== */}
 
       <FlatList
-        data={cart.items}
+        data={displayItems}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         showsVerticalScrollIndicator={false}

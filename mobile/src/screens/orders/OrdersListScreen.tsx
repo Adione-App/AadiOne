@@ -9,7 +9,7 @@
 
 import { FlatList, Image, Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { ChevronRight } from "lucide-react-native";
+import { ChevronRight, ShoppingBag } from "lucide-react-native";
 import type { OrderSummaryDto } from "@shared";
 import { formatPaise } from "@shared/money";
 import { formatDateTimeInZone } from "@shared/datetime";
@@ -76,8 +76,9 @@ export default function OrdersListScreen({
 
   const renderItem = ({ item }: { item: OrderSummaryDto }) => {
     const bucket = BUCKET_STYLE[item.bucket];
-    const shownThumbnails = item.itemThumbnails.slice(0, MAX_THUMBNAILS);
-    const hiddenCount = item.itemCount - shownThumbnails.length;
+    const shownCount = Math.min(item.itemCount, MAX_THUMBNAILS);
+    const shownSlots = Array.from({ length: shownCount }, (_, index) => item.itemThumbnails[index] ?? null);
+    const hiddenCount = item.itemCount - shownCount;
 
     return (
       <Pressable onPress={() => onOpenOrder(item.id)}>
@@ -99,19 +100,22 @@ export default function OrdersListScreen({
             </View>
           </View>
 
-          {shownThumbnails.length > 0 && (
+          {shownSlots.length > 0 && (
             <View style={styles.thumbRow}>
-              {shownThumbnails.map((url, index) => {
+              {shownSlots.map((url, index) => {
                 const resolved = resolveImageUrl(url);
-                return resolved ? (
-                  <Image
-                    key={`${url}-${index}`}
-                    source={{ uri: resolved }}
-                    style={styles.thumb}
-                    resizeMode="contain"
-                  />
-                ) : (
-                  <View key={`${url}-${index}`} style={styles.thumbPlaceholder} />
+                return (
+                  <View key={index} style={styles.thumb}>
+                    {resolved ? (
+                      <Image
+                        source={{ uri: resolved }}
+                        style={styles.thumbImage}
+                        resizeMode="contain"
+                      />
+                    ) : (
+                      <ShoppingBag size={18} color={colors.textMuted} strokeWidth={1.7} />
+                    )}
+                  </View>
                 );
               })}
 
@@ -197,12 +201,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
   },
-  thumbPlaceholder: {
-    width: 40,
-    height: 40,
-    borderRadius: radius.sm,
-    backgroundColor: colors.skeleton,
+  thumbImage: {
+    width: "100%",
+    height: "100%",
   },
   thumbMore: {
     width: 40,

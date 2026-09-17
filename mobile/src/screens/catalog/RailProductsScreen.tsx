@@ -12,8 +12,9 @@ import { colors, spacing } from "@shared/theme";
 import { useRailProducts } from "@/lib/queries";
 import { useCartActions } from "@/lib/useCartActions";
 import { useGridColumns } from "@/lib/useGridColumns";
-import { AppText, EmptyState, ErrorState, Loading, NoticeStrip, Screen } from "@/components/ui";
+import { AppText, EmptyState, ErrorState, NoticeStrip, Screen } from "@/components/ui";
 import { ProductCard } from "@/components/ProductCard";
+import { ProductGridSkeleton } from "@/components/ProductCardSkeleton";
 
 export default function RailProductsScreen({
   railKey,
@@ -61,7 +62,7 @@ export default function RailProductsScreen({
       )}
 
       {rail.isLoading ? (
-        <Loading />
+        <ProductGridSkeleton columns={columns} />
       ) : rail.isError ? (
         <ErrorState message="We could not load this." onRetry={() => void rail.refetch()} />
       ) : (rail.data?.products.length ?? 0) === 0 ? (

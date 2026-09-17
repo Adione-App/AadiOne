@@ -62,6 +62,11 @@ export function useProducts(params: {
     queryKey: keys.products(query.toString()),
     queryFn: () =>
       api.get<CursorPage<ProductSummaryDto>>(`/products?${query.toString()}`),
+    // Each category the customer has opened this session should stay ready
+    // to show instantly if they switch back to it — react-query's default
+    // 5-minute garbage-collect window is short enough that browsing several
+    // categories evicts the first ones before the customer circles back.
+    gcTime: 30 * 60_000,
   });
 }
 
@@ -69,6 +74,10 @@ export function useProduct(id: string) {
   return useQuery({
     queryKey: keys.product(id),
     queryFn: () => api.get<ProductDetailDto>(`/products/${id}`),
+    // Reopening a product already viewed this session (e.g. from the cart,
+    // or backing out and tapping it again) should be instant, not refetched
+    // from a blank loading screen.
+    gcTime: 30 * 60_000,
   });
 }
 
@@ -80,6 +89,9 @@ export function useRailProducts(key: HomeFeedDto["rails"][number]["key"]) {
       api.get<{ title: string; products: ProductSummaryDto[] }>(
         `/products/rail/${key}?limit=60`,
       ),
+    // Same reasoning as useProducts — keep a rail's "See All" page ready
+    // for the rest of the session instead of evicting it after 5 minutes.
+    gcTime: 30 * 60_000,
   });
 }
 

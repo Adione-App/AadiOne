@@ -252,7 +252,7 @@ export default function UpiPaymentScreen({
           accessibilityRole="button"
           accessibilityLabel="Go back"
         >
-          <Ionicons name="arrow-back" size={30} color={colors.textPrimary} />
+          <AppText variant="h2">←</AppText>
         </Pressable>
 
         <View style={styles.headerText}>

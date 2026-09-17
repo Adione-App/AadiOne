@@ -335,7 +335,7 @@ export default function CheckoutScreen({
           accessibilityRole="button"
           accessibilityLabel="Go back"
         >
-          <Ionicons name="arrow-back" size={27} color={colors.textPrimary} />
+          <AppText variant="h2">←</AppText>
         </Pressable>
 
         <View style={styles.headerText}>

@@ -24,6 +24,7 @@ import { useCartActions } from '@/lib/useCartActions';
 import { useGridColumns } from '@/lib/useGridColumns';
 import { AppText, EmptyState, Loading, NoticeStrip, Screen } from '@/components/ui';
 import { ProductCard } from '@/components/ProductCard';
+import { ProductGridSkeleton } from '@/components/ProductCardSkeleton';
 import CategoryIcon from '@/components/CategoryIcon';
 
 export default function CategoriesScreen({
@@ -53,6 +54,15 @@ export default function CategoriesScreen({
   useEffect(() => {
     if (!selected && leaves.length > 0) setSelected(leaves[0]!.id);
   }, [leaves, selected]);
+
+  // This screen stays mounted inside its own tab stack, so `initialCategoryId`
+  // only seeds `selected` on first mount. Without this, tapping a different
+  // category chip on Home after Categories was already opened would navigate
+  // here with a new `categoryId` param that silently had no effect, because
+  // `selected` was already set from a previous visit.
+  useEffect(() => {
+    if (initialCategoryId) setSelected(initialCategoryId);
+  }, [initialCategoryId]);
 
   const products = useProducts(selected ? { categoryId: selected } : {});
 
@@ -120,7 +130,7 @@ export default function CategoriesScreen({
           )}
 
           {products.isLoading ? (
-            <Loading />
+            <ProductGridSkeleton columns={columns} />
           ) : (products.data?.items.length ?? 0) === 0 ? (
             <EmptyState title="Nothing here yet" hint="Try another category." />
           ) : (

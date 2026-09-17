@@ -646,13 +646,28 @@ async function queueOrderNotification(
 /* -------------------------------------------------------------------------- */
 
 const ORDER_DETAIL_INCLUDE = {
-  items: { orderBy: { createdAt: 'asc' as const } },
+  items: {
+    orderBy: { createdAt: 'asc' as const },
+    // The row's own `imageUrl` is a snapshot taken at order time, so it stays
+    // blank for older orders placed before the product had a photo. Falling
+    // back to the variant's current image lets those orders pick one up
+    // retroactively instead of showing a placeholder forever.
+    include: {
+      variant: {
+        include: { images: { orderBy: { displayOrder: 'asc' as const }, take: 1 } },
+      },
+    },
+  },
   statusHistory: { orderBy: { createdAt: 'asc' as const } },
   address: true,
   assignments: { include: { agent: true }, orderBy: { assignedAt: 'desc' as const }, take: 1 },
 } as const;
 
 type OrderWithRelations = Prisma.OrderGetPayload<{ include: typeof ORDER_DETAIL_INCLUDE }>;
+
+function resolveItemImage(item: OrderWithRelations['items'][number]): string | null {
+  return item.imageUrl ?? item.variant?.imageUrl ?? item.variant?.images[0]?.url ?? null;
+}
 
 function buildTimeline(order: OrderWithRelations): OrderTimelineEntryDto[] {
   const currentStep = toCustomerTimelineStep(order.status);
@@ -702,7 +717,7 @@ function toSummary(order: OrderWithRelations): OrderSummaryDto {
     totalPaise: order.totalPaise,
     itemCount: order.items.reduce((sum, item) => sum + item.qty, 0),
     itemThumbnails: order.items
-      .map((item) => item.imageUrl)
+      .map(resolveItemImage)
       .filter((url): url is string => url !== null)
       .slice(0, 3),
     placedAt: (order.placedAt ?? order.createdAt).toISOString(),
@@ -742,7 +757,7 @@ export async function getOrderDetail(
       productName: item.productName,
       variantName: item.variantName,
       brandName: item.brandName,
-      imageUrl: item.imageUrl,
+      imageUrl: resolveItemImage(item),
       sku: item.sku,
       qty: item.qty,
       mrpPaise: item.mrpPaise,

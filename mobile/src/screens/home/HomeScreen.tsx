@@ -219,9 +219,9 @@ export default function HomeScreen({
           accessibilityLabel="Open account"
         >
           <Ionicons
-            name="person-outline"
-            size={21}
-            color={colors.textSecondary}
+            name="person-circle"
+            size={38}
+            color={colors.primary}
           />
         </Pressable>
       </View>
@@ -619,14 +619,6 @@ const styles = StyleSheet.create({
     width: 42,
 
     height: 42,
-
-    borderRadius: 21,
-
-    borderWidth: 1,
-
-    borderColor: colors.border,
-
-    backgroundColor: colors.primarySurface,
 
     alignItems: "center",
 

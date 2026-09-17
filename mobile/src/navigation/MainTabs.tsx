@@ -126,7 +126,7 @@ export function MainTabs() {
 
           tabBarIcon: ({ color, focused }) => (
             <AnimatedTabIcon color={color} focused={focused}>
-              <HomeIcon color={color} />
+              <HomeIcon color={color} focused={focused} />
             </AnimatedTabIcon>
           ),
         }}
@@ -141,7 +141,7 @@ export function MainTabs() {
 
           tabBarIcon: ({ color, focused }) => (
             <AnimatedTabIcon color={color} focused={focused}>
-              <CategoriesIcon color={color} />
+              <CategoriesIcon color={color} focused={focused} />
             </AnimatedTabIcon>
           ),
         }}
@@ -156,7 +156,7 @@ export function MainTabs() {
 
           tabBarIcon: ({ color, focused }) => (
             <AnimatedTabIcon color={color} focused={focused}>
-              <SearchIcon color={color} />
+              <SearchIcon color={color} focused={focused} />
             </AnimatedTabIcon>
           ),
         }}
@@ -171,7 +171,7 @@ export function MainTabs() {
 
           tabBarIcon: ({ color, focused }) => (
             <AnimatedTabIcon color={color} focused={focused}>
-              <CartIcon color={color} />
+              <CartIcon color={color} focused={focused} />
             </AnimatedTabIcon>
           ),
 
@@ -192,7 +192,7 @@ export function MainTabs() {
 
           tabBarIcon: ({ color, focused }) => (
             <AnimatedTabIcon color={color} focused={focused}>
-              <AccountIcon color={color} />
+              <AccountIcon color={color} focused={focused} />
             </AnimatedTabIcon>
           ),
         }}

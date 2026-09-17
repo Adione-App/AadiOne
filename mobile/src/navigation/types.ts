@@ -25,9 +25,14 @@ export type AuthStackParamList = {
  * from a product opened in Search returns to Search, not to Home.
  */
 export type CatalogStackParamList = {
-  Home: undefined;
-  Categories: { categoryId?: string } | undefined;
-  Search: undefined;
+  // Named distinctly from the bottom-tab routes ("Home", "Categories",
+  // "Search" on the parent Tab.Navigator) that host these stacks — reusing
+  // the tab's own name for its stack's landing screen makes React Navigation
+  // warn about ambiguous same-name nesting and can misroute a bare
+  // `navigate("Home")` between the tab and the screen.
+  HomeFeed: undefined;
+  CategoriesHome: { categoryId?: string } | undefined;
+  SearchHome: undefined;
   ProductDetail: { productId: string };
   SelectLocation: undefined;
   AddressForm: { addressId?: string } | undefined;
@@ -38,7 +43,7 @@ export type CatalogStackParamList = {
 };
 
 export type CartStackParamList = {
-  Cart: undefined;
+  CartHome: undefined;
   Checkout: undefined;
   UpiPayment: { orderId: string };
   OrderTracking: { orderId: string };
@@ -48,7 +53,7 @@ export type CartStackParamList = {
 };
 
 export type AccountStackParamList = {
-  Account: undefined;
+  AccountHome: undefined;
   Orders: undefined;
   OrderTracking: { orderId: string };
   Addresses: undefined;

@@ -59,7 +59,7 @@ export function HomeStack() {
           HOME
       --------------------------------------------------------------- */}
 
-      <CatalogStack.Screen name="Home">
+      <CatalogStack.Screen name="HomeFeed">
         {({ navigation }) => (
           <HomeScreen
             onOpenProduct={(productId) =>
@@ -69,7 +69,7 @@ export function HomeStack() {
             }
             onOpenCategory={(categoryId) =>
               navigation.getParent()?.navigate("Categories", {
-                screen: "Categories",
+                screen: "CategoriesHome",
                 params: {
                   categoryId,
                 },
@@ -77,7 +77,7 @@ export function HomeStack() {
             }
             onOpenAllCategories={() =>
               navigation.getParent()?.navigate("Categories", {
-                screen: "Categories",
+                screen: "CategoriesHome",
                 params: undefined,
               })
             }
@@ -169,7 +169,7 @@ export function HomeStack() {
 export function CategoriesStack() {
   return (
     <CatalogStack.Navigator screenOptions={noHeader}>
-      <CatalogStack.Screen name="Categories">
+      <CatalogStack.Screen name="CategoriesHome">
         {({ navigation, route }) => (
           <CategoriesScreen
             {...(route.params?.categoryId
@@ -211,7 +211,7 @@ export function CategoriesStack() {
 export function SearchStack() {
   return (
     <CatalogStack.Navigator screenOptions={noHeader}>
-      <CatalogStack.Screen name="Search">
+      <CatalogStack.Screen name="SearchHome">
         {({ navigation }) => (
           <SearchScreen
             onOpenProduct={(productId) =>
@@ -251,7 +251,7 @@ export function CartStack() {
           CART
       --------------------------------------------------------------- */}
 
-      <CartNav.Screen name="Cart">
+      <CartNav.Screen name="CartHome">
         {({ navigation }) => (
           <CartScreen
             onCheckout={() => navigation.navigate("Checkout")}
@@ -360,7 +360,7 @@ export function AccountStack() {
           ACCOUNT
       --------------------------------------------------------------- */}
 
-      <AccountNav.Screen name="Account">
+      <AccountNav.Screen name="AccountHome">
         {({ navigation }) => (
           <AccountScreen
             onSelect={(key) => {

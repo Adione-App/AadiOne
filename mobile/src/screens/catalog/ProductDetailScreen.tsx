@@ -229,16 +229,24 @@ export default function ProductDetailScreen({
         {variant && !outOfStock ? (
           qtyInCart > 0 ? (
             <View style={styles.footerRow}>
-              <QuantityStepper
-                qty={qtyInCart}
-                max={variant.maxQtyPerOrder}
-                busy={cart.isBusy(variant.id)}
-                onIncrement={() => void cart.increment(variant.id)}
-                onDecrement={() => void cart.decrement(variant.id)}
-              />
-              <AppText variant="bodyStrong" color={colors.primary}>
-                {formatPaise(variant.pricePaise * qtyInCart)} in cart
-              </AppText>
+              <View style={styles.footerStepper}>
+                <QuantityStepper
+                  qty={qtyInCart}
+                  max={variant.maxQtyPerOrder}
+                  busy={cart.isBusy(variant.id)}
+                  onIncrement={() => void cart.increment(variant.id)}
+                  onDecrement={() => void cart.decrement(variant.id)}
+                  fullWidth
+                />
+              </View>
+              <View style={styles.footerTotal}>
+                <AppText variant="caption" color={colors.textSecondary}>
+                  {qtyInCart} in cart
+                </AppText>
+                <AppText variant="h3" color={colors.primary}>
+                  {formatPaise(variant.pricePaise * qtyInCart)}
+                </AppText>
+              </View>
             </View>
           ) : (
             <Button label="Add to Cart" onPress={() => void cart.add(variant.id)} />
@@ -299,5 +307,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: colors.border,
   },
-  footerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  footerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.base },
+  footerStepper: { width: 148 },
+  footerTotal: { flex: 1, alignItems: 'flex-end' },
 });

@@ -118,6 +118,8 @@ export default function CartScreen({
     const imageUrl = resolveImageUrl(item.imageUrl);
 
     const hasDiscount = item.mrpPaise > item.unitPricePaise;
+    const itemBusy = actions.isBusy(item.variantId);
+    const qty = actions.qtyFor(item.variantId);
 
     return (
       <View style={styles.productCard}>
@@ -192,7 +194,7 @@ export default function CartScreen({
           <Pressable
             style={styles.deleteButton}
             onPress={() => void actions.remove(item.variantId)}
-            disabled={actions.busy}
+            disabled={itemBusy}
             hitSlop={8}
           >
             <TrashIcon color={colors.textPrimary} />
@@ -201,9 +203,9 @@ export default function CartScreen({
           {/* Quantity */}
 
           <QuantityStepper
-            qty={item.qty}
+            qty={qty}
             max={item.maxQtyPerOrder}
-            busy={actions.busy}
+            busy={itemBusy}
             onIncrement={() => void actions.increment(item.variantId)}
             onDecrement={() => void actions.decrement(item.variantId)}
           />

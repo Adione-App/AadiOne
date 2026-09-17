@@ -7,13 +7,15 @@
  * decision in one place.
  */
 
-import { FlatList, Pressable, StyleSheet, View } from "react-native";
+import { FlatList, Image, Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ChevronRight } from "lucide-react-native";
 import type { OrderSummaryDto } from "@shared";
 import { formatPaise } from "@shared/money";
 import { formatDateTimeInZone } from "@shared/datetime";
 import { colors, radius, spacing } from "@shared/theme";
 import { useOrders } from "@/lib/queries";
+import { resolveImageUrl } from "@/lib/api";
 import {
   AppText,
   Card,
@@ -22,6 +24,9 @@ import {
   Loading,
   Screen,
 } from "@/components/ui";
+
+/** More than this many item thumbnails and the rest collapse into a "+N" tile. */
+const MAX_THUMBNAILS = 4;
 
 const BUCKET_STYLE = {
   ONGOING: { bg: colors.infoSurface, fg: colors.info, label: "Ongoing" },
@@ -71,32 +76,63 @@ export default function OrdersListScreen({
 
   const renderItem = ({ item }: { item: OrderSummaryDto }) => {
     const bucket = BUCKET_STYLE[item.bucket];
+    const shownThumbnails = item.itemThumbnails.slice(0, MAX_THUMBNAILS);
+    const hiddenCount = item.itemCount - shownThumbnails.length;
+
     return (
       <Pressable onPress={() => onOpenOrder(item.id)}>
-        <Card style={{ marginBottom: spacing.md }}>
+        <Card style={styles.card}>
           <View style={styles.row}>
-            <View>
+            <View style={{ flex: 1, minWidth: 0 }}>
               <AppText variant="caption" color={colors.textSecondary}>
-                Order ID
+                Order #{item.orderNumber}
               </AppText>
-              <AppText variant="bodyStrong">#{item.orderNumber}</AppText>
               <AppText variant="caption" color={colors.textSecondary}>
                 {formatDateTimeInZone(new Date(item.placedAt), "Asia/Kolkata")}
               </AppText>
             </View>
 
-            <View style={{ alignItems: "flex-end", gap: spacing.xs }}>
-              <View style={[styles.badge, { backgroundColor: bucket.bg }]}>
-                <AppText variant="caption" color={bucket.fg}>
-                  {item.bucket === "ONGOING" ? item.statusLabel : bucket.label}
-                </AppText>
-              </View>
-              <AppText variant="bodyStrong">
-                {formatPaise(item.totalPaise)}
+            <View style={[styles.badge, { backgroundColor: bucket.bg }]}>
+              <AppText variant="caption" color={bucket.fg}>
+                {item.bucket === "ONGOING" ? item.statusLabel : bucket.label}
               </AppText>
-              <AppText variant="caption" color={colors.textSecondary}>
-                {item.itemCount} item{item.itemCount === 1 ? "" : "s"}
-              </AppText>
+            </View>
+          </View>
+
+          {shownThumbnails.length > 0 && (
+            <View style={styles.thumbRow}>
+              {shownThumbnails.map((url, index) => {
+                const resolved = resolveImageUrl(url);
+                return resolved ? (
+                  <Image
+                    key={`${url}-${index}`}
+                    source={{ uri: resolved }}
+                    style={styles.thumb}
+                    resizeMode="contain"
+                  />
+                ) : (
+                  <View key={`${url}-${index}`} style={styles.thumbPlaceholder} />
+                );
+              })}
+
+              {hiddenCount > 0 && (
+                <View style={styles.thumbMore}>
+                  <AppText variant="caption" color={colors.textSecondary}>
+                    +{hiddenCount}
+                  </AppText>
+                </View>
+              )}
+            </View>
+          )}
+
+          <View style={styles.bottomRow}>
+            <AppText variant="caption" color={colors.textSecondary}>
+              {item.itemCount} item{item.itemCount === 1 ? "" : "s"}
+            </AppText>
+
+            <View style={styles.bottomRight}>
+              <AppText variant="bodyStrong">{formatPaise(item.totalPaise)}</AppText>
+              <ChevronRight size={16} color={colors.textMuted} />
             </View>
           </View>
         </Card>
@@ -136,10 +172,59 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.divider,
     backgroundColor: colors.surface,
   },
-  row: { flexDirection: "row", justifyContent: "space-between" },
+  card: { marginBottom: spacing.md, padding: spacing.md },
+  row: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
   badge: {
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
     borderRadius: radius.pill,
+  },
+
+  thumbRow: {
+    flexDirection: "row",
+    gap: spacing.xs,
+    marginTop: spacing.sm,
+  },
+  thumb: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  thumbPlaceholder: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.sm,
+    backgroundColor: colors.skeleton,
+  },
+  thumbMore: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceSunken,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  bottomRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: spacing.sm,
+    paddingTop: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.divider,
+  },
+  bottomRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
   },
 });

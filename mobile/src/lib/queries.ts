@@ -116,16 +116,23 @@ export function useCart(distanceKm: number | null = null) {
  * The server's response REPLACES local state rather than being merged into it.
  * If it corrected a quantity or removed an out-of-stock line, that correction
  * is what the customer must see — a merge would quietly restore the item.
+ *
+ * ROOT CAUSE FIXED HERE: this used to write the response into the single key
+ * `['cart', null]` and merely INVALIDATE everything else, including whatever
+ * `['cart', distanceKm]` key the screen is actually reading (distanceKm is a
+ * real number once location is known, never null). Invalidation only queues
+ * a slower background refetch — so the screen kept showing pre-mutation data
+ * until that refetch happened to land, then "self-corrected" a second or two
+ * later. `setQueriesData` with a partial key match updates EVERY cached
+ * `['cart', *]` variant with this response directly and synchronously, so
+ * the screen's own query is corrected in the same tick as the mutation
+ * response — no dependent refetch, and nothing left to invalidate.
  */
 export function useCartMutations() {
   const queryClient = useQueryClient();
 
   const write = (data: CartDto) => {
-    queryClient.setQueryData([...keys.cart, null], data);
-
-    queryClient.invalidateQueries({
-      queryKey: keys.cart,
-    });
+    queryClient.setQueriesData<CartDto>({ queryKey: keys.cart }, data);
   };
 
 

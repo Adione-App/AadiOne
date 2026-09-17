@@ -1,14 +1,21 @@
+import { memo } from "react";
 import { Image, Pressable, StyleSheet, View } from "react-native";
+import { ShoppingCart } from "lucide-react-native";
 
 import type { ProductSummaryDto } from "@shared";
 import { formatPaise } from "@shared/money";
-import { colors, radius, spacing } from "@shared/theme";
+import { colors, radius, shadow, spacing } from "@shared/theme";
 
 import { resolveImageUrl } from "../lib/api";
 import { AppText } from "./ui";
 
 /* =====================================================================
    QUANTITY STEPPER
+
+   `fullWidth` is the pill used in the card's own action bar and the
+   product-detail footer — big, easy to tap, spans the space a lone "Add"
+   button would have used. The compact (default) size is for tight rows,
+   like the cart screen's line item next to its delete icon.
 ===================================================================== */
 
 export function QuantityStepper({
@@ -16,46 +23,61 @@ export function QuantityStepper({
   max,
   onIncrement,
   onDecrement,
-  busy,
+  fullWidth,
 }: {
   qty: number;
   max: number;
   onIncrement: () => void;
   onDecrement: () => void;
+  /** @deprecated no longer disables the buttons — cart sync is race-safe
+   * per-tap now, so there's nothing an in-flight request needs protecting
+   * from. Kept so existing call sites don't need to change. */
   busy?: boolean;
+  fullWidth?: boolean;
 }) {
   return (
-    <View style={styles.stepper}>
+    <View style={[styles.stepper, fullWidth && styles.stepperFullWidth]}>
       <Pressable
         onPress={onDecrement}
-        disabled={busy}
         hitSlop={8}
-        style={styles.stepperButton}
+        style={[
+          styles.stepperButton,
+          fullWidth && styles.stepperButtonFullWidth,
+        ]}
         accessibilityLabel="Decrease quantity"
       >
         <AppText
           variant="h3"
-          color={colors.primary}
+          color={colors.onPrimary}
           style={styles.stepperSymbol}
         >
           −
         </AppText>
       </Pressable>
 
-      <AppText variant="bodyStrong" style={styles.quantityText}>
+      <AppText
+        variant="bodyStrong"
+        color={colors.onPrimary}
+        style={[styles.quantityText, fullWidth && styles.quantityTextFullWidth]}
+      >
         {qty}
       </AppText>
 
       <Pressable
         onPress={onIncrement}
-        disabled={busy || qty >= max}
+        disabled={qty >= max}
         hitSlop={8}
-        style={styles.stepperButton}
+        style={[
+          styles.stepperButton,
+          fullWidth && styles.stepperButtonFullWidth,
+        ]}
         accessibilityLabel="Increase quantity"
       >
         <AppText
           variant="h3"
-          color={qty >= max ? colors.disabledText : colors.primary}
+          // The stepper's pill is solid green — `disabledText` (grey) reads
+          // as invisible on it, unlike on the white surfaces it's tuned for.
+          color={qty >= max ? "rgba(255,255,255,0.45)" : colors.onPrimary}
           style={styles.stepperSymbol}
         >
           +
@@ -69,7 +91,7 @@ export function QuantityStepper({
    PRODUCT CARD
 ===================================================================== */
 
-export function ProductCard({
+function ProductCardImpl({
   product,
   qtyInCart,
   onPress,
@@ -93,39 +115,59 @@ export function ProductCard({
   const imageUrl = resolveImageUrl(product.thumbUrl);
 
   return (
-    <Pressable
-      onPress={onPress}
-      style={styles.card}
-      accessibilityRole="button"
-      accessibilityLabel={`Open ${product.name}`}
-    >
+    // Plain View, not Pressable: navigation belongs to the image alone (see
+    // below), never to the card as a whole. A Pressable here previously
+    // wrapped everything, including the Add/stepper buttons — and a DISABLED
+    // nested Pressable (mid-request) doesn't claim the touch, so the tap fell
+    // through to this outer Pressable's onPress and opened Product Details
+    // instead of doing nothing. Removing the outer handler entirely closes
+    // that hole rather than working around it.
+    <View style={styles.card}>
       {/* =============================================================
-          IMAGE
+          IMAGE — the ONLY part of the card that opens Product Details.
       ============================================================= */}
 
-      <View style={styles.imageBox}>
+      <Pressable
+        onPress={onPress}
+        style={styles.imageBox}
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${product.name}`}
+      >
         {imageUrl ? (
           <Image
             source={{ uri: imageUrl }}
-            style={styles.image}
+            style={[styles.image, outOfStock && styles.imageFaded]}
             resizeMode="contain"
           />
         ) : (
           <View style={styles.imagePlaceholder} />
         )}
 
-        {variant && variant.discountPercent > 0 && (
-          <View style={styles.discountBadge}>
+        {outOfStock ? (
+          <View style={styles.outOfStockBadge}>
             <AppText
               variant="overline"
-              color={colors.discountBadgeText}
-              style={styles.discountText}
+              color={colors.textSecondary}
+              style={styles.badgeText}
             >
-              {variant.discountPercent}% OFF
+              Out of Stock
             </AppText>
           </View>
+        ) : (
+          variant &&
+          variant.discountPercent > 0 && (
+            <View style={styles.discountBadge}>
+              <AppText
+                variant="overline"
+                color={colors.discountBadgeText}
+                style={styles.badgeText}
+              >
+                {variant.discountPercent}% OFF
+              </AppText>
+            </View>
+          )
         )}
-      </View>
+      </Pressable>
 
       {/* =============================================================
           PRODUCT NAME
@@ -159,85 +201,79 @@ export function ProductCard({
       </View>
 
       {/* =============================================================
-          BOTTOM
+          PRICE
       ============================================================= */}
 
-      <View style={styles.bottomSection}>
-        {/* PRICE */}
+      <View style={styles.priceRow}>
+        {variant && (
+          <>
+            <AppText variant="price" numberOfLines={1} style={styles.price}>
+              {formatPaise(variant.pricePaise)}
+            </AppText>
 
-        <View style={styles.priceContainer}>
-          {variant && (
-            <>
-              <AppText variant="price" numberOfLines={1} style={styles.price}>
-                {formatPaise(variant.pricePaise)}
-              </AppText>
-
-              {variant.mrpPaise > variant.pricePaise && (
-                <AppText
-                  variant="caption"
-                  color={colors.textMuted}
-                  numberOfLines={1}
-                  style={styles.mrp}
-                >
-                  {formatPaise(variant.mrpPaise)}
-                </AppText>
-              )}
-            </>
-          )}
-        </View>
-
-        {/* ACTION */}
-
-        <View style={styles.actionContainer}>
-          {outOfStock ? (
-            <View style={styles.outOfStockTag}>
+            {variant.mrpPaise > variant.pricePaise && (
               <AppText
                 variant="caption"
-                color={colors.textSecondary}
+                color={colors.textMuted}
                 numberOfLines={1}
-                style={styles.outOfStockText}
+                style={styles.mrp}
               >
-                Out of stock
+                {formatPaise(variant.mrpPaise)}
               </AppText>
-            </View>
-          ) : qtyInCart > 0 ? (
-            <QuantityStepper
-              qty={qtyInCart}
-              max={variant?.maxQtyPerOrder ?? 10}
-              onIncrement={onIncrement}
-              onDecrement={onDecrement}
-              busy={busy}
-            />
-          ) : (
-            <Pressable
-              onPress={onAdd}
-              disabled={busy}
-              style={[styles.addButton, busy && styles.addButtonDisabled]}
-              accessibilityRole="button"
-              accessibilityLabel={`Add ${product.name} to cart`}
-            >
-              <AppText
-                variant="bodyStrong"
-                color={colors.primary}
-                style={styles.addText}
-              >
-                Add
-              </AppText>
-
-              <AppText
-                variant="bodyStrong"
-                color={colors.primary}
-                style={styles.addPlus}
-              >
-                +
-              </AppText>
-            </Pressable>
-          )}
-        </View>
+            )}
+          </>
+        )}
       </View>
-    </Pressable>
+
+      {/* =============================================================
+          ACTION BAR — full width, matches the reference design.
+      ============================================================= */}
+
+      {outOfStock ? (
+        <View style={styles.outOfStockBar}>
+          <AppText
+            variant="bodyStrong"
+            color={colors.textSecondary}
+            style={styles.outOfStockBarText}
+          >
+            Out of Stock
+          </AppText>
+        </View>
+      ) : qtyInCart > 0 ? (
+        <QuantityStepper
+          qty={qtyInCart}
+          max={variant?.maxQtyPerOrder ?? 10}
+          onIncrement={onIncrement}
+          onDecrement={onDecrement}
+          busy={busy}
+          fullWidth
+        />
+      ) : (
+        <Pressable
+          onPress={onAdd}
+          style={styles.addButton}
+          accessibilityRole="button"
+          accessibilityLabel={`Add ${product.name} to cart`}
+        >
+          <ShoppingCart size={14} color={colors.onPrimary} strokeWidth={2.3} />
+          <AppText
+            variant="bodyStrong"
+            color={colors.onPrimary}
+            style={styles.addText}
+          >
+            Add
+          </AppText>
+        </Pressable>
+      )}
+    </View>
   );
 }
+
+// Memoized so a re-render triggered by one product's qty change (via
+// useCartActions' forceRender) doesn't re-render every other visible card —
+// only useful once a screen's own onAdd/onIncrement/onDecrement callbacks are
+// stable across renders too; harmless either way.
+export const ProductCard = memo(ProductCardImpl);
 
 /* =====================================================================
    STYLES
@@ -261,8 +297,6 @@ const styles = StyleSheet.create({
 
     width: "100%",
 
-    height: 190,
-
     backgroundColor: colors.surface,
 
     borderRadius: radius.lg,
@@ -271,9 +305,11 @@ const styles = StyleSheet.create({
 
     borderColor: colors.border,
 
-    padding: spacing.xs,
+    padding: spacing.sm,
 
     overflow: "hidden",
+
+    ...shadow.sm,
   },
 
   /* ================================================================
@@ -283,7 +319,7 @@ const styles = StyleSheet.create({
   imageBox: {
     width: "100%",
 
-    height: 70,
+    height: 96,
 
     alignItems: "center",
 
@@ -298,6 +334,10 @@ const styles = StyleSheet.create({
     height: "100%",
   },
 
+  imageFaded: {
+    opacity: 0.4,
+  },
+
   imagePlaceholder: {
     width: "100%",
 
@@ -309,7 +349,7 @@ const styles = StyleSheet.create({
   },
 
   /* ================================================================
-     DISCOUNT
+     BADGES (discount / out of stock)
   ================================================================ */
 
   discountBadge: {
@@ -330,7 +370,25 @@ const styles = StyleSheet.create({
     zIndex: 2,
   },
 
-  discountText: {
+  outOfStockBadge: {
+    position: "absolute",
+
+    top: 0,
+
+    left: 0,
+
+    backgroundColor: colors.surfaceSunken,
+
+    paddingHorizontal: 8,
+
+    paddingVertical: 3,
+
+    borderRadius: radius.sm,
+
+    zIndex: 2,
+  },
+
+  badgeText: {
     fontSize: 9,
 
     lineHeight: 12,
@@ -343,21 +401,21 @@ const styles = StyleSheet.create({
   ================================================================ */
 
   nameContainer: {
-    height: 32,
+    height: 34,
 
-    marginTop: 4,
+    marginTop: spacing.xs,
 
     justifyContent: "flex-start",
   },
 
   productName: {
-    fontSize: 12,
+    fontSize: 13,
 
     lineHeight: 17,
 
     color: colors.textPrimary,
 
-    fontWeight: "500",
+    fontWeight: "600",
   },
 
   /* ================================================================
@@ -373,7 +431,7 @@ const styles = StyleSheet.create({
   },
 
   variantName: {
-    fontSize: 10,
+    fontSize: 11,
 
     lineHeight: 14,
 
@@ -381,41 +439,25 @@ const styles = StyleSheet.create({
   },
 
   /* ================================================================
-     BOTTOM
-  ================================================================ */
-
-  bottomSection: {
-    height: 32,
-
-    marginTop: "auto",
-
-    flexDirection: "row",
-
-    alignItems: "center",
-
-    justifyContent: "space-between",
-
-    gap: 6,
-  },
-
-  /* ================================================================
      PRICE
   ================================================================ */
 
-  priceContainer: {
-    flex: 1,
+  priceRow: {
+    flexDirection: "row",
 
-    minWidth: 0,
+    alignItems: "baseline",
 
-    height: 32,
+    gap: 6,
 
-    justifyContent: "center",
+    height: 22,
+
+    marginTop: 2,
   },
 
   price: {
-    fontSize: 14,
+    fontSize: 15,
 
-    lineHeight: 18,
+    lineHeight: 19,
 
     fontWeight: "800",
 
@@ -423,45 +465,27 @@ const styles = StyleSheet.create({
   },
 
   mrp: {
-    fontSize: 9,
+    fontSize: 11,
 
-    lineHeight: 12,
+    lineHeight: 14,
 
     textDecorationLine: "line-through",
-
-    marginTop: 0,
   },
 
   /* ================================================================
-     ACTION
-  ================================================================ */
-
-  actionContainer: {
-    width: 62,
-
-    height: 30,
-
-    alignItems: "flex-end",
-
-    justifyContent: "center",
-  },
-
-  /* ================================================================
-     ADD
+     ADD BUTTON — full width, matches the reference design.
   ================================================================ */
 
   addButton: {
-    width: 62,
+    width: "100%",
 
-    height: 30,
+    height: 36,
+
+    marginTop: spacing.sm,
 
     borderRadius: radius.pill,
 
-    borderWidth: 1,
-
-    borderColor: colors.primary,
-
-    backgroundColor: colors.surface,
+    backgroundColor: colors.primary,
 
     flexDirection: "row",
 
@@ -469,23 +493,11 @@ const styles = StyleSheet.create({
 
     justifyContent: "center",
 
-    gap: 3,
-  },
-
-  addButtonDisabled: {
-    opacity: 0.5,
+    gap: 6,
   },
 
   addText: {
-    fontSize: 12,
-
-    lineHeight: 16,
-
-    fontWeight: "700",
-  },
-
-  addPlus: {
-    fontSize: 15,
+    fontSize: 13,
 
     lineHeight: 17,
 
@@ -493,17 +505,17 @@ const styles = StyleSheet.create({
   },
 
   /* ================================================================
-     OUT OF STOCK
+     OUT OF STOCK BAR
   ================================================================ */
 
-  outOfStockTag: {
-    width: 62,
+  outOfStockBar: {
+    width: "100%",
 
-    height: 30,
+    height: 36,
 
-    paddingHorizontal: 4,
+    marginTop: spacing.sm,
 
-    borderRadius: radius.sm,
+    borderRadius: radius.pill,
 
     backgroundColor: colors.surfaceSunken,
 
@@ -512,16 +524,18 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 
-  outOfStockText: {
-    fontSize: 9,
+  outOfStockBarText: {
+    fontSize: 12,
 
-    lineHeight: 12,
-
-    textAlign: "center",
+    lineHeight: 16,
   },
 
   /* ================================================================
      QUANTITY STEPPER
+
+     Default size: compact pill for tight rows (the cart screen's line
+     item). `fullWidth` styles below are merged on top for the card's own
+     action bar and the product-detail footer.
   ================================================================ */
 
   stepper: {
@@ -539,11 +553,17 @@ const styles = StyleSheet.create({
 
     borderRadius: radius.pill,
 
-    borderWidth: 1,
+    backgroundColor: colors.primary,
+  },
 
-    borderColor: colors.primary,
+  stepperFullWidth: {
+    width: "100%",
 
-    backgroundColor: colors.surface,
+    height: 36,
+
+    marginTop: spacing.sm,
+
+    paddingHorizontal: 4,
   },
 
   stepperButton: {
@@ -554,6 +574,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
 
     justifyContent: "center",
+  },
+
+  stepperButtonFullWidth: {
+    width: 32,
+
+    height: 32,
+
+    borderRadius: radius.circle,
+
+    backgroundColor: "rgba(255,255,255,0.18)",
   },
 
   stepperSymbol: {
@@ -574,5 +604,11 @@ const styles = StyleSheet.create({
     minWidth: 16,
 
     textAlign: "center",
+  },
+
+  quantityTextFullWidth: {
+    fontSize: 14,
+
+    lineHeight: 18,
   },
 });

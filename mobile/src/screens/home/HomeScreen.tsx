@@ -9,7 +9,14 @@ import {
 import React, { useEffect } from "react";
 
 import { Ionicons } from "@expo/vector-icons";
-import { ArrowRight, ChevronRight } from "lucide-react-native";
+import {
+  ArrowRight,
+  ChevronRight,
+  Leaf,
+  ShieldCheck,
+  MapPin,
+  Zap,
+} from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { HomeFeedDto, ProductSummaryDto } from "@shared";
@@ -396,8 +403,47 @@ export default function HomeScreen({
             />
           </View>
         ))}
+
+        {/* ========================================================
+            TRUST STRIP
+        ======================================================== */}
+
+        <View style={styles.trustStrip}>
+          <TrustBadge icon={Leaf} label="Fresh Products" hint="From local stores" />
+          <TrustBadge icon={Zap} label="Fast Delivery" hint="10–20 mins" />
+          <TrustBadge icon={ShieldCheck} label="Trusted & Safe" hint="Quality you can rely on" />
+          <TrustBadge icon={MapPin} label="Local Business" hint="Supporting our community" />
+        </View>
       </ScrollView>
     </Screen>
+  );
+}
+
+/* =====================================================================
+   TRUST BADGE
+===================================================================== */
+
+function TrustBadge({
+  icon: Icon,
+  label,
+  hint,
+}: {
+  icon: typeof Leaf;
+  label: string;
+  hint: string;
+}) {
+  return (
+    <View style={styles.trustBadge}>
+      <View style={styles.trustIcon}>
+        <Icon size={18} color={colors.primary} strokeWidth={2} />
+      </View>
+      <AppText variant="caption" style={styles.trustLabel}>
+        {label}
+      </AppText>
+      <AppText variant="overline" color={colors.textSecondary} style={styles.trustHint}>
+        {hint}
+      </AppText>
+    </View>
   );
 }
 
@@ -874,5 +920,65 @@ const styles = StyleSheet.create({
 
   productWrapper: {
     width: 132,
+  },
+
+  /* ================================================================
+     TRUST STRIP
+  ================================================================ */
+
+  trustStrip: {
+    flexDirection: "row",
+
+    flexWrap: "wrap",
+
+    marginHorizontal: spacing.base,
+
+    marginTop: spacing.xl,
+
+    marginBottom: spacing.base,
+
+    borderRadius: radius.lg,
+
+    borderWidth: 1,
+
+    borderColor: colors.divider,
+
+    backgroundColor: colors.surfaceMuted,
+
+    padding: spacing.base,
+
+    gap: spacing.md,
+  },
+
+  trustBadge: {
+    width: "47%",
+
+    alignItems: "flex-start",
+  },
+
+  trustIcon: {
+    width: 34,
+
+    height: 34,
+
+    borderRadius: radius.circle,
+
+    backgroundColor: colors.primarySurface,
+
+    alignItems: "center",
+
+    justifyContent: "center",
+
+    marginBottom: spacing.xs,
+  },
+
+  trustLabel: {
+    fontWeight: "700",
+
+    color: colors.textPrimary,
+  },
+
+  trustHint: {
+    marginTop: 1,
   },
 });

@@ -8,19 +8,30 @@
 
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  ChevronRight,
+  FileText,
+  HelpCircle,
+  Info,
+  MapPin,
+  Package,
+  ShieldCheck,
+  UserRound,
+  type LucideIcon,
+} from 'lucide-react-native';
 import { formatIndianMobile } from '@shared/phone';
 import { colors, radius, spacing } from '@shared/theme';
 import { useAuth } from '@/lib/store';
 import { AppText, Button, Card, NoticeStrip, Screen } from '@/components/ui';
 
-const MENU = [
-  { key: 'personal', label: 'Personal Information' },
-  { key: 'orders', label: 'My Orders' },
-  { key: 'addresses', label: 'Addresses' },
-  { key: 'help', label: 'Help & Support' },
-  { key: 'about', label: 'About AdiOne' },
-  { key: 'privacy', label: 'Privacy Policy' },
-  { key: 'terms', label: 'Terms & Conditions' },
+const MENU: { key: string; label: string; icon: LucideIcon }[] = [
+  { key: 'personal', label: 'Personal Information', icon: UserRound },
+  { key: 'orders', label: 'My Orders', icon: Package },
+  { key: 'addresses', label: 'Addresses', icon: MapPin },
+  { key: 'help', label: 'Help & Support', icon: HelpCircle },
+  { key: 'about', label: 'About AdiOne', icon: Info },
+  { key: 'privacy', label: 'Privacy Policy', icon: ShieldCheck },
+  { key: 'terms', label: 'Terms & Conditions', icon: FileText },
 ];
 
 export default function AccountScreen({ onSelect }: { onSelect: (key: string) => void }) {
@@ -62,10 +73,13 @@ export default function AccountScreen({ onSelect }: { onSelect: (key: string) =>
         <View style={{ marginTop: spacing.lg }}>
           {MENU.map((item) => (
             <Pressable key={item.key} onPress={() => onSelect(item.key)} style={styles.row}>
-              <AppText variant="bodyLarge">{item.label}</AppText>
-              <AppText variant="bodyLarge" color={colors.textMuted}>
-                ›
+              <View style={styles.rowIcon}>
+                <item.icon size={18} color={colors.primary} strokeWidth={2} />
+              </View>
+              <AppText variant="bodyLarge" style={styles.rowLabel}>
+                {item.label}
               </AppText>
+              <ChevronRight size={18} color={colors.textMuted} />
             </Pressable>
           ))}
         </View>
@@ -94,9 +108,20 @@ const styles = StyleSheet.create({
     minHeight: 56,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     paddingHorizontal: spacing.base,
     borderBottomWidth: 1,
     borderBottomColor: colors.divider,
+  },
+  rowIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: radius.circle,
+    backgroundColor: colors.primarySurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: spacing.md,
+  },
+  rowLabel: {
+    flex: 1,
   },
 });

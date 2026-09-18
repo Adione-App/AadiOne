@@ -131,8 +131,8 @@ function StoreCard() {
           <Icon name="store" />
         </span>
       </div>
-      <div className="mt-3 flex items-center gap-2">
-        <p className="truncate text-sm font-semibold text-gray-900">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <p className="text-sm font-semibold text-gray-900">
           {store.data?.name ?? 'AdiOne Store'}
         </p>
         <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${status.className}`}>

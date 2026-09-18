@@ -54,7 +54,8 @@ import { formatEtaRange } from "@shared/distance";
 import { colors, radius, spacing } from "@shared/theme";
 
 import { api, ApiRequestError, resolveImageUrl } from "@/lib/api";
-import { keys, useCart } from "@/lib/queries";
+import { clearCartAfterOrder, keys, useCart } from "@/lib/queries";
+import { useLocation } from "@/lib/store";
 
 import {
   AppText,
@@ -146,7 +147,11 @@ export default function CheckoutScreen({
    * ============================================================
    */
 
-  const cart = useCart();
+  // Same query key every other cart-reading screen uses (see MainTabs.tsx)
+  // — a bare `useCart()` here would default distanceKm to `null`, a second
+  // independently-fetched cache entry for the same cart.
+  const serviceabilityForCart = useLocation((state) => state.serviceability);
+  const cart = useCart(serviceabilityForCart?.distanceKm ?? null);
 
   /* ============================================================
    * ADDRESSES
@@ -242,9 +247,18 @@ export default function CheckoutScreen({
         idempotencyKey,
       );
 
-      await queryClient.invalidateQueries({
-        queryKey: keys.cart,
-      });
+      // The order transaction already marked the cart CONVERTED server-side
+      // (it's genuinely empty now, not an optimistic guess) — write that
+      // directly instead of only invalidating, so the badge and every
+      // cart-reading screen update in this same tick instead of waiting on
+      // a background GET /cart that a slow connection could delay well past
+      // the moment the customer is already looking at the success screen.
+      clearCartAfterOrder(queryClient);
+
+      // Still reconcile with the server in the background for the fields
+      // clearCartAfterOrder doesn't fabricate (checkoutEnabled, changes,
+      // etc.) — fire-and-forget, nothing waits on this.
+      void queryClient.invalidateQueries({ queryKey: keys.cart });
 
       await queryClient.invalidateQueries({
         queryKey: keys.orders,

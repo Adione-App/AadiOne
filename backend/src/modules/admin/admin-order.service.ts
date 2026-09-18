@@ -183,6 +183,7 @@ export async function listOrders(options: {
       paymentStatus: order.paymentStatus,
       totalPaise: order.totalPaise,
       itemCount: order.items.reduce((sum, item) => sum + item.qty, 0),
+      lineItemCount: order.items.length,
       itemThumbnails: order.items
         .map((item) => item.imageUrl)
         .filter((url): url is string => url !== null)

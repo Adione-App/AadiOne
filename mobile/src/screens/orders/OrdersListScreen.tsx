@@ -76,9 +76,12 @@ export default function OrdersListScreen({
 
   const renderItem = ({ item }: { item: OrderSummaryDto }) => {
     const bucket = BUCKET_STYLE[item.bucket];
-    const shownCount = Math.min(item.itemCount, MAX_THUMBNAILS);
+    // One slot per distinct product ordered, not per unit — 4 units of the
+    // same product is one line (`lineItemCount`), not four thumbnails.
+    // `itemCount` (used below, in the "N items" label) is the unit total.
+    const shownCount = Math.min(item.lineItemCount, MAX_THUMBNAILS);
     const shownSlots = Array.from({ length: shownCount }, (_, index) => item.itemThumbnails[index] ?? null);
-    const hiddenCount = item.itemCount - shownCount;
+    const hiddenCount = item.lineItemCount - shownCount;
 
     return (
       <Pressable onPress={() => onOpenOrder(item.id)}>

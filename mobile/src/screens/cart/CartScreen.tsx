@@ -17,7 +17,14 @@
  * - checkoutEnabled
  */
 
-import { FlatList, Image, Pressable, StyleSheet, View } from "react-native";
+import {
+  FlatList,
+  Image,
+  LayoutAnimation,
+  Pressable,
+  StyleSheet,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { CartItemDto } from "@shared";
@@ -41,6 +48,21 @@ import {
 } from "@/components/ui";
 
 import { QuantityStepper } from "@/components/ProductCard";
+
+/**
+ * Short, subtle animation for rows leaving the list — Clear Cart and
+ * per-item removal already update state instantly (see `useCartActions`),
+ * this only softens how that removal LOOKS so it reads as polished rather
+ * than an abrupt cut, without a heavy layout animation or added delay.
+ */
+const CART_ROW_REMOVE_ANIMATION = {
+  duration: 200,
+  update: { type: LayoutAnimation.Types.easeInEaseOut },
+  delete: {
+    type: LayoutAnimation.Types.easeInEaseOut,
+    property: LayoutAnimation.Properties.opacity,
+  },
+} as const;
 
 /* ================================================================
  * MAIN CART SCREEN
@@ -214,7 +236,10 @@ export default function CartScreen({
 
           <Pressable
             style={styles.deleteButton}
-            onPress={() => void actions.remove(item.variantId)}
+            onPress={() => {
+              LayoutAnimation.configureNext(CART_ROW_REMOVE_ANIMATION);
+              void actions.remove(item.variantId);
+            }}
             disabled={itemBusy}
             hitSlop={8}
           >
@@ -228,7 +253,13 @@ export default function CartScreen({
             max={item.maxQtyPerOrder}
             busy={itemBusy}
             onIncrement={() => void actions.increment(item.variantId)}
-            onDecrement={() => void actions.decrement(item.variantId)}
+            onDecrement={() => {
+              // Only the removal case (qty going to 0, row leaving the
+              // list) needs the animation — a plain quantity decrease has
+              // nothing to animate.
+              if (qty <= 1) LayoutAnimation.configureNext(CART_ROW_REMOVE_ANIMATION);
+              void actions.decrement(item.variantId);
+            }}
           />
         </View>
       </View>
@@ -277,7 +308,10 @@ export default function CartScreen({
 
         <Pressable
           style={styles.clearCartContainer}
-          onPress={() => void actions.clear()}
+          onPress={() => {
+            LayoutAnimation.configureNext(CART_ROW_REMOVE_ANIMATION);
+            void actions.clear();
+          }}
           disabled={actions.busy}
           hitSlop={8}
         >

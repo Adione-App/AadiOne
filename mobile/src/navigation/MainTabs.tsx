@@ -10,6 +10,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { colors, layout, spacing } from "@shared/theme";
 import { useCart } from "@/lib/queries";
+import { useLocation } from "@/lib/store";
 
 import {
   AccountStack,
@@ -65,7 +66,18 @@ function AnimatedTabIcon({
 }
 
 export function MainTabs() {
-  const { data: cart } = useCart();
+  // Every other screen reads the cart through `useCartActions`, which uses
+  // the real serviceability distance once location is known. Reading the
+  // badge from `useCart()` (distanceKm defaulting to `null`) made this a
+  // SECOND, independently-fetched cache entry for the same cart — mutations
+  // kept both in sync, but each entry's own background refetches raced
+  // independently, which is exactly the kind of split source of truth that
+  // let the badge drift out of sync with what the Cart screen showed. Using
+  // the same key here collapses the whole app onto one cart query.
+  const serviceability = useLocation((state) => state.serviceability);
+  const distanceKm = serviceability?.distanceKm ?? null;
+
+  const { data: cart } = useCart(distanceKm);
   const insets = useSafeAreaInsets();
 
   const cartCount = cart?.bill.itemCount ?? 0;

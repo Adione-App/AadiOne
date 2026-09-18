@@ -10,6 +10,7 @@
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "sync:shared": "node scripts/sync-shared.mjs",
+    "report:missing-images": "tsx scripts/report-missing-images.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",

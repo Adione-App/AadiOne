@@ -6,6 +6,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import type {
   CartDto,
   CategoryDto,
@@ -123,30 +124,78 @@ export function useCart(distanceKm: number | null = null) {
 }
 
 /**
- * Cart mutations.
+ * Bumped every time the cart becomes authoritatively empty from OUTSIDE a
+ * per-item mutation's own response — a successful order, or Clear Cart.
  *
- * The server's response REPLACES local state rather than being merged into it.
- * If it corrected a quantity or removed an out-of-stock line, that correction
- * is what the customer must see — a merge would quietly restore the item.
- *
- * ROOT CAUSE FIXED HERE: this used to write the response into the single key
- * `['cart', null]` and merely INVALIDATE everything else, including whatever
- * `['cart', distanceKm]` key the screen is actually reading (distanceKm is a
- * real number once location is known, never null). Invalidation only queues
- * a slower background refetch — so the screen kept showing pre-mutation data
- * until that refetch happened to land, then "self-corrected" a second or two
- * later. `setQueriesData` with a partial key match updates EVERY cached
- * `['cart', *]` variant with this response directly and synchronously, so
- * the screen's own query is corrected in the same tick as the mutation
- * response — no dependent refetch, and nothing left to invalidate.
+ * Why this exists: a per-item add/update/remove request can still be in
+ * flight when the user checks out or taps Clear Cart (e.g. they tapped `+`
+ * then immediately hit Checkout before that request's response arrived).
+ * That response is a `CartDto` computed against the cart as it was BEFORE
+ * the clear/order — applying it afterward would resurrect an item/count
+ * into a cart that has since been correctly emptied. Each mutation captures
+ * the epoch it started with (`onMutate`) and its `onSuccess` compares that
+ * to the current epoch before writing to the cache; a mismatch means an
+ * authoritative clear happened in between, so the response is dropped.
  */
+let cartEpoch = 0;
+
+function bumpCartEpoch(): number {
+  cartEpoch += 1;
+  return cartEpoch;
+}
+
+const cartLog = (...args: unknown[]): void => {
+  if (__DEV__) console.log("[CART]", ...args);
+};
+
+/**
+ * Called right after a successful order placement. The backend marks the
+ * cart CONVERTED inside the SAME transaction that creates the order (see
+ * `cartService.markConverted` in order.service.ts), so the cart is already
+ * truly empty server-side by the time `POST /orders` resolves — this isn't
+ * an optimistic guess, it's writing down what the server has already done.
+ *
+ * Previously this moment only called `invalidateQueries`, which marks the
+ * cached (still showing the pre-order items) data stale and queues a
+ * background `GET /cart` for every screen currently reading it. That GET
+ * is a real network round trip — on a slow connection the badge and the
+ * Cart screen kept showing the old count until it happened to land, which
+ * is exactly the "order succeeded but badge still says 4" bug. Writing the
+ * known-correct empty state directly makes every reader consistent in the
+ * same tick as order success, with no dependency on network timing.
+ */
+export function clearCartAfterOrder(queryClient: QueryClient): void {
+  bumpCartEpoch();
+  cartLog("ORDER_SUCCESS", "cart cleared, epoch", cartEpoch);
+
+  queryClient.setQueriesData<CartDto>({ queryKey: keys.cart }, (old) =>
+    old ? { ...old, items: [], bill: { ...old.bill, itemCount: 0 } } : old,
+  );
+}
+
 export function useCartMutations() {
   const queryClient = useQueryClient();
 
   const write = (data: CartDto) => {
+    cartLog("SERVER_RESPONSE", "cart length", data.items.length, "derived count", data.bill.itemCount);
     queryClient.setQueriesData<CartDto>({ queryKey: keys.cart }, data);
+    cartLog("STATE_UPDATED", "count", data.bill.itemCount);
   };
 
+  type MutationContext = { epoch: number };
+
+  // A newer authoritative clear (Clear Cart, or a successful order) landed
+  // while this request was in flight — see `cartEpoch` above. That state is
+  // correct and newer; this response is stale and must not overwrite it.
+  const guardedWrite = (data: CartDto, context: MutationContext | undefined): void => {
+    if (context && context.epoch !== cartEpoch) {
+      cartLog("SERVER_RESPONSE", "dropped stale response (epoch moved on)");
+      return;
+    }
+    write(data);
+  };
+
+  const captureEpoch = (): MutationContext => ({ epoch: cartEpoch });
 
   const addItem = useMutation({
     mutationFn: (input: {
@@ -161,15 +210,16 @@ export function useCartMutations() {
           ? `?distanceKm=${encodeURIComponent(distanceKm)}`
           : "";
 
+      cartLog("ADD", input.variantId, "qty", input.qty ?? 1);
+
       return api.post<CartDto>(`/cart/items${query}`, {
         variantId: input.variantId,
         qty: input.qty ?? 1,
       });
     },
 
-    onSuccess: (data) => {
-      write(data);
-    },
+    onMutate: captureEpoch,
+    onSuccess: (data, _vars, context) => guardedWrite(data, context),
   });
 
   const updateQty = useMutation({
@@ -185,14 +235,15 @@ export function useCartMutations() {
           ? `?distanceKm=${encodeURIComponent(distanceKm)}`
           : "";
 
+      cartLog(input.qty > 0 ? "UPDATE_QTY" : "REMOVE", input.cartItemId, "qty", input.qty);
+
       return api.patch<CartDto>(`/cart/items/${input.cartItemId}${query}`, {
         qty: input.qty,
       });
     },
 
-    onSuccess: (data) => {
-      write(data);
-    },
+    onMutate: captureEpoch,
+    onSuccess: (data, _vars, context) => guardedWrite(data, context),
   });
 
   const removeItem = useMutation({
@@ -204,12 +255,13 @@ export function useCartMutations() {
           ? `?distanceKm=${encodeURIComponent(distanceKm)}`
           : "";
 
+      cartLog("REMOVE", input.cartItemId);
+
       return api.delete<CartDto>(`/cart/items/${input.cartItemId}${query}`);
     },
 
-    onSuccess: (data) => {
-      write(data);
-    },
+    onMutate: captureEpoch,
+    onSuccess: (data, _vars, context) => guardedWrite(data, context),
   });
 
   const clearCart = useMutation({
@@ -221,12 +273,18 @@ export function useCartMutations() {
           ? `?distanceKm=${encodeURIComponent(distanceKm)}`
           : "";
 
+      cartLog("CLEAR", "requested");
+
       // The backend already offers one atomic bulk clear (DELETE /cart) —
       // one round trip instead of one DELETE per line.
       return api.delete<CartDto>(`/cart${query}`);
     },
 
     onSuccess: (data) => {
+      // Clear is itself an authoritative empty, exactly like order success —
+      // bump the epoch so a slower add/update from just before the tap can't
+      // land afterward and resurrect an item (see `cartEpoch` above).
+      bumpCartEpoch();
       write(data);
     },
   });
@@ -245,9 +303,8 @@ export function useCartMutations() {
       });
     },
 
-    onSuccess: (data) => {
-      write(data);
-    },
+    onMutate: captureEpoch,
+    onSuccess: (data, _vars, context) => guardedWrite(data, context),
   });
 
   return {

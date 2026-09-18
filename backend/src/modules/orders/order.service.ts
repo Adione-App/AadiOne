@@ -652,9 +652,19 @@ const ORDER_DETAIL_INCLUDE = {
     // blank for older orders placed before the product had a photo. Falling
     // back to the variant's current image lets those orders pick one up
     // retroactively instead of showing a placeholder forever.
+    //
+    // Catalog images are uploaded at the PRODUCT level (catalog.service's
+    // `toSummaryDto` reads `product.images[0]`, not the variant) — a variant
+    // rarely has its own override image. So the fallback must check the
+    // product's gallery too, or an image added in admin never shows up here.
     include: {
       variant: {
-        include: { images: { orderBy: { displayOrder: 'asc' as const }, take: 1 } },
+        include: {
+          images: { orderBy: { displayOrder: 'asc' as const }, take: 1 },
+          product: {
+            include: { images: { orderBy: { displayOrder: 'asc' as const }, take: 1 } },
+          },
+        },
       },
     },
   },
@@ -666,7 +676,13 @@ const ORDER_DETAIL_INCLUDE = {
 type OrderWithRelations = Prisma.OrderGetPayload<{ include: typeof ORDER_DETAIL_INCLUDE }>;
 
 function resolveItemImage(item: OrderWithRelations['items'][number]): string | null {
-  return item.imageUrl ?? item.variant?.imageUrl ?? item.variant?.images[0]?.url ?? null;
+  return (
+    item.imageUrl ??
+    item.variant?.imageUrl ??
+    item.variant?.images[0]?.url ??
+    item.variant?.product.images[0]?.url ??
+    null
+  );
 }
 
 function buildTimeline(order: OrderWithRelations): OrderTimelineEntryDto[] {
@@ -716,6 +732,7 @@ function toSummary(order: OrderWithRelations): OrderSummaryDto {
     paymentStatus: order.paymentStatus,
     totalPaise: order.totalPaise,
     itemCount: order.items.reduce((sum, item) => sum + item.qty, 0),
+    lineItemCount: order.items.length,
     itemThumbnails: order.items
       .map(resolveItemImage)
       .filter((url): url is string => url !== null)

@@ -449,7 +449,10 @@ export interface OrderSummaryDto {
   paymentMethod: PaymentMethod;
   paymentStatus: OrderPaymentStatus;
   totalPaise: number;
+  /** Total units across all lines (e.g. 4 units of one product is 4, not 1). */
   itemCount: number;
+  /** Number of distinct order lines — what "N thumbnails" should count. */
+  lineItemCount: number;
   /** First few item thumbnails, for the My Orders list. */
   itemThumbnails: string[];
   placedAt: string;

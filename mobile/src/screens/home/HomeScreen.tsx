@@ -218,11 +218,7 @@ export default function HomeScreen({
           accessibilityRole="button"
           accessibilityLabel="Open account"
         >
-          <Ionicons
-            name="person-circle"
-            size={38}
-            color={colors.primary}
-          />
+          <Ionicons name="person-circle" size={38} color={colors.primary} />
         </Pressable>
       </View>
 
@@ -409,10 +405,22 @@ export default function HomeScreen({
         ======================================================== */}
 
         <View style={styles.trustStrip}>
-          <TrustBadge icon={Leaf} label="Fresh Products" hint="From local stores" />
+          <TrustBadge
+            icon={Leaf}
+            label="Fresh Products"
+            hint="From local stores"
+          />
           <TrustBadge icon={Zap} label="Fast Delivery" hint="10–20 mins" />
-          <TrustBadge icon={ShieldCheck} label="Trusted & Safe" hint="Quality you can rely on" />
-          <TrustBadge icon={MapPin} label="Local Business" hint="Supporting our community" />
+          <TrustBadge
+            icon={ShieldCheck}
+            label="Trusted & Safe"
+            hint="Quality you can rely on"
+          />
+          <TrustBadge
+            icon={MapPin}
+            label="Local Business"
+            hint="Supporting our community"
+          />
         </View>
       </ScrollView>
     </Screen>
@@ -440,7 +448,11 @@ function TrustBadge({
       <AppText variant="caption" style={styles.trustLabel}>
         {label}
       </AppText>
-      <AppText variant="overline" color={colors.textSecondary} style={styles.trustHint}>
+      <AppText
+        variant="overline"
+        color={colors.textSecondary}
+        style={styles.trustHint}
+      >
         {hint}
       </AppText>
     </View>
@@ -534,7 +546,7 @@ const styles = StyleSheet.create({
 
     // Keeps the location area shorter and creates
     // clear space before the account button.
-    marginRight: 100,
+    marginRight: 90,
   },
 
   /* ================================================================

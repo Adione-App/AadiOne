@@ -17,7 +17,10 @@ import * as ExpoSplashScreen from "expo-splash-screen";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, useIsRestoring } from "@tanstack/react-query";
+import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
+import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persister";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { onSessionExpired } from "@/lib/api";
 import { useAuth, useLocation } from "@/lib/store";
@@ -60,6 +63,20 @@ const queryClient = new QueryClient({
   },
 });
 
+/**
+ * Persists the whole query cache (Home feed, categories, products, cart, …)
+ * to disk, so a returning customer's Home renders from what was on screen
+ * last time instead of a blank loading state while the first fetch of a
+ * fresh session completes. Every restored query is still exactly as stale as
+ * it was before persistence existed — `staleTime`/`refetchOnMount` above
+ * decide when it silently refetches, persistence only decides what the very
+ * first paint looks like.
+ */
+const asyncStoragePersister = createAsyncStoragePersister({
+  storage: AsyncStorage,
+  key: "adione.rq-cache",
+});
+
 /* -------------------------------------------------------------------------- */
 /* Auth Stack                                                                 */
 /* -------------------------------------------------------------------------- */
@@ -98,6 +115,39 @@ function MainFlow() {
   return <MainTabs />;
 }
 
+/**
+ * The query cache restore from disk (see `asyncStoragePersister` above) is a
+ * separate async step from auth/location hydration — `useIsRestoring` can
+ * only be read by a component rendered INSIDE `PersistQueryClientProvider`,
+ * which is why this isn't just inlined into `App`. While it's true, queries
+ * are held back from fetching so a real network response can't race a
+ * still-loading disk read and overwrite it — so this is also the one moment
+ * `MainFlow`/`HomeScreen` must not be allowed to mount yet, or a returning
+ * customer would see a flash of "could not load" before the restored Home
+ * feed appears a beat later.
+ */
+function RootNavigator({
+  status,
+  startupReady,
+}: {
+  status: "loading" | "authenticated" | "anonymous";
+  startupReady: boolean;
+}) {
+  const isRestoring = useIsRestoring();
+
+  return (
+    <NavigationContainer>
+      {status === "loading" || !startupReady || isRestoring ? (
+        <StartupLoading />
+      ) : status === "authenticated" ? (
+        <MainFlow />
+      ) : (
+        <AuthStack />
+      )}
+    </NavigationContainer>
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /* App                                                                        */
 /* -------------------------------------------------------------------------- */
@@ -133,7 +183,12 @@ export default function App() {
 
     const restoreSession = async () => {
       try {
-        await restore();
+        // Runs alongside auth restore, not after it — reading the location
+        // cache is a single local disk read, and there is no reason a
+        // returning customer's Home should wait for it to finish before the
+        // auth check does. `refresh()` (the actual network re-verification)
+        // happens later, once Home mounts — see HomeScreen's own effect.
+        await Promise.all([restore(), useLocation.getState().hydrate()]);
       } finally {
         if (!mounted) {
           return;
@@ -185,19 +240,23 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <QueryClientProvider client={queryClient}>
+      <PersistQueryClientProvider
+        client={queryClient}
+        persistOptions={{
+          persister: asyncStoragePersister,
+          // A stale week-old cache still beats a blank screen on a bad
+          // connection (see requirement on offline usability) — every
+          // restored query re-validates itself the moment it's observed
+          // again, per its own staleTime, exactly as if it had never left
+          // memory.
+          maxAge: 7 * 24 * 60 * 60_000,
+          buster: "v1",
+        }}
+      >
         <StatusBar style="dark" />
 
-        <NavigationContainer>
-          {status === "loading" || !startupReady ? (
-            <StartupLoading />
-          ) : status === "authenticated" ? (
-            <MainFlow />
-          ) : (
-            <AuthStack />
-          )}
-        </NavigationContainer>
-      </QueryClientProvider>
+        <RootNavigator status={status} startupReady={startupReady} />
+      </PersistQueryClientProvider>
     </SafeAreaProvider>
   );
 }

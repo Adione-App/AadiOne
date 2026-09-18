@@ -27,6 +27,8 @@ import * as service from "./admin-order.service";
 
 const uuid = z.string().uuid();
 const idParams = z.object({ id: uuid });
+/** "YYYY-MM-DD" — the admin dashboard's date picker sends this, unparsed. */
+const calendarDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 export const adminOrderRouter: Router = Router();
 
@@ -35,8 +37,14 @@ export const adminOrderRouter: Router = Router();
 adminOrderRouter.get(
   "/dashboard",
   requirePermission(Permission.DASHBOARD_READ),
-  asyncHandler(async (_req: Request, res: Response) => {
-    ok(res, await service.getDashboard());
+  validate({
+    query: z.object({
+      date: calendarDate.optional(),
+    }),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const query = validatedQuery<{ date?: string }>(req);
+    ok(res, await service.getDashboard(query.date));
   }),
 );
 
@@ -50,6 +58,7 @@ adminOrderRouter.get(
       tab: z.nativeEnum(AdminOrderTab).optional(),
       search: z.string().trim().max(60).optional(),
       cursor: z.string().datetime().optional(),
+      date: calendarDate.optional(),
       limit: z.coerce
         .number()
         .int()
@@ -63,6 +72,7 @@ adminOrderRouter.get(
       tab?: AdminOrderTab;
       search?: string;
       cursor?: string;
+      date?: string;
       limit: number;
     }>(req);
     okCursorPage(
@@ -70,6 +80,7 @@ adminOrderRouter.get(
       await service.listOrders({
         ...(query.tab ? { tab: query.tab } : {}),
         ...(query.search ? { search: query.search } : {}),
+        ...(query.date ? { date: query.date } : {}),
         cursor: query.cursor ?? null,
         limit: query.limit,
       }),

@@ -250,6 +250,7 @@ async function toSummaryDto(
       variants[0] ??
       null,
     variantCount: variants.length,
+    status: product.status,
   };
 }
 
@@ -266,7 +267,6 @@ async function toDetailDto(
     ...summary,
     description: product.description,
     descriptionHi: product.descriptionHi,
-    status: product.status,
     images: product.images.map((image) => ({
       id: image.id,
       url: image.url,

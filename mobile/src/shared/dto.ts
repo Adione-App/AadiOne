@@ -233,12 +233,18 @@ export interface ProductSummaryDto {
   /** The default variant's commercial data, for cards and grids. */
   defaultVariant: VariantDto | null;
   variantCount: number;
+  /**
+   * DRAFT/INACTIVE/ARCHIVED never reach a customer — every customer-facing
+   * query filters to ACTIVE upstream, so this is always ACTIVE there. Admin's
+   * product list is the one place this varies, driving the "Display on App"
+   * toggle.
+   */
+  status: ProductStatus;
 }
 
 export interface ProductDetailDto extends ProductSummaryDto {
   description: string | null;
   descriptionHi: string | null;
-  status: ProductStatus;
   images: ProductImageDto[];
   variants: VariantDto[];
   /** Vertical-specific display attributes (shelf life, storage, origin, …). */
@@ -571,6 +577,10 @@ export interface RegisterDeviceRequest {
 /* -------------------------------------------------------------------------- */
 
 export interface AdminDashboardDto {
+  /** The store-local calendar day ("YYYY-MM-DD") this snapshot reports on. */
+  date: string;
+  /** False when `date` is a historical day rather than today. */
+  isToday: boolean;
   todayOrderCount: number;
   todayRevenuePaise: number;
   totalOrderCount: number;

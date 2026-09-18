@@ -20,7 +20,7 @@ import {
   type AdminOrderSummaryDto,
   type CursorPage,
 } from "../../shared";
-import { startOfZonedDay, endOfZonedDay } from "../../shared/datetime";
+import { startOfZonedDay, endOfZonedDay, getZonedParts } from "../../shared/datetime";
 import { AppError } from "../../common/errors";
 import { prisma } from "../../infra/db/prisma";
 import * as storeService from "../stores/store.service";
@@ -34,12 +34,37 @@ import { transitionOrder } from "../orders/order-state.service";
 /* Dashboard                                                                  */
 /* -------------------------------------------------------------------------- */
 
-export async function getDashboard(): Promise<AdminDashboardDto> {
+/**
+ * Interprets a "YYYY-MM-DD" query param as a calendar day, independent of
+ * the server's own timezone. Anchored at UTC noon rather than UTC midnight —
+ * midnight would land on the PREVIOUS local day in any timezone behind UTC,
+ * which `startOfZonedDay`/`endOfZonedDay` below would then read as the wrong
+ * day. Noon is safely inside every real-world UTC offset (-12 to +14).
+ */
+function parseCalendarDate(dateStr: string): Date {
+  return new Date(`${dateStr}T12:00:00.000Z`);
+}
+
+/** "YYYY-MM-DD" for the given instant, in the given IANA timezone. */
+function formatZonedDateOnly(date: Date, timeZone: string): string {
+  const p = getZonedParts(date, timeZone);
+  return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
+}
+
+/**
+ * `date` is the store-local calendar day to report on ("YYYY-MM-DD"), from
+ * the admin dashboard's date picker. Defaults to today when omitted — every
+ * field below resolves identically to the old hardcoded-"now" behaviour in
+ * that case, so the default view is unchanged.
+ */
+export async function getDashboard(date?: string): Promise<AdminDashboardDto> {
   const store = await storeService.getActiveStore();
-  const now = new Date();
-  // "Today" means the store's local day, not the server's UTC day.
-  const dayStart = startOfZonedDay(now, store.timezone);
-  const dayEnd = endOfZonedDay(now, store.timezone);
+  const referenceDate = date ? parseCalendarDate(date) : new Date();
+  // The store's local day, not the server's UTC day — and not the
+  // requesting admin's own device timezone either.
+  const dayStart = startOfZonedDay(referenceDate, store.timezone);
+  const dayEnd = endOfZonedDay(referenceDate, store.timezone);
+  const todayStart = startOfZonedDay(new Date(), store.timezone);
 
   const paidStatuses = [OrderStatus.DELIVERED, OrderStatus.OUT_FOR_DELIVERY];
 
@@ -96,6 +121,8 @@ export async function getDashboard(): Promise<AdminDashboardDto> {
   ]);
 
   return {
+    date: date ?? formatZonedDateOnly(new Date(), store.timezone),
+    isToday: dayStart.getTime() === todayStart.getTime(),
     todayOrderCount: todayOrders,
     todayRevenuePaise: todayRevenue._sum.totalPaise ?? 0,
     totalOrderCount: totalOrders,
@@ -121,9 +148,24 @@ export async function listOrders(options: {
   search?: string;
   cursor?: string | null;
   limit: number;
+  /**
+   * Store-local calendar day ("YYYY-MM-DD") to restrict results to — used by
+   * the dashboard's "Recent Orders" panel when a historical date is
+   * selected, so it lists orders actually PLACED that day rather than
+   * today's live queue. Independent of `tab`/`cursor`; the admin order
+   * board (which doesn't pass this) is unaffected.
+   */
+  date?: string;
 }): Promise<CursorPage<AdminOrderSummaryDto>> {
   const store = await storeService.getActiveStore();
   const statuses = options.tab ? ADMIN_TAB_STATUSES[options.tab] : undefined;
+
+  const dateRange = options.date
+    ? {
+        gte: startOfZonedDay(parseCalendarDate(options.date), store.timezone),
+        lte: endOfZonedDay(parseCalendarDate(options.date), store.timezone),
+      }
+    : null;
 
   const orders = await prisma.order.findMany({
     where: {
@@ -145,8 +187,16 @@ export async function listOrders(options: {
             ],
           }
         : {}),
-      ...(options.cursor
-        ? { createdAt: { lt: new Date(options.cursor) } }
+      // Merged into one `createdAt` range rather than two separate spreads —
+      // both `dateRange` and the cursor bound write to the same field, and a
+      // second spread with the same key would silently discard the first.
+      ...(dateRange || options.cursor
+        ? {
+            createdAt: {
+              ...dateRange,
+              ...(options.cursor ? { lt: new Date(options.cursor) } : {}),
+            },
+          }
         : {}),
     },
     include: {

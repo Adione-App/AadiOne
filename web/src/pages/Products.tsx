@@ -589,17 +589,62 @@ export default function ProductsPage() {
     queryFn: () => api.get<CategoryDto[]>('/categories?includeChildren=true'),
   });
 
+  const productsQueryKey = ['admin-products', categoryId] as const;
+
   const products = useQuery({
-    queryKey: ['admin-products', categoryId],
+    queryKey: productsQueryKey,
     queryFn: () =>
+      // The ADMIN listing, not the customer-facing `/products` — that one
+      // filters to status=ACTIVE, which would make a product disappear from
+      // this very table the moment "Display on App" was switched off, with
+      // no way to find it again to switch back on.
       api.get<CursorPage<ProductSummaryDto>>(
-        `/products?limit=100${categoryId ? `&categoryId=${categoryId}` : ''}`,
+        `/admin/products?limit=100${categoryId ? `&categoryId=${categoryId}` : ''}`,
       ),
   });
 
   const invalidate = (): void => {
     void queryClient.invalidateQueries({ queryKey: ['admin-products'] });
   };
+
+  const [pendingDisplayIds, setPendingDisplayIds] = useState<Set<string>>(new Set());
+
+  const setDisplay = useMutation({
+    mutationFn: (input: { id: string; status: 'ACTIVE' | 'INACTIVE' }) =>
+      api.patch(`/admin/products/${input.id}`, { status: input.status }),
+    onMutate: async (input) => {
+      setPendingDisplayIds((current) => new Set(current).add(input.id));
+      await queryClient.cancelQueries({ queryKey: productsQueryKey });
+      const previous = queryClient.getQueryData<CursorPage<ProductSummaryDto>>(productsQueryKey);
+      // Flip it on screen immediately — the PATCH runs in the background,
+      // rolled back in onError if the server refuses it (e.g. no variant
+      // priced yet).
+      queryClient.setQueryData<CursorPage<ProductSummaryDto>>(productsQueryKey, (old) =>
+        old
+          ? {
+              ...old,
+              items: old.items.map((product) =>
+                product.id === input.id ? { ...product, status: input.status } : product,
+              ),
+            }
+          : old,
+      );
+      return { previous };
+    },
+    onError: (err: Error, _input, context) => {
+      if (context?.previous) queryClient.setQueryData(productsQueryKey, context.previous);
+      setError(err.message);
+    },
+    onSuccess: () => setError(null),
+    onSettled: (_data, _err, input) => {
+      setPendingDisplayIds((current) => {
+        const next = new Set(current);
+        next.delete(input.id);
+        return next;
+      });
+      invalidate();
+    },
+  });
 
   const setStock = useMutation({
     mutationFn: (input: { storeVariantId: string; stockQty: number }) =>
@@ -693,7 +738,7 @@ export default function ProductsPage() {
           onChange={(event) => setStockFilter(event.target.value)}
           className={`${inputClass} w-auto min-w-[140px]`}
         >
-          <option value="">All Status</option>
+          <option value="">All Stock Levels</option>
           <option value="in">In stock</option>
           <option value="low">Low stock</option>
           <option value="out">Out of stock</option>
@@ -735,7 +780,8 @@ export default function ProductsPage() {
                 <Th>Category</Th>
                 <Th>Price (₹)</Th>
                 <Th>Stock</Th>
-                <Th>Status</Th>
+                <Th>Stock Status</Th>
+                <Th>Display on App</Th>
                 <Th>COD</Th>
                 <Th className="text-right">Actions</Th>
               </tr>
@@ -820,8 +866,32 @@ export default function ProductsPage() {
                       ) : qty <= 10 ? (
                         <Pill tone="amber">Low Stock</Pill>
                       ) : (
-                        <Pill tone="brand">Active</Pill>
+                        <Pill tone="brand">In Stock</Pill>
                       )}
+                    </Td>
+
+                    <Td>
+                      <label className="inline-flex cursor-pointer items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={product.status === 'ACTIVE'}
+                          disabled={pendingDisplayIds.has(product.id)}
+                          onChange={(event) =>
+                            setDisplay.mutate({
+                              id: product.id,
+                              status: event.target.checked ? 'ACTIVE' : 'INACTIVE',
+                            })
+                          }
+                          className="h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500 disabled:opacity-50"
+                        />
+                        <span className="text-xs text-gray-500">
+                          {product.status === 'ACTIVE'
+                            ? 'Visible'
+                            : product.status === 'DRAFT'
+                              ? 'Draft'
+                              : 'Hidden'}
+                        </span>
+                      </label>
                     </Td>
 
                     <Td>

@@ -10,9 +10,16 @@
 import { Router, type Request, type Response } from 'express';
 import express from 'express';
 import { z } from 'zod';
-import { CodPolicy, Permission, ProductStatus, UnitType, CatalogVertical } from '../../shared';
-import { asyncHandler, created, noContent, ok } from '../../common/response';
-import { validate } from '../../middleware/validate';
+import {
+  CodPolicy,
+  PAGINATION_MAX_LIMIT,
+  Permission,
+  ProductStatus,
+  UnitType,
+  CatalogVertical,
+} from '../../shared';
+import { asyncHandler, created, noContent, ok, okCursorPage } from '../../common/response';
+import { validate, validatedQuery } from '../../middleware/validate';
 import { requirePermission, requireUser } from '../../middleware/auth';
 import { MAX_IMAGE_BYTES } from '../../infra/storage';
 import * as service from './admin-catalog.service';
@@ -99,6 +106,27 @@ adminCatalogRouter.delete(
 );
 
 /* products ----------------------------------------------------------------- */
+
+adminCatalogRouter.get(
+  '/products',
+  requirePermission(Permission.CATALOG_READ),
+  validate({
+    query: z.object({
+      categoryId: uuid.optional(),
+      limit: z.coerce.number().int().positive().max(PAGINATION_MAX_LIMIT).default(100),
+    }),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const query = validatedQuery<{ categoryId?: string; limit: number }>(req);
+    okCursorPage(
+      res,
+      await service.listProductsForAdmin({
+        ...(query.categoryId ? { categoryId: query.categoryId } : {}),
+        limit: query.limit,
+      }),
+    );
+  }),
+);
 
 adminCatalogRouter.post(
   '/products',

@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   ORDER_STATUS_LABELS,
   AdminOrderTab,
@@ -10,6 +10,7 @@ import {
 } from '@shared';
 import { formatPaise } from '@shared/money';
 import { api } from '@/lib/api';
+import { formatShortDate, todayIsoInIndia } from '@/lib/dashboardDate';
 import {
   Button,
   EmptyState,
@@ -113,10 +114,30 @@ function SummaryRow({ label, value }: { label: string; value: React.ReactNode })
 }
 
 export default function DashboardPage() {
+  // Same URL param the date picker in the TopBar writes to (see App.tsx) —
+  // reading it here, not from a separate store, keeps exactly one source of
+  // truth for "which day is selected" and makes it survive a page refresh.
+  const [searchParams] = useSearchParams();
+  const todayIso = todayIsoInIndia();
+  const selectedDate = searchParams.get('date') ?? todayIso;
+  const isToday = selectedDate === todayIso;
+
   const dashboard = useQuery({
-    queryKey: ['dashboard'],
-    queryFn: () => api.get<AdminDashboardDto>('/admin/dashboard'),
-    refetchInterval: 30_000,
+    // The date is part of the key: switching dates is a genuinely different
+    // query/cache entry, not a mutation of one shared entry — so a slower
+    // response for a date the admin has since navigated away from can never
+    // land on top of the one currently being viewed (React Query only ever
+    // applies a response to the cache slot for the key it was fetched with).
+    queryKey: ['dashboard', selectedDate],
+    queryFn: () => api.get<AdminDashboardDto>(`/admin/dashboard?date=${selectedDate}`),
+    // Only today's numbers can still move; a past day is done and settled,
+    // so polling it every 30s would just be wasted requests.
+    refetchInterval: isToday ? 30_000 : false,
+    // Keep showing the PREVIOUS date's numbers while the newly-picked date
+    // loads, instead of blanking the whole dashboard to a spinner on every
+    // switch — a rapid 17 → 16 → 15 pick then settles on 15's data once it
+    // arrives, never a full-page reload feel in between.
+    placeholderData: keepPreviousData,
   });
 
   const config = useQuery({
@@ -126,10 +147,17 @@ export default function DashboardPage() {
   });
 
   const recent = useQuery({
-    queryKey: ['admin-orders', AdminOrderTab.NEW, ''],
+    queryKey: ['admin-orders', 'dashboard', selectedDate],
     queryFn: () =>
-      api.get<CursorPage<AdminOrderSummaryDto>>(`/admin/orders?tab=${AdminOrderTab.NEW}&limit=5`),
-    refetchInterval: 30_000,
+      isToday
+        ? api.get<CursorPage<AdminOrderSummaryDto>>(
+            `/admin/orders?tab=${AdminOrderTab.NEW}&limit=5`,
+          )
+        : api.get<CursorPage<AdminOrderSummaryDto>>(
+            `/admin/orders?date=${selectedDate}&limit=5`,
+          ),
+    refetchInterval: isToday ? 30_000 : false,
+    placeholderData: keepPreviousData,
   });
 
   const data = dashboard.data;
@@ -148,7 +176,7 @@ export default function DashboardPage() {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           icon="orders"
-          label="Today's Orders"
+          label={data.isToday ? "Today's Orders" : `Orders on ${formatShortDate(data.date)}`}
           value={data.todayOrderCount}
           tone="brand"
           foot={
@@ -159,7 +187,7 @@ export default function DashboardPage() {
         />
         <StatCard
           icon="rupee"
-          label="Today's Sales"
+          label={data.isToday ? "Today's Sales" : `Sales on ${formatShortDate(data.date)}`}
           value={formatPaise(data.todayRevenuePaise)}
           tone="amber"
           foot={<span className="text-gray-500">{data.completedTodayCount} delivered</span>}
@@ -281,7 +309,7 @@ export default function DashboardPage() {
 
       {/* ---- recent orders ---- */}
       <Panel
-        title="New Orders"
+        title={data.isToday ? 'New Orders' : `Orders on ${formatShortDate(data.date)}`}
         bodyClass=""
         action={
           <Link to="/orders" className="text-sm font-medium text-brand-600 hover:underline">
@@ -291,7 +319,17 @@ export default function DashboardPage() {
       >
         {(recent.data?.items.length ?? 0) === 0 ? (
           <div className="p-5 pt-0">
-            <EmptyState title="No new orders waiting" hint="Accepted orders move to their own tab." />
+            {data.isToday ? (
+              <EmptyState
+                title="No new orders waiting"
+                hint="Accepted orders move to their own tab."
+              />
+            ) : (
+              <EmptyState
+                title="No orders on this date"
+                hint={`No orders were placed on ${formatShortDate(data.date)}.`}
+              />
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">

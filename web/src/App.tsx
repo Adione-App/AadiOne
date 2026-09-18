@@ -1,11 +1,19 @@
 import { useEffect, useState } from 'react';
-import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import {
+  NavLink,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useSearchParams,
+} from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import type { PublicConfig, StoreDto } from '@shared';
 import { useAuth } from '@/lib/auth';
 import { api, onSessionExpired } from '@/lib/api';
 import { disconnectSocket } from '@/lib/socket';
 import { Icon, Spinner, type IconName } from '@/components/ui';
+import { todayIsoInIndia } from '@/lib/dashboardDate';
 import LoginPage from '@/pages/Login';
 import DashboardPage from '@/pages/Dashboard';
 import OrdersPage from '@/pages/Orders';
@@ -177,8 +185,12 @@ function Sidebar({ onNavigate }: { onNavigate: () => void }) {
   );
 }
 
+/** Dashboard lives at "/" — only there does the date pill become a picker. */
+const DASHBOARD_PATH = '/';
+
 function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
   const { pathname } = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const user = useAuth((state) => state.user);
   const logout = useAuth((state) => state.logout);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -188,6 +200,10 @@ function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
     NAV.filter((item) => (item.end ? pathname === item.to : pathname.startsWith(item.to))).sort(
       (a, b) => b.to.length - a.to.length,
     )[0] ?? NAV[0]!;
+
+  const isDashboard = pathname === DASHBOARD_PATH;
+  const todayIso = todayIsoInIndia();
+  const selectedDate = searchParams.get('date') ?? todayIso;
 
   const today = new Date().toLocaleDateString('en-IN', {
     day: 'numeric',
@@ -211,10 +227,37 @@ function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
           <p className="truncate text-sm text-gray-500">{active.subtitle}</p>
         </div>
 
-        <div className="hidden items-center gap-2 rounded-xl border border-gray-300 px-3.5 py-2.5 text-sm font-medium text-gray-700 md:flex">
-          <Icon name="calendar" className="h-4 w-4 text-gray-400" />
-          {today}
-        </div>
+        {isDashboard ? (
+          <label
+            className="hidden cursor-pointer items-center gap-2 rounded-xl border border-gray-300 px-3.5 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 md:flex"
+            title="View the dashboard for a different date"
+          >
+            <Icon name="calendar" className="h-4 w-4 text-gray-400" />
+            <input
+              type="date"
+              value={selectedDate}
+              max={todayIso}
+              onChange={(event) => {
+                const value = event.target.value;
+                setSearchParams((prev) => {
+                  const next = new URLSearchParams(prev);
+                  // Future dates can't reach here (disabled by `max`), but a
+                  // date >= today is treated as "today" either way — that's
+                  // the default, so drop the param and keep the URL clean.
+                  if (!value || value >= todayIso) next.delete('date');
+                  else next.set('date', value);
+                  return next;
+                });
+              }}
+              className="cursor-pointer border-none bg-transparent p-0 text-sm font-medium text-gray-700 outline-none"
+            />
+          </label>
+        ) : (
+          <div className="hidden items-center gap-2 rounded-xl border border-gray-300 px-3.5 py-2.5 text-sm font-medium text-gray-700 md:flex">
+            <Icon name="calendar" className="h-4 w-4 text-gray-400" />
+            {today}
+          </div>
+        )}
 
         <NavLink
           to="/orders"

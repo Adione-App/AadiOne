@@ -14,6 +14,8 @@ import {
   ErrorCode,
   ProductStatus,
   type CatalogVertical,
+  type CursorPage,
+  type ProductSummaryDto,
   type UnitType,
 } from '../../shared';
 import { slugify } from '../../shared/text';
@@ -22,7 +24,8 @@ import { prisma, runInTransaction } from '../../infra/db/prisma';
 import { storage, buildImageKey, assertUploadable } from '../../infra/storage';
 import { moduleLogger } from '../../common/logger';
 import * as storeService from '../stores/store.service';
-import { invalidateCategoryCache } from './catalog.service';
+import { invalidateCategoryCache, mapProducts } from './catalog.service';
+import { PRODUCT_INCLUDE } from './catalog.repository';
 
 const log = moduleLogger('admin:catalog');
 
@@ -203,6 +206,38 @@ export async function deleteCategory(id: string, actorUserId: string): Promise<v
 /* -------------------------------------------------------------------------- */
 /* Products                                                                   */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * Admin's own product list — deliberately NOT the customer-facing
+ * `catalogService.listProducts`, which filters to `status = 'ACTIVE'` (and
+ * optionally in-stock) so shoppers never see a draft or hidden product. An
+ * admin managing the catalogue needs to see and toggle EVERY status,
+ * including the ones a customer must never find, or a product switched to
+ * "hidden" would also disappear from the admin's own list — making it
+ * impossible to switch back on.
+ */
+export async function listProductsForAdmin(options: {
+  categoryId?: string;
+  limit: number;
+}): Promise<CursorPage<ProductSummaryDto>> {
+  const store = await storeService.getActiveStore();
+
+  const products = await prisma.product.findMany({
+    where: {
+      deletedAt: null,
+      ...(options.categoryId ? { categoryId: options.categoryId } : {}),
+    },
+    include: PRODUCT_INCLUDE(store.id),
+    orderBy: { createdAt: 'desc' },
+    take: options.limit,
+  });
+
+  return {
+    items: await mapProducts(products),
+    hasMore: false,
+    nextCursor: null,
+  };
+}
 
 export interface UpsertProductInput {
   name: string;

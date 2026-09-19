@@ -70,14 +70,15 @@ export async function registerForPush(): Promise<void> {
       });
     }
 
-    const projectId = Constants.expoConfig?.extra?.["eas"]?.["projectId"] as
-      | string
-      | undefined;
-    const token = (
-      await Notifications.getExpoPushTokenAsync(
-        projectId ? { projectId } : undefined,
-      )
-    ).data;
+    // The backend's FcmNotificationProvider calls Google's FCM v1 API
+    // directly with its own service account (see notification.service.ts) —
+    // it is NOT going through Expo's push relay. That endpoint needs the
+    // device's actual native registration token, not an Expo push token
+    // (`ExponentPushToken[...]`, from `getExpoPushTokenAsync`), which Google
+    // rejects as an invalid FCM token. `getDevicePushTokenAsync` returns
+    // that native token directly, using the app's own `google-services.json`
+    // (Android) with no Expo project id involved.
+    const token = (await Notifications.getDevicePushTokenAsync()).data;
 
     // Re-posting the same token on every launch is wasted traffic on a
     // connection where every request costs the customer.

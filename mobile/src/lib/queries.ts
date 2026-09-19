@@ -144,10 +144,6 @@ function bumpCartEpoch(): number {
   return cartEpoch;
 }
 
-const cartLog = (...args: unknown[]): void => {
-  if (__DEV__) console.log("[CART]", ...args);
-};
-
 /**
  * Called right after a successful order placement. The backend marks the
  * cart CONVERTED inside the SAME transaction that creates the order (see
@@ -166,7 +162,6 @@ const cartLog = (...args: unknown[]): void => {
  */
 export function clearCartAfterOrder(queryClient: QueryClient): void {
   bumpCartEpoch();
-  cartLog("ORDER_SUCCESS", "cart cleared, epoch", cartEpoch);
 
   queryClient.setQueriesData<CartDto>({ queryKey: keys.cart }, (old) =>
     old ? { ...old, items: [], bill: { ...old.bill, itemCount: 0 } } : old,
@@ -177,9 +172,7 @@ export function useCartMutations() {
   const queryClient = useQueryClient();
 
   const write = (data: CartDto) => {
-    cartLog("SERVER_RESPONSE", "cart length", data.items.length, "derived count", data.bill.itemCount);
     queryClient.setQueriesData<CartDto>({ queryKey: keys.cart }, data);
-    cartLog("STATE_UPDATED", "count", data.bill.itemCount);
   };
 
   type MutationContext = { epoch: number };
@@ -188,10 +181,7 @@ export function useCartMutations() {
   // while this request was in flight — see `cartEpoch` above. That state is
   // correct and newer; this response is stale and must not overwrite it.
   const guardedWrite = (data: CartDto, context: MutationContext | undefined): void => {
-    if (context && context.epoch !== cartEpoch) {
-      cartLog("SERVER_RESPONSE", "dropped stale response (epoch moved on)");
-      return;
-    }
+    if (context && context.epoch !== cartEpoch) return;
     write(data);
   };
 
@@ -209,8 +199,6 @@ export function useCartMutations() {
         distanceKm !== null
           ? `?distanceKm=${encodeURIComponent(distanceKm)}`
           : "";
-
-      cartLog("ADD", input.variantId, "qty", input.qty ?? 1);
 
       return api.post<CartDto>(`/cart/items${query}`, {
         variantId: input.variantId,
@@ -235,8 +223,6 @@ export function useCartMutations() {
           ? `?distanceKm=${encodeURIComponent(distanceKm)}`
           : "";
 
-      cartLog(input.qty > 0 ? "UPDATE_QTY" : "REMOVE", input.cartItemId, "qty", input.qty);
-
       return api.patch<CartDto>(`/cart/items/${input.cartItemId}${query}`, {
         qty: input.qty,
       });
@@ -255,8 +241,6 @@ export function useCartMutations() {
           ? `?distanceKm=${encodeURIComponent(distanceKm)}`
           : "";
 
-      cartLog("REMOVE", input.cartItemId);
-
       return api.delete<CartDto>(`/cart/items/${input.cartItemId}${query}`);
     },
 
@@ -272,8 +256,6 @@ export function useCartMutations() {
         distanceKm !== null
           ? `?distanceKm=${encodeURIComponent(distanceKm)}`
           : "";
-
-      cartLog("CLEAR", "requested");
 
       // The backend already offers one atomic bulk clear (DELETE /cart) —
       // one round trip instead of one DELETE per line.

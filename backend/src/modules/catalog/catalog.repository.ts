@@ -255,8 +255,13 @@ export async function listRailProductIds(
       : Prisma.empty;
 
   const ordering = {
+    // Deliberately random rather than ranked — with a catalogue this small,
+    // a fixed "Popular" order looked the same as every other rail on every
+    // visit. Randomizing what shows here (still gated to in-stock, active
+    // products by the WHERE clause below) is what actually reads as
+    // "different products" rather than a permanent top-10 list.
     POPULAR: Prisma.sql`
-      p.popularity_score DESC
+      RANDOM()
     `,
 
     DAILY_ESSENTIALS: Prisma.sql`

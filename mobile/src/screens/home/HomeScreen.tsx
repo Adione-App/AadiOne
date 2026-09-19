@@ -5,8 +5,9 @@ import {
   ScrollView,
   StyleSheet,
   View,
+  useWindowDimensions,
 } from "react-native";
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -70,6 +71,9 @@ export default function HomeScreen({
 
   const { location, serviceability, refresh } = useLocation();
 
+  const { width: windowWidth } = useWindowDimensions();
+  const [activeBanner, setActiveBanner] = useState(0);
+
   useEffect(() => {
     void refresh();
 
@@ -130,6 +134,77 @@ export default function HomeScreen({
       />
     </View>
   );
+
+  /* ================================================================
+     PROMOTIONAL BANNERS
+
+     A small, fixed set — not admin-managed — so this stays exactly the
+     same shape as the single banner it replaces, just three of them.
+  ================================================================ */
+
+  const bannerSlideWidth = Math.min(640, windowWidth - spacing.base * 2);
+  const bannerSlideGap = spacing.sm;
+
+  const banners = [
+    {
+      id: "free-delivery",
+      title: "FREE DELIVERY",
+      subtitle: "On orders above ₹299",
+      actionLabel: "Shop Now",
+      onPress: onOpenSearch,
+    },
+    {
+      id: "fresh-produce",
+      title: "FRESH FRUITS & VEGETABLES",
+      subtitle: "Farm-fresh, delivered fast",
+      actionLabel: "Explore",
+      onPress: onOpenAllCategories,
+    },
+    {
+      id: "daily-essentials",
+      title: "DAILY ESSENTIALS",
+      subtitle: "Everything you need, everyday",
+      actionLabel: "Shop Now",
+      onPress: () => onOpenRail("DAILY_ESSENTIALS", "Daily Essentials"),
+    },
+  ];
+
+  /* ================================================================
+     HOME SECTION ORDER
+
+     A fixed, requested layout — Daily Essentials, then the produce
+     category shelf, then Offers, Best Sellers, and Popular (which the
+     backend now randomizes rather than ranks — see catalog.repository.ts)
+     last. This replaces looping over `rails` and `categoryRails`
+     separately in whatever order the API happened to return them, which
+     is what let "Popular" and "Daily Essentials" end up showing the exact
+     same fixed top-10 every time.
+  ================================================================ */
+
+  const railByKey = new Map(feed.data.rails.map((rail) => [rail.key, rail]));
+  // Only the highest-priority category shelf is featured on Home — see
+  // catalog.service.ts, `categoryRails` is ordered by the category's own
+  // `displayOrder`, so this is whichever category the store has configured
+  // to come first (Vegetables & Fruits, currently).
+  const featuredCategoryRail = feed.data.categoryRails?.[0] ?? null;
+
+  type HomeSection =
+    | { kind: "rail"; rail: HomeFeedDto["rails"][number] }
+    | { kind: "category"; rail: HomeFeedDto["categoryRails"][number] };
+
+  const homeSections: HomeSection[] = [
+    railByKey.get("DAILY_ESSENTIALS"),
+    featuredCategoryRail,
+    railByKey.get("OFFERS"),
+    railByKey.get("BEST_SELLERS"),
+    railByKey.get("POPULAR"),
+  ]
+    .filter((entry): entry is NonNullable<typeof entry> => entry != null)
+    .map((entry) =>
+      "categoryId" in entry
+        ? { kind: "category" as const, rail: entry }
+        : { kind: "rail" as const, rail: entry },
+    );
 
   return (
     <Screen style={styles.screen}>
@@ -286,51 +361,91 @@ export default function HomeScreen({
         )}
 
         {/* ========================================================
-            PROMOTIONAL BANNER
+            PROMOTIONAL BANNERS — swipeable, with a dot indicator
         ======================================================== */}
 
-        <View style={styles.bannerWrapper}>
-          <Image
-            source={adioneHomeBanner}
-            style={styles.banner}
-            resizeMode="cover"
-            accessibilityLabel="AdiOne delivery promotion"
-          />
+        <View style={styles.bannerCarousel}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            decelerationRate="fast"
+            snapToInterval={bannerSlideWidth + bannerSlideGap}
+            snapToAlignment="start"
+            contentContainerStyle={{ paddingHorizontal: spacing.base }}
+            onMomentumScrollEnd={(event) => {
+              const index = Math.round(
+                event.nativeEvent.contentOffset.x /
+                  (bannerSlideWidth + bannerSlideGap),
+              );
+              setActiveBanner(
+                Math.max(0, Math.min(banners.length - 1, index)),
+              );
+            }}
+          >
+            {banners.map((item, index) => (
+              <View
+                key={item.id}
+                style={[
+                  styles.bannerWrapper,
+                  {
+                    width: bannerSlideWidth,
+                    marginRight:
+                      index === banners.length - 1 ? 0 : bannerSlideGap,
+                  },
+                ]}
+              >
+                <Image
+                  source={adioneHomeBanner}
+                  style={styles.banner}
+                  resizeMode="cover"
+                  accessibilityLabel={item.title}
+                />
 
-          {/* Very light overlay only */}
+                {/* Very light overlay only */}
 
-          <View style={styles.bannerOverlay} />
+                <View style={styles.bannerOverlay} />
 
-          {/* ------------------------------------------------------
-              Banner Content
-          ------------------------------------------------------ */}
+                {/* ------------------------------------------------
+                    Banner Content
+                ------------------------------------------------ */}
 
-          <View style={styles.bannerContent}>
-            <AppText style={styles.bannerTitle}>FREE DELIVERY</AppText>
+                <View style={styles.bannerContent}>
+                  <AppText style={styles.bannerTitle}>{item.title}</AppText>
 
-            <AppText style={styles.bannerSubtitle}>
-              On orders above ₹299
-            </AppText>
+                  <AppText style={styles.bannerSubtitle}>
+                    {item.subtitle}
+                  </AppText>
 
-            {/* --------------------------------------------------
-                SHOP NOW
-            -------------------------------------------------- */}
+                  <Pressable
+                    onPress={item.onPress}
+                    style={styles.shopNowButton}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel={item.actionLabel}
+                  >
+                    <AppText style={styles.shopNowText}>
+                      {item.actionLabel}
+                    </AppText>
+                    <ArrowRight size={13} color="#FFFFFF" strokeWidth={2.5} />
+                  </Pressable>
+                </View>
+              </View>
+            ))}
+          </ScrollView>
 
-            <Pressable
-              onPress={onOpenSearch}
-              style={styles.shopNowButton}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Shop now"
-            >
-              <AppText style={styles.shopNowText}>Shop Now</AppText>
-              <ArrowRight size={13} color="#FFFFFF" strokeWidth={2.5} />
-            </Pressable>
-          </View>
-
-          {/* IMPORTANT:
-              No extra "10 Delivery" badge here.
-          */}
+          {banners.length > 1 && (
+            <View style={styles.bannerDots}>
+              {banners.map((item, index) => (
+                <View
+                  key={item.id}
+                  style={[
+                    styles.bannerDot,
+                    index === activeBanner && styles.bannerDotActive,
+                  ]}
+                />
+              ))}
+            </View>
+          )}
         </View>
 
         {/* ========================================================
@@ -345,7 +460,15 @@ export default function HomeScreen({
           contentContainerStyle={styles.categoryRow}
         >
           {feed.data.categories
-            .flatMap((category) => category.children ?? [category])
+            // `children` is `[]` (not undefined) for a top-level category
+            // that has no subcategories of its own — e.g. "Vegetables &
+            // Fruits", added as its own root with no children beneath it.
+            // `?? [category]` only catches null/undefined, so an empty
+            // array silently produced zero icons for it. `.length` catches
+            // both cases.
+            .flatMap((category) =>
+              category.children?.length ? category.children : [category],
+            )
             .map((category) => (
               <Pressable
                 key={category.id}
@@ -374,19 +497,31 @@ export default function HomeScreen({
         </ScrollView>
 
         {/* ========================================================
-            PRODUCT RAILS
+            PRODUCT RAILS — Daily Essentials, the featured category shelf,
+            Offers, Best Sellers, then Popular, in that fixed order.
         ======================================================== */}
 
-        {feed.data.rails.map((rail) => (
-          <View key={rail.key} style={styles.rail}>
+        {homeSections.map((section) => (
+          <View
+            key={
+              section.kind === "rail"
+                ? section.rail.key
+                : section.rail.categoryId
+            }
+            style={styles.rail}
+          >
             <SectionHeader
-              title={rail.title}
-              onSeeAll={() => onOpenRail(rail.key, rail.title)}
+              title={section.rail.title}
+              onSeeAll={() =>
+                section.kind === "rail"
+                  ? onOpenRail(section.rail.key, section.rail.title)
+                  : onOpenCategory(section.rail.categoryId)
+              }
             />
 
             <FlatList
               horizontal
-              data={rail.products}
+              data={section.rail.products}
               keyExtractor={(item) => item.id}
               renderItem={renderProduct}
               showsHorizontalScrollIndicator={false}
@@ -691,23 +826,18 @@ const styles = StyleSheet.create({
      BANNER
   ================================================================ */
 
-  bannerWrapper: {
-    marginHorizontal: spacing.base,
-
+  bannerCarousel: {
     marginTop: spacing.md,
+  },
 
+  bannerWrapper: {
     // Matches the source banner's own proportions (1653x569) so `cover`
     // crops the same small sliver on every screen width instead of an
     // ever-larger chunk as the device gets wider than a phone — on a
     // tablet, a fixed height here forced a wide, short crop that sliced
-    // most of the artwork away.
+    // most of the artwork away. Width itself is set per-slide from JS
+    // (see `bannerSlideWidth`), capped the same way `maxWidth: 640` used to.
     aspectRatio: 1653 / 569,
-
-    maxWidth: 640,
-
-    alignSelf: "center",
-
-    width: "100%",
 
     borderRadius: radius.lg,
 
@@ -716,6 +846,34 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primarySurface,
 
     position: "relative",
+  },
+
+  bannerDots: {
+    flexDirection: "row",
+
+    justifyContent: "center",
+
+    alignItems: "center",
+
+    gap: 6,
+
+    marginTop: spacing.sm,
+  },
+
+  bannerDot: {
+    width: 6,
+
+    height: 6,
+
+    borderRadius: 3,
+
+    backgroundColor: colors.border,
+  },
+
+  bannerDotActive: {
+    width: 16,
+
+    backgroundColor: colors.primary,
   },
 
   banner: {

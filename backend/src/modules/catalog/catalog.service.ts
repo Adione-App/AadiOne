@@ -49,6 +49,15 @@ interface CategoryCache {
 
 const CATEGORY_CACHE_TTL_MS = 60_000;
 let categoryCache: CategoryCache | null = null;
+/**
+ * Shared by every caller that arrives while a refresh is already in flight.
+ * Without this, a cold cache under concurrent load — e.g. Home's
+ * `Promise.all` mapping every product in a rail through `toSummaryDto`,
+ * each independently resolving its COD chain — has every one of those
+ * callers see the cache as empty at the same instant and fire its own
+ * `findAllCategories()` query, all at once, for what should be one read.
+ */
+let categoryCacheLoad: Promise<Map<string, Category>> | null = null;
 
 async function getCategoryMap(): Promise<Map<string, Category>> {
   if (
@@ -57,12 +66,21 @@ async function getCategoryMap(): Promise<Map<string, Category>> {
   ) {
     return categoryCache.byId;
   }
-  const categories = await repository.findAllCategories();
-  categoryCache = {
-    byId: new Map(categories.map((category) => [category.id, category])),
-    loadedAt: Date.now(),
-  };
-  return categoryCache.byId;
+
+  if (categoryCacheLoad) return categoryCacheLoad;
+
+  categoryCacheLoad = (async () => {
+    const categories = await repository.findAllCategories();
+    const byId = new Map(categories.map((category) => [category.id, category]));
+    categoryCache = { byId, loadedAt: Date.now() };
+    return byId;
+  })();
+
+  try {
+    return await categoryCacheLoad;
+  } finally {
+    categoryCacheLoad = null;
+  }
 }
 
 export function invalidateCategoryCache(): void {
@@ -502,13 +520,27 @@ export async function subscribeBackInStock(
 /* Home feed                                                                  */
 /* -------------------------------------------------------------------------- */
 
+// Order here decides dedup fill-priority (see the loop below), not just
+// display order — meaningful, ranked rails (curated by real signals: offer
+// depth, actual sales) get first pick of matching products. POPULAR is
+// randomized (see listRailProductIds) and placed last on purpose: it has no
+// ranking of its own to protect, so it should fill in from whatever the
+// other rails left over rather than randomly claiming products ahead of them.
 const RAILS = [
   { key: "DAILY_ESSENTIALS", title: "Daily Essentials" },
-  { key: "POPULAR", title: "Popular Products" },
+  { key: "OFFERS", title: "Offers for You" },
   { key: "BEST_SELLERS", title: "Best Sellers" },
   { key: "RECENTLY_ADDED", title: "Recently Added" },
-  { key: "OFFERS", title: "Offers for You" },
+  { key: "POPULAR", title: "Popular Products" },
 ] as const;
+
+/** How many candidates each rail considers before deduplication trims it down. */
+const RAIL_CANDIDATE_LIMIT = 40;
+/** A rail with fewer fresh products than this backfills with repeats rather than looking sparse. */
+const MIN_RAIL_SIZE = 4;
+const RAIL_DISPLAY_SIZE = 10;
+/** How many products a category's Home shelf shows before "See All". */
+const CATEGORY_RAIL_SIZE = 10;
 
 /**
  * One call fills the whole Home screen.
@@ -527,21 +559,34 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
   });
 
   /*
-   * Each Home rail is independent.
-   *
-   * The same product is allowed to appear in multiple rails.
-   *
-   * Example:
-   * - Amul Curd can be in Popular Products
-   * - Amul Curd can be in Recently Added
-   * - Amul Curd can be in Offers for You
-   *
-   * This is intentional. We do NOT exclude products between rails.
+   * Each rail is ranked independently (popularity, recency, discount, …).
+   * With a catalogue this small, the same handful of products used to
+   * dominate every ranking and Home read as "the same products again and
+   * again" (rails previously allowed unlimited overlap by design). Rails
+   * are now filled in order, each one skipping whatever an earlier rail
+   * already used — except when that would leave it with almost nothing to
+   * show, in which case a repeat is still better than a near-empty shelf.
    */
+  const usedProductIds = new Set<string>();
   const rails: HomeFeedDto["rails"] = [];
 
   for (const rail of RAILS) {
-    const ids = await repository.listRailProductIds(store.id, rail.key, 10);
+    const candidateIds = await repository.listRailProductIds(
+      store.id,
+      rail.key,
+      RAIL_CANDIDATE_LIMIT,
+    );
+
+    const freshIds = candidateIds
+      .filter((id) => !usedProductIds.has(id))
+      .slice(0, RAIL_DISPLAY_SIZE);
+
+    const ids =
+      freshIds.length >= MIN_RAIL_SIZE
+        ? freshIds
+        : candidateIds.slice(0, RAIL_DISPLAY_SIZE);
+
+    for (const id of ids) usedProductIds.add(id);
 
     const products = await repository.hydrateProducts(ids, store.id);
 
@@ -554,10 +599,48 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
     });
   }
 
+  /*
+   * One shelf per top-level category, so a category the shopper just added
+   * (or any category too small to win a spot in the popularity/recency
+   * rails above) still gets real visibility on Home. `categoryPath` already
+   * matches every product beneath it, not just direct children.
+   */
+  const topLevelCategories = (await repository.findAllCategories()).filter(
+    (category) => category.parentId === null,
+  );
+
+  const categoryRails: HomeFeedDto["categoryRails"] = [];
+
+  for (const category of topLevelCategories) {
+    const rows = await repository.listProductIds({
+      storeId: store.id,
+      categoryPath: category.path,
+      inStockOnly: true,
+      sort: "POPULAR",
+      limit: CATEGORY_RAIL_SIZE,
+    });
+
+    if (rows.length === 0) continue;
+
+    const products = await repository.hydrateProducts(
+      rows.map((row) => row.id),
+      store.id,
+    );
+
+    categoryRails.push({
+      categoryId: category.id,
+      title: category.name,
+      products: await Promise.all(
+        products.map((product) => toSummaryDto(product, context)),
+      ),
+    });
+  }
+
   return {
     banners: [],
     categories,
     rails: rails.filter((rail) => rail.products.length > 0),
+    categoryRails,
   };
 }
 

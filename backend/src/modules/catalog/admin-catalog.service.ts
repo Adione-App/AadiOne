@@ -491,11 +491,46 @@ export async function deleteVariant(id: string, actorUserId: string): Promise<vo
 export async function createUploadTarget(input: {
   fileName: string;
   contentType: string;
+  folder?: 'products' | 'categories';
 }): Promise<ReturnType<typeof storage.createPresignedUpload>> {
   assertUploadable(input.contentType);
   // Presigned upload: image bytes go straight to object storage and never
   // through the API's JSON body (PRD §42).
-  return storage.createPresignedUpload({ folder: 'products', ...input });
+  return storage.createPresignedUpload({ folder: input.folder ?? 'products', ...input });
+}
+
+/**
+ * A category has exactly one image (`Category.imageUrl`), not a gallery like
+ * a product — so attaching one is just resolving the uploaded key to a
+ * public URL and writing it straight onto the row, no join table needed.
+ */
+export async function attachCategoryImage(
+  input: { categoryId: string; key: string },
+  actorUserId: string,
+): Promise<{ imageUrl: string }> {
+  const category = await prisma.category.findFirst({
+    where: { id: input.categoryId, deletedAt: null },
+  });
+  if (!category) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Category not found.' });
+
+  const imageUrl = storage.publicUrl(input.key);
+
+  await prisma.category.update({
+    where: { id: input.categoryId },
+    data: { imageUrl },
+  });
+  invalidateCategoryCache();
+
+  await audit({
+    actorUserId,
+    action: 'category.image.attach',
+    entityType: 'Category',
+    entityId: input.categoryId,
+    before: { imageUrl: category.imageUrl },
+    after: { imageUrl },
+  });
+
+  return { imageUrl };
 }
 
 export async function attachProductImage(

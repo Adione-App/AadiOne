@@ -271,6 +271,16 @@ export interface HomeFeedDto {
     title: string;
     products: ProductSummaryDto[];
   }[];
+  /**
+   * One rail per top-level category ("Grocery", "Vegetables & Fruits", …),
+   * so a newly added category gets its own visible shelf on Home instead of
+   * competing for space in the generic popularity/recency rails above.
+   */
+  categoryRails: {
+    categoryId: string;
+    title: string;
+    products: ProductSummaryDto[];
+  }[];
 }
 
 /* -------------------------------------------------------------------------- */

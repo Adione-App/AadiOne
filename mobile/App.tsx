@@ -250,7 +250,12 @@ export default function App() {
           // again, per its own staleTime, exactly as if it had never left
           // memory.
           maxAge: 7 * 24 * 60 * 60_000,
-          buster: "v1",
+          // Bump this whenever a persisted DTO shape changes incompatibly
+          // (e.g. HomeFeedDto gaining a required `categoryRails` field) — it
+          // invalidates every previously persisted cache instead of letting
+          // an old shape get restored into code that now assumes the new
+          // one, which crashes on render rather than just refetching.
+          buster: "v2",
         }}
       >
         <StatusBar style="dark" />

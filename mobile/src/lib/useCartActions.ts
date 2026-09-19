@@ -125,19 +125,12 @@ export function useCartActions() {
 
   const busyVariants = useRef<Set<string>>(new Set());
   const clearInFlightRef = useRef<Promise<void> | null>(null);
-  // Debug-only, per variant — logged as [Cart] lines so the exact sequence
-  // of taps/requests/responses can be read back during testing.
-  const mutationSeqRef = useRef<Record<string, number>>({});
 
   const busy =
     addItem.isPending ||
     updateQty.isPending ||
     removeItem.isPending ||
     clearCart.isPending;
-
-  const log = (...args: unknown[]): void => {
-    if (__DEV__) console.log("[Cart]", ...args);
-  };
 
   /**
    * Sends whatever qty is CURRENTLY pending for one variant. Safe to call
@@ -160,18 +153,12 @@ export function useCartActions() {
     const known: KnownLine =
       chainedKnown !== undefined ? chainedKnown : (linesRef.current.get(variantId) ?? null);
 
-    const seq = (mutationSeqRef.current[variantId] ?? 0) + 1;
-    mutationSeqRef.current[variantId] = seq;
-
     if (targetQty <= 0 && !known) {
       // Already empty server-side — nothing to sync for a decrement-to-zero
       // that resolved before any line was ever created.
-      log(variantId, "mutation", seq, "no-op: already empty, target 0");
       if (pendingQtyRef.current[variantId] === targetQty) clearPending(variantId);
       return;
     }
-
-    log(variantId, "mutation", seq, "start, target qty", targetQty, "known line", known);
 
     setError(null);
     busyVariants.current.add(variantId);
@@ -205,9 +192,7 @@ export function useCartActions() {
 
       const line = response.items.find((item) => item.variantId === variantId);
       confirmedKnown = line ? { id: line.id, qty: line.qty } : null;
-      log(variantId, "mutation", seq, "response applied, server qty", line?.qty ?? 0);
     } catch (err) {
-      log(variantId, "mutation", seq, "failed", err);
       setError(
         err instanceof ApiRequestError
           ? err.message
@@ -224,7 +209,6 @@ export function useCartActions() {
         // A newer tap landed while this request was in flight. Do NOT let
         // the response we just got settle the UI — it's already stale.
         // Continue straight to the latest target; no delay.
-        log(variantId, "mutation", seq, "superseded by newer tap, re-dispatching");
         void dispatch(variantId, confirmedKnown);
       }
     }

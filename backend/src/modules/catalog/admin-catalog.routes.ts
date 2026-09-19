@@ -105,6 +105,24 @@ adminCatalogRouter.delete(
   }),
 );
 
+adminCatalogRouter.post(
+  '/categories/:id/image',
+  requirePermission(Permission.CATALOG_WRITE),
+  validate({
+    params: idParams,
+    body: z.object({ key: z.string().trim().min(1).max(400) }),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(
+      res,
+      await service.attachCategoryImage(
+        { categoryId: req.params['id'] as string, key: req.body.key },
+        requireUser(req).id,
+      ),
+    );
+  }),
+);
+
 /* products ----------------------------------------------------------------- */
 
 adminCatalogRouter.get(
@@ -187,6 +205,7 @@ adminCatalogRouter.post(
     body: z.object({
       fileName: z.string().trim().min(1).max(200),
       contentType: z.string().trim().min(1).max(100),
+      folder: z.enum(['products', 'categories']).optional(),
     }),
   }),
   asyncHandler(async (req: Request, res: Response) => {

@@ -5,10 +5,11 @@
  * parent id and lets the API recompute paths and depths.
  */
 
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CategoryDto } from '@shared';
 import { api } from '@/lib/api';
+import { uploadProductImage, validateImage } from '@/lib/upload';
 import {
   Button,
   EmptyState,
@@ -169,11 +170,61 @@ export default function CategoriesPage() {
     onError: (err: Error) => setError(err.message),
   });
 
+  const setOrder = useMutation({
+    mutationFn: (input: { id: string; displayOrder: number }) =>
+      api.patch(`/admin/categories/${input.id}`, { displayOrder: input.displayOrder }),
+    onSuccess: () => {
+      setError(null);
+      invalidate();
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const [uploadingId, setUploadingId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [imageTargetId, setImageTargetId] = useState<string | null>(null);
+
+  const setImage = useMutation({
+    mutationFn: async (input: { id: string; file: File }) => {
+      const invalid = validateImage(input.file);
+      if (invalid) throw new Error(invalid);
+
+      const key = await uploadProductImage(input.file, (body) =>
+        api.post('/admin/uploads/presign', { ...body, folder: 'categories' }),
+      );
+      await api.post(`/admin/categories/${input.id}/image`, { key });
+    },
+    onMutate: (input) => setUploadingId(input.id),
+    onSuccess: () => {
+      setError(null);
+      invalidate();
+    },
+    onError: (err: Error) => setError(err.message),
+    onSettled: () => setUploadingId(null),
+  });
+
+  function handleFileChosen(event: ChangeEvent<HTMLInputElement>): void {
+    const file = event.target.files?.[0];
+    event.target.value = ''; // lets picking the same file twice re-fire onChange
+    if (file && imageTargetId) setImage.mutate({ id: imageTargetId, file });
+    setImageTargetId(null);
+  }
+
   const tree = categories.data ?? [];
   const rows = flatten(tree);
 
   return (
     <div className="space-y-5">
+      {/* Single shared file input — `imageTargetId` says which row's upload
+          button opened it, since there's no reason to render one per row. */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/avif"
+        className="hidden"
+        onChange={handleFileChosen}
+      />
+
       <div className="flex flex-wrap items-center justify-end gap-3">
         <Button onClick={() => setAdding(true)}>
           <Icon name="plus" className="h-4 w-4" />
@@ -233,9 +284,37 @@ export default function CategoriesPage() {
                     )}
                   </Td>
                   <Td className="text-gray-600">{category.productCount ?? '—'}</Td>
-                  <Td className="text-gray-600">{category.displayOrder}</Td>
                   <Td>
-                    <div className="flex justify-end">
+                    <input
+                      type="number"
+                      defaultValue={category.displayOrder}
+                      min={0}
+                      title="Lower numbers appear first, e.g. on Home and in the category list."
+                      // Committed on blur, not per keystroke — same pattern as
+                      // the product price/stock inputs.
+                      onBlur={(event) => {
+                        const next = Number(event.target.value);
+                        if (Number.isFinite(next) && next !== category.displayOrder) {
+                          setOrder.mutate({ id: category.id, displayOrder: next });
+                        }
+                      }}
+                      className="w-20 rounded-lg border border-gray-300 px-2.5 py-1.5"
+                    />
+                  </Td>
+                  <Td>
+                    <div className="flex justify-end gap-1">
+                      <button
+                        aria-label={`Upload image for ${category.name}`}
+                        title="Upload image"
+                        disabled={uploadingId === category.id}
+                        onClick={() => {
+                          setImageTargetId(category.id);
+                          fileInputRef.current?.click();
+                        }}
+                        className="rounded-lg p-2 text-gray-400 transition hover:bg-brand-50 hover:text-brand-600 disabled:opacity-50"
+                      >
+                        <Icon name="image" />
+                      </button>
                       <button
                         aria-label={`Delete ${category.name}`}
                         onClick={() => {

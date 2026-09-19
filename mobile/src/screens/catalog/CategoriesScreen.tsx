@@ -49,7 +49,13 @@ export default function CategoriesScreen({
   const railWidth = Math.round(Math.max(80, Math.min(104, width * 0.26)));
   const columns = useGridColumns(spacing.xs * 2 + railWidth);
 
-  const leaves = (categories.data ?? []).flatMap((category) => category.children ?? [category]);
+  // `children` is `[]` (not undefined) for a top-level category with no
+  // subcategories of its own (e.g. "Vegetables & Fruits") — `?? [category]`
+  // only catches null/undefined, so that category silently contributed zero
+  // rows to the sidebar. `.length` catches the empty-array case too.
+  const leaves = (categories.data ?? []).flatMap((category) =>
+    category.children?.length ? category.children : [category],
+  );
 
   useEffect(() => {
     if (!selected && leaves.length > 0) setSelected(leaves[0]!.id);

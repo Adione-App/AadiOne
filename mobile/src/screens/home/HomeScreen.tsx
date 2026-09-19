@@ -1,4 +1,5 @@
 import {
+  Animated,
   FlatList,
   Image,
   Pressable,
@@ -7,7 +8,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -42,6 +43,16 @@ import { ProductCard } from "@/components/ProductCard";
 import CategoryIcon from "@/components/CategoryIcon";
 
 import adioneHomeBanner from "../../../assets/adione-homebar.png";
+import bannerDailyEssentials from "../../../assets/home-banner-daily-essentials.png";
+import bannerElectronics from "../../../assets/home-banner-electronics.png";
+import bannerVegFruits from "../../../assets/home-banner-vegetables-fruits.png";
+import promoClothes from "../../../assets/promo-clothes.png";
+import promoElectronics from "../../../assets/promo-electronics.png";
+import promoFreshProduce from "../../../assets/promo-fresh-fruits-veggies.png";
+import promoGrocery from "../../../assets/promo-grocery.png";
+
+/** Fixed count of the promotional carousel below — see the `banners` array. */
+const HOME_BANNER_COUNT = 4;
 
 /* =====================================================================
    HOME SCREEN
@@ -73,6 +84,8 @@ export default function HomeScreen({
 
   const { width: windowWidth } = useWindowDimensions();
   const [activeBanner, setActiveBanner] = useState(0);
+  const bannerScrollRef = useRef<ScrollView>(null);
+  const bannerAutoplayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     void refresh();
@@ -83,6 +96,32 @@ export default function HomeScreen({
 
     return () => clearInterval(interval);
   }, [refresh]);
+
+  // Advances the banner carousel every 2s. A manual swipe (see
+  // `onMomentumScrollEnd` below) calls this again to restart the countdown,
+  // so autoplay doesn't fight a swipe the customer just made.
+  const startBannerAutoplay = () => {
+    if (bannerAutoplayTimerRef.current) clearInterval(bannerAutoplayTimerRef.current);
+    if (HOME_BANNER_COUNT <= 1) return;
+
+    const slideStep = Math.min(640, windowWidth - spacing.base * 2) + spacing.sm;
+
+    bannerAutoplayTimerRef.current = setInterval(() => {
+      setActiveBanner((current) => {
+        const next = (current + 1) % HOME_BANNER_COUNT;
+        bannerScrollRef.current?.scrollTo({ x: next * slideStep, animated: true });
+        return next;
+      });
+    }, 2000);
+  };
+
+  useEffect(() => {
+    startBannerAutoplay();
+    return () => {
+      if (bannerAutoplayTimerRef.current) clearInterval(bannerAutoplayTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [windowWidth]);
 
   /* ================================================================
      LOADING
@@ -136,10 +175,77 @@ export default function HomeScreen({
   );
 
   /* ================================================================
-     PROMOTIONAL BANNERS
+     CATEGORY RAIL LOOKUP
 
-     A small, fixed set — not admin-managed — so this stays exactly the
-     same shape as the single banner it replaces, just three of them.
+     Shared by both the banners (deep-linking "Electronics"/"Fresh
+     Produce" banners to their actual shelf) and the Home section order
+     below. "Grocery" is deliberately excluded — Daily Essentials already
+     covers grocery staples, so its own shelf just duplicated that rail —
+     and Vegetables & Fruits always gets the first featured slot when the
+     store has it, rather than however it happens to rank by
+     `displayOrder`. Everything else still resolves dynamically, so a new
+     category the store adds later shows up without a code change.
+  ================================================================ */
+
+  const allCategoryRails = feed.data.categoryRails ?? [];
+  const isGroceryShelf = (title: string) => title.trim().toLowerCase() === "grocery";
+  const isProduceShelf = (title: string) => /fruit|vegetable/i.test(title);
+  const isElectronicsShelf = (title: string) => /electronic/i.test(title);
+  const isClothesShelf = (title: string) => /cloth|fashion|apparel/i.test(title);
+
+  const produceRail = allCategoryRails.find((rail) => isProduceShelf(rail.title));
+  const electronicsRail = allCategoryRails.find((rail) => isElectronicsShelf(rail.title));
+  const clothesRail = allCategoryRails.find((rail) => isClothesShelf(rail.title));
+  const groceryRail = allCategoryRails.find((rail) => isGroceryShelf(rail.title));
+  const otherCategoryRails = allCategoryRails.filter(
+    (rail) => rail !== produceRail && !isGroceryShelf(rail.title),
+  );
+
+  const featuredCategoryRails = [produceRail, ...otherCategoryRails]
+    .filter((rail): rail is NonNullable<typeof rail> => rail != null)
+    .slice(0, 2);
+
+  /* ================================================================
+     "SHOP BY CATEGORY" PROMO TILES — bottom-of-Home strip, deliberately a
+     different shape/interaction (horizontal tile strip, entrance
+     animation) from the swipe carousel up top so it doesn't just read as
+     a second copy of the same thing. Each tile deep-links to its matching
+     shelf when the store has one, same resolution as the banners above.
+  ================================================================ */
+
+  const promoTiles = [
+    {
+      id: "clothes",
+      image: promoClothes,
+      onPress: clothesRail ? () => onOpenCategory(clothesRail.categoryId) : onOpenAllCategories,
+    },
+    {
+      id: "electronics",
+      image: promoElectronics,
+      onPress: electronicsRail
+        ? () => onOpenCategory(electronicsRail.categoryId)
+        : onOpenAllCategories,
+    },
+    {
+      id: "fresh-produce",
+      image: promoFreshProduce,
+      onPress: produceRail ? () => onOpenCategory(produceRail.categoryId) : onOpenAllCategories,
+    },
+    {
+      id: "grocery",
+      image: promoGrocery,
+      onPress: groceryRail ? () => onOpenCategory(groceryRail.categoryId) : onOpenAllCategories,
+    },
+  ];
+
+  /* ================================================================
+     PROMOTIONAL BANNERS — auto-rotating carousel
+
+     The first slide is the existing "Free Delivery" banner (unchanged —
+     same image, same text overlay). The other three are full marketing
+     graphics with their own baked-in text/CTA, so they render as plain
+     images with no overlay, the whole slide tappable instead of just a
+     button.
   ================================================================ */
 
   const bannerSlideWidth = Math.min(640, windowWidth - spacing.base * 2);
@@ -148,32 +254,38 @@ export default function HomeScreen({
   const banners = [
     {
       id: "free-delivery",
+      image: adioneHomeBanner,
       title: "FREE DELIVERY",
       subtitle: "On orders above ₹299",
       actionLabel: "Shop Now",
       onPress: onOpenSearch,
     },
     {
-      id: "fresh-produce",
-      title: "FRESH FRUITS & VEGETABLES",
-      subtitle: "Farm-fresh, delivered fast",
-      actionLabel: "Explore",
-      onPress: onOpenAllCategories,
+      id: "daily-essentials",
+      image: bannerDailyEssentials,
+      onPress: () => onOpenRail("DAILY_ESSENTIALS", "Daily Essentials"),
     },
     {
-      id: "daily-essentials",
-      title: "DAILY ESSENTIALS",
-      subtitle: "Everything you need, everyday",
-      actionLabel: "Shop Now",
-      onPress: () => onOpenRail("DAILY_ESSENTIALS", "Daily Essentials"),
+      id: "electronics",
+      image: bannerElectronics,
+      onPress: electronicsRail
+        ? () => onOpenCategory(electronicsRail.categoryId)
+        : onOpenAllCategories,
+    },
+    {
+      id: "fresh-produce",
+      image: bannerVegFruits,
+      onPress: produceRail
+        ? () => onOpenCategory(produceRail.categoryId)
+        : onOpenAllCategories,
     },
   ];
 
   /* ================================================================
      HOME SECTION ORDER
 
-     A fixed, requested layout — Daily Essentials, then the produce
-     category shelf, then Offers, Best Sellers, and Popular (which the
+     A fixed, requested layout — Daily Essentials, then the top two
+     category shelves, then Best Sellers, Offers, and Popular (which the
      backend now randomizes rather than ranks — see catalog.repository.ts)
      last. This replaces looping over `rails` and `categoryRails`
      separately in whatever order the API happened to return them, which
@@ -182,11 +294,6 @@ export default function HomeScreen({
   ================================================================ */
 
   const railByKey = new Map(feed.data.rails.map((rail) => [rail.key, rail]));
-  // Only the highest-priority category shelf is featured on Home — see
-  // catalog.service.ts, `categoryRails` is ordered by the category's own
-  // `displayOrder`, so this is whichever category the store has configured
-  // to come first (Vegetables & Fruits, currently).
-  const featuredCategoryRail = feed.data.categoryRails?.[0] ?? null;
 
   type HomeSection =
     | { kind: "rail"; rail: HomeFeedDto["rails"][number] }
@@ -194,9 +301,9 @@ export default function HomeScreen({
 
   const homeSections: HomeSection[] = [
     railByKey.get("DAILY_ESSENTIALS"),
-    featuredCategoryRail,
-    railByKey.get("OFFERS"),
+    ...featuredCategoryRails,
     railByKey.get("BEST_SELLERS"),
+    railByKey.get("OFFERS"),
     railByKey.get("POPULAR"),
   ]
     .filter((entry): entry is NonNullable<typeof entry> => entry != null)
@@ -366,6 +473,7 @@ export default function HomeScreen({
 
         <View style={styles.bannerCarousel}>
           <ScrollView
+            ref={bannerScrollRef}
             horizontal
             showsHorizontalScrollIndicator={false}
             decelerationRate="fast"
@@ -380,57 +488,88 @@ export default function HomeScreen({
               setActiveBanner(
                 Math.max(0, Math.min(banners.length - 1, index)),
               );
+              // A manual swipe shouldn't be immediately undone by autoplay
+              // jumping to the next slide moments later — restart the timer.
+              startBannerAutoplay();
             }}
           >
-            {banners.map((item, index) => (
-              <View
-                key={item.id}
-                style={[
-                  styles.bannerWrapper,
-                  {
-                    width: bannerSlideWidth,
-                    marginRight:
-                      index === banners.length - 1 ? 0 : bannerSlideGap,
-                  },
-                ]}
-              >
-                <Image
-                  source={adioneHomeBanner}
-                  style={styles.banner}
-                  resizeMode="cover"
-                  accessibilityLabel={item.title}
-                />
+            {banners.map((item, index) => {
+              const hasOverlay = "title" in item;
+              const slideStyle = [
+                styles.bannerWrapper,
+                {
+                  width: bannerSlideWidth,
+                  // The "Free Delivery" banner keeps its own image's native
+                  // ratio (1653x569) — forcing it into the marketing
+                  // graphics' taller ratio zoomed the image in via `cover`
+                  // and cut its baked-in title/clock artwork off the edge.
+                  aspectRatio: hasOverlay ? 1653 / 569 : 2000 / 760,
+                  marginRight: index === banners.length - 1 ? 0 : bannerSlideGap,
+                },
+              ];
 
-                {/* Very light overlay only */}
-
-                <View style={styles.bannerOverlay} />
-
-                {/* ------------------------------------------------
-                    Banner Content
-                ------------------------------------------------ */}
-
-                <View style={styles.bannerContent}>
-                  <AppText style={styles.bannerTitle}>{item.title}</AppText>
-
-                  <AppText style={styles.bannerSubtitle}>
-                    {item.subtitle}
-                  </AppText>
-
+              // Only the first slide ("Free Delivery") carries a text
+              // overlay — the other three are full marketing graphics with
+              // their own baked-in title/CTA, so the whole slide is just a
+              // tappable image.
+              if (!("title" in item)) {
+                return (
                   <Pressable
+                    key={item.id}
                     onPress={item.onPress}
-                    style={styles.shopNowButton}
-                    hitSlop={8}
+                    style={slideStyle}
                     accessibilityRole="button"
-                    accessibilityLabel={item.actionLabel}
+                    accessibilityLabel={item.id}
                   >
-                    <AppText style={styles.shopNowText}>
-                      {item.actionLabel}
-                    </AppText>
-                    <ArrowRight size={13} color="#FFFFFF" strokeWidth={2.5} />
+                    <Image
+                      source={item.image}
+                      style={styles.banner}
+                      resizeMode="cover"
+                    />
                   </Pressable>
+                );
+              }
+
+              return (
+                <View key={item.id} style={slideStyle}>
+                  <Image
+                    source={item.image}
+                    style={styles.banner}
+                    resizeMode="cover"
+                    accessibilityLabel={item.title}
+                  />
+
+                  {/* Very light overlay only */}
+
+                  <View style={styles.bannerOverlay} />
+
+                  {/* ------------------------------------------------
+                      Banner Content
+                  ------------------------------------------------ */}
+
+                  <View style={styles.bannerContent}>
+                    <AppText style={styles.bannerTitle}>{item.title}</AppText>
+
+                    <AppText style={styles.bannerSubtitle}>
+                      {item.subtitle}
+                    </AppText>
+
+                    <Pressable
+                      onPress={item.onPress}
+                      style={styles.shopNowButton}
+                      hitSlop={8}
+                      accessibilityRole="button"
+                      accessibilityLabel={item.actionLabel}
+                    >
+                      <AppText style={styles.shopNowText}>
+                        {item.actionLabel}
+                      </AppText>
+                      <ArrowRight size={13} color="#FFFFFF" strokeWidth={2.5} />
+                    </Pressable>
+                  </View>
                 </View>
-              </View>
-            ))}
+              );
+            })}
           </ScrollView>
 
           {banners.length > 1 && (
@@ -536,6 +675,13 @@ export default function HomeScreen({
         ))}
 
         {/* ========================================================
+            SHOP BY CATEGORY — promo tile strip
+        ======================================================== */}
+
+        <SectionHeader title="Shop by Category" onSeeAll={onOpenAllCategories} />
+        <PromoTileStrip tiles={promoTiles} />
+
+        {/* ========================================================
             TRUST STRIP
         ======================================================== */}
 
@@ -628,6 +774,76 @@ function SectionHeader({
         <ChevronRight size={16} color={colors.primary} strokeWidth={2.5} />
       </Pressable>
     </View>
+  );
+}
+
+/* =====================================================================
+   PROMO TILE STRIP — "Shop by Category" at the bottom of Home
+
+   Deliberately a different shape from the top carousel: several square
+   tiles visible at once in a free-scrolling row (no snap, no dots),
+   each popping in with a staggered scale/fade entrance the first time
+   this section mounts, so it reads as its own distinct block rather than
+   a second copy of the swipe banner.
+===================================================================== */
+
+function PromoTileStrip({
+  tiles,
+}: {
+  tiles: { id: string; image: number; onPress: () => void }[];
+}) {
+  const entrance = useRef(tiles.map(() => new Animated.Value(0))).current;
+
+  useEffect(() => {
+    Animated.stagger(
+      90,
+      entrance.map((value) =>
+        Animated.spring(value, {
+          toValue: 1,
+          useNativeDriver: true,
+          friction: 7,
+          tension: 60,
+        }),
+      ),
+    ).start();
+    // Runs once, when the strip first mounts — `entrance` is a stable ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.promoRow}
+    >
+      {tiles.map((tile, index) => {
+        const value = entrance[index]!;
+        return (
+          <Animated.View
+            key={tile.id}
+            style={{
+              opacity: value,
+              transform: [
+                { scale: value.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1] }) },
+                { translateY: value.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) },
+              ],
+            }}
+          >
+            <Pressable
+              onPress={tile.onPress}
+              style={({ pressed }) => [
+                styles.promoTile,
+                pressed && styles.promoTilePressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={`Shop ${tile.id}`}
+            >
+              <Image source={tile.image} style={styles.promoTileImage} resizeMode="cover" />
+            </Pressable>
+          </Animated.View>
+        );
+      })}
+    </ScrollView>
   );
 }
 
@@ -831,14 +1047,12 @@ const styles = StyleSheet.create({
   },
 
   bannerWrapper: {
-    // Matches the source banner's own proportions (1653x569) so `cover`
-    // crops the same small sliver on every screen width instead of an
-    // ever-larger chunk as the device gets wider than a phone — on a
-    // tablet, a fixed height here forced a wide, short crop that sliced
-    // most of the artwork away. Width itself is set per-slide from JS
-    // (see `bannerSlideWidth`), capped the same way `maxWidth: 640` used to.
-    aspectRatio: 1653 / 569,
-
+    // `aspectRatio` is set per-slide (see the render loop) since the "Free
+    // Delivery" banner and the three marketing graphics aren't drawn at the
+    // same proportions — forcing them into one shared ratio zoomed `cover`
+    // in enough to crop baked-in artwork off the image's edge. Width itself
+    // is set per-slide from JS too (see `bannerSlideWidth`), capped the
+    // same way `maxWidth: 640` used to.
     borderRadius: radius.lg,
 
     overflow: "hidden",
@@ -1082,6 +1296,34 @@ const styles = StyleSheet.create({
 
   productWrapper: {
     width: 132,
+  },
+
+  /* ================================================================
+     PROMO TILE STRIP
+  ================================================================ */
+
+  promoRow: {
+    paddingHorizontal: spacing.base,
+    paddingBottom: spacing.sm,
+    gap: spacing.md,
+  },
+
+  promoTile: {
+    width: 176,
+    height: 176,
+    borderRadius: radius.xl,
+    overflow: "hidden",
+    backgroundColor: colors.surfaceMuted,
+    ...shadow.md,
+  },
+
+  promoTilePressed: {
+    opacity: 0.9,
+  },
+
+  promoTileImage: {
+    width: "100%",
+    height: "100%",
   },
 
   /* ================================================================

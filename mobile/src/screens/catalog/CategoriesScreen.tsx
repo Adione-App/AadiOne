@@ -1,14 +1,22 @@
 /**
- * Category listing (Task 14.7).
+ * Category browsing (Task 14.7, restructured).
  *
- * Sidebar of subcategories plus a product grid, matching the mockup. The
- * sticky "N items in cart" bar sits above the tab bar so checkout is always
- * one tap away while browsing.
+ * Landing is a category showcase with big images, not a product grid.
+ * Tapping a category that has subcategories (e.g. "Grocery") opens them in a
+ * left sidebar with its products on the right — the original browsing
+ * pattern, just reached through the showcase instead of being the landing
+ * view. A category with none (e.g. "Vegetables & Fruits", added as its own
+ * root with no children) goes straight to a full-width product grid. The
+ * sticky "N items in cart" bar sits above the tab bar at every level so
+ * checkout is always one tap away while browsing.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
+  Animated,
+  BackHandler,
   FlatList,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -16,16 +24,31 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { ProductSummaryDto } from '@shared';
+import type { CategoryDto, ProductSummaryDto } from '@shared';
 import { formatPaise } from '@shared/money';
 import { colors, radius, spacing } from '@shared/theme';
 import { useCategories, useProducts } from '@/lib/queries';
 import { useCartActions } from '@/lib/useCartActions';
 import { useGridColumns } from '@/lib/useGridColumns';
-import { AppText, EmptyState, Loading, NoticeStrip, Screen } from '@/components/ui';
+import { resolveImageUrl } from '@/lib/api';
+import { AppText, EmptyState, ErrorState, Loading, NoticeStrip, Screen } from '@/components/ui';
 import { ProductCard } from '@/components/ProductCard';
 import { ProductGridSkeleton } from '@/components/ProductCardSkeleton';
 import CategoryIcon from '@/components/CategoryIcon';
+
+/* =====================================================================
+   DRILL STATE
+
+   root       — the big-image category showcase
+   category   — a parent's subcategories in a left sidebar, its products
+                (of the selected subcategory) on the right
+   products   — a full-width product grid for a leaf category
+===================================================================== */
+
+type Drill =
+  | { level: 'root' }
+  | { level: 'category'; parent: CategoryDto; selectedChildId: string }
+  | { level: 'products'; category: CategoryDto };
 
 export default function CategoriesScreen({
   onOpenProduct,
@@ -39,44 +62,100 @@ export default function CategoriesScreen({
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const categories = useCategories();
-  const [selected, setSelected] = useState<string | undefined>(initialCategoryId);
   const cart = useCartActions();
+  const columns = useGridColumns();
 
-  // Measured against the screen rather than fixed, and clamped at both ends:
-  // a rail wide enough to read still has to leave two product cards room in
-  // what is left, or names break mid-word and the price is squeezed out of the
-  // card entirely. ~26% puts a 360dp screen at 94dp rail / 266dp grid.
+  // Same sizing rule the sidebar used before this screen grew a landing
+  // page: wide enough to read, but always leaving two product cards' worth
+  // of room in what's left. See the original CategoriesScreen for the math.
   const railWidth = Math.round(Math.max(80, Math.min(104, width * 0.26)));
-  const columns = useGridColumns(spacing.xs * 2 + railWidth);
+  const sidebarColumns = useGridColumns(spacing.xs * 2 + railWidth);
 
-  // `children` is `[]` (not undefined) for a top-level category with no
-  // subcategories of its own (e.g. "Vegetables & Fruits") — `?? [category]`
-  // only catches null/undefined, so that category silently contributed zero
-  // rows to the sidebar. `.length` catches the empty-array case too.
-  const leaves = (categories.data ?? []).flatMap((category) =>
-    category.children?.length ? category.children : [category],
-  );
+  const [drill, setDrill] = useState<Drill>({ level: 'root' });
 
-  useEffect(() => {
-    if (!selected && leaves.length > 0) setSelected(leaves[0]!.id);
-  }, [leaves, selected]);
+  const openCategory = (category: CategoryDto) => {
+    setDrill(
+      category.children?.length
+        ? { level: 'category', parent: category, selectedChildId: category.children[0]!.id }
+        : { level: 'products', category },
+    );
+  };
+
+  const selectSidebarChild = (childId: string) => {
+    setDrill((current) =>
+      current.level === 'category' ? { ...current, selectedChildId: childId } : current,
+    );
+  };
+
+  const goBack = () => setDrill({ level: 'root' });
 
   // This screen stays mounted inside its own tab stack, so `initialCategoryId`
-  // only seeds `selected` on first mount. Without this, tapping a different
-  // category chip on Home after Categories was already opened would navigate
-  // here with a new `categoryId` param that silently had no effect, because
-  // `selected` was already set from a previous visit.
+  // has to be re-applied on every change, not just on first mount — otherwise
+  // tapping a different category chip/shelf on Home while Categories is
+  // already mounted would navigate here with a new `categoryId` param that
+  // silently had no effect. A leaf subcategory id opens its parent's sidebar
+  // with that subcategory pre-selected, exactly like tapping it there would.
   useEffect(() => {
-    if (initialCategoryId) setSelected(initialCategoryId);
-  }, [initialCategoryId]);
+    if (!initialCategoryId) return;
+    const roots = categories.data ?? [];
 
-  const products = useProducts(selected ? { categoryId: selected } : {});
+    for (const root of roots) {
+      if (root.id === initialCategoryId) {
+        openCategory(root);
+        return;
+      }
+      const child = root.children?.find((item) => item.id === initialCategoryId);
+      if (child) {
+        setDrill({ level: 'category', parent: root, selectedChildId: child.id });
+        return;
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialCategoryId, categories.data]);
+
+  // Android hardware back returns to the showcase instead of leaving the tab.
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (drill.level === 'root') return false;
+      goBack();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [drill]);
+
+  const activeCategoryId =
+    drill.level === 'category'
+      ? drill.selectedChildId
+      : drill.level === 'products'
+        ? drill.category.id
+        : undefined;
+
+  const products = useProducts(
+    activeCategoryId ? { categoryId: activeCategoryId, enabled: true } : { enabled: false },
+  );
 
   if (categories.isLoading) return <Loading label="Loading categories…" />;
+  if (categories.isError || !categories.data) {
+    return (
+      <ErrorState
+        message="We could not load categories."
+        onRetry={() => void categories.refetch()}
+      />
+    );
+  }
+
+  const cartCount = cart.cart?.bill.itemCount ?? 0;
+
+  const headerTitle =
+    drill.level === 'root'
+      ? 'Categories'
+      : drill.level === 'category'
+        ? drill.parent.name
+        : drill.category.name;
 
   // Stable references — see HomeScreen's renderProduct for why these are
   // passed directly rather than wrapped in a fresh per-item closure.
-  const renderItem = ({ item }: { item: ProductSummaryDto }) => (
+  const renderProduct = ({ item }: { item: ProductSummaryDto }) => (
     <ProductCard
       product={item}
       qtyInCart={item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0}
@@ -88,73 +167,103 @@ export default function CategoriesScreen({
     />
   );
 
-  const cartCount = cart.cart?.bill.itemCount ?? 0;
+  const productGridColumns = drill.level === 'category' ? sidebarColumns : columns;
+
+  const productPane =
+    products.isLoading ? (
+      <ProductGridSkeleton columns={productGridColumns} />
+    ) : (products.data?.items.length ?? 0) === 0 ? (
+      <EmptyState title="Nothing here yet" hint="Try another category." />
+    ) : (
+      <FlatList
+        key={`grid-${productGridColumns}`}
+        data={products.data?.items ?? []}
+        keyExtractor={(item) => item.id}
+        renderItem={renderProduct}
+        numColumns={productGridColumns}
+        contentContainerStyle={{
+          padding: spacing.xs,
+          paddingBottom: cartCount > 0 ? 96 : spacing.xxl,
+        }}
+        showsVerticalScrollIndicator={false}
+      />
+    );
 
   return (
     <Screen>
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
-        <AppText variant="h1">Categories</AppText>
+        {drill.level !== 'root' && (
+          <Pressable
+            onPress={goBack}
+            hitSlop={12}
+            style={styles.back}
+            accessibilityRole="button"
+            accessibilityLabel="Go back"
+          >
+            <AppText variant="h2">←</AppText>
+          </Pressable>
+        )}
+        <AppText variant="h1" numberOfLines={1} style={{ flex: 1 }}>
+          {headerTitle}
+        </AppText>
       </View>
 
-      <View style={{ flex: 1, flexDirection: 'row' }}>
-        <ScrollView
-          style={[styles.sidebar, { width: railWidth }]}
-          contentContainerStyle={{ paddingBottom: spacing.xxl }}
-          showsVerticalScrollIndicator={false}
-        >
-          {leaves.map((category) => {
-            const active = category.id === selected;
-            return (
-              <Pressable
-                key={category.id}
-                onPress={() => setSelected(category.id)}
-                style={[styles.sidebarItem, active && styles.sidebarItemActive]}
-              >
-                <CategoryIcon
-                  name={category.name}
-                  imageUrl={category.imageUrl}
-                  size={38}
-                />
-                <AppText
-                  variant="caption"
-                  color={active ? colors.primary : colors.textSecondary}
-                  numberOfLines={3}
-                  style={{ textAlign: 'center', marginTop: spacing.xxs }}
-                >
-                  {category.name}
-                </AppText>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
+      {drill.level === 'root' && (
+        <CategoryGrid categories={categories.data} onSelect={openCategory} />
+      )}
 
+      {drill.level === 'category' && (
+        <View style={{ flex: 1, flexDirection: 'row' }}>
+          <ScrollView
+            style={[styles.sidebar, { width: railWidth }]}
+            contentContainerStyle={{ paddingBottom: spacing.xxl }}
+            showsVerticalScrollIndicator={false}
+          >
+            {drill.parent.children!.map((child) => {
+              const active = child.id === drill.selectedChildId;
+              return (
+                <Pressable
+                  key={child.id}
+                  onPress={() => selectSidebarChild(child.id)}
+                  style={[styles.sidebarItem, active && styles.sidebarItemActive]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${child.name}`}
+                >
+                  <CategoryIcon name={child.name} imageUrl={child.imageUrl} size={38} />
+                  <AppText
+                    variant="caption"
+                    color={active ? colors.primary : colors.textSecondary}
+                    numberOfLines={3}
+                    style={{ textAlign: 'center', marginTop: spacing.xxs }}
+                  >
+                    {child.name}
+                  </AppText>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+
+          <View style={{ flex: 1 }}>
+            {cart.error && (
+              <View style={{ padding: spacing.sm }}>
+                <NoticeStrip message={cart.error} />
+              </View>
+            )}
+            {productPane}
+          </View>
+        </View>
+      )}
+
+      {drill.level === 'products' && (
         <View style={{ flex: 1 }}>
           {cart.error && (
-            <View style={{ padding: spacing.sm }}>
+            <View style={{ paddingHorizontal: spacing.base, paddingTop: spacing.sm }}>
               <NoticeStrip message={cart.error} />
             </View>
           )}
-
-          {products.isLoading ? (
-            <ProductGridSkeleton columns={columns} />
-          ) : (products.data?.items.length ?? 0) === 0 ? (
-            <EmptyState title="Nothing here yet" hint="Try another category." />
-          ) : (
-            <FlatList
-              key={`grid-${columns}`}
-              data={products.data?.items ?? []}
-              keyExtractor={(item) => item.id}
-              renderItem={renderItem}
-              numColumns={columns}
-              contentContainerStyle={{
-                padding: spacing.xs,
-                paddingBottom: cartCount > 0 ? 96 : spacing.xxl,
-              }}
-              showsVerticalScrollIndicator={false}
-            />
-          )}
+          {productPane}
         </View>
-      </View>
+      )}
 
       {cartCount > 0 && (
         <Pressable onPress={onOpenCart} style={[styles.stickyBar, { bottom: spacing.sm }]}>
@@ -175,14 +284,155 @@ export default function CategoriesScreen({
   );
 }
 
+/* =====================================================================
+   CATEGORY SHOWCASE GRID — the landing view, big images
+===================================================================== */
+
+function CategoryGrid({
+  categories,
+  onSelect,
+}: {
+  categories: CategoryDto[];
+  onSelect: (category: CategoryDto) => void;
+}) {
+  if (categories.length === 0) {
+    return <EmptyState title="Nothing here yet" hint="Check back in a little while." />;
+  }
+
+  return (
+    <FlatList
+      data={categories}
+      keyExtractor={(item) => item.id}
+      numColumns={2}
+      columnWrapperStyle={styles.categoryRow}
+      contentContainerStyle={styles.categoryGrid}
+      renderItem={({ item }) => (
+        <CategoryGridCard category={item} onPress={() => onSelect(item)} />
+      )}
+      showsVerticalScrollIndicator={false}
+    />
+  );
+}
+
+function CategoryGridCard({
+  category,
+  onPress,
+}: {
+  category: CategoryDto;
+  onPress: () => void;
+}) {
+  const scale = useRef(new Animated.Value(1)).current;
+
+  const pressIn = () => {
+    Animated.timing(scale, { toValue: 0.96, duration: 100, useNativeDriver: true }).start();
+  };
+  const pressOut = () => {
+    Animated.timing(scale, { toValue: 1, duration: 100, useNativeDriver: true }).start();
+  };
+
+  // A parent category's own product count only reflects products assigned to
+  // IT directly (see countProductsByCategory), not the total beneath its
+  // children — showing that number on a category that holds all its items in
+  // subcategories would misleadingly read as "0 items" or near it. Only leaf
+  // cards, whose count is exactly what tapping them shows, get the badge.
+  const isLeaf = !category.children?.length;
+  const showCount = isLeaf && (category.productCount ?? 0) > 0;
+  const resolvedImage = category.imageUrl ? resolveImageUrl(category.imageUrl) : null;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      onPressIn={pressIn}
+      onPressOut={pressOut}
+      style={styles.categoryCard}
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${category.name}`}
+    >
+      <Animated.View style={[styles.categoryCardInner, { transform: [{ scale }] }]}>
+        <View style={styles.categoryImageBox}>
+          {resolvedImage ? (
+            // Full-size, uncropped-by-a-circle image — a category photo read
+            // as a small round icon (the old CategoryIcon shape) is exactly
+            // what looked unclear here. Vector-icon fallback (no real image
+            // yet) still uses the round icon since it's decorative, not a
+            // photo losing detail.
+            <Image
+              source={{ uri: resolvedImage }}
+              style={styles.categoryImage}
+              resizeMode="cover"
+              accessibilityLabel={category.name}
+            />
+          ) : (
+            <CategoryIcon name={category.name} imageUrl={null} size={64} />
+          )}
+        </View>
+
+        <AppText variant="bodyStrong" numberOfLines={2} style={styles.categoryCardName}>
+          {category.name}
+        </AppText>
+
+        {showCount && (
+          <AppText variant="caption" color={colors.textSecondary}>
+            {category.productCount} item{category.productCount === 1 ? '' : 's'}
+          </AppText>
+        )}
+      </Animated.View>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   header: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: spacing.base,
     paddingBottom: spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: colors.divider,
     backgroundColor: colors.surface,
   },
+  back: { width: 32, height: 32, justifyContent: 'center', marginRight: spacing.xs },
+
+  /* Category showcase grid — big images */
+  categoryGrid: {
+    padding: spacing.base,
+    paddingBottom: spacing.xxl,
+  },
+  categoryRow: {
+    gap: spacing.md,
+  },
+  categoryCard: {
+    flex: 1,
+    marginBottom: spacing.md,
+  },
+  categoryCardInner: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    padding: spacing.sm,
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  categoryImageBox: {
+    width: '100%',
+    aspectRatio: 1,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: spacing.sm,
+    overflow: 'hidden',
+  },
+  categoryImage: {
+    width: '100%',
+    height: '100%',
+  },
+  categoryCardName: {
+    textAlign: 'center',
+  },
+
+  /* Left sidebar — subcategories of one parent */
   // Width is set at render from the screen size — see railWidth. Anything
   // fixed here would be overridden, so it is deliberately absent.
   sidebar: { backgroundColor: colors.surfaceMuted, flexGrow: 0, flexShrink: 0 },
@@ -199,6 +449,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primarySurface,
     borderLeftColor: colors.primary,
   },
+
   stickyBar: {
     position: 'absolute',
     left: spacing.base,

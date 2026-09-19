@@ -345,7 +345,7 @@ const styles = StyleSheet.create({
   imageBox: {
     width: "100%",
 
-    height: 96,
+    height: 70,
 
     alignItems: "center",
 
@@ -442,7 +442,7 @@ const styles = StyleSheet.create({
   },
 
   badgeText: {
-    fontSize: 9,
+    fontSize: 8,
 
     lineHeight: 12,
 
@@ -454,7 +454,7 @@ const styles = StyleSheet.create({
   ================================================================ */
 
   nameContainer: {
-    height: 34,
+    height: 35,
 
     marginTop: spacing.xs,
 
@@ -462,9 +462,9 @@ const styles = StyleSheet.create({
   },
 
   productName: {
-    fontSize: 13,
+    fontSize: 12,
 
-    lineHeight: 17,
+    lineHeight: 15,
 
     color: colors.textPrimary,
 

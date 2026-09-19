@@ -54,6 +54,8 @@ export function useCategories() {
 export function useProducts(params: {
   categoryId?: string;
   inStock?: boolean;
+  /** False skips the request entirely — e.g. while a category grid, not a product list, is on screen. */
+  enabled?: boolean;
 }) {
   const query = new URLSearchParams({ limit: "30" });
   if (params.categoryId) query.set("categoryId", params.categoryId);
@@ -63,6 +65,7 @@ export function useProducts(params: {
     queryKey: keys.products(query.toString()),
     queryFn: () =>
       api.get<CursorPage<ProductSummaryDto>>(`/products?${query.toString()}`),
+    enabled: params.enabled ?? true,
     // Each category the customer has opened this session should stay ready
     // to show instantly if they switch back to it — react-query's default
     // 5-minute garbage-collect window is short enough that browsing several

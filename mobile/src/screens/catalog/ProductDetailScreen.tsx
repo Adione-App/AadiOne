@@ -15,7 +15,7 @@ import { formatPaise } from '@shared/money';
 import { colors, radius, spacing } from '@shared/theme';
 import { api } from '@/lib/api';
 import { useProduct } from '@/lib/queries';
-import { useCartActions } from '@/lib/useCartActions';
+import { snapshotFromProduct, useCartActions } from '@/lib/useCartActions';
 import {
   AppText,
   Button,
@@ -245,7 +245,22 @@ export default function ProductDetailScreen({
               </View>
             </View>
           ) : (
-            <Button label="Add to Cart" onPress={() => void cart.add(variant.id)} />
+            <View style={styles.footerRow}>
+              <View style={styles.footerPriceInfo}>
+                <AppText variant="caption" color={colors.textSecondary}>
+                  Price
+                </AppText>
+                <AppText variant="h3" color={colors.primary}>
+                  {formatPaise(variant.pricePaise)}
+                </AppText>
+              </View>
+
+              <Button
+                label="Add to Cart"
+                onPress={() => cart.add(variant.id, snapshotFromProduct(detail, variant))}
+                style={styles.addToCartButton}
+              />
+            </View>
           )
         ) : null}
       </View>
@@ -306,4 +321,6 @@ const styles = StyleSheet.create({
   footerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.base },
   footerStepper: { width: 148 },
   footerTotal: { flex: 1, alignItems: 'flex-end' },
+  footerPriceInfo: { flex: 1, alignItems: 'flex-start' },
+  addToCartButton: { minWidth: 168, paddingHorizontal: spacing.xl },
 });

@@ -44,7 +44,6 @@ export type CatalogStackParamList = {
 
 export type CartStackParamList = {
   CartHome: undefined;
-  Checkout: undefined;
   UpiPayment: { orderId: string };
   OrderTracking: { orderId: string };
   Addresses: undefined;

@@ -1,5 +1,14 @@
-import { memo } from "react";
-import { Image, Pressable, StyleSheet, View } from "react-native";
+import { memo, useEffect, useRef, useState } from "react";
+import {
+  Animated,
+  Easing,
+  Image,
+  Pressable,
+  StyleSheet,
+  View,
+  type StyleProp,
+  type TextStyle,
+} from "react-native";
 import { Info, ShoppingCart } from "lucide-react-native";
 
 import type { ProductSummaryDto } from "@shared";
@@ -7,7 +16,119 @@ import { formatPaise } from "@shared/money";
 import { colors, radius, shadow, spacing } from "@shared/theme";
 
 import { resolveImageUrl } from "../lib/api";
+import { type CartItemSnapshot, snapshotFromProduct } from "../lib/useCartActions";
 import { AppText } from "./ui";
+
+/* =====================================================================
+   ANIMATED QUANTITY — odometer-style digit roll.
+
+   Incrementing: the new number pops up from below into place while the
+   old one slides up and out above. Decrementing: the reverse — the new
+   number drops in from above while the old one slides down and out
+   below. Both numbers are real siblings clipped by one fixed-height
+   `overflow: hidden` box, driven by a single Animated.Value so they move
+   in lockstep — cheap (a transform + opacity, native driver) and used by
+   every QuantityStepper in the app (Home, Category, Cart, product
+   detail), so it only needed writing once here.
+===================================================================== */
+
+const QTY_ANIM_DURATION = 180;
+
+function AnimatedQuantity({
+  qty,
+  textStyle,
+  color,
+  lineHeight,
+}: {
+  qty: number;
+  textStyle: StyleProp<TextStyle>;
+  color: string;
+  lineHeight: number;
+}) {
+  const [displayQty, setDisplayQty] = useState(qty);
+  const [outgoingQty, setOutgoingQty] = useState<number | null>(null);
+  const directionRef = useRef<1 | -1>(1);
+  const anim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    if (qty === displayQty) return;
+
+    directionRef.current = qty > displayQty ? 1 : -1;
+    setOutgoingQty(displayQty);
+    setDisplayQty(qty);
+    anim.setValue(0);
+
+    Animated.timing(anim, {
+      toValue: 1,
+      duration: QTY_ANIM_DURATION,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start(() => setOutgoingQty(null));
+    // `displayQty` deliberately excluded — this must fire once per `qty`
+    // change, not re-run when the effect's own setState updates it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qty]);
+
+  const sign = directionRef.current;
+
+  // Incoming number: slides in from below (increment) or above (decrement)
+  // and overshoots slightly past its resting scale — the "pop".
+  const incomingTranslateY = anim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [sign * lineHeight, 0],
+  });
+  const incomingScale = anim.interpolate({
+    inputRange: [0, 0.6, 1],
+    outputRange: [0.6, 1.08, 1],
+  });
+  const incomingOpacity = anim.interpolate({
+    inputRange: [0, 0.3, 1],
+    outputRange: [0, 1, 1],
+  });
+
+  // Outgoing number: slides out the opposite way and fades.
+  const outgoingTranslateY = anim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -sign * lineHeight],
+  });
+  const outgoingOpacity = anim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 0],
+  });
+
+  return (
+    <View style={[styles.qtyClip, { height: lineHeight }]}>
+      {outgoingQty !== null && (
+        <Animated.Text
+          style={[
+            textStyle,
+            {
+              color,
+              position: "absolute",
+              opacity: outgoingOpacity,
+              transform: [{ translateY: outgoingTranslateY }],
+            },
+          ]}
+        >
+          {outgoingQty}
+        </Animated.Text>
+      )}
+
+      <Animated.Text
+        style={[
+          textStyle,
+          {
+            color,
+            opacity: incomingOpacity,
+            transform: [{ translateY: incomingTranslateY }, { scale: incomingScale }],
+          },
+        ]}
+      >
+        {displayQty}
+      </Animated.Text>
+    </View>
+  );
+}
 
 /* =====================================================================
    QUANTITY STEPPER
@@ -55,13 +176,15 @@ export function QuantityStepper({
         </AppText>
       </Pressable>
 
-      <AppText
-        variant="bodyStrong"
+      <AnimatedQuantity
+        qty={qty}
         color={colors.onPrimary}
-        style={[styles.quantityText, fullWidth && styles.quantityTextFullWidth]}
-      >
-        {qty}
-      </AppText>
+        lineHeight={fullWidth ? 18 : 16}
+        textStyle={[
+          styles.quantityText,
+          fullWidth && styles.quantityTextFullWidth,
+        ]}
+      />
 
       <Pressable
         onPress={onIncrement}
@@ -104,9 +227,11 @@ function ProductCardImpl({
   qtyInCart: number;
   /** Called with the PRODUCT id — from the image, or the More Details icon. */
   onPress: (productId: string) => void;
-  /** Called with the VARIANT id — same stable function for every card, so
-   * changing one product's quantity doesn't recreate props for the rest. */
-  onAdd: (variantId: string) => void;
+  /** Called with the VARIANT id and enough product data to show the new
+   * line in the cart badge/Cart screen before the server confirms it — same
+   * stable function for every card, so changing one product's quantity
+   * doesn't recreate props for the rest. */
+  onAdd: (variantId: string, snapshot: CartItemSnapshot) => void;
   onIncrement: (variantId: string) => void;
   onDecrement: (variantId: string) => void;
   busy?: boolean;
@@ -249,45 +374,96 @@ function ProductCardImpl({
 
       {/* =============================================================
           ACTION BAR — full width, matches the reference design.
+
+          Wrapped in ActionBarTransition so switching between "Add",
+          the stepper, and "Out of Stock" is a quick fade/scale instead
+          of an abrupt swap — covers both directions: the stepper
+          appearing after a tap on Add, and Add reappearing when a
+          decrement empties the line.
       ============================================================= */}
 
-      {outOfStock ? (
-        <View style={styles.outOfStockBar}>
-          <AppText
-            variant="bodyStrong"
-            color={colors.textSecondary}
-            style={styles.outOfStockBarText}
+      <ActionBarTransition mode={outOfStock ? "outOfStock" : qtyInCart > 0 ? "stepper" : "add"}>
+        {outOfStock ? (
+          <View style={styles.outOfStockBar}>
+            <AppText
+              variant="bodyStrong"
+              color={colors.textSecondary}
+              style={styles.outOfStockBarText}
+            >
+              Out of Stock
+            </AppText>
+          </View>
+        ) : qtyInCart > 0 ? (
+          <QuantityStepper
+            qty={qtyInCart}
+            max={variant?.maxQtyPerOrder ?? 10}
+            onIncrement={() => variant && onIncrement(variant.id)}
+            onDecrement={() => variant && onDecrement(variant.id)}
+            busy={busy}
+            fullWidth
+          />
+        ) : (
+          <Pressable
+            onPress={() => variant && onAdd(variant.id, snapshotFromProduct(product, variant))}
+            style={styles.addButton}
+            accessibilityRole="button"
+            accessibilityLabel={`Add ${product.name} to cart`}
           >
-            Out of Stock
-          </AppText>
-        </View>
-      ) : qtyInCart > 0 ? (
-        <QuantityStepper
-          qty={qtyInCart}
-          max={variant?.maxQtyPerOrder ?? 10}
-          onIncrement={() => variant && onIncrement(variant.id)}
-          onDecrement={() => variant && onDecrement(variant.id)}
-          busy={busy}
-          fullWidth
-        />
-      ) : (
-        <Pressable
-          onPress={() => variant && onAdd(variant.id)}
-          style={styles.addButton}
-          accessibilityRole="button"
-          accessibilityLabel={`Add ${product.name} to cart`}
-        >
-          <ShoppingCart size={14} color={colors.onPrimary} strokeWidth={2.3} />
-          <AppText
-            variant="bodyStrong"
-            color={colors.onPrimary}
-            style={styles.addText}
-          >
-            Add
-          </AppText>
-        </Pressable>
-      )}
+            <ShoppingCart size={14} color={colors.onPrimary} strokeWidth={2.3} />
+            <AppText
+              variant="bodyStrong"
+              color={colors.onPrimary}
+              style={styles.addText}
+            >
+              Add
+            </AppText>
+          </Pressable>
+        )}
+      </ActionBarTransition>
     </View>
+  );
+}
+
+/* =====================================================================
+   ACTION BAR TRANSITION — fade + scale between Add / stepper / out-of-
+   stock. Fast (200ms) so it reads as a snap, not a wait; the quantity
+   number itself is already instant (AnimatedQuantity) regardless of this.
+===================================================================== */
+
+type ActionBarMode = "add" | "stepper" | "outOfStock";
+
+function ActionBarTransition({
+  mode,
+  children,
+}: {
+  mode: ActionBarMode;
+  children: React.ReactNode;
+}) {
+  const anim = useRef(new Animated.Value(1)).current;
+  const prevMode = useRef(mode);
+
+  useEffect(() => {
+    if (mode === prevMode.current) return;
+    prevMode.current = mode;
+
+    anim.setValue(0);
+    Animated.timing(anim, {
+      toValue: 1,
+      duration: 200,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [mode, anim]);
+
+  return (
+    <Animated.View
+      style={{
+        opacity: anim,
+        transform: [{ scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.88, 1] }) }],
+      }}
+    >
+      {children}
+    </Animated.View>
   );
 }
 
@@ -663,5 +839,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
 
     lineHeight: 18,
+  },
+
+  qtyClip: {
+    minWidth: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
   },
 });

@@ -9,7 +9,7 @@
  *   - oldest-waiting orders are visually loudest
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AdminOrderTab,
@@ -194,6 +194,45 @@ export default function OrdersPage() {
   });
 
   /**
+   * Counts for the two time-sensitive tabs — New and Payment to verify —
+   * fetched independently of whichever tab is currently open.
+   *
+   * Without this, an admin sitting on "Preparing" all day would never see
+   * that a UPI order has been waiting for payment verification for the last
+   * ten minutes: its tab carries no badge of its own, and the count used to
+   * come from `query` above, which only ever reflects the CURRENTLY OPEN
+   * tab — useless for flagging every OTHER tab. This is what actually makes
+   * "Payment to verify" impossible to miss even when it isn't the tab
+   * you're looking at.
+   */
+  const attentionCounts = useQuery({
+    // Deliberately prefixed with "admin-orders" (not a standalone key) so
+    // every existing `invalidateQueries({ queryKey: ["admin-orders"] })`
+    // call already elsewhere in this file — after a status change, payment
+    // confirmation, etc. — refreshes this too, without having to remember
+    // to add a second invalidation at each of those call sites.
+    queryKey: ["admin-orders", "attention-counts"],
+
+    queryFn: async () => {
+      const [newOrders, paymentPending] = await Promise.all([
+        api.get<CursorPage<AdminOrderSummaryDto>>(
+          `/admin/orders?tab=${AdminOrderTab.NEW}&limit=50`,
+        ),
+        api.get<CursorPage<AdminOrderSummaryDto>>(
+          `/admin/orders?tab=${AdminOrderTab.PAYMENT_PENDING}&limit=50`,
+        ),
+      ]);
+
+      return {
+        [AdminOrderTab.NEW]: newOrders.items.length,
+        [AdminOrderTab.PAYMENT_PENDING]: paymentPending.items.length,
+      };
+    },
+
+    refetchInterval: 20_000,
+  });
+
+  /**
    * Delivery agents.
    */
   const agents = useQuery({
@@ -339,11 +378,6 @@ export default function OrdersPage() {
 
   const orders = query.data?.items ?? [];
 
-  const newCount = useMemo(
-    () => (tab === AdminOrderTab.NEW ? orders.length : 0),
-    [orders.length, tab],
-  );
-
   /**
    * Normal order-state transition.
    */
@@ -392,25 +426,44 @@ export default function OrdersPage() {
 
       <Surface className="px-2">
         <div className="flex flex-nowrap gap-1 overflow-x-auto">
-          {TABS.map((item) => (
-            <button
-              key={item.key}
-              onClick={() => setTab(item.key)}
-              className={`relative min-h-11 whitespace-nowrap px-4 text-sm font-semibold transition ${
-                tab === item.key
-                  ? "text-brand-600 after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-brand-500"
-                  : "text-gray-500 hover:text-gray-800"
-              }`}
-            >
-              {item.label}
+          {TABS.map((item) => {
+            // Payment verification blocks an order completely until it's
+            // done, and its tab is easy to never visit on a normal counter
+            // workflow — a louder, danger-toned badge (vs. New's neutral
+            // brand one) so it reads as more urgent than "orders exist".
+            const isPaymentPending = item.key === AdminOrderTab.PAYMENT_PENDING;
+            const count = isPaymentPending
+              ? (attentionCounts.data?.[AdminOrderTab.PAYMENT_PENDING] ?? 0)
+              : item.key === AdminOrderTab.NEW
+                ? (attentionCounts.data?.[AdminOrderTab.NEW] ?? 0)
+                : 0;
 
-              {item.key === AdminOrderTab.NEW && newCount > 0 && (
-                <span className="ml-2 rounded-full bg-brand-50 px-2 py-0.5 text-xs text-brand-600">
-                  {newCount}
-                </span>
-              )}
-            </button>
-          ))}
+            return (
+              <button
+                key={item.key}
+                onClick={() => setTab(item.key)}
+                className={`relative min-h-11 whitespace-nowrap px-4 text-sm font-semibold transition ${
+                  tab === item.key
+                    ? "text-brand-600 after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-brand-500"
+                    : "text-gray-500 hover:text-gray-800"
+                }`}
+              >
+                {item.label}
+
+                {count > 0 && (
+                  <span
+                    className={`ml-2 rounded-full px-2 py-0.5 text-xs font-bold ${
+                      isPaymentPending
+                        ? "bg-danger-50 text-danger-500"
+                        : "bg-brand-50 text-brand-600"
+                    }`}
+                  >
+                    {count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </Surface>
 

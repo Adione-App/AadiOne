@@ -52,6 +52,25 @@ export function generateNumericOtp(length: number, random: () => number = Math.r
   return out;
 }
 
+/**
+ * The specific, house/street part of an address, shown FIRST wherever an
+ * address appears compactly (Cart's address bar, the address picker, Order
+ * Tracking, the COD confirm popup) — `area` alone is what the customer typed
+ * as "Address Line 2" on the address form (see AddressFormScreen), so
+ * showing only `area, city` was really showing line 2 while dropping line 1
+ * (house number/street) entirely. Falls back to `area` only when there's no
+ * house/street at all, so an older address saved without one still shows
+ * something.
+ */
+export function addressPrimaryLine(parts: {
+  houseNo?: string | null;
+  street?: string | null;
+  area?: string | null;
+}): string {
+  const line = [parts.houseNo, parts.street].filter((v): v is string => Boolean(v && v.trim())).join(', ');
+  return line || parts.area || '';
+}
+
 /** "Near Shiv Mandir, Main Road, Sikar, Rajasthan 332001" from address parts. */
 export function formatAddressLine(parts: {
   houseNo?: string | null;

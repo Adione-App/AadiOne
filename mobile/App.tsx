@@ -251,11 +251,33 @@ export default function App() {
           // memory.
           maxAge: 7 * 24 * 60 * 60_000,
           // Bump this whenever a persisted DTO shape changes incompatibly
-          // (e.g. HomeFeedDto gaining a required `categoryRails` field) — it
-          // invalidates every previously persisted cache instead of letting
-          // an old shape get restored into code that now assumes the new
-          // one, which crashes on render rather than just refetching.
-          buster: "v2",
+          // (e.g. HomeFeedDto gaining a required `categoryRails` field), or
+          // — as here — whenever what's ALLOWED to be persisted changes.
+          // `shouldDehydrateQuery` below only takes effect on the next save;
+          // without bumping this, a device that already has an old snapshot
+          // on disk (written before cart/orders were excluded) would still
+          // restore that stale cart/order data one more time before its next
+          // save overwrites it clean. Bumping discards every old snapshot
+          // outright, so the exclusion is in effect from the very next
+          // launch instead of one session later.
+          buster: "v3",
+          // Cart and order data are excluded from disk persistence entirely.
+          // Unlike Home/categories/products — read-heavy, low-stakes, fine to
+          // paint stale-then-refresh — a week-old cart or order snapshot is
+          // an ACTIVE mistake, not just a stale paint: it directly caused a
+          // cancelled order's items to reappear as if they were still in the
+          // cart on a later app open, and a cancelled order to still read
+          // "Ongoing" until something happened to trigger a refetch. These
+          // queries hit the network fresh every time they're first observed
+          // in a session (see `refetchOnMount: 'always'` on them in
+          // queries.ts) — persistence would only reintroduce that staleness
+          // window, not help it.
+          dehydrateOptions: {
+            shouldDehydrateQuery: (query) => {
+              const rootKey = query.queryKey[0];
+              return rootKey !== "cart" && rootKey !== "orders" && rootKey !== "order";
+            },
+          },
         }}
       >
         <StatusBar style="dark" />

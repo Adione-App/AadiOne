@@ -3,47 +3,66 @@
  *
  * ARCHITECTURE (see queries.ts's `write()` for the other half of this fix):
  *
- * 1. OPTIMISTIC QTY — `pendingQtyRef` is the qty a variant shows *right now*,
- *    ahead of the server confirming it. It's a ref, not state, so a fast
- *    second tap computes off the value the first tap just set rather than a
- *    stale one captured before the re-render landed. `qtyFor()` always reads
- *    this ref first, falling back to the real cart data only once nothing is
- *    pending for that variant.
+ * 0. TRULY SHARED OPTIMISTIC STATE — `usePendingCartStore` (a small Zustand
+ *    store, module-scoped so there is exactly ONE instance for the whole
+ *    app) holds the pending-quantity overlay and the in-flight/busy set.
+ *    This is NOT a local ref/state inside the hook — it used to be, and
+ *    that was a real bug: `useCartActions()` is called independently by
+ *    every screen AND by the tab bar (`MainTabs.tsx`, for the cart badge).
+ *    Each call used to get its OWN local pending state, so a tap on a
+ *    product card in Home updated Home's own hook instance instantly, but
+ *    the badge — a DIFFERENT hook instance living in a different component
+ *    tree — had no way to know a tap happened anywhere except by waiting
+ *    for the mutation's network response to update the shared React Query
+ *    cache. That round trip was the entire 2–3 second delay: the card
+ *    looked instant, the badge did not, because only the badge's copy of
+ *    "what's pending" was still waiting on the network. Routing pending
+ *    qty/busy through one shared store makes a tap ANYWHERE update EVERY
+ *    subscriber (badge, every open screen) in the same tick, not just the
+ *    screen the tap happened on.
+ *
+ * 1. OPTIMISTIC QTY — the store's `pendingQty` map is the qty a variant
+ *    shows *right now*, ahead of the server confirming it. Reads inside
+ *    imperative code (`dispatch`, `add`/`increment`/`decrement`) always go
+ *    through `usePendingCartStore.getState()` rather than a value captured
+ *    at the last render, so a fast second tap computes off the value the
+ *    first tap just set rather than a stale one. Every component using
+ *    this hook ALSO subscribes to the store reactively, which is what
+ *    makes React re-render it the instant any tap — anywhere — changes the
+ *    shared state.
  *
  * 2. ONE REQUEST IN FLIGHT PER VARIANT, SENT IMMEDIATELY, NO DEBOUNCE — every
  *    tap dispatches straight away; there is no artificial delay. If a
- *    request for a variant is already in flight, a new tap only updates the
- *    optimistic qty and returns — `dispatch`'s own `finally` notices the
- *    target moved and immediately re-dispatches once the current request
- *    settles. This isn't for smoothness (the UI is already instant); it's
- *    required for correctness: `POST /cart/items` is ADDITIVE server-side
- *    (qty sent is added to whatever's already there), so two concurrent
- *    "create the line" requests for the same variant would double-count.
- *    Serializing keeps exactly one request in flight, which both prevents
- *    that and means a stale response can never land after a newer one —
- *    there's only ever one response to receive at a time.
+ *    request for a variant is already in flight (checked against the
+ *    SHARED busy set, so this is true regardless of which screen started
+ *    it), a new tap only updates the optimistic qty and returns —
+ *    `dispatch`'s own `finally` notices the target moved and immediately
+ *    re-dispatches once the current request settles. This isn't for
+ *    smoothness (the UI is already instant); it's required for
+ *    correctness: `POST /cart/items` is ADDITIVE server-side (qty sent is
+ *    added to whatever's already there), so two concurrent "create the
+ *    line" requests for the same variant would double-count. Serializing
+ *    keeps exactly one request in flight, which both prevents that and
+ *    means a stale response can never land after a newer one — there's
+ *    only ever one response to receive at a time.
  *
  * 3. KNOWING WHETHER A LINE ALREADY EXISTS — a fresh dispatch (a real tap)
  *    reads this from `linesRef.current`, i.e. the live `cart` query data,
  *    never from a value cached on a previous tap. That data is shared across
  *    every screen (see queries.ts's `write()`), so it's correct regardless
- *    of which screen last touched the cart — this used to be cached in a
- *    ref that persisted for the hook's whole lifetime, which is exactly what
- *    broke: add a product from Home, clear the cart from the Cart screen,
- *    then tap Add on that product from Home again — Home's cache still
- *    "remembered" the line id the clear had just deleted, so it sent a PATCH
- *    to a cart item that no longer existed and the server correctly said
- *    "Cart item not found." A CHAINED re-dispatch (point 2, same synchronous
- *    continuation as the response it's reacting to) is the one place a fresh
- *    read would still be one render behind, so that case alone passes the
- *    just-confirmed line through as an explicit argument instead.
+ *    of which screen last touched the cart. A CHAINED re-dispatch (point 2,
+ *    same synchronous continuation as the response it's reacting to) is the
+ *    one place a fresh read would still be one render behind, so that case
+ *    alone passes the just-confirmed line through as an explicit argument
+ *    instead.
  *
- * 4. CLEAR ALL vs PER-ITEM TAPS — `clearInFlightRef` holds the in-progress
- *    clear's promise. A per-item dispatch that starts while a clear is
- *    running awaits it first, then re-reads pending/known state fresh. This
- *    is what stops "Delete B, then Clear All, then Add A" from racing: the
- *    Add's actual request can never be answered by a clear response that was
- *    computed before the add happened.
+ * 4. CLEAR ALL vs PER-ITEM TAPS — a module-level (so, again, genuinely
+ *    shared) `clearInFlightPromise` holds the in-progress clear's promise.
+ *    A per-item dispatch that starts while a clear is running awaits it
+ *    first, then re-reads pending/known state fresh. This is what stops
+ *    "Delete B, then Clear All, then Add A" from racing — including across
+ *    different screens — the Add's actual request can never be answered by
+ *    a clear response that was computed before the add happened.
  *
  * 5. STABLE FUNCTION IDENTITIES — every function this hook returns is
  *    `useCallback`'d with an empty dependency array and reads all changing
@@ -55,13 +74,125 @@
  *    different product's quantity changes.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CartDto } from "@shared";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { create } from "zustand";
+import type { CartDto, ProductSummaryDto, VariantDto } from "@shared";
 import { ApiRequestError } from "./api";
 import { useCart, useCartMutations } from "./queries";
 import { useLocation } from "@/lib/store";
 
 type KnownLine = { id: string; qty: number } | null;
+
+/**
+ * Enough product/variant display data to render a cart LINE for a variant
+ * that has never been added before — i.e. the exact moment "Add" is tapped,
+ * before the server has confirmed a line exists at all. Without this, the
+ * FIRST add of a product had nothing to show in `optimisticCart.items`
+ * (there was no existing `cart.items` entry to apply the pending qty to),
+ * so the tapped card itself updated instantly (it reads `qtyFor` directly)
+ * but the cart badge / Cart screen — which read the full item list — stayed
+ * at their old numbers until the network round trip landed. Passed in by
+ * whichever screen has the product data at hand (ProductCard builds it from
+ * its own `product`/`variant` props; see `snapshotFromProduct` below).
+ */
+export interface CartItemSnapshot {
+  productId: string;
+  productName: string;
+  variantName: string;
+  brandName: string | null;
+  imageUrl: string | null;
+  mrpPaise: number;
+  unitPricePaise: number;
+  inStock: boolean;
+  availableQty: number;
+  maxQtyPerOrder: number;
+  allowCod: boolean;
+}
+
+export function snapshotFromProduct(
+  product: Pick<ProductSummaryDto, "id" | "name" | "brandName" | "thumbUrl">,
+  variant: VariantDto,
+): CartItemSnapshot {
+  return {
+    productId: product.id,
+    productName: product.name,
+    variantName: variant.variantName,
+    brandName: product.brandName,
+    imageUrl: variant.imageUrl ?? product.thumbUrl,
+    mrpPaise: variant.mrpPaise,
+    unitPricePaise: variant.pricePaise,
+    inStock: variant.inStock,
+    availableQty: variant.availableQty,
+    maxQtyPerOrder: variant.maxQtyPerOrder,
+    allowCod: variant.allowCod,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* SHARED pending-cart store — see file header, point 0.                     */
+/* -------------------------------------------------------------------------- */
+
+interface PendingCartState {
+  /** variantId -> the qty it should show right now, ahead of the server. */
+  pendingQty: Record<string, number>;
+  /** variantId -> true while a request for it is in flight. */
+  busyVariants: Record<string, boolean>;
+  /**
+   * variantId -> display data for a variant added while it has no confirmed
+   * server line yet, so `optimisticCart` can synthesize a full line for it
+   * instead of only knowing its bare quantity. Never cleared: harmless to
+   * keep (bounded by distinct variants touched this session, a few hundred
+   * bytes each) and simpler than reasoning about exactly when it's safe to
+   * drop — once a real line exists in `cart.items`, the snapshot is just
+   * unused, not wrong.
+   */
+  pendingSnapshots: Record<string, CartItemSnapshot>;
+  setPending: (variantId: string, qty: number) => void;
+  clearPending: (variantId: string) => void;
+  setBusy: (variantId: string, busy: boolean) => void;
+  setSnapshot: (variantId: string, snapshot: CartItemSnapshot) => void;
+}
+
+const usePendingCartStore = create<PendingCartState>((set) => ({
+  pendingQty: {},
+  busyVariants: {},
+  pendingSnapshots: {},
+
+  setPending: (variantId, qty) =>
+    set((state) => ({ pendingQty: { ...state.pendingQty, [variantId]: qty } })),
+
+  setSnapshot: (variantId, snapshot) =>
+    set((state) => ({
+      pendingSnapshots: { ...state.pendingSnapshots, [variantId]: snapshot },
+    })),
+
+  clearPending: (variantId) =>
+    set((state) => {
+      if (!(variantId in state.pendingQty)) return state;
+      const next = { ...state.pendingQty };
+      delete next[variantId];
+      return { pendingQty: next };
+    }),
+
+  setBusy: (variantId, busy) =>
+    set((state) => {
+      if (busy) {
+        if (state.busyVariants[variantId]) return state;
+        return { busyVariants: { ...state.busyVariants, [variantId]: true } };
+      }
+      if (!(variantId in state.busyVariants)) return state;
+      const next = { ...state.busyVariants };
+      delete next[variantId];
+      return { busyVariants: next };
+    }),
+}));
+
+/**
+ * Serializes Clear Cart against every screen's dispatches, not just calls
+ * made through the same hook instance — module scope, so there is exactly
+ * one of these for the whole app, same reasoning as the store above.
+ */
+let clearInFlightPromise: Promise<void> | null = null;
 
 export function useCartActions() {
   // IMPORTANT: pass the current serviceability distance
@@ -72,17 +203,24 @@ export function useCartActions() {
 
   const distanceKm = serviceability?.distanceKm ?? null;
 
-  const { data: cart } = useCart(distanceKm);
+  const {
+    data: cart,
+    isLoading: cartIsLoading,
+    isError: cartIsError,
+    refetch: refetchCart,
+  } = useCart(distanceKm);
 
   const mutations = useCartMutations();
-  const { addItem, updateQty, removeItem, clearCart } = mutations;
 
   const [error, setError] = useState<string | null>(null);
 
-  // Mirrors pendingQtyRef so changing it triggers a re-render; the ref is
-  // what's actually read/written synchronously during rapid taps.
-  const pendingQtyRef = useRef<Record<string, number>>({});
-  const [, forceRender] = useState(0);
+  // Reactive subscriptions: purely so THIS component re-renders the instant
+  // ANY component's tap changes the shared store — including one that
+  // happened in a totally different screen. `pendingQty`/`busyVariants` are
+  // replaced (not mutated) on every store update, so reference-equality
+  // (Zustand's default) reliably detects every change.
+  const pendingQty = usePendingCartStore((state) => state.pendingQty);
+  const busyVariants = usePendingCartStore((state) => state.busyVariants);
 
   const linesByVariant = useMemo(() => {
     const map = new Map<string, CartDto["items"][number]>();
@@ -94,8 +232,16 @@ export function useCartActions() {
     return map;
   }, [cart]);
 
-  // Read by dispatch()/clear()/the unmount flush without needing any of
-  // these in their own dependency lists — see file header, point 5.
+  // Read by dispatch()/clear() without needing any of these in their own
+  // dependency lists — see file header, point 5.
+  // Real refs — a STABLE object mutated in place every render, not a new
+  // object each time (a `useMemo`-built `{ current }` would be a fresh
+  // object on every change, which is NOT the same thing: `add`/`increment`/
+  // etc. below are `useCallback`'d with an empty dep array, so the `dispatch`
+  // closure they capture is fixed at mount forever — it only stays correct
+  // because it dereferences `.current` on a ref object whose IDENTITY never
+  // changes, only its contents. A `useMemo` swap-the-object approach would
+  // leave that mount-time closure reading data frozen from the first render.
   const linesRef = useRef(linesByVariant);
   linesRef.current = linesByVariant;
   const distanceKmRef = useRef(distanceKm);
@@ -105,32 +251,136 @@ export function useCartActions() {
   const mutationsRef = useRef(mutations);
   mutationsRef.current = mutations;
 
-  const qtyForImpl = (variantId: string): number =>
-    variantId in pendingQtyRef.current
-      ? pendingQtyRef.current[variantId]!
+  // Always the absolute-latest value, whether called during render or from
+  // an event handler / async continuation — see file header, point 1.
+  const qtyForImpl = (variantId: string): number => {
+    const pending = usePendingCartStore.getState().pendingQty;
+    return variantId in pending
+      ? pending[variantId]!
       : (linesRef.current.get(variantId)?.qty ?? 0);
+  };
 
   const setPending = (variantId: string, qty: number): void => {
-    pendingQtyRef.current = { ...pendingQtyRef.current, [variantId]: qty };
-    forceRender((n) => n + 1);
+    usePendingCartStore.getState().setPending(variantId, qty);
   };
 
   const clearPending = (variantId: string): void => {
-    if (!(variantId in pendingQtyRef.current)) return;
-    const next = { ...pendingQtyRef.current };
-    delete next[variantId];
-    pendingQtyRef.current = next;
-    forceRender((n) => n + 1);
+    usePendingCartStore.getState().clearPending(variantId);
   };
 
-  const busyVariants = useRef<Set<string>>(new Set());
-  const clearInFlightRef = useRef<Promise<void> | null>(null);
+  const isBusyImpl = (variantId: string): boolean =>
+    Boolean(usePendingCartStore.getState().busyVariants[variantId]);
 
-  const busy =
-    addItem.isPending ||
-    updateQty.isPending ||
-    removeItem.isPending ||
-    clearCart.isPending;
+  /**
+   * The cart, repriced against whatever quantities are CURRENTLY pending —
+   * i.e. what the customer's last tap asked for, not what the server has
+   * confirmed yet. This is the single source every screen (cart badge, Cart
+   * screen bill, sticky "N items" bars) reads instead of the raw server
+   * `cart`, so a quantity change is reflected everywhere in the same render
+   * instead of only once the mutation's response lands.
+   *
+   * Only per-unit arithmetic is redone here — each line's own
+   * `unitPricePaise`/`mrpPaise` is already server-priced and fixed
+   * regardless of qty, so `unitPricePaise × qty` is exact, not a guess.
+   * `deliveryFeePaise` / `platformFeePaise` / `couponDiscountPaise` are left
+   * exactly as the server last reported: they're policy (e.g. a
+   * free-delivery threshold, a coupon's own rules), not something this hook
+   * has the rules to recompute, and duplicating that logic client-side is
+   * exactly the kind of drift-prone "trust the client's math" bug this
+   * codebase deliberately avoids elsewhere. They catch up on the next real
+   * cart response, same as a brand-new line for a product not yet in
+   * `cart.items` (which has nothing local to reprice until the server
+   * confirms it).
+   */
+  const optimisticCart = useMemo<CartDto | undefined>(() => {
+    if (!cart) return cart;
+
+    let itemsSubtotalPaise = 0;
+    let itemDiscountPaise = 0;
+    let itemCount = 0;
+
+    const items = cart.items
+      .map((item) => {
+        const qty =
+          item.variantId in pendingQty ? pendingQty[item.variantId]! : item.qty;
+        if (qty <= 0) return null;
+
+        const lineTotalPaise = item.unitPricePaise * qty;
+        const lineDiscountPaise = Math.max(
+          0,
+          (item.mrpPaise - item.unitPricePaise) * qty,
+        );
+
+        itemsSubtotalPaise += lineTotalPaise;
+        itemDiscountPaise += lineDiscountPaise;
+        itemCount += qty;
+
+        return { ...item, qty, lineTotalPaise, lineDiscountPaise };
+      })
+      .filter((item): item is CartDto["items"][number] => item !== null);
+
+    // A variant pending its FIRST-EVER add has no entry in `cart.items` yet
+    // (the server hasn't created the line), so the loop above never sees it
+    // — this is what left the badge/Cart screen showing the old count until
+    // the network response landed, even though the tapped card itself (which
+    // reads `qtyFor` directly) looked instant. Synthesize a line from the
+    // snapshot the tapping screen supplied, so it shows up everywhere in the
+    // same tick as the tap.
+    const knownVariantIds = new Set(items.map((item) => item.variantId));
+    const snapshots = usePendingCartStore.getState().pendingSnapshots;
+
+    for (const [variantId, qty] of Object.entries(pendingQty)) {
+      if (qty <= 0 || knownVariantIds.has(variantId)) continue;
+      const snapshot = snapshots[variantId];
+      if (!snapshot) continue;
+
+      const lineTotalPaise = snapshot.unitPricePaise * qty;
+      const lineDiscountPaise = Math.max(
+        0,
+        (snapshot.mrpPaise - snapshot.unitPricePaise) * qty,
+      );
+
+      itemsSubtotalPaise += lineTotalPaise;
+      itemDiscountPaise += lineDiscountPaise;
+      itemCount += qty;
+
+      items.push({
+        id: `pending-${variantId}`,
+        variantId,
+        qty,
+        lineTotalPaise,
+        lineDiscountPaise,
+        ...snapshot,
+      });
+    }
+
+    const netItemsPaise = itemsSubtotalPaise - cart.bill.couponDiscountPaise;
+    const totalPaise =
+      netItemsPaise + cart.bill.deliveryFeePaise + cart.bill.platformFeePaise;
+
+    return {
+      ...cart,
+      items,
+      bill: {
+        ...cart.bill,
+        itemCount,
+        itemsSubtotalPaise,
+        itemDiscountPaise,
+        totalSavingsPaise: itemDiscountPaise + cart.bill.couponDiscountPaise,
+        totalPaise,
+      },
+    };
+    // `pendingQty` is a new object reference on every store update (see the
+    // store above), so this recomputes exactly when it should.
+  }, [cart, pendingQty]);
+
+  // Derived from the SHARED busy set (also true while Clear Cart is
+  // running — `clear()` marks every affected variant busy) rather than this
+  // particular hook instance's own `useMutation` `.isPending` flags, which
+  // would have the same cross-screen blind spot `pendingQty` used to have:
+  // a mutation fired by a DIFFERENT screen's hook instance wouldn't flip
+  // THIS instance's `.isPending` at all.
+  const busy = Object.keys(busyVariants).length > 0;
 
   /**
    * Sends whatever qty is CURRENTLY pending for one variant. Safe to call
@@ -141,10 +391,11 @@ export function useCartActions() {
     // A Clear All is in progress — its response must land and be applied
     // before this variant's own request is allowed to go out, or a clear
     // response computed before this tap could later overwrite it.
-    if (clearInFlightRef.current) await clearInFlightRef.current;
+    if (clearInFlightPromise) await clearInFlightPromise;
 
-    if (busyVariants.current.has(variantId)) return;
-    const targetQty = pendingQtyRef.current[variantId];
+    const store = usePendingCartStore.getState();
+    if (store.busyVariants[variantId]) return;
+    const targetQty = store.pendingQty[variantId];
     if (targetQty === undefined) return;
 
     // `chainedKnown` is only passed by the same-tick re-dispatch below, right
@@ -156,13 +407,14 @@ export function useCartActions() {
     if (targetQty <= 0 && !known) {
       // Already empty server-side — nothing to sync for a decrement-to-zero
       // that resolved before any line was ever created.
-      if (pendingQtyRef.current[variantId] === targetQty) clearPending(variantId);
+      if (usePendingCartStore.getState().pendingQty[variantId] === targetQty) {
+        clearPending(variantId);
+      }
       return;
     }
 
     setError(null);
-    busyVariants.current.add(variantId);
-    forceRender((n) => n + 1);
+    usePendingCartStore.getState().setBusy(variantId, true);
 
     const { addItem: add_, updateQty: update_ } = mutationsRef.current;
     // Set on success to the line this response just confirmed (or null), so
@@ -181,8 +433,9 @@ export function useCartActions() {
             qty: Math.max(0, targetQty),
             distanceKm: distanceKmRef.current,
           })
-        : // Additive server-side. Safe ONLY because busyVariants guarantees
-          // this is the sole in-flight request for this variant, so "0 +
+        : // Additive server-side. Safe ONLY because the shared busy set
+          // guarantees this is the sole in-flight request for this
+          // variant — across every screen, not just this one — so "0 +
           // targetQty" is exactly the qty the user asked for.
           await add_.mutateAsync({
             variantId,
@@ -199,9 +452,9 @@ export function useCartActions() {
           : "Could not update your cart.",
       );
     } finally {
-      busyVariants.current.delete(variantId);
+      usePendingCartStore.getState().setBusy(variantId, false);
 
-      if (pendingQtyRef.current[variantId] === targetQty) {
+      if (usePendingCartStore.getState().pendingQty[variantId] === targetQty) {
         // Nothing changed while this was in flight — the response we just
         // applied IS the current truth, so the optimistic cover can drop.
         clearPending(variantId);
@@ -214,44 +467,35 @@ export function useCartActions() {
     }
   };
 
-  // A tap must not be silently dropped just because the screen it was made
-  // on unmounts before its request finishes (e.g. navigating away right
-  // after tapping). `mutate` (not `mutateAsync`) is used because the request
-  // should outlive this component, and nothing here needs to await it.
-  useEffect(() => {
-    return () => {
-      for (const variantId of Object.keys(pendingQtyRef.current)) {
-        if (busyVariants.current.has(variantId)) continue; // already in flight, will complete on its own
-        const targetQty = pendingQtyRef.current[variantId];
-        if (targetQty === undefined) continue;
-
-        const known = linesRef.current.get(variantId) ?? null;
-
-        if (known) {
-          updateQty.mutate({
-            cartItemId: known.id,
-            qty: Math.max(0, targetQty),
-            distanceKm: distanceKmRef.current,
-          });
-        } else if (targetQty > 0) {
-          addItem.mutate({ variantId, qty: targetQty, distanceKm: distanceKmRef.current });
-        }
-      }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    };
-  }, []);
+  // NOTE on "a tap must not be silently dropped when a screen unmounts":
+  // the previous, per-component version of this hook had an unmount effect
+  // that manually re-fired any pending-but-not-yet-dispatched request,
+  // because its pending state was a ref local to that one component — once
+  // it unmounted, nothing else would ever look at that ref again.
+  //
+  // That's no longer possible to lose: `pendingQty`/`busyVariants` now live
+  // in the module-level store above, not in this component. `dispatch()` is
+  // a plain async closure over that shared store and the mutation
+  // functions — once called, it keeps running to completion (or to its own
+  // re-dispatch) as a normal JS promise chain, completely independent of
+  // whether the screen that happened to trigger it is still mounted. There
+  // is no per-screen cleanup left to do.
 
   // Stable across every render (empty dep arrays) — see file header, point 5.
   // Everything each closure needs comes from a ref, never from render scope.
   const qtyFor = useCallback((variantId: string): number => qtyForImpl(variantId), []);
 
   const isBusy = useCallback(
-    (variantId: string): boolean => busyVariants.current.has(variantId),
+    (variantId: string): boolean => isBusyImpl(variantId),
     [],
   );
 
-  const add = useCallback((variantId: string, qty = 1): void => {
-    setPending(variantId, qtyForImpl(variantId) + qty);
+  const add = useCallback((variantId: string, snapshot?: CartItemSnapshot): void => {
+    // Stored BEFORE setPending so the same render pass that reacts to the
+    // new pendingQty already has display data to synthesize a line with —
+    // see `optimisticCart` above.
+    if (snapshot) usePendingCartStore.getState().setSnapshot(variantId, snapshot);
+    setPending(variantId, qtyForImpl(variantId) + 1);
     void dispatch(variantId);
   }, []);
 
@@ -278,15 +522,16 @@ export function useCartActions() {
 
     setError(null);
 
+    const store = usePendingCartStore.getState();
     for (const item of items) {
       // A per-item request mid-flight or one that's about to fire from a
       // just-set pending qty would otherwise land after the clear and put
-      // the item right back. clearInFlightRef (below) additionally holds
-      // off any NEW tap's request until this clear has fully settled.
-      clearPending(item.variantId);
-      busyVariants.current.add(item.variantId);
+      // the item right back. `clearInFlightPromise` (below) additionally
+      // holds off any NEW tap's request — from any screen — until this
+      // clear has fully settled.
+      store.clearPending(item.variantId);
+      store.setBusy(item.variantId, true);
     }
-    forceRender((n) => n + 1);
 
     const run = (async () => {
       try {
@@ -301,17 +546,26 @@ export function useCartActions() {
             : "Could not clear your cart.",
         );
       } finally {
-        for (const item of items) busyVariants.current.delete(item.variantId);
+        const current = usePendingCartStore.getState();
+        for (const item of items) current.setBusy(item.variantId, false);
       }
     })();
 
-    clearInFlightRef.current = run;
+    clearInFlightPromise = run;
     await run;
-    if (clearInFlightRef.current === run) clearInFlightRef.current = null;
+    if (clearInFlightPromise === run) clearInFlightPromise = null;
   }, []);
 
   return {
-    cart,
+    // The optimistic view — see `optimisticCart` above. Every screen
+    // (badge, Cart screen, sticky bars) should read cart state through
+    // this hook rather than calling `useCart()` directly, so they all
+    // share the exact same instantly-updating numbers instead of each
+    // being its own separately-lagging source of truth.
+    cart: optimisticCart,
+    isLoading: cartIsLoading,
+    isError: cartIsError,
+    refetch: refetchCart,
     error,
     busy,
 

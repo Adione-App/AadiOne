@@ -23,7 +23,6 @@ import ProductDetailScreen from "@/screens/catalog/ProductDetailScreen";
 import RailProductsScreen from "@/screens/catalog/RailProductsScreen";
 
 import CartScreen from "@/screens/cart/CartScreen";
-import CheckoutScreen from "@/screens/checkout/CheckoutScreen";
 import OrderTrackingScreen from "@/screens/orders/OrderTrackingScreen";
 import OrdersListScreen from "@/screens/orders/OrdersListScreen";
 
@@ -254,21 +253,9 @@ export function CartStack() {
       <CartNav.Screen name="CartHome">
         {({ navigation }) => (
           <CartScreen
-            onCheckout={() => navigation.navigate("Checkout")}
+            onAddAddress={() => navigation.navigate("AddressForm")}
             onBrowse={() => navigation.getParent()?.navigate("Home")}
-          />
-        )}
-      </CartNav.Screen>
-
-      {/* ---------------------------------------------------------------
-          CHECKOUT
-      --------------------------------------------------------------- */}
-
-      <CartNav.Screen name="Checkout">
-        {({ navigation }) => (
-          <CheckoutScreen
-            onBack={() => navigation.goBack()}
-            onAddAddress={() => navigation.navigate("Addresses")}
+            onOpenSearch={() => navigation.getParent()?.navigate("Search")}
             onPlaced={(order, requiresPayment) =>
               requiresPayment
                 ? navigation.replace("UpiPayment", {
@@ -295,11 +282,19 @@ export function CartStack() {
                 orderId: route.params.orderId,
               })
             }
+            // Left the screen without cancelling — a real payment attempt
+            // may still be in flight, so land on Order Tracking where the
+            // customer can check its status later.
             onCancel={() =>
               navigation.replace("OrderTracking", {
                 orderId: route.params.orderId,
               })
             }
+            // The order was actually cancelled (nothing was ever attempted)
+            // — there's nothing to track, so go back to a normal cart
+            // instead of a tracking page for an order that no longer
+            // matters.
+            onCancelled={() => navigation.replace("CartHome")}
           />
         )}
       </CartNav.Screen>

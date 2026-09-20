@@ -123,6 +123,13 @@ export function useCart(distanceKm: number | null = null) {
           ? `/cart?distanceKm=${encodeURIComponent(distanceKm)}`
           : "/cart",
       ),
+    // The cart must never sit on a stale answer just because it was already
+    // in memory — every screen that shows it refetches fresh the instant
+    // it's observed, regardless of the app's default 30s staleTime. Without
+    // this, an order placed on one screen could leave the cart looking
+    // unchanged for up to 30s on another that had it cached (e.g. re-opening
+    // the Cart tab right after checkout).
+    refetchOnMount: "always",
   });
 }
 
@@ -309,6 +316,10 @@ export function useOrders() {
   return useQuery({
     queryKey: keys.orders,
     queryFn: () => api.get<CursorPage<OrderSummaryDto>>("/orders?limit=20"),
+    // A cancelled/delivered order must show its real status the moment this
+    // list is opened, not whatever it was up to 30s ago — see useCart's same
+    // reasoning above.
+    refetchOnMount: "always",
   });
 }
 
@@ -319,5 +330,6 @@ export function useOrder(id: string, live: boolean) {
     // Polling backs up the socket. A tracking screen that silently stops
     // updating is worse than one that costs a request every 30 seconds.
     refetchInterval: live ? 30_000 : false,
+    refetchOnMount: "always",
   });
 }

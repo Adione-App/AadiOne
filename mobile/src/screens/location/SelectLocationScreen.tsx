@@ -11,6 +11,7 @@ import * as Location from "expo-location";
 import { useQuery } from "@tanstack/react-query";
 import type { AddressDto } from "@shared";
 import { colors, radius, spacing } from "@shared/theme";
+import { addressPrimaryLine } from "@shared/text";
 import { api } from "@/lib/api";
 import { useLocation } from "@/lib/store";
 import { AppText, Button, Card, Loading, Screen } from "@/components/ui";
@@ -89,7 +90,7 @@ export default function SelectLocationScreen({
     void setLocation({
       latitude: address.latitude,
       longitude: address.longitude,
-      label: [address.area, address.city, address.pincode]
+      label: [addressPrimaryLine(address), address.city, address.pincode]
         .filter(Boolean)
         .join(", "),
     });

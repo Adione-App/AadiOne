@@ -4,13 +4,12 @@
  */
 
 import { useEffect, useRef } from "react";
-import { Animated, View, StyleSheet } from "react-native";
+import { Animated, Easing, View, StyleSheet } from "react-native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { colors, layout, spacing } from "@shared/theme";
-import { useCart } from "@/lib/queries";
-import { useLocation } from "@/lib/store";
+import { useCartActions } from "@/lib/useCartActions";
 
 import {
   AccountStack,
@@ -65,19 +64,114 @@ function AnimatedTabIcon({
   );
 }
 
-export function MainTabs() {
-  // Every other screen reads the cart through `useCartActions`, which uses
-  // the real serviceability distance once location is known. Reading the
-  // badge from `useCart()` (distanceKm defaulting to `null`) made this a
-  // SECOND, independently-fetched cache entry for the same cart — mutations
-  // kept both in sync, but each entry's own background refetches raced
-  // independently, which is exactly the kind of split source of truth that
-  // let the badge drift out of sync with what the Cart screen showed. Using
-  // the same key here collapses the whole app onto one cart query.
-  const serviceability = useLocation((state) => state.serviceability);
-  const distanceKm = serviceability?.distanceKm ?? null;
+/**
+ * Cart tab badge — a custom one (not `options.tabBarBadge`) specifically so
+ * it can pulse on every count change: React Navigation's built-in badge is
+ * just a plain Text/View pair it renders internally, with no hook for
+ * animating it. This is also the app's one "added to cart" cue that's
+ * visible from anywhere — a flying icon from the tapped product card would
+ * need to cross between independent per-tab navigators (Home/Category/
+ * Product Detail all live in different stacks from the tab bar itself),
+ * which is a lot of fragile cross-screen position math for the same
+ * "something just changed in your cart" signal this already gives instantly
+ * and reliably, wherever the tap happened.
+ */
+function CartBadge({ count }: { count: number }) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const prevCount = useRef(count);
 
-  const { data: cart } = useCart(distanceKm);
+  useEffect(() => {
+    if (count === prevCount.current) return;
+    prevCount.current = count;
+
+    scale.setValue(0.6);
+    Animated.spring(scale, {
+      toValue: 1,
+      friction: 5,
+      tension: 260,
+      useNativeDriver: true,
+    }).start();
+  }, [count, scale]);
+
+  if (count <= 0) return null;
+
+  return (
+    <Animated.View
+      style={[styles.badge, { transform: [{ scale }] }]}
+      pointerEvents="none"
+    >
+      <Animated.Text style={styles.badgeText}>
+        {count > 9 ? "9+" : count}
+      </Animated.Text>
+    </Animated.View>
+  );
+}
+
+/**
+ * Pops the given scale value once when `trigger` changes — used on the Cart
+ * icon itself (not just its badge number) so an add registers as one
+ * cohesive pulse of the whole icon, not just a number changing in the
+ * corner.
+ */
+function usePulse(trigger: number) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const prev = useRef(trigger);
+
+  useEffect(() => {
+    if (trigger === prev.current) return;
+    prev.current = trigger;
+
+    Animated.sequence([
+      Animated.timing(scale, {
+        toValue: 1.22,
+        duration: 120,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }),
+      Animated.timing(scale, {
+        toValue: 1,
+        duration: 180,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [trigger, scale]);
+
+  return scale;
+}
+
+/** A real component (not an inline callback) so `usePulse`'s hook is safe to call. */
+function CartTabIcon({
+  color,
+  focused,
+  count,
+}: {
+  color: string;
+  focused: boolean;
+  count: number;
+}) {
+  const pulse = usePulse(count);
+
+  return (
+    <AnimatedTabIcon color={color} focused={focused}>
+      <Animated.View style={{ transform: [{ scale: pulse }] }}>
+        <CartIcon color={color} focused={focused} />
+      </Animated.View>
+      <CartBadge count={count} />
+    </AnimatedTabIcon>
+  );
+}
+
+export function MainTabs() {
+  // Reads through `useCartActions` — same hook every other cart-touching
+  // screen uses — rather than calling `useCart()` directly, so the badge
+  // shows the exact same OPTIMISTIC count a product card or the Cart screen
+  // is already showing, updated the instant a tap happens rather than only
+  // once the mutation's response lands. A second, independent `useCart()`
+  // call here would still share the underlying server cache entry, but its
+  // *count* would lag behind by one network round trip every time — which
+  // is exactly the "badge doesn't match what I just tapped" bug this avoids.
+  const { cart } = useCartActions();
   const insets = useSafeAreaInsets();
 
   const cartCount = cart?.bill.itemCount ?? 0;
@@ -120,12 +214,6 @@ export function MainTabs() {
 
         tabBarItemStyle: {
           paddingHorizontal: 2,
-        },
-
-        tabBarBadgeStyle: {
-          backgroundColor: colors.danger,
-          color: colors.onPrimary,
-          fontSize: 10,
         },
       }}
     >
@@ -178,20 +266,34 @@ export function MainTabs() {
       <Tab.Screen
         name="Cart"
         component={CartStack}
+        listeners={({ navigation }) => ({
+          // Placing an order lands on Order Tracking (or the UPI payment
+          // screen) via `navigation.replace` inside CartStack — deliberately,
+          // so the customer can't back-button into re-placing the same
+          // order. But `replace` leaves that screen as the top of the Cart
+          // tab's OWN stack indefinitely: switch to Home, add something new,
+          // tap the Cart tab again, and you'd land right back on the now-
+          // finished order instead of your actual cart, with no way back
+          // short of the in-screen back button. Re-pointing the tab at
+          // CartHome every time it's pressed FROM ANOTHER TAB fixes that,
+          // while leaving the normal "already on Cart, tap it again" case
+          // (e.g. mid-payment on the UPI screen) untouched — that still just
+          // pops to top as usual, so an in-progress payment isn't yanked out
+          // from under the customer by their own tab bar.
+          tabPress: (event) => {
+            if (navigation.isFocused()) return;
+            event.preventDefault();
+            navigation.navigate("Cart", { screen: "CartHome" });
+          },
+        })}
         options={{
           tabBarLabel: "Cart",
 
+          // Custom icon (not the built-in `tabBarBadge`) so the badge can
+          // pulse on every count change — see CartTabIcon/CartBadge above.
           tabBarIcon: ({ color, focused }) => (
-            <AnimatedTabIcon color={color} focused={focused}>
-              <CartIcon color={color} focused={focused} />
-            </AnimatedTabIcon>
+            <CartTabIcon color={color} focused={focused} count={cartCount} />
           ),
-
-          ...(cartCount > 0
-            ? {
-                tabBarBadge: cartCount > 9 ? "9+" : cartCount,
-              }
-            : {}),
         }}
       />
 
@@ -225,5 +327,25 @@ const styles = StyleSheet.create({
 
   iconWrapperActive: {
     backgroundColor: colors.primarySurface,
+  },
+
+  badge: {
+    position: "absolute",
+    top: -3,
+    right: 2,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    paddingHorizontal: 3,
+    backgroundColor: colors.danger,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  badgeText: {
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: "700",
+    color: colors.onPrimary,
   },
 });

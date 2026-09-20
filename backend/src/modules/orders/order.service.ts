@@ -43,6 +43,7 @@ import * as pricingService from '../pricing/pricing.service';
 import * as inventoryService from '../inventory/inventory.service';
 import * as cartService from '../cart/cart.service';
 import { transitionOrder } from './order-state.service';
+import { emitNewOrder } from '../../realtime/socket';
 
 const log = moduleLogger('orders');
 
@@ -613,6 +614,26 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
   // Notifications and socket emits happen AFTER commit — never inside a
   // transaction holding inventory locks.
   await queueOrderNotification(created, NotificationType.ORDER_PLACED);
+
+  // Tells the admin panel's live board a new order arrived — its chime and
+  // tab badges (see `web/src/pages/Orders.tsx`) are the store's only
+  // real-time cue that anything needs attention. This was previously only
+  // ever fired from `transitionOrder` for a transition LANDING ON
+  // ORDER_PLACED — never from order CREATION itself, which goes through a
+  // direct `tx.order.create` here, not `transitionOrder`. That meant every
+  // new order relied entirely on the admin panel's 20s poll to appear, and
+  // a UPI order — created straight into PENDING_PAYMENT, a status with no
+  // badge on its own tab and not the panel's default tab — was effectively
+  // invisible until the admin happened to click over there themselves.
+  // Emitting here covers BOTH paths (COD's ORDER_PLACED and UPI's
+  // PENDING_PAYMENT) the moment the order exists, not just the one that
+  // happened to go through a later transition.
+  emitNewOrder(created.storeId, {
+    orderId: created.id,
+    orderNumber: created.orderNumber,
+    status: created.status,
+    statusLabel: ORDER_STATUS_LABELS[created.status],
+  });
 
   return {
     order: await getOrderDetail(input.userId, created.id, deliveryOtp),

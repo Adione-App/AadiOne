@@ -42,10 +42,18 @@ export default function UpiPaymentScreen({
   orderId,
   onPaid,
   onCancel,
+  onCancelled,
 }: {
   orderId: string;
   onPaid: () => void;
+  /** Leaving WITHOUT cancelling — a real payment attempt may be in flight,
+   * so the order stays pending and this should land somewhere the customer
+   * can check on it later (Order Tracking). */
   onCancel: () => void;
+  /** The order was just actually cancelled — nothing to track, so this
+   * should return the customer to a normal screen (the cart), not tracking
+   * for an order that no longer exists in any meaningful sense. */
+  onCancelled: () => void;
 }) {
   const insets = useSafeAreaInsets();
 
@@ -53,6 +61,7 @@ export default function UpiPaymentScreen({
   const [utr, setUtr] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [claimIdempotencyKey] = useState(() => Crypto.randomUUID());
 
   /*
@@ -182,21 +191,64 @@ export default function UpiPaymentScreen({
     }
   }
 
+  /**
+   * Leaving before ever successfully opening a UPI app (`stage` never left
+   * "ready" — see `openUpiPayment`) means no payment was attempted at all,
+   * not even a failed one. Previously this order was left sitting as
+   * PENDING_PAYMENT forever regardless — indistinguishable from a real
+   * abandoned payment, and confusing to see in order history with nothing
+   * to actually verify. Since NOTHING was attempted, the order is safe to
+   * cancel outright (the existing self-cancel endpoint already allows this
+   * for any PENDING_PAYMENT order — see order.service.ts's
+   * `canCustomerCancel`), instead of leaving a phantom order behind. Once a
+   * UPI app HAS been opened, this reverts to the original "might have paid,
+   * leave it pending" behaviour, since a real attempt may be in flight and
+   * must never be cancelled out from under the customer.
+   */
   function confirmLeave(): void {
+    if (stage !== "ready") {
+      Alert.alert(
+        "Leave payment?",
+        "Your payment will remain pending. If you paid successfully, the store can verify it from the merchant account.",
+        [
+          { text: "Stay", style: "cancel" },
+          { text: "Go back", onPress: onCancel },
+        ],
+      );
+      return;
+    }
+
     Alert.alert(
-      "Leave payment?",
-      "Your payment will remain pending. If you paid successfully, the store can verify it from the merchant account.",
+      "Cancel this order?",
+      "You haven't made a payment yet, so this order will be cancelled. You can add items to your cart and order again anytime.",
       [
+        { text: "Stay", style: "cancel" },
         {
-          text: "Stay",
-          style: "cancel",
-        },
-        {
-          text: "Go back",
-          onPress: onCancel,
+          text: "Cancel order",
+          style: "destructive",
+          onPress: () => void cancelUnattemptedOrder(),
         },
       ],
     );
+  }
+
+  async function cancelUnattemptedOrder(): Promise<void> {
+    if (cancelling) return;
+    setCancelling(true);
+
+    try {
+      await api.post(`/orders/${orderId}/cancel`, {
+        reason: "Customer left before attempting payment",
+      });
+      onCancelled();
+    } catch {
+      // Best-effort — if cancelling fails for any reason, fall back to the
+      // original safe behaviour rather than leaving the customer stuck on
+      // this screen with no way out.
+      onCancel();
+    } finally {
+      setCancelling(false);
+    }
   }
 
   if (intent.isLoading) {
@@ -222,7 +274,13 @@ export default function UpiPaymentScreen({
         <Button
           label="Go back"
           variant="secondary"
-          onPress={onCancel}
+          // The payment intent itself failed, so — same as never opening a
+          // UPI app — nothing was ever attempted. `confirmLeave` already
+          // knows to cancel the order in that case instead of leaving it
+          // stranded as pending.
+          onPress={confirmLeave}
+          disabled={cancelling}
+          loading={cancelling}
           style={{ marginTop: spacing.base }}
         />
       </Screen>
@@ -247,6 +305,7 @@ export default function UpiPaymentScreen({
       >
         <Pressable
           onPress={confirmLeave}
+          disabled={cancelling}
           hitSlop={12}
           style={styles.back}
           accessibilityRole="button"
@@ -357,24 +416,6 @@ function ReadyPaymentView({
           style={styles.heroArtwork}
           imageStyle={styles.heroArtworkImage}
         />
-
-        <View style={styles.safePaymentBox}>
-          <View style={styles.safeIconCircle}>
-            <Ionicons
-              name="shield-checkmark"
-              size={23}
-              color={colors.primary}
-            />
-          </View>
-          <AppText
-            variant="caption"
-            color={colors.textPrimary}
-            style={styles.safeText}
-          >
-            Your payment
-            {"\n"}is safe
-          </AppText>
-        </View>
       </View>
 
       {/* How it works */}
@@ -825,36 +866,6 @@ const styles = StyleSheet.create({
 
   heroArtworkImage: {
     opacity: 1,
-  },
-
-  safePaymentBox: {
-    position: "absolute",
-    right: 9,
-    top: 42,
-    width: 76,
-    minHeight: 78,
-    borderRadius: 14,
-    backgroundColor: "#DFF4E7",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 7,
-    zIndex: 3,
-  },
-
-  safeIconCircle: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 3,
-  },
-
-  safeText: {
-    textAlign: "center",
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: "700",
   },
 
   howCard: {

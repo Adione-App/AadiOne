@@ -36,6 +36,7 @@ import { OrderStatus, TERMINAL_ORDER_STATUSES } from "@shared";
 
 import { formatPaise } from "@shared/money";
 import { formatDateTimeInZone } from "@shared/datetime";
+import { formatAddressLine } from "@shared/text";
 
 import { colors, radius, spacing } from "@shared/theme";
 
@@ -822,8 +823,7 @@ export default function OrderTrackingScreen({
               color={colors.textSecondary}
               style={styles.addressText}
             >
-              {order.deliveryAddress.area}, {order.deliveryAddress.city},{" "}
-              {order.deliveryAddress.state} {order.deliveryAddress.pincode}
+              {formatAddressLine(order.deliveryAddress)}
             </AppText>
           </View>
         </View>

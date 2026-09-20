@@ -82,6 +82,38 @@ describe('POST /auth/send-otp', () => {
     expect(res.headers['retry-after']).toBeDefined();
   });
 
+  it('only lets one of two concurrent requests for the same number through', async () => {
+    // Reproduces the exact race that used to let two requests both reach the
+    // SMS provider with the same OTP content seconds apart (MSG91 error
+    // 311, "duplicate content"): a rapid double-tap, or a client retry that
+    // overlaps with the original request. The cooldown reservation must be
+    // atomic so only one of these can ever win.
+    const [first, second] = await Promise.all([
+      api().post('/api/v1/auth/send-otp').send({ mobile: MOBILE }),
+      api().post('/api/v1/auth/send-otp').send({ mobile: MOBILE }),
+    ]);
+
+    const statuses = [first.status, second.status].sort();
+    expect(statuses).toEqual([200, 429]);
+
+    const blocked = first.status === 429 ? first : second;
+    expect(expectError(blocked.body).code).toBe(ErrorCode.OTP_RESEND_TOO_SOON);
+    expect(blocked.headers['retry-after']).toBeDefined();
+  });
+
+  it('does not let two different mobile numbers block each other', async () => {
+    const OTHER_MOBILE = '9876500001';
+    await otpService.clearOtpState(OTHER_MOBILE);
+
+    const [a, b] = await Promise.all([
+      api().post('/api/v1/auth/send-otp').send({ mobile: MOBILE }),
+      api().post('/api/v1/auth/send-otp').send({ mobile: OTHER_MOBILE }),
+    ]);
+
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+  });
+
   it('rate-limits repeated requests for the same number', async () => {
     // 3 per hour. The cooldown is 1s in test config, so wait it out between
     // attempts to prove the HOURLY limiter fires rather than the cooldown.

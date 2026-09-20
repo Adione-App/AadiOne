@@ -49,6 +49,7 @@ export default function OtpVerifyScreen({
 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [resendBusy, setResendBusy] = useState(false);
 
   const [secondsLeft, setSecondsLeft] = useState(
     route.params.resendAfterSeconds,
@@ -169,7 +170,15 @@ export default function OtpVerifyScreen({
   /* ---------------------------------------------------------------------- */
 
   async function resend(): Promise<void> {
+    // Guards against rapid double-taps firing a second request before the
+    // first one's response (and its cooldown) has come back — the button is
+    // only hidden once `secondsLeft` updates, which needs a network
+    // round-trip. The backend enforces the real cooldown regardless; this
+    // just avoids sending it duplicate requests from one tap.
+    if (resendBusy) return;
+
     setError(null);
+    setResendBusy(true);
 
     try {
       const result = await api.post<SendOtpResponse>("/auth/send-otp", {
@@ -182,9 +191,21 @@ export default function OtpVerifyScreen({
         setDigits(result.devOtp.split("").slice(0, OTP_LENGTH));
       }
     } catch (err) {
-      setError(
-        err instanceof ApiRequestError ? err.message : "Could not resend OTP.",
-      );
+      if (err instanceof ApiRequestError) {
+        setError(err.message);
+
+        // The backend is the source of truth for the cooldown — if it says
+        // requests are still blocked (e.g. this one lost a race with
+        // another in-flight request for the same number), resync the
+        // on-screen countdown to match rather than leaving it at 0.
+        if (err.retryAfterSeconds !== undefined) {
+          setSecondsLeft(err.retryAfterSeconds);
+        }
+      } else {
+        setError("Could not resend OTP.");
+      }
+    } finally {
+      setResendBusy(false);
     }
   }
 
@@ -314,9 +335,12 @@ export default function OtpVerifyScreen({
               </AppText>
             </AppText>
           ) : (
-            <Pressable onPress={resend}>
-              <AppText variant="bodyStrong" color={colors.primary}>
-                Resend OTP
+            <Pressable onPress={resend} disabled={resendBusy} hitSlop={8}>
+              <AppText
+                variant="bodyStrong"
+                color={resendBusy ? colors.textMuted : colors.primary}
+              >
+                {resendBusy ? "Sending…" : "Resend OTP"}
               </AppText>
             </Pressable>
           )}

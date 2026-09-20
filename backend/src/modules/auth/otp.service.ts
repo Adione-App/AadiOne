@@ -7,6 +7,7 @@ import { cache, CacheKey } from "../../infra/cache";
 import { env, isProduction } from "../../config/env";
 import { otpProvider } from "../../infra/otp";
 import { maskMobile } from "../../shared/phone";
+import { ErrorCode } from "../../shared";
 
 const log = moduleLogger("otp");
 
@@ -72,15 +73,40 @@ export async function sendOtp(mobile: string): Promise<SendOtpOutcome> {
     Boolean(env.PLAY_REVIEW_MOBILE) && mobile === env.PLAY_REVIEW_MOBILE;
 
   /*
-   * Resend cooldown applies to every account, including
-   * the Google Play reviewer account.
+   * Reserve the cooldown FIRST, atomically, before any OTP is generated or
+   * any provider is called.
+   *
+   * `setIfAbsent` is a single atomic operation on both cache drivers (Redis
+   * `SET ... NX`, and node-cache's synchronous get-then-set within one
+   * process — see MemoryCacheStore's class comment). Previously the
+   * cooldown was only written AFTER a successful send, which left a race
+   * window: two requests for the same mobile arriving close together could
+   * both read "no cooldown yet", both generate an OTP and both call MSG91
+   * with the same message content seconds apart — which is exactly what
+   * MSG91 error 311 ("duplicate content") reports. Reserving the cooldown
+   * up front means the loser of that race is rejected right here, before
+   * MSG91 is ever contacted.
    */
-  const existingCooldown = await cache.get(cooldownKey(mobile));
+  const reserved = await cache.setIfAbsent(
+    cooldownKey(mobile),
+    "1",
+    env.OTP_RESEND_COOLDOWN_SECONDS,
+  );
 
-  if (existingCooldown) {
-    throw new AppError("OTP_RESEND_TOO_SOON" as never, {
+  if (!reserved) {
+    const remainingTtl = await cache.ttl(cooldownKey(mobile));
+    const retryAfterSeconds =
+      remainingTtl > 0 ? remainingTtl : env.OTP_RESEND_COOLDOWN_SECONDS;
+
+    log.info(
+      { mobile: maskMobile(mobile), retryAfterSeconds },
+      "OTP request blocked — resend cooldown active",
+    );
+
+    throw new AppError(ErrorCode.OTP_RESEND_TOO_SOON, {
       message: "Please wait before requesting another OTP.",
       internalMessage: `OTP resend too soon for ${maskMobile(mobile)}`,
+      retryAfterSeconds,
     });
   }
 
@@ -99,6 +125,10 @@ export async function sendOtp(mobile: string): Promise<SendOtpOutcome> {
   /*
    * IMPORTANT:
    * Never store the plaintext OTP.
+   *
+   * This also replaces whatever OTP was previously active for this mobile —
+   * only one OTP is ever valid at a time, so an old code can no longer be
+   * used once a new one has been requested.
    */
   await cache.set(otpKey(mobile), hashCode(code), expiresInSeconds);
 
@@ -116,17 +146,9 @@ export async function sendOtp(mobile: string): Promise<SendOtpOutcome> {
      * App Access / reviewer instructions.
      */
     if (isPlayReviewAccount) {
-      await cache.set(
-        cooldownKey(mobile),
-        "1",
-        env.OTP_RESEND_COOLDOWN_SECONDS,
-      );
-
       log.info(
-        {
-          mobile: maskMobile(mobile),
-        },
-        "Play review OTP prepared",
+        { mobile: maskMobile(mobile) },
+        "OTP request accepted (Play review account)",
       );
 
       return {
@@ -134,6 +156,8 @@ export async function sendOtp(mobile: string): Promise<SendOtpOutcome> {
         expiresInSeconds,
       };
     }
+
+    log.info({ mobile: maskMobile(mobile) }, "OTP request accepted");
 
     /*
      * Normal customer:
@@ -151,7 +175,7 @@ export async function sendOtp(mobile: string): Promise<SendOtpOutcome> {
         provider: otpProvider.name,
         messageId: result.messageId,
       },
-      "OTP sent",
+      "OTP provider request succeeded",
     );
 
     /*
@@ -161,11 +185,6 @@ export async function sendOtp(mobile: string): Promise<SendOtpOutcome> {
      */
     const devOtp = !isProduction && result.devCode ? result.devCode : undefined;
 
-    /*
-     * Start resend cooldown only after the provider succeeds.
-     */
-    await cache.set(cooldownKey(mobile), "1", env.OTP_RESEND_COOLDOWN_SECONDS);
-
     return {
       resendAfterSeconds: env.OTP_RESEND_COOLDOWN_SECONDS,
       expiresInSeconds,
@@ -174,12 +193,19 @@ export async function sendOtp(mobile: string): Promise<SendOtpOutcome> {
     };
   } catch (error) {
     /*
-     * If SMS delivery/provider fails, do not leave an OTP
-     * that the customer never received.
+     * If SMS delivery/provider fails, do not leave an OTP that the customer
+     * never received, and release the cooldown reservation too — a failed
+     * send must not make the customer wait out a 30s cooldown for an OTP
+     * that never arrived.
      */
     await cache.delete(otpKey(mobile));
     await cache.delete(attemptsKey(mobile));
     await cache.delete(cooldownKey(mobile));
+
+    log.warn(
+      { mobile: maskMobile(mobile), provider: otpProvider.name },
+      "OTP provider request failed",
+    );
 
     throw error;
   }
@@ -209,7 +235,9 @@ export async function verifyOtp(
    * No OTP exists or it has expired.
    */
   if (!storedHash) {
-    throw new AppError("OTP_EXPIRED" as never, {
+    log.warn({ mobile: maskMobile(mobile) }, "OTP verification failed — expired or not found");
+
+    throw new AppError(ErrorCode.OTP_EXPIRED, {
       message: "This OTP has expired. Please request a new one.",
       internalMessage: `OTP expired for ${maskMobile(mobile)}`,
     });
@@ -229,7 +257,9 @@ export async function verifyOtp(
     await cache.delete(otpKey(mobile));
     await cache.delete(attemptsKey(mobile));
 
-    throw new AppError("OTP_MAX_ATTEMPTS" as never, {
+    log.warn({ mobile: maskMobile(mobile) }, "OTP verification failed — max attempts already reached");
+
+    throw new AppError(ErrorCode.OTP_MAX_ATTEMPTS, {
       message: "Too many incorrect attempts. Please request a new OTP.",
       internalMessage: `OTP max attempts reached for ${maskMobile(mobile)}`,
     });
@@ -264,13 +294,20 @@ export async function verifyOtp(
       await cache.delete(otpKey(mobile));
       await cache.delete(attemptsKey(mobile));
 
-      throw new AppError("OTP_MAX_ATTEMPTS" as never, {
+      log.warn({ mobile: maskMobile(mobile) }, "OTP verification failed — max attempts reached");
+
+      throw new AppError(ErrorCode.OTP_MAX_ATTEMPTS, {
         message: "Too many incorrect attempts. Please request a new OTP.",
         internalMessage: `OTP max attempts reached for ${maskMobile(mobile)}`,
       });
     }
 
-    throw new AppError("OTP_INVALID" as never, {
+    log.warn(
+      { mobile: maskMobile(mobile), attempts: nextAttempts },
+      "OTP verification failed — incorrect code",
+    );
+
+    throw new AppError(ErrorCode.OTP_INVALID, {
       message: "The OTP you entered is incorrect.",
       internalMessage: `invalid OTP for ${maskMobile(mobile)}`,
     });

@@ -157,6 +157,8 @@ export class ApiRequestError extends Error {
     readonly code: ErrorCode,
     message: string,
     readonly status: number,
+    /** Present on 429 responses — seconds until the request may be retried. */
+    readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = "ApiRequestError";
@@ -334,6 +336,8 @@ async function performRequest<T>(
         error?.message ?? "Something went wrong. Please try again.",
 
         response.status,
+
+        error?.retryAfterSeconds,
       );
     }
 

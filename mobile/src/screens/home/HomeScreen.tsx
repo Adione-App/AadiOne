@@ -87,6 +87,15 @@ export default function HomeScreen({
   const bannerScrollRef = useRef<ScrollView>(null);
   const bannerAutoplayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Collapses the address/profile row as the page scrolls, leaving the
+  // search bar (moved OUT of the ScrollView below, so it never scrolls away
+  // itself) as the only thing left pinned at the top. `headerHeight` is
+  // measured once from the row's own natural layout (it varies by device —
+  // depends on `insets.top`) rather than hard-coded, so the collapse always
+  // starts from its real expanded height with no jump.
+  const scrollY = useRef(new Animated.Value(0)).current;
+  const [headerHeight, setHeaderHeight] = useState(0);
+
   useEffect(() => {
     void refresh();
 
@@ -319,11 +328,31 @@ export default function HomeScreen({
           TOP LOCATION HEADER
       ============================================================ */}
 
-      <View
+      <Animated.View
+        onLayout={(event) => {
+          // Only ever captured once — a later layout pass while the row is
+          // already mid-collapse would otherwise overwrite the real
+          // expanded height with whatever shrunken height it has at that
+          // moment.
+          if (headerHeight === 0) setHeaderHeight(event.nativeEvent.layout.height);
+        }}
         style={[
           styles.header,
           {
             paddingTop: insets.top + 4,
+          },
+          headerHeight > 0 && {
+            height: scrollY.interpolate({
+              inputRange: [0, headerHeight],
+              outputRange: [headerHeight, 0],
+              extrapolate: "clamp",
+            }),
+            opacity: scrollY.interpolate({
+              inputRange: [0, headerHeight * 0.6],
+              outputRange: [1, 0],
+              extrapolate: "clamp",
+            }),
+            overflow: "hidden",
           },
         ]}
       >
@@ -402,46 +431,51 @@ export default function HomeScreen({
         >
           <Ionicons name="person-circle" size={38} color={colors.primary} />
         </Pressable>
-      </View>
+      </Animated.View>
+
+      {/* ============================================================
+          SEARCH — deliberately OUTSIDE the ScrollView below, so it never
+          scrolls away itself: once the address/profile row above has
+          collapsed, this is the only thing left pinned at the top.
+      ============================================================ */}
+
+      <Pressable
+        onPress={onOpenSearch}
+        style={styles.searchBar}
+        accessibilityRole="button"
+        accessibilityLabel="Search products"
+      >
+        <Ionicons
+          name="search-outline"
+          size={20}
+          color={colors.textMuted}
+          style={styles.searchIcon}
+        />
+
+        <AppText
+          variant="body"
+          color={colors.textMuted}
+          style={styles.searchPlaceholder}
+        >
+          Search for atta, rice, dal, oil…
+        </AppText>
+      </Pressable>
 
       {/* ============================================================
           SCROLLABLE HOME
       ============================================================ */}
 
       <ScrollView
+        onScroll={Animated.event(
+          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+          { useNativeDriver: false },
+        )}
+        scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{
           paddingBottom: insets.bottom + spacing.xxl,
         }}
       >
-        {/* ========================================================
-            SEARCH
-        ======================================================== */}
-
-        <Pressable
-          onPress={onOpenSearch}
-          style={styles.searchBar}
-          accessibilityRole="button"
-          accessibilityLabel="Search products"
-        >
-          <Ionicons
-            name="search-outline"
-            size={20}
-            color={colors.textMuted}
-            style={styles.searchIcon}
-          />
-
-          <AppText
-            variant="body"
-            color={colors.textMuted}
-            style={styles.searchPlaceholder}
-          >
-            Search for atta, rice, dal, oil…
-          </AppText>
-
-          {/* <Ionicons name="mic-outline" size={19} color={colors.textMuted} /> */}
-        </Pressable>
-
         {/* ========================================================
             SERVICEABILITY / CART NOTICES
         ======================================================== */}
@@ -998,6 +1032,7 @@ const styles = StyleSheet.create({
     marginHorizontal: spacing.base,
 
     marginTop: spacing.md,
+    marginBottom: spacing.sm,
 
     minHeight: 44,
 

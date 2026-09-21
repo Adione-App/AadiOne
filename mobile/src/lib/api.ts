@@ -262,6 +262,14 @@ export interface RequestOptions {
 
   timeoutMs?: number;
   retried?: boolean;
+
+  /**
+   * An external cancellation signal — e.g. TanStack Query's own `signal`,
+   * passed through so a query that's been superseded (search-as-you-type
+   * firing a newer term) actually stops the underlying fetch instead of
+   * completing uselessly in the background.
+   */
+  signal?: AbortSignal;
 }
 
 const sleep = (ms: number): Promise<void> =>
@@ -278,6 +286,16 @@ async function performRequest<T>(
     options.timeoutMs ??
       (options.idempotencyKey ? ORDER_TIMEOUT_MS : REQUEST_TIMEOUT_MS),
   );
+
+  // Bridges an external signal (see RequestOptions.signal) onto our own
+  // controller — `fetch` only takes one signal, and we always need ours for
+  // the timeout regardless of whether a caller passed their own.
+  const externalSignal = options.signal;
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener("abort", onExternalAbort);
+  }
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -360,6 +378,7 @@ async function performRequest<T>(
     );
   } finally {
     clearTimeout(timeout);
+    externalSignal?.removeEventListener("abort", onExternalAbort);
   }
 }
 
@@ -381,6 +400,11 @@ export async function request<T>(
     } catch (error) {
       lastError = error as ApiRequestError;
 
+      // An externally cancelled request (e.g. React Query dropping a
+      // superseded search-as-you-type query) isn't a failure worth
+      // retrying — nothing will ever read the result either way.
+      if (options.signal?.aborted) throw lastError;
+
       if (!canRetry || !lastError.isRetryable || attempt === maxAttempts - 1) {
         throw lastError;
       }
@@ -393,7 +417,8 @@ export async function request<T>(
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
+  get: <T>(path: string, options?: { signal?: AbortSignal }) =>
+    request<T>(path, { signal: options?.signal }),
 
   post: <T>(path: string, body?: unknown, idempotencyKey?: string) =>
     request<T>(path, {

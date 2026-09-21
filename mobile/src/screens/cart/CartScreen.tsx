@@ -285,14 +285,46 @@ export default function CartScreen({
 
   if (displayItems.length === 0) {
     return (
-      <EmptyState
-        title="Your cart is empty"
-        hint="Add your favourite groceries to get started."
-        action={{
-          label: "Browse products",
-          onPress: onBrowse,
-        }}
-      />
+      <Screen>
+        <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
+          <View style={styles.headerLeft}>
+            <AppText variant="h1" style={styles.headerTitle}>
+              Your Cart
+            </AppText>
+
+            <AppText variant="body" color={colors.textSecondary} style={styles.headerSubtitle}>
+              0 items in your cart
+            </AppText>
+          </View>
+
+          <Pressable
+            style={styles.searchIconButton}
+            onPress={onOpenSearch}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Search products"
+          >
+            <Ionicons name="search" size={20} color={colors.primary} />
+          </Pressable>
+        </View>
+
+        <EmptyState
+          icon={
+            <View>
+              <Ionicons name="cart-outline" size={52} color={colors.primary} />
+              <View style={styles.emptyCartBadge}>
+                <Ionicons name="add" size={14} color={colors.onPrimary} />
+              </View>
+            </View>
+          }
+          title="Your cart is empty"
+          hint="Looks like you haven't added anything yet. Start exploring and fill it up with your favourite groceries!"
+          action={{
+            label: "Continue Shopping",
+            onPress: onBrowse,
+          }}
+        />
+      </Screen>
     );
   }
 
@@ -1121,6 +1153,20 @@ const styles = StyleSheet.create({
   },
 
   headerLeft: { flex: 1 },
+
+  emptyCartBadge: {
+    position: "absolute",
+    bottom: -2,
+    right: -8,
+    width: 24,
+    height: 24,
+    borderRadius: radius.circle,
+    backgroundColor: colors.primary,
+    borderWidth: 2,
+    borderColor: colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 
   headerTitle: {
     fontSize: 26,

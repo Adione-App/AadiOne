@@ -24,9 +24,9 @@ export function CategoriesIcon({ color, focused }: IconProps) {
   );
 }
 
-export function SearchIcon({ color, focused }: IconProps) {
+export function FoodIcon({ color, focused }: IconProps) {
   return (
-    <Ionicons name={focused ? 'search' : 'search-outline'} size={SIZE} color={color} />
+    <Ionicons name={focused ? 'fast-food' : 'fast-food-outline'} size={SIZE} color={color} />
   );
 }
 

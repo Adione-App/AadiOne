@@ -6,34 +6,68 @@
  * category/list that has never been fetched — a category already in the
  * query cache renders its real cards immediately instead (see
  * CategoriesScreen / RailProductsScreen).
+ *
+ * Every bone pulses opacity in a loop (a plain `Animated` loop, no gradient
+ * library needed) — `ProductGridSkeleton` creates ONE shared pulse and hands
+ * it to every card so the whole grid breathes in sync, rather than each
+ * card animating independently and looking noisy.
  */
 
-import { View, StyleSheet } from "react-native";
+import { useEffect, useRef } from "react";
+import { Animated, View, StyleSheet } from "react-native";
 import { colors, radius, spacing } from "@shared/theme";
 
-function Bone({ style }: { style?: object }) {
-  return <View style={[styles.bone, style]} />;
+function useSkeletonPulse(): Animated.Value {
+  const pulse = useRef(new Animated.Value(0.55)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 700,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0.55,
+          duration: 700,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+
+  return pulse;
 }
 
-export function ProductCardSkeleton() {
+function Bone({ style, pulse }: { style?: object; pulse: Animated.Value }) {
+  return <Animated.View style={[styles.bone, style, { opacity: pulse }]} />;
+}
+
+export function ProductCardSkeleton({ pulse: sharedPulse }: { pulse?: Animated.Value } = {}) {
+  const ownPulse = useSkeletonPulse();
+  const pulse = sharedPulse ?? ownPulse;
+
   return (
     <View style={styles.card}>
-      <View style={styles.imageBox} />
+      <Animated.View style={[styles.imageBox, { opacity: pulse }]} />
 
       <View style={styles.nameContainer}>
-        <Bone style={{ width: "90%", height: 12 }} />
-        <Bone style={{ width: "60%", height: 12, marginTop: 4 }} />
+        <Bone pulse={pulse} style={{ width: "90%", height: 12 }} />
+        <Bone pulse={pulse} style={{ width: "60%", height: 12, marginTop: 4 }} />
       </View>
 
       <View style={styles.variantContainer}>
-        <Bone style={{ width: "40%", height: 10 }} />
+        <Bone pulse={pulse} style={{ width: "40%", height: 10 }} />
       </View>
 
       <View style={styles.priceRow}>
-        <Bone style={{ width: 50, height: 14 }} />
+        <Bone pulse={pulse} style={{ width: 50, height: 14 }} />
       </View>
 
-      <View style={styles.button} />
+      <Animated.View style={[styles.button, { opacity: pulse }]} />
     </View>
   );
 }
@@ -46,6 +80,7 @@ export function ProductGridSkeleton({
   columns: number;
   count?: number;
 }) {
+  const pulse = useSkeletonPulse();
   const rows = Math.ceil(count / columns);
 
   return (
@@ -54,7 +89,7 @@ export function ProductGridSkeleton({
         <View key={rowIndex} style={styles.row}>
           {Array.from({ length: columns }, (_, colIndex) => (
             <View key={colIndex} style={styles.cell}>
-              <ProductCardSkeleton />
+              <ProductCardSkeleton pulse={pulse} />
             </View>
           ))}
         </View>

@@ -5,7 +5,12 @@
  * eligibility, totals. The app renders them and never derives them.
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import type {
   CartDto,
@@ -102,11 +107,26 @@ export function useRailProducts(key: HomeFeedDto["rails"][number]["key"]) {
 export function useSearch(term: string) {
   return useQuery({
     queryKey: keys.search(term),
-    queryFn: () =>
+    // `signal` is TanStack Query's own — passed through to `fetch` (see
+    // api.ts) so a term this component has moved on from (search-as-you-type
+    // firing a newer one) actually stops the request instead of completing
+    // uselessly in the background. Also means an old, slow response can
+    // never land after a newer one — there is no old response, it never
+    // finishes.
+    queryFn: ({ signal }) =>
       api.get<CursorPage<ProductSummaryDto>>(
         `/products/search?q=${encodeURIComponent(term)}&limit=30`,
+        { signal },
       ),
     enabled: term.trim().length >= 2,
+    // Without this, changing the search term swaps to a brand-new query with
+    // no data yet — the whole results grid blanked out to a full loading
+    // state on every keystroke, even though the previous term's results were
+    // still perfectly good to look at for the instant it takes the new ones
+    // to arrive. Keeping the old page on screen (see SearchScreen's
+    // `isFetching` — a small inline indicator, not another full-screen
+    // loader) makes typing feel continuous instead of flickery.
+    placeholderData: keepPreviousData,
   });
 }
 

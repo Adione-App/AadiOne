@@ -83,7 +83,7 @@ export function HomeStack() {
             onOpenRail={(key, title) =>
               navigation.navigate("RailProducts", { key, title })
             }
-            onOpenSearch={() => navigation.getParent()?.navigate("Search")}
+            onOpenSearch={() => navigation.navigate("SearchHome")}
             /*
              * FIX:
              * Previously this function was empty.
@@ -111,6 +111,7 @@ export function HomeStack() {
                 productId,
               })
             }
+            onGoToCart={() => navigation.getParent()?.navigate("Cart")}
           />
         )}
       </CatalogStack.Screen>
@@ -157,6 +158,22 @@ export function HomeStack() {
           />
         )}
       </CatalogStack.Screen>
+
+      {/* ---------------------------------------------------------------
+          SEARCH — pushed onto Home's own stack (see MainTabs) rather than
+          living in the tab bar, so its "back" returns to wherever it was
+          opened from instead of needing its own tab.
+      --------------------------------------------------------------- */}
+
+      <CatalogStack.Screen name="SearchHome">
+        {({ navigation }) => (
+          <SearchScreen
+            onOpenProduct={(productId) =>
+              navigation.navigate("ProductDetail", { productId })
+            }
+          />
+        )}
+      </CatalogStack.Screen>
     </CatalogStack.Navigator>
   );
 }
@@ -196,42 +213,7 @@ export function CategoriesStack() {
                 productId,
               })
             }
-          />
-        )}
-      </CatalogStack.Screen>
-    </CatalogStack.Navigator>
-  );
-}
-
-/* =====================================================================
-   SEARCH STACK
-===================================================================== */
-
-export function SearchStack() {
-  return (
-    <CatalogStack.Navigator screenOptions={noHeader}>
-      <CatalogStack.Screen name="SearchHome">
-        {({ navigation }) => (
-          <SearchScreen
-            onOpenProduct={(productId) =>
-              navigation.navigate("ProductDetail", {
-                productId,
-              })
-            }
-          />
-        )}
-      </CatalogStack.Screen>
-
-      <CatalogStack.Screen name="ProductDetail">
-        {({ navigation, route }) => (
-          <ProductDetailScreen
-            productId={route.params.productId}
-            onBack={() => navigation.goBack()}
-            onOpenProduct={(productId) =>
-              navigation.push("ProductDetail", {
-                productId,
-              })
-            }
+            onGoToCart={() => navigation.getParent()?.navigate("Cart")}
           />
         )}
       </CatalogStack.Screen>
@@ -255,7 +237,9 @@ export function CartStack() {
           <CartScreen
             onAddAddress={() => navigation.navigate("AddressForm")}
             onBrowse={() => navigation.getParent()?.navigate("Home")}
-            onOpenSearch={() => navigation.getParent()?.navigate("Search")}
+            onOpenSearch={() =>
+              navigation.getParent()?.navigate("Home", { screen: "SearchHome" })
+            }
             onPlaced={(order, requiresPayment) =>
               requiresPayment
                 ? navigation.replace("UpiPayment", {

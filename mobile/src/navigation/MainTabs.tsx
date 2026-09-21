@@ -1,30 +1,38 @@
 ﻿/**
- * Bottom tabs (decision O2):
- * Home · Categories · Search · Cart · Account.
+ * Bottom tabs:
+ * Home · Categories · Food · Cart · Account.
+ *
+ * Search is still fully available — from Home's own search bar and the Cart
+ * screen's search icon — it's just reached by pushing onto the current
+ * stack (see HomeStack's "SearchHome" screen) instead of living in the tab
+ * bar; the center slot there is Food (a placeholder for now).
  */
 
 import { useEffect, useRef } from "react";
 import { Animated, Easing, View, StyleSheet } from "react-native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
+import { getFocusedRouteNameFromRoute } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { colors, layout, spacing } from "@shared/theme";
 import { useCartActions } from "@/lib/useCartActions";
+import { useFlyToCartStore } from "@/lib/flyToCart";
 
 import {
   AccountStack,
   CartStack,
   CategoriesStack,
   HomeStack,
-  SearchStack,
 } from "./stacks";
+
+import FoodScreen from "@/screens/food/FoodScreen";
 
 import {
   AccountIcon,
   CartIcon,
   CategoriesIcon,
+  FoodIcon,
   HomeIcon,
-  SearchIcon,
 } from "./TabIcons";
 
 const Tab = createBottomTabNavigator();
@@ -100,9 +108,7 @@ function CartBadge({ count }: { count: number }) {
       style={[styles.badge, { transform: [{ scale }] }]}
       pointerEvents="none"
     >
-      <Animated.Text style={styles.badgeText}>
-        {count > 9 ? "9+" : count}
-      </Animated.Text>
+      <Animated.Text style={styles.badgeText}>{count}</Animated.Text>
     </Animated.View>
   );
 }
@@ -151,14 +157,31 @@ function CartTabIcon({
   count: number;
 }) {
   const pulse = usePulse(count);
+  const iconRef = useRef<View>(null);
+  const setCartIconPosition = useFlyToCartStore((state) => state.setCartIconPosition);
+
+  // Window-relative position of the cart icon, for the "fly to cart"
+  // animation (see flyToCart.tsx) to land on — re-measured whenever this
+  // icon's own layout changes (e.g. rotation, tab bar height changes from
+  // safe-area insets settling), not on every render.
+  const measure = () => {
+    iconRef.current?.measureInWindow((x, y, width, height) => {
+      if (width > 0 && height > 0) setCartIconPosition({ x, y, width, height });
+    });
+  };
 
   return (
-    <AnimatedTabIcon color={color} focused={focused}>
-      <Animated.View style={{ transform: [{ scale: pulse }] }}>
-        <CartIcon color={color} focused={focused} />
-      </Animated.View>
-      <CartBadge count={count} />
-    </AnimatedTabIcon>
+    // `collapsable={false}` — otherwise Android may optimize this plain,
+    // unstyled View out of the native tree, which silently breaks
+    // `measureInWindow` (it would measure the wrong/parent node).
+    <View ref={iconRef} onLayout={measure} collapsable={false}>
+      <AnimatedTabIcon color={color} focused={focused}>
+        <Animated.View style={{ transform: [{ scale: pulse }] }}>
+          <CartIcon color={color} focused={focused} />
+        </Animated.View>
+        <CartBadge count={count} />
+      </AnimatedTabIcon>
+    </View>
   );
 }
 
@@ -178,43 +201,56 @@ export function MainTabs() {
 
   return (
     <Tab.Navigator
-      screenOptions={{
-        headerShown: false,
+      screenOptions={({ route }) => {
+        // Product Detail replaces the tab bar with its own Add/Go to Cart
+        // bar (see ProductDetailScreen) — checking the FOCUSED route inside
+        // whichever tab's nested stack is active (not the tab's own route
+        // name, which is always just "Home"/"Categories"/"Search") is the
+        // documented way to hide the tab bar for one specific nested screen
+        // without disturbing the other screens in that same stack.
+        const focusedRouteName = getFocusedRouteNameFromRoute(route);
+        const hideTabBar = focusedRouteName === "ProductDetail";
 
-        tabBarActiveTintColor: colors.primary,
-        tabBarInactiveTintColor: colors.textSecondary,
+        return {
+          headerShown: false,
 
-        tabBarStyle: {
-          height: layout.tabBarHeight + insets.bottom,
-          paddingBottom: insets.bottom + spacing.xs,
-          paddingTop: spacing.xs,
+          tabBarActiveTintColor: colors.primary,
+          tabBarInactiveTintColor: colors.textSecondary,
 
-          borderTopWidth: 1,
-          borderTopColor: colors.border,
+          tabBarStyle: hideTabBar
+            ? { display: "none" }
+            : {
+                height: layout.tabBarHeight + insets.bottom,
+                paddingBottom: insets.bottom + spacing.xs,
+                paddingTop: spacing.xs,
 
-          backgroundColor: colors.surface,
+                borderTopWidth: 1,
+                borderTopColor: colors.border,
 
-          elevation: 8,
-          shadowOpacity: 0.08,
-          shadowRadius: 8,
-          shadowOffset: {
-            width: 0,
-            height: -2,
+                backgroundColor: colors.surface,
+
+                elevation: 8,
+                shadowOpacity: 0.08,
+                shadowRadius: 8,
+                shadowOffset: {
+                  width: 0,
+                  height: -2,
+                },
+              },
+
+          tabBarShowLabel: true,
+
+          tabBarLabelStyle: {
+            fontSize: 11,
+            fontWeight: "600",
+            marginTop: 2,
+            marginBottom: 0,
           },
-        },
 
-        tabBarShowLabel: true,
-
-        tabBarLabelStyle: {
-          fontSize: 11,
-          fontWeight: "600",
-          marginTop: 2,
-          marginBottom: 0,
-        },
-
-        tabBarItemStyle: {
-          paddingHorizontal: 2,
-        },
+          tabBarItemStyle: {
+            paddingHorizontal: 2,
+          },
+        };
       }}
     >
       {/* HOME */}
@@ -247,16 +283,16 @@ export function MainTabs() {
         }}
       />
 
-      {/* SEARCH */}
+      {/* FOOD */}
       <Tab.Screen
-        name="Search"
-        component={SearchStack}
+        name="Food"
+        component={FoodScreen}
         options={{
-          tabBarLabel: "Search",
+          tabBarLabel: "Food",
 
           tabBarIcon: ({ color, focused }) => (
             <AnimatedTabIcon color={color} focused={focused}>
-              <SearchIcon color={color} focused={focused} />
+              <FoodIcon color={color} focused={focused} />
             </AnimatedTabIcon>
           ),
         }}

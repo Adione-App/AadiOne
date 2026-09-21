@@ -24,8 +24,10 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { onSessionExpired } from "@/lib/api";
 import { useAuth, useLocation } from "@/lib/store";
+import { useRecentSearches } from "@/lib/recentSearches";
 
 import { StartupLoading } from "@/components/ui";
+import { FlyToCartOverlay } from "@/lib/flyToCart";
 
 import SplashScreen from "@/screens/auth/SplashScreen";
 import MobileEntryScreen from "@/screens/auth/MobileEntryScreen";
@@ -188,7 +190,11 @@ export default function App() {
         // returning customer's Home should wait for it to finish before the
         // auth check does. `refresh()` (the actual network re-verification)
         // happens later, once Home mounts — see HomeScreen's own effect.
-        await Promise.all([restore(), useLocation.getState().hydrate()]);
+        await Promise.all([
+          restore(),
+          useLocation.getState().hydrate(),
+          useRecentSearches.getState().hydrate(),
+        ]);
       } finally {
         if (!mounted) {
           return;
@@ -283,6 +289,10 @@ export default function App() {
         <StatusBar style="dark" />
 
         <RootNavigator status={status} startupReady={startupReady} />
+
+        {/* Mounted last so it paints above the tab bar/screens — see
+            flyToCart.tsx for why this needs to be a root-level overlay. */}
+        <FlyToCartOverlay />
       </PersistQueryClientProvider>
     </SafeAreaProvider>
   );

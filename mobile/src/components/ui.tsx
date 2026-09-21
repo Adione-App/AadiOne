@@ -279,10 +279,14 @@ export function ErrorState({
 export function EmptyState({
   title,
   hint,
+  icon,
   action,
 }: {
   title: string;
   hint?: string;
+  /** Rendered inside a soft circular badge above the title — an Ionicons
+   * element or similar, sized around 48-56px looks best. */
+  icon?: ReactNode;
   action?: {
     label: string;
     onPress: () => void;
@@ -290,6 +294,8 @@ export function EmptyState({
 }) {
   return (
     <View style={styles.centered}>
+      {icon && <View style={styles.emptyStateIconCircle}>{icon}</View>}
+
       <AppText variant="h3" style={{ textAlign: "center" }}>
         {title}
       </AppText>
@@ -521,6 +527,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     padding: spacing.xl,
+  },
+
+  emptyStateIconCircle: {
+    width: 112,
+    height: 112,
+    borderRadius: radius.circle,
+    backgroundColor: colors.primarySurface,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: spacing.lg,
   },
 
   notice: {

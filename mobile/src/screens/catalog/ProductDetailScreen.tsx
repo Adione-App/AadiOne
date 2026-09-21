@@ -6,16 +6,18 @@
  * and choose which size they are buying.
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import type { ProductSummaryDto, VariantDto } from '@shared';
 import { formatPaise } from '@shared/money';
-import { colors, radius, spacing } from '@shared/theme';
+import { colors, layout, radius, spacing } from '@shared/theme';
 import { api } from '@/lib/api';
 import { useProduct } from '@/lib/queries';
 import { snapshotFromProduct, useCartActions } from '@/lib/useCartActions';
+import { flyToCart } from '@/lib/flyToCart';
 import {
   AppText,
   Button,
@@ -32,10 +34,12 @@ export default function ProductDetailScreen({
   productId,
   onBack,
   onOpenProduct,
+  onGoToCart,
 }: {
   productId: string;
   onBack: () => void;
   onOpenProduct: (productId: string) => void;
+  onGoToCart: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const product = useProduct(productId);
@@ -67,6 +71,19 @@ export default function ProductDetailScreen({
 
   const qtyInCart = variant ? cart.qtyFor(variant.id) : 0;
   const outOfStock = !variant?.inStock;
+  const cartItemCount = cart.cart?.bill.itemCount ?? 0;
+
+  const galleryRef = useRef<View>(null);
+
+  // Same decorative flight as ProductCard's — flies from the product
+  // gallery image to the cart tab icon on Add/+ (see flyToCart.tsx).
+  const triggerFly = () => {
+    galleryRef.current?.measureInWindow((x, y, width, height) => {
+      if (width > 0 && height > 0) {
+        flyToCart({ x, y, width, height }, detail.imageUrl);
+      }
+    });
+  };
 
   async function requestNotify(): Promise<void> {
     if (!variant) return;
@@ -86,11 +103,13 @@ export default function ProductDetailScreen({
       </View>
 
       <ScrollView contentContainerStyle={{ paddingBottom: 140 }}>
-        <ProductGallery
-          images={detail.images}
-          fallbackUrl={detail.imageUrl}
-          productName={detail.name}
-        />
+        <View ref={galleryRef} collapsable={false}>
+          <ProductGallery
+            images={detail.images}
+            fallbackUrl={detail.imageUrl}
+            productName={detail.name}
+          />
+        </View>
 
         <View style={{ padding: spacing.base }}>
           <AppText variant="h1">{detail.name}</AppText>
@@ -220,49 +239,67 @@ export default function ProductDetailScreen({
         </View>
       </ScrollView>
 
+      {/* Replaces the bottom tab bar on this screen (see MainTabs — the tab
+          bar hides itself whenever "ProductDetail" is the focused nested
+          route), so "Go to Cart" is the only way back to the cart from
+          here — it has to stay visible next to Add/the stepper no matter
+          what state the item is in. */}
       <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.base }]}>
         {cart.error && <NoticeStrip message={cart.error} />}
-        {variant && !outOfStock ? (
-          qtyInCart > 0 ? (
-            <View style={styles.footerRow}>
-              <View style={styles.footerStepper}>
+
+        <View style={styles.footerRow}>
+          {variant && !outOfStock ? (
+            qtyInCart > 0 ? (
+              <View style={styles.footerStepperFlex}>
                 <QuantityStepper
                   qty={qtyInCart}
                   max={variant.maxQtyPerOrder}
                   busy={cart.isBusy(variant.id)}
-                  onIncrement={() => void cart.increment(variant.id)}
+                  onIncrement={() => {
+                    triggerFly();
+                    void cart.increment(variant.id);
+                  }}
                   onDecrement={() => void cart.decrement(variant.id)}
                   fullWidth
                 />
               </View>
-              <View style={styles.footerTotal}>
-                <AppText variant="caption" color={colors.textSecondary}>
-                  {qtyInCart} in cart
-                </AppText>
-                <AppText variant="h3" color={colors.primary}>
-                  {formatPaise(variant.pricePaise * qtyInCart)}
-                </AppText>
-              </View>
-            </View>
-          ) : (
-            <View style={styles.footerRow}>
-              <View style={styles.footerPriceInfo}>
-                <AppText variant="caption" color={colors.textSecondary}>
-                  Price
-                </AppText>
-                <AppText variant="h3" color={colors.primary}>
-                  {formatPaise(variant.pricePaise)}
-                </AppText>
-              </View>
-
+            ) : (
               <Button
                 label="Add to Cart"
-                onPress={() => cart.add(variant.id, snapshotFromProduct(detail, variant))}
-                style={styles.addToCartButton}
+                onPress={() => {
+                  triggerFly();
+                  cart.add(variant.id, snapshotFromProduct(detail, variant));
+                }}
+                style={styles.footerAddButton}
               />
+            )
+          ) : (
+            <View style={styles.footerUnavailable}>
+              <AppText variant="bodyStrong" color={colors.textSecondary}>
+                Currently unavailable
+              </AppText>
             </View>
-          )
-        ) : null}
+          )}
+
+          <Pressable
+            onPress={onGoToCart}
+            style={styles.goToCartButton}
+            accessibilityRole="button"
+            accessibilityLabel="Go to cart"
+          >
+            <Ionicons name="cart" size={19} color={colors.onPrimary} />
+            <AppText variant="bodyStrong" color={colors.onPrimary}>
+              Cart
+            </AppText>
+            {cartItemCount > 0 && (
+              <View style={styles.goToCartBadge}>
+                <AppText variant="overline" color={colors.primary} style={styles.goToCartBadgeText}>
+                  {cartItemCount > 99 ? '99+' : cartItemCount}
+                </AppText>
+              </View>
+            )}
+          </Pressable>
+        </View>
       </View>
     </Screen>
   );
@@ -318,9 +355,35 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: colors.border,
   },
-  footerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.base },
-  footerStepper: { width: 148 },
-  footerTotal: { flex: 1, alignItems: 'flex-end' },
-  footerPriceInfo: { flex: 1, alignItems: 'flex-start' },
-  addToCartButton: { minWidth: 168, paddingHorizontal: spacing.xl },
+  footerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  footerStepperFlex: { flex: 1 },
+  footerAddButton: { flex: 1 },
+  footerUnavailable: {
+    flex: 1,
+    height: layout.minTouchTarget,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  goToCartButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    height: layout.minTouchTarget,
+    paddingHorizontal: spacing.base,
+    borderRadius: radius.pill,
+    backgroundColor: colors.primary,
+  },
+  goToCartBadge: {
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: radius.circle,
+    backgroundColor: colors.onPrimary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  goToCartBadgeText: {
+    color: colors.primary,
+    fontWeight: '700',
+  },
 });

@@ -17,6 +17,7 @@ import { colors, radius, shadow, spacing } from "@shared/theme";
 
 import { resolveImageUrl } from "../lib/api";
 import { type CartItemSnapshot, snapshotFromProduct } from "../lib/useCartActions";
+import { flyToCart } from "../lib/flyToCart";
 import { AppText } from "./ui";
 
 /* =====================================================================
@@ -244,6 +245,18 @@ function ProductCardImpl({
 
   const openDetails = () => onPress(product.id);
 
+  const imageWrapRef = useRef<View>(null);
+
+  // Fires the flying-image animation from this card's own product image to
+  // the cart tab icon — purely decorative (see flyToCart.tsx); the real
+  // Add/+ handler below always still runs regardless of whether the
+  // measurement succeeds.
+  const triggerFly = () => {
+    imageWrapRef.current?.measureInWindow((x, y, width, height) => {
+      if (width > 0 && height > 0) flyToCart({ x, y, width, height }, imageUrl);
+    });
+  };
+
   return (
     // Plain View, not Pressable: navigation belongs to the image and the
     // More Details icon alone (see below), never to the card as a whole. A
@@ -262,7 +275,7 @@ function ProductCardImpl({
           touch or accidentally disable itself against the image beneath.
       ============================================================= */}
 
-      <View style={styles.imageWrap}>
+      <View style={styles.imageWrap} ref={imageWrapRef} collapsable={false}>
         <Pressable
           onPress={openDetails}
           style={styles.imageBox}
@@ -397,14 +410,22 @@ function ProductCardImpl({
           <QuantityStepper
             qty={qtyInCart}
             max={variant?.maxQtyPerOrder ?? 10}
-            onIncrement={() => variant && onIncrement(variant.id)}
+            onIncrement={() => {
+              if (!variant) return;
+              triggerFly();
+              onIncrement(variant.id);
+            }}
             onDecrement={() => variant && onDecrement(variant.id)}
             busy={busy}
             fullWidth
           />
         ) : (
           <Pressable
-            onPress={() => variant && onAdd(variant.id, snapshotFromProduct(product, variant))}
+            onPress={() => {
+              if (!variant) return;
+              triggerFly();
+              onAdd(variant.id, snapshotFromProduct(product, variant));
+            }}
             style={styles.addButton}
             accessibilityRole="button"
             accessibilityLabel={`Add ${product.name} to cart`}

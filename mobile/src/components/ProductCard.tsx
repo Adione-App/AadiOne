@@ -2,13 +2,13 @@ import { memo, useEffect, useRef, useState } from "react";
 import {
   Animated,
   Easing,
-  Image,
   Pressable,
   StyleSheet,
   View,
   type StyleProp,
   type TextStyle,
 } from "react-native";
+import { Image } from "expo-image";
 import { Info, ShoppingCart } from "lucide-react-native";
 
 import type { ProductSummaryDto } from "@shared";
@@ -286,7 +286,9 @@ function ProductCardImpl({
             <Image
               source={{ uri: imageUrl }}
               style={[styles.image, outOfStock && styles.imageFaded]}
-              resizeMode="contain"
+              contentFit="contain"
+              transition={150}
+              cachePolicy="memory-disk"
             />
           ) : (
             <View style={styles.imagePlaceholder} />

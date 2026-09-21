@@ -27,13 +27,13 @@ import * as Crypto from "expo-crypto";
 import {
   ActivityIndicator,
   FlatList,
-  Image,
   LayoutAnimation,
   Modal,
   Pressable,
   StyleSheet,
   View,
 } from "react-native";
+import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -359,7 +359,13 @@ export default function CartScreen({
       <View style={styles.productCard}>
         <View style={styles.productImageBox}>
           {imageUrl ? (
-            <Image source={{ uri: imageUrl }} style={styles.productImage} resizeMode="contain" />
+            <Image
+              source={{ uri: imageUrl }}
+              style={styles.productImage}
+              contentFit="contain"
+              transition={150}
+              cachePolicy="memory-disk"
+            />
           ) : (
             <View style={styles.imagePlaceholder} />
           )}

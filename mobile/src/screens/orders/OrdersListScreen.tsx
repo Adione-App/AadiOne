@@ -7,7 +7,8 @@
  * decision in one place.
  */
 
-import { FlatList, Image, Pressable, StyleSheet, View } from "react-native";
+import { FlatList, Pressable, StyleSheet, View } from "react-native";
+import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ChevronRight, ShoppingBag } from "lucide-react-native";
 import type { OrderSummaryDto } from "@shared";
@@ -113,7 +114,9 @@ export default function OrdersListScreen({
                       <Image
                         source={{ uri: resolved }}
                         style={styles.thumbImage}
-                        resizeMode="contain"
+                        contentFit="contain"
+                        transition={150}
+                        cachePolicy="memory-disk"
                       />
                     ) : (
                       <ShoppingBag size={18} color={colors.textMuted} strokeWidth={1.7} />

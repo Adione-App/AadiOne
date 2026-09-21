@@ -53,6 +53,13 @@ export default function ProductDetailScreen({
     enabled: product.isSuccess,
   });
 
+  // Every hook this component uses MUST run on every render, including the
+  // loading/error ones below that return early — a hook declared after an
+  // early return gets skipped on that render and then suddenly called once
+  // data arrives, which is a hard React crash (mismatched hook count), not
+  // just a warning, in a release build with no dev tools attached to show it.
+  const galleryRef = useRef<View>(null);
+
   if (product.isLoading) return <Loading />;
   if (product.isError || !product.data) {
     return (
@@ -72,8 +79,6 @@ export default function ProductDetailScreen({
   const qtyInCart = variant ? cart.qtyFor(variant.id) : 0;
   const outOfStock = !variant?.inStock;
   const cartItemCount = cart.cart?.bill.itemCount ?? 0;
-
-  const galleryRef = useRef<View>(null);
 
   // Same decorative flight as ProductCard's — flies from the product
   // gallery image to the cart tab icon on Add/+ (see flyToCart.tsx).

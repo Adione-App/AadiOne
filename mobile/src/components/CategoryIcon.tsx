@@ -19,7 +19,8 @@
  * adds later still gets a sensible icon instead of the generic bag.
  */
 
-import { Image, StyleSheet, View } from "react-native";
+import { StyleSheet, View } from "react-native";
+import { Image } from "expo-image";
 import type { LucideIcon } from "lucide-react-native";
 import {
   Baby,
@@ -117,7 +118,9 @@ export default function CategoryIcon({
           uri: resolveImageUrl(imageUrl) ?? undefined,
         }}
         style={[box, styles.image]}
-        resizeMode="cover"
+        contentFit="cover"
+        transition={150}
+        cachePolicy="memory-disk"
         accessibilityLabel={name}
       />
     );

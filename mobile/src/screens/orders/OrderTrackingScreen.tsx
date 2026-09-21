@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import {
   Alert,
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
   View,
 } from "react-native";
+import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Text } from "react-native";
@@ -869,7 +869,9 @@ export default function OrderTrackingScreen({
                         source={{
                           uri: productImage,
                         }}
-                        resizeMode="contain"
+                        contentFit="contain"
+                        transition={150}
+                        cachePolicy="memory-disk"
                         style={styles.productImage}
                       />
                     ) : (

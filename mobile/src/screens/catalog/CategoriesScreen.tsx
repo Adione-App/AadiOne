@@ -16,13 +16,13 @@ import {
   Animated,
   BackHandler,
   FlatList,
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
   View,
   useWindowDimensions,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { CategoryDto, ProductSummaryDto } from '@shared';
 import { formatPaise } from '@shared/money';
@@ -359,7 +359,9 @@ function CategoryGridCard({
             <Image
               source={{ uri: resolvedImage }}
               style={styles.categoryImage}
-              resizeMode="cover"
+              contentFit="cover"
+              transition={150}
+              cachePolicy="memory-disk"
               accessibilityLabel={category.name}
             />
           ) : (

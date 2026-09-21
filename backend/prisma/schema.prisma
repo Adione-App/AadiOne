@@ -499,6 +499,13 @@ model Category {
   children Category[] @relation("CategoryTree")
   products Product[]
 
+  // Overridden by a partial index scoped to live rows in the
+  // category_slug_partial_unique migration (parent_id IS NOT NULL AND
+  // deleted_at IS NULL) — Prisma can't express partial indexes here, so this
+  // declaration still exists for typegen, but the index actually enforced in
+  // the database excludes soft-deleted categories, letting a deleted
+  // category's name/slug be reused. Root categories (parent_id NULL) are a
+  // separate case, see categories_root_slug_unique in null_scope_unique.
   @@unique([parentId, slug])
   /// "All products under Grocery" prefix query.
   @@index([path])

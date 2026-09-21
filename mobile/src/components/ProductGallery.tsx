@@ -11,7 +11,6 @@
 
 import { useRef, useState } from "react";
 import {
-  Image,
   ScrollView,
   StyleSheet,
   View,
@@ -19,6 +18,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
+import { Image } from "expo-image";
 import { colors, radius, spacing } from "@shared/theme";
 import { AppText } from "@/components/ui";
 import { resolveImageUrl } from "@/lib/api";
@@ -66,7 +66,9 @@ export default function ProductGallery({
             uri: resolveImageUrl(sources[0]!.url) ?? undefined,
           }}
           style={styles.image}
-          resizeMode="contain"
+          contentFit="contain"
+          transition={150}
+          cachePolicy="memory-disk"
           accessibilityLabel={sources[0]!.altText ?? productName}
         />
       </View>
@@ -98,7 +100,9 @@ export default function ProductGallery({
                 uri: resolveImageUrl(image.url) ?? undefined,
               }}
               style={styles.image}
-              resizeMode="contain"
+              contentFit="contain"
+              transition={150}
+              cachePolicy="memory-disk"
               accessibilityLabel={image.altText ?? productName}
             />
           </View>

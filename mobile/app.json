@@ -3,7 +3,7 @@
     "name": "AadiOne",
     "slug": "adione",
     "owner": "aadione-app",
-    "version": "1.0.2",
+    "version": "1.0.4",
     "orientation": "portrait",
     "scheme": "adione",
     "userInterfaceStyle": "light",
@@ -14,7 +14,7 @@
     "android": {
       "package": "in.adione.app",
       "googleServicesFile": "./android/app/google-services.json",
-      "versionCode": 3,
+      "versionCode": 5,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adione-icon.png",
         "backgroundColor": "#FFFFFF"

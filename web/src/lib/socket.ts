@@ -56,9 +56,24 @@ export function useOrderSocket(handlers: Handlers, storeId?: string): void {
 
     const handleCreated = (event: OrderEvent) => ref.current.onNewOrder?.(event);
     const handleChanged = (event: OrderEvent) => ref.current.onStatusChanged?.(event);
+    // Without this, a rejected handshake (wrong/expired token, or the
+    // origin missing from the backend's CORS_ORIGINS) fails completely
+    // silently — socket.io-client just keeps retrying forever in the
+    // background with nothing in the UI or console to explain why the "new
+    // order" chime never fires. The REST poll this screen also runs is what
+    // was masking this: the order list still updates (just up to ~20s late),
+    // making the missing socket connection easy to miss.
+    const handleConnectError = (error: Error) => {
+      // eslint-disable-next-line no-console
+      console.error(
+        '[socket] connection failed — realtime order updates/chime are down, falling back to polling:',
+        error.message,
+      );
+    };
 
     instance.on('order.created', handleCreated);
     instance.on('order.status_changed', handleChanged);
+    instance.on('connect_error', handleConnectError);
     instance.on('connect', () => {
       if (storeId) instance.emit('store:subscribe', storeId);
     });
@@ -68,6 +83,7 @@ export function useOrderSocket(handlers: Handlers, storeId?: string): void {
     return () => {
       instance.off('order.created', handleCreated);
       instance.off('order.status_changed', handleChanged);
+      instance.off('connect_error', handleConnectError);
     };
   }, [storeId]);
 }

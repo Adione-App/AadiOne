@@ -1,7 +1,7 @@
 import {
   Animated,
+  Easing,
   FlatList,
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -10,6 +10,7 @@ import {
 } from "react-native";
 import React, { useEffect, useRef, useState } from "react";
 
+import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import {
   ArrowRight,
@@ -53,6 +54,70 @@ import promoGrocery from "../../../assets/promo-grocery.png";
 
 /** Fixed count of the promotional carousel below — see the `banners` array. */
 const HOME_BANNER_COUNT = 4;
+
+/* =====================================================================
+   ANIMATED SEARCH PLACEHOLDER
+
+   Cycles through example queries (fade + slide, the same idea as
+   ProductCard's AnimatedQuantity) instead of sitting on one static line —
+   the quick-commerce apps this design follows use the same "rotating
+   placeholder" cue to hint at what's searchable without the customer
+   having to tap in first.
+===================================================================== */
+
+const SEARCH_PLACEHOLDERS = [
+  "Search for atta, rice, dal…",
+  "Search for milk, bread, eggs…",
+  "Search for chips, biscuits…",
+  "Search for soap, shampoo…",
+  "Search for fruits, vegetables…",
+];
+
+const PLACEHOLDER_HOLD_MS = 2200;
+const PLACEHOLDER_ANIM_MS = 280;
+
+function AnimatedSearchPlaceholder() {
+  const [index, setIndex] = useState(0);
+  const anim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      Animated.timing(anim, {
+        toValue: 0,
+        duration: PLACEHOLDER_ANIM_MS,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }).start(() => {
+        setIndex((current) => (current + 1) % SEARCH_PLACEHOLDERS.length);
+        anim.setValue(0);
+        Animated.timing(anim, {
+          toValue: 1,
+          duration: PLACEHOLDER_ANIM_MS,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }).start();
+      });
+    }, PLACEHOLDER_HOLD_MS);
+
+    return () => clearInterval(timer);
+  }, [anim]);
+
+  const translateY = anim.interpolate({ inputRange: [0, 1], outputRange: [8, 0] });
+
+  return (
+    <View style={styles.searchPlaceholderClip}>
+      <Animated.Text
+        numberOfLines={1}
+        style={[
+          styles.searchPlaceholder,
+          { color: colors.textMuted, opacity: anim, transform: [{ translateY }] },
+        ]}
+      >
+        {SEARCH_PLACEHOLDERS[index]}
+      </Animated.Text>
+    </View>
+  );
+}
 
 /* =====================================================================
    HOME SCREEN
@@ -326,36 +391,43 @@ export default function HomeScreen({
     <Screen style={styles.screen}>
       {/* ============================================================
           TOP LOCATION HEADER
+
+          `insets.top` lives on this OUTER, never-animated wrapper — not on
+          the collapsing row itself — so the safe-area gap at the very top
+          of the screen stays correct and constant whether the row below is
+          fully expanded, mid-collapse, or fully collapsed. Only the row's
+          OWN content height collapses.
       ============================================================ */}
 
-      <Animated.View
-        onLayout={(event) => {
-          // Only ever captured once — a later layout pass while the row is
-          // already mid-collapse would otherwise overwrite the real
-          // expanded height with whatever shrunken height it has at that
-          // moment.
-          if (headerHeight === 0) setHeaderHeight(event.nativeEvent.layout.height);
-        }}
-        style={[
-          styles.header,
-          {
-            paddingTop: insets.top + 4,
-          },
-          headerHeight > 0 && {
-            height: scrollY.interpolate({
-              inputRange: [0, headerHeight],
-              outputRange: [headerHeight, 0],
-              extrapolate: "clamp",
-            }),
-            opacity: scrollY.interpolate({
-              inputRange: [0, headerHeight * 0.6],
-              outputRange: [1, 0],
-              extrapolate: "clamp",
-            }),
-            overflow: "hidden",
-          },
-        ]}
-      >
+      <View style={{ paddingTop: insets.top }}>
+        <Animated.View
+          onLayout={(event) => {
+            // Only ever captured once — a later layout pass while the row is
+            // already mid-collapse would otherwise overwrite the real
+            // expanded height with whatever shrunken height it has at that
+            // moment.
+            if (headerHeight === 0) setHeaderHeight(event.nativeEvent.layout.height);
+          }}
+          style={[
+            styles.header,
+            {
+              paddingTop: 4,
+            },
+            headerHeight > 0 && {
+              height: scrollY.interpolate({
+                inputRange: [0, headerHeight],
+                outputRange: [headerHeight, 0],
+                extrapolate: "clamp",
+              }),
+              opacity: scrollY.interpolate({
+                inputRange: [0, headerHeight * 0.6],
+                outputRange: [1, 0],
+                extrapolate: "clamp",
+              }),
+              overflow: "hidden",
+            },
+          ]}
+        >
         {/* ----------------------------------------------------------
             LOCATION
         ---------------------------------------------------------- */}
@@ -431,35 +503,46 @@ export default function HomeScreen({
         >
           <Ionicons name="person-circle" size={38} color={colors.primary} />
         </Pressable>
-      </Animated.View>
+        </Animated.View>
 
-      {/* ============================================================
-          SEARCH — deliberately OUTSIDE the ScrollView below, so it never
-          scrolls away itself: once the address/profile row above has
-          collapsed, this is the only thing left pinned at the top.
-      ============================================================ */}
+        {/* ==========================================================
+            SEARCH — deliberately OUTSIDE the ScrollView below, so it
+            never scrolls away itself: once the address/profile row above
+            has collapsed, this is the only thing left pinned at the top.
+            Its own top margin shrinks as the row collapses instead of
+            staying fixed, so no dead gap is left above it once scrolled.
+        ========================================================== */}
 
-      <Pressable
-        onPress={onOpenSearch}
-        style={styles.searchBar}
-        accessibilityRole="button"
-        accessibilityLabel="Search products"
-      >
-        <Ionicons
-          name="search-outline"
-          size={20}
-          color={colors.textMuted}
-          style={styles.searchIcon}
-        />
-
-        <AppText
-          variant="body"
-          color={colors.textMuted}
-          style={styles.searchPlaceholder}
+        <Animated.View
+          style={
+            headerHeight > 0
+              ? {
+                  marginTop: scrollY.interpolate({
+                    inputRange: [0, headerHeight],
+                    outputRange: [spacing.md, spacing.xs],
+                    extrapolate: "clamp",
+                  }),
+                }
+              : { marginTop: spacing.md }
+          }
         >
-          Search for atta, rice, dal, oil…
-        </AppText>
-      </Pressable>
+          <Pressable
+            onPress={onOpenSearch}
+            style={styles.searchBar}
+            accessibilityRole="button"
+            accessibilityLabel="Search products"
+          >
+            <Ionicons
+              name="search-outline"
+              size={20}
+              color={colors.textMuted}
+              style={styles.searchIcon}
+            />
+
+            <AnimatedSearchPlaceholder />
+          </Pressable>
+        </Animated.View>
+      </View>
 
       {/* ============================================================
           SCROLLABLE HOME
@@ -558,7 +641,9 @@ export default function HomeScreen({
                     <Image
                       source={item.image}
                       style={styles.banner}
-                      resizeMode="cover"
+                      contentFit="cover"
+                      transition={150}
+                      cachePolicy="memory-disk"
                     />
                   </Pressable>
                 );
@@ -569,7 +654,9 @@ export default function HomeScreen({
                   <Image
                     source={item.image}
                     style={styles.banner}
-                    resizeMode="cover"
+                    contentFit="cover"
+                    transition={150}
+                    cachePolicy="memory-disk"
                     accessibilityLabel={item.title}
                   />
 
@@ -872,7 +959,13 @@ function PromoTileStrip({
               accessibilityRole="button"
               accessibilityLabel={`Shop ${tile.id}`}
             >
-              <Image source={tile.image} style={styles.promoTileImage} resizeMode="cover" />
+              <Image
+                source={tile.image}
+                style={styles.promoTileImage}
+                contentFit="cover"
+                transition={150}
+                cachePolicy="memory-disk"
+              />
             </Pressable>
           </Animated.View>
         );
@@ -1031,7 +1124,6 @@ const styles = StyleSheet.create({
   searchBar: {
     marginHorizontal: spacing.base,
 
-    marginTop: spacing.md,
     marginBottom: spacing.sm,
 
     minHeight: 44,
@@ -1055,9 +1147,14 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
 
-  searchPlaceholder: {
+  searchPlaceholderClip: {
     flex: 1,
+    height: 18,
+    overflow: "hidden",
+    justifyContent: "center",
+  },
 
+  searchPlaceholder: {
     fontSize: 13,
 
     lineHeight: 18,

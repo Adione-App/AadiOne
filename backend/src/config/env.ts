@@ -435,6 +435,22 @@ function loadEnv(): Env {
 
 export const env = loadEnv();
 
+// A soft warning, not a `fail()` — unlike REDIS/OTP_PROVIDER/PAYMENT_PROVIDER/
+// STORAGE_PROVIDER above, this can't hard-fail startup: flipping it to a
+// guard without every deploy having FCM_* creds ready first would crash-loop
+// a previously-working production API. Console-only, printed unconditionally
+// (not behind a logger) so it's visible even if log shipping is misconfigured
+// — the whole point is to not silently ship with push notifications disabled.
+if (env.NODE_ENV === "production" && env.NOTIFICATION_PROVIDER !== "fcm") {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "\n[AdiOne] WARNING: NOTIFICATION_PROVIDER is not set to 'fcm' in production.\n" +
+      "Every customer push notification (order placed, out for delivery, etc.) is being " +
+      "logged only, not actually sent. Set NOTIFICATION_PROVIDER=fcm and FCM_PROJECT_ID / " +
+      "FCM_CLIENT_EMAIL / FCM_PRIVATE_KEY to enable real push notifications.\n",
+  );
+}
+
 export const isProduction = env.NODE_ENV === "production";
 
 export const isTest = env.NODE_ENV === "test";

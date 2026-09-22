@@ -128,7 +128,7 @@ export interface ConfigValues {
  * seeded.
  */
 export const CONFIG_DEFAULTS: ConfigValues = {
-  MAX_SERVICE_RADIUS_KM: 10,
+  MAX_SERVICE_RADIUS_KM: 12,
 
   ROAD_DISTANCE_FACTOR: 1.3,
 

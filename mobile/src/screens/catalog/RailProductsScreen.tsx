@@ -32,8 +32,11 @@ export default function RailProductsScreen({
   const cart = useCartActions();
   const columns = useGridColumns();
 
+  // Percentage width, not flex:1 — an incomplete last row (odd item count)
+  // would otherwise stretch its lone card to the full row width instead of
+  // its own column's share (see CategoriesScreen for the same fix).
   const renderItem = ({ item }: { item: ProductSummaryDto }) => (
-    <View style={styles.cardWrapper}>
+    <View style={[styles.cardWrapper, { width: `${100 / columns}%` }]}>
       <ProductCard
         product={item}
         qtyInCart={item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0}
@@ -94,5 +97,5 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   back: { width: 40, height: 40, justifyContent: "center" },
-  cardWrapper: { flex: 1, padding: spacing.xs },
+  cardWrapper: { padding: spacing.xs },
 });

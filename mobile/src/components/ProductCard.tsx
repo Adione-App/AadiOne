@@ -16,7 +16,10 @@ import { formatPaise } from "@shared/money";
 import { colors, radius, shadow, spacing } from "@shared/theme";
 
 import { resolveImageUrl } from "../lib/api";
-import { type CartItemSnapshot, snapshotFromProduct } from "../lib/useCartActions";
+import {
+  type CartItemSnapshot,
+  snapshotFromProduct,
+} from "../lib/useCartActions";
 import { flyToCart } from "../lib/flyToCart";
 import { AppText } from "./ui";
 
@@ -121,7 +124,10 @@ function AnimatedQuantity({
           {
             color,
             opacity: incomingOpacity,
-            transform: [{ translateY: incomingTranslateY }, { scale: incomingScale }],
+            transform: [
+              { translateY: incomingTranslateY },
+              { scale: incomingScale },
+            ],
           },
         ]}
       >
@@ -397,7 +403,9 @@ function ProductCardImpl({
           decrement empties the line.
       ============================================================= */}
 
-      <ActionBarTransition mode={outOfStock ? "outOfStock" : qtyInCart > 0 ? "stepper" : "add"}>
+      <ActionBarTransition
+        mode={outOfStock ? "outOfStock" : qtyInCart > 0 ? "stepper" : "add"}
+      >
         {outOfStock ? (
           <View style={styles.outOfStockBar}>
             <AppText
@@ -432,7 +440,11 @@ function ProductCardImpl({
             accessibilityRole="button"
             accessibilityLabel={`Add ${product.name} to cart`}
           >
-            <ShoppingCart size={14} color={colors.onPrimary} strokeWidth={2.3} />
+            <ShoppingCart
+              size={14}
+              color={colors.onPrimary}
+              strokeWidth={2.3}
+            />
             <AppText
               variant="bodyStrong"
               color={colors.onPrimary}
@@ -453,15 +465,24 @@ function ProductCardImpl({
    number itself is already instant (AnimatedQuantity) regardless of this.
 ===================================================================== */
 
-type ActionBarMode = "add" | "stepper" | "outOfStock";
+export type ActionBarMode = "add" | "stepper" | "outOfStock";
 
-function ActionBarTransition({
+export function ActionBarTransition({
   mode,
   children,
 }: {
   mode: ActionBarMode;
   children: React.ReactNode;
 }) {
+  // Deliberately no caller-supplied `style` prop here: this Animated.View's
+  // opacity/scale is native-driven (useNativeDriver: true). Merging in an
+  // outside style animated by a DIFFERENT, JS-driven value (e.g. a `flex`
+  // resize — flex isn't supported by the native driver at all) onto this
+  // same node makes RN try to build one native config covering both and
+  // throws ("Style property 'flex' is not supported by native animated
+  // module"). A caller that needs to size this needs a wrapping Animated.View
+  // of its OWN around <ActionBarTransition>, not a style passed through it —
+  // see ProductDetailScreen's footer for that pattern.
   const anim = useRef(new Animated.Value(1)).current;
   const prevMode = useRef(mode);
 
@@ -482,7 +503,14 @@ function ActionBarTransition({
     <Animated.View
       style={{
         opacity: anim,
-        transform: [{ scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.88, 1] }) }],
+        transform: [
+          {
+            scale: anim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0.88, 1],
+            }),
+          },
+        ],
       }}
     >
       {children}

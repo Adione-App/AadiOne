@@ -82,16 +82,21 @@ export default function SearchScreen({
   // changes, so this stays false for every later keystroke (see `useSearch`).
   const firstLoad = hasQuery && results.isLoading && items.length === 0;
 
+  // Percentage width, not flex:1/bare — an incomplete last row (odd result
+  // count) would otherwise stretch its lone card to the full row width
+  // instead of its own column's share.
   const renderItem = ({ item }: { item: ProductSummaryDto }) => (
-    <ProductCard
-      product={item}
-      qtyInCart={item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0}
-      busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
-      onPress={onOpenProduct}
-      onAdd={cart.add}
-      onIncrement={cart.increment}
-      onDecrement={cart.decrement}
-    />
+    <View style={[styles.popularCell, { width: `${100 / columns}%` }]}>
+      <ProductCard
+        product={item}
+        qtyInCart={item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0}
+        busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
+        onPress={onOpenProduct}
+        onAdd={cart.add}
+        onIncrement={cart.increment}
+        onDecrement={cart.decrement}
+      />
+    </View>
   );
 
   // A non-virtualized wrapping grid (not FlatList) — reused for both the

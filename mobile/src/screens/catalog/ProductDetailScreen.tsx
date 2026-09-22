@@ -6,18 +6,17 @@
  * and choose which size they are buying.
  */
 
-import { useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { useQuery } from '@tanstack/react-query';
-import type { ProductSummaryDto, VariantDto } from '@shared';
-import { formatPaise } from '@shared/money';
-import { colors, layout, radius, spacing } from '@shared/theme';
-import { api } from '@/lib/api';
-import { useProduct } from '@/lib/queries';
-import { snapshotFromProduct, useCartActions } from '@/lib/useCartActions';
-import { flyToCart } from '@/lib/flyToCart';
+import { useState } from "react";
+import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
+import { useQuery } from "@tanstack/react-query";
+import type { ProductSummaryDto, VariantDto } from "@shared";
+import { formatPaise } from "@shared/money";
+import { colors, layout, radius, spacing } from "@shared/theme";
+import { api } from "@/lib/api";
+import { useProduct } from "@/lib/queries";
+import { snapshotFromProduct, useCartActions } from "@/lib/useCartActions";
 import {
   AppText,
   Button,
@@ -26,9 +25,13 @@ import {
   Loading,
   NoticeStrip,
   Screen,
-} from '@/components/ui';
-import { ProductCard, QuantityStepper } from '@/components/ProductCard';
-import ProductGallery from '@/components/ProductGallery';
+} from "@/components/ui";
+import {
+  ActionBarTransition,
+  ProductCard,
+  QuantityStepper,
+} from "@/components/ProductCard";
+import ProductGallery from "@/components/ProductGallery";
 
 export default function ProductDetailScreen({
   productId,
@@ -44,21 +47,28 @@ export default function ProductDetailScreen({
   const insets = useSafeAreaInsets();
   const product = useProduct(productId);
   const cart = useCartActions();
-  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
+  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(
+    null,
+  );
   const [notifyRequested, setNotifyRequested] = useState(false);
 
   const related = useQuery({
-    queryKey: ['related', productId],
-    queryFn: () => api.get<ProductSummaryDto[]>(`/products/${productId}/related`),
+    queryKey: ["related", productId],
+    queryFn: () =>
+      api.get<ProductSummaryDto[]>(`/products/${productId}/related`),
     enabled: product.isSuccess,
   });
 
-  // Every hook this component uses MUST run on every render, including the
-  // loading/error ones below that return early — a hook declared after an
-  // early return gets skipped on that render and then suddenly called once
-  // data arrives, which is a hard React crash (mismatched hook count), not
-  // just a warning, in a release build with no dev tools attached to show it.
-  const galleryRef = useRef<View>(null);
+  // Computed with optional chaining (product.data may not exist yet) so
+  // this is safe to feed into `cart.qtyFor` below before we know
+  // `product.data` exists — no hook depends on it, but keeping the shape
+  // consistent with the rest of this file's "every value is optional-chained
+  // until after the loading/error guards" convention.
+  const variant: VariantDto | undefined =
+    product.data?.variants.find((item) => item.id === selectedVariantId) ??
+    product.data?.variants.find((item) => item.inStock) ??
+    product.data?.variants[0];
+  const qtyInCart = variant ? cart.qtyFor(variant.id) : 0;
 
   if (product.isLoading) return <Loading />;
   if (product.isError || !product.data) {
@@ -71,24 +81,8 @@ export default function ProductDetailScreen({
   }
 
   const detail = product.data;
-  const variant: VariantDto | undefined =
-    detail.variants.find((item) => item.id === selectedVariantId) ??
-    detail.variants.find((item) => item.inStock) ??
-    detail.variants[0];
-
-  const qtyInCart = variant ? cart.qtyFor(variant.id) : 0;
   const outOfStock = !variant?.inStock;
   const cartItemCount = cart.cart?.bill.itemCount ?? 0;
-
-  // Same decorative flight as ProductCard's — flies from the product
-  // gallery image to the cart tab icon on Add/+ (see flyToCart.tsx).
-  const triggerFly = () => {
-    galleryRef.current?.measureInWindow((x, y, width, height) => {
-      if (width > 0 && height > 0) {
-        flyToCart({ x, y, width, height }, detail.imageUrl);
-      }
-    });
-  };
 
   async function requestNotify(): Promise<void> {
     if (!variant) return;
@@ -108,13 +102,11 @@ export default function ProductDetailScreen({
       </View>
 
       <ScrollView contentContainerStyle={{ paddingBottom: 140 }}>
-        <View ref={galleryRef} collapsable={false}>
-          <ProductGallery
-            images={detail.images}
-            fallbackUrl={detail.imageUrl}
-            productName={detail.name}
-          />
-        </View>
+        <ProductGallery
+          images={detail.images}
+          fallbackUrl={detail.imageUrl}
+          productName={detail.name}
+        />
 
         <View style={{ padding: spacing.base }}>
           <AppText variant="h1">{detail.name}</AppText>
@@ -134,7 +126,7 @@ export default function ProductDetailScreen({
                   <AppText
                     variant="bodyLarge"
                     color={colors.textMuted}
-                    style={{ textDecorationLine: 'line-through' }}
+                    style={{ textDecorationLine: "line-through" }}
                   >
                     {formatPaise(variant.mrpPaise)}
                   </AppText>
@@ -164,11 +156,17 @@ export default function ProductDetailScreen({
                       onPress={() => setSelectedVariantId(item.id)}
                       style={[
                         styles.variantChip,
-                        active && { borderColor: colors.primary, backgroundColor: colors.primarySurface },
+                        active && {
+                          borderColor: colors.primary,
+                          backgroundColor: colors.primarySurface,
+                        },
                         !item.inStock && { opacity: 0.5 },
                       ]}
                     >
-                      <AppText variant="bodyStrong" color={active ? colors.primary : colors.textPrimary}>
+                      <AppText
+                        variant="bodyStrong"
+                        color={active ? colors.primary : colors.textPrimary}
+                      >
                         {item.variantName}
                       </AppText>
                       <AppText variant="caption" color={colors.textSecondary}>
@@ -182,13 +180,22 @@ export default function ProductDetailScreen({
           )}
 
           {outOfStock && (
-            <Card style={{ marginTop: spacing.lg, backgroundColor: colors.primarySurface }}>
+            <Card
+              style={{
+                marginTop: spacing.lg,
+                backgroundColor: colors.primarySurface,
+              }}
+            >
               <AppText variant="h3">Out of stock</AppText>
-              <AppText variant="body" color={colors.textSecondary} style={{ marginTop: spacing.xs }}>
+              <AppText
+                variant="body"
+                color={colors.textSecondary}
+                style={{ marginTop: spacing.xs }}
+              >
                 We’ve run out of this item. Please check back in some time.
               </AppText>
               <Button
-                label={notifyRequested ? 'We’ll notify you' : 'Notify me'}
+                label={notifyRequested ? "We’ll notify you" : "Notify me"}
                 variant="secondary"
                 disabled={notifyRequested}
                 onPress={() => void requestNotify()}
@@ -200,7 +207,11 @@ export default function ProductDetailScreen({
           {detail.description && (
             <View style={{ marginTop: spacing.lg }}>
               <AppText variant="h3">About this product</AppText>
-              <AppText variant="body" color={colors.textSecondary} style={{ marginTop: spacing.xs }}>
+              <AppText
+                variant="body"
+                color={colors.textSecondary}
+                style={{ marginTop: spacing.xs }}
+              >
                 {detail.description}
               </AppText>
             </View>
@@ -213,7 +224,9 @@ export default function ProductDetailScreen({
               {Object.entries(detail.attributes).map(([key, value]) => (
                 <View key={key} style={styles.attributeRow}>
                   <AppText variant="body" color={colors.textSecondary}>
-                    {key.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())}
+                    {key
+                      .replace(/([A-Z])/g, " $1")
+                      .replace(/^./, (c) => c.toUpperCase())}
                   </AppText>
                   <AppText variant="body">{String(value)}</AppText>
                 </View>
@@ -229,8 +242,16 @@ export default function ProductDetailScreen({
                   <View key={item.id} style={{ width: 160 }}>
                     <ProductCard
                       product={item}
-                      qtyInCart={item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0}
-                      busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
+                      qtyInCart={
+                        item.defaultVariant
+                          ? cart.qtyFor(item.defaultVariant.id)
+                          : 0
+                      }
+                      busy={
+                        item.defaultVariant
+                          ? cart.isBusy(item.defaultVariant.id)
+                          : false
+                      }
                       onPress={onOpenProduct}
                       onAdd={cart.add}
                       onIncrement={cart.increment}
@@ -249,42 +270,56 @@ export default function ProductDetailScreen({
           route), so "Go to Cart" is the only way back to the cart from
           here — it has to stay visible next to Add/the stepper no matter
           what state the item is in. */}
-      <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.base }]}>
+      <View
+        style={[styles.footer, { paddingBottom: insets.bottom + spacing.base }]}
+      >
         {cart.error && <NoticeStrip message={cart.error} />}
 
         <View style={styles.footerRow}>
-          {variant && !outOfStock ? (
-            qtyInCart > 0 ? (
-              <View style={styles.footerStepperFlex}>
-                <QuantityStepper
-                  qty={qtyInCart}
-                  max={variant.maxQtyPerOrder}
-                  busy={cart.isBusy(variant.id)}
-                  onIncrement={() => {
-                    triggerFly();
-                    void cart.increment(variant.id);
-                  }}
-                  onDecrement={() => void cart.decrement(variant.id)}
-                  fullWidth
-                />
-              </View>
-            ) : (
-              <Button
-                label="Add to Cart"
-                onPress={() => {
-                  triggerFly();
-                  cart.add(variant.id, snapshotFromProduct(detail, variant));
-                }}
-                style={styles.footerAddButton}
-              />
-            )
-          ) : (
-            <View style={styles.footerUnavailable}>
-              <AppText variant="bodyStrong" color={colors.textSecondary}>
-                Currently unavailable
-              </AppText>
-            </View>
-          )}
+          {/* Same width as the Cart button on the right, in every state —
+              ActionBarTransition (native-driven fade+scale) handles making
+              the Add-button-to-stepper swap itself feel smooth; the row
+              layout around it never changes size. */}
+          <View style={styles.footerActionFlex}>
+            <ActionBarTransition
+              mode={
+                outOfStock || !variant
+                  ? "outOfStock"
+                  : qtyInCart > 0
+                    ? "stepper"
+                    : "add"
+              }
+            >
+              {variant && !outOfStock ? (
+                qtyInCart > 0 ? (
+                  <View style={styles.footerStepperFlex}>
+                    <QuantityStepper
+                      qty={qtyInCart}
+                      max={variant.maxQtyPerOrder}
+                      busy={cart.isBusy(variant.id)}
+                      onIncrement={() => void cart.increment(variant.id)}
+                      onDecrement={() => void cart.decrement(variant.id)}
+                      fullWidth
+                    />
+                  </View>
+                ) : (
+                  <Button
+                    label="Add to Cart"
+                    onPress={() =>
+                      cart.add(variant.id, snapshotFromProduct(detail, variant))
+                    }
+                    style={styles.footerAddButton}
+                  />
+                )
+              ) : (
+                <View style={styles.footerUnavailable}>
+                  <AppText variant="bodyStrong" color={colors.textSecondary}>
+                    Currently unavailable
+                  </AppText>
+                </View>
+              )}
+            </ActionBarTransition>
+          </View>
 
           <Pressable
             onPress={onGoToCart}
@@ -298,8 +333,12 @@ export default function ProductDetailScreen({
             </AppText>
             {cartItemCount > 0 && (
               <View style={styles.goToCartBadge}>
-                <AppText variant="overline" color={colors.primary} style={styles.goToCartBadgeText}>
-                  {cartItemCount > 99 ? '99+' : cartItemCount}
+                <AppText
+                  variant="overline"
+                  color={colors.primary}
+                  style={styles.goToCartBadgeText}
+                >
+                  {cartItemCount > 99 ? "99+" : cartItemCount}
                 </AppText>
               </View>
             )}
@@ -312,8 +351,8 @@ export default function ProductDetailScreen({
 
 const styles = StyleSheet.create({
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: spacing.md,
     paddingHorizontal: spacing.base,
     paddingBottom: spacing.sm,
@@ -321,10 +360,10 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.divider,
     backgroundColor: colors.surface,
   },
-  back: { width: 40, height: 40, justifyContent: 'center' },
+  back: { width: 40, height: 40, justifyContent: "center" },
   priceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: spacing.md,
     marginTop: spacing.md,
   },
@@ -334,7 +373,12 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: radius.sm,
   },
-  variantRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
+  variantRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
   variantChip: {
     paddingHorizontal: spacing.base,
     paddingVertical: spacing.sm,
@@ -344,14 +388,14 @@ const styles = StyleSheet.create({
     minWidth: 88,
   },
   attributeRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    justifyContent: "space-between",
     paddingVertical: spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: colors.divider,
   },
   footer: {
-    position: 'absolute',
+    position: "absolute",
     left: 0,
     right: 0,
     bottom: 0,
@@ -360,18 +404,23 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: colors.border,
   },
-  footerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  footerRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  // Same flex:1 on this AND goToCartButton below — equal width in every
+  // state (before and after Add is tapped), never a size change.
+  footerActionFlex: { flex: 1 },
   footerStepperFlex: { flex: 1 },
   footerAddButton: { flex: 1 },
   footerUnavailable: {
     flex: 1,
     height: layout.minTouchTarget,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
   },
   goToCartButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
     gap: spacing.xs,
     height: layout.minTouchTarget,
     paddingHorizontal: spacing.base,
@@ -384,11 +433,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     borderRadius: radius.circle,
     backgroundColor: colors.onPrimary,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
   },
   goToCartBadgeText: {
     color: colors.primary,
-    fontWeight: '700',
+    fontWeight: "700",
   },
 });

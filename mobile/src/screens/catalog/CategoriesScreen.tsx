@@ -68,7 +68,7 @@ export default function CategoriesScreen({
   // Same sizing rule the sidebar used before this screen grew a landing
   // page: wide enough to read, but always leaving two product cards' worth
   // of room in what's left. See the original CategoriesScreen for the math.
-  const railWidth = Math.round(Math.max(80, Math.min(104, width * 0.26)));
+  const railWidth = Math.round(Math.max(72, Math.min(92, width * 0.22)));
   const sidebarColumns = useGridColumns(spacing.xs * 2 + railWidth);
 
   const [drill, setDrill] = useState<Drill>({ level: 'root' });
@@ -153,21 +153,31 @@ export default function CategoriesScreen({
         ? drill.parent.name
         : drill.category.name;
 
+  const productGridColumns = drill.level === 'category' ? sidebarColumns : columns;
+
   // Stable references — see HomeScreen's renderProduct for why these are
   // passed directly rather than wrapped in a fresh per-item closure.
+  //
+  // Wrapped in a fixed-percentage-width cell rather than handing ProductCard
+  // straight to FlatList: ProductCard's own root has `flex: 1`, and an
+  // INCOMPLETE last row (e.g. 5 items in a 2-column grid) stretches a lone
+  // flex:1 item to fill the whole row instead of just its own column's
+  // share — exactly the "last card looks different / full width" bug. A
+  // percentage width fixes every row, complete or not, to the same card
+  // size; the padding also doubles as the gutter between cards.
   const renderProduct = ({ item }: { item: ProductSummaryDto }) => (
-    <ProductCard
-      product={item}
-      qtyInCart={item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0}
-      busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
-      onPress={onOpenProduct}
-      onAdd={cart.add}
-      onIncrement={cart.increment}
-      onDecrement={cart.decrement}
-    />
+    <View style={[styles.productCell, { width: `${100 / productGridColumns}%` }]}>
+      <ProductCard
+        product={item}
+        qtyInCart={item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0}
+        busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
+        onPress={onOpenProduct}
+        onAdd={cart.add}
+        onIncrement={cart.increment}
+        onDecrement={cart.decrement}
+      />
+    </View>
   );
-
-  const productGridColumns = drill.level === 'category' ? sidebarColumns : columns;
 
   const productPane =
     products.isLoading ? (
@@ -394,6 +404,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   back: { width: 32, height: 32, justifyContent: 'center', marginRight: spacing.xs },
+
+  /* Product grid — see renderProduct for why this wraps every card. */
+  productCell: {
+    padding: spacing.xs,
+  },
 
   /* Category showcase grid — big images */
   categoryGrid: {

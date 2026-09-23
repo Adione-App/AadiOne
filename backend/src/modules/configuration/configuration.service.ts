@@ -185,6 +185,7 @@ const POSITIVE_NUMBER_KEYS: readonly (keyof ConfigValues)[] = [
   ConfigKey.PAYMENT_HOLD_MINUTES,
   ConfigKey.DEFAULT_MAX_QTY_PER_ORDER,
   ConfigKey.MAX_ADDRESSES_PER_USER,
+  ConfigKey.REFERRAL_COUPON_EXPIRY_DAYS,
 ];
 
 const NON_NEGATIVE_NUMBER_KEYS: readonly (keyof ConfigValues)[] = [
@@ -198,6 +199,8 @@ const NON_NEGATIVE_NUMBER_KEYS: readonly (keyof ConfigValues)[] = [
   ConfigKey.BATCH_DELAY_MINUTES,
   ConfigKey.ETA_BUFFER_MINUTES,
   ConfigKey.LOW_STOCK_THRESHOLD,
+  ConfigKey.REFERRAL_REWARD_PAISE,
+  ConfigKey.REFERRAL_MIN_ORDER_PAISE,
 ];
 
 function validateValue(key: keyof ConfigValues, value: unknown): void {

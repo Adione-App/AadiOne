@@ -204,3 +204,13 @@ export const signupPerMobile = rateLimit({
   windowSeconds: HOUR,
   identify: byMobile,
 });
+
+/* --- Referrals -------------------------------------------------------------- */
+
+/** Guards a new account from grinding through referral codes to find a valid one. */
+export const referralApplyPerUser = rateLimit({
+  scope: 'referral:apply:user',
+  limit: 5,
+  windowSeconds: HOUR,
+  identify: byUser,
+});

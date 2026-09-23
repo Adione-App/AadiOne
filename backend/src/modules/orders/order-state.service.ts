@@ -31,6 +31,7 @@ import { runInTransaction, type Tx } from '../../infra/db/prisma';
 import { moduleLogger } from '../../common/logger';
 import * as inventoryService from '../inventory/inventory.service';
 import * as notificationService from '../notifications/notification.service';
+import * as referralService from '../referrals/referral.service';
 import {
   emitNewOrder,
   emitOrderStatus,
@@ -232,6 +233,20 @@ export async function transitionOrder(input: TransitionInput): Promise<Transitio
         metadata: (input.metadata ?? null) as never,
       },
     });
+
+    // Refer & Earn: DELIVERED is the one unambiguous "genuinely fulfilled
+    // order" event in this system (COD collects money only on delivery,
+    // online orders only reach it after a real delivery scan) — see
+    // referral.service.ts's own doc comment for why this single call, inside
+    // this same transaction, is both correct and race-safe with no extra
+    // locking of its own beyond what it already does internally.
+    if (toStatus === OrderStatus.DELIVERED) {
+      await referralService.tryRewardForOrder(tx, {
+        id: updated.id,
+        userId: updated.userId,
+        itemsSubtotalPaise: updated.itemsSubtotalPaise,
+      });
+    }
 
     log.info(
       { orderId: order.id, fromStatus, toStatus, actorType: input.actorType },

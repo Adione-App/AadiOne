@@ -24,6 +24,7 @@ import {
   deviceRouter,
   notificationRouter,
 } from '../modules/notifications/notification.routes';
+import { referralRouter, rewardsRouter } from '../modules/referrals/referral.routes';
 
 export const apiRouter: Router = Router();
 
@@ -43,6 +44,8 @@ apiRouter.use('/orders', orderRouter);
 apiRouter.use('/payments', paymentRouter);
 apiRouter.use('/notifications', notificationRouter);
 apiRouter.use('/devices', deviceRouter);
+apiRouter.use('/referrals', referralRouter);
+apiRouter.use('/rewards', rewardsRouter);
 apiRouter.use('/admin', adminRouter);
 
 // Phase 9  — payments

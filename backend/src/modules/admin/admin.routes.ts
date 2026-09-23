@@ -12,6 +12,7 @@ import { authenticatedApiLimit } from '../../middleware/rateLimit';
 import { adminCatalogRouter } from '../catalog/admin-catalog.routes';
 import { adminInventoryRouter } from '../inventory/admin-inventory.routes';
 import { adminStoreRouter } from '../stores/admin-store.routes';
+import { adminReferralRouter } from '../referrals/admin-referral.routes';
 import { adminOrderRouter } from './admin-order.routes';
 
 export const adminRouter: Router = Router();
@@ -22,3 +23,4 @@ adminRouter.use('/', adminCatalogRouter);
 adminRouter.use('/', adminInventoryRouter);
 adminRouter.use('/', adminStoreRouter);
 adminRouter.use('/', adminOrderRouter);
+adminRouter.use('/', adminReferralRouter);

@@ -249,16 +249,16 @@ enum IdempotencyStatus {
 // =============================================================================
 
 model User {
-  id       String     @id @default(uuid()) @db.Uuid
+  id           String     @id @default(uuid()) @db.Uuid
   /// Canonical 10-digit Indian mobile, no country code. Uniqueness is the
   /// business rule ("one account per number") as well as the login lookup.
-  mobile   String     @unique @db.VarChar(15)
-  fullName String?    @map("full_name") @db.VarChar(120)
-  email    String?    @db.VarChar(160)
+  mobile       String     @unique @db.VarChar(15)
+  fullName     String?    @map("full_name") @db.VarChar(120)
+  email        String?    @db.VarChar(160)
   /// Admin login only. Customers authenticate by OTP and have no password.
-  passwordHash String? @map("password_hash") @db.VarChar(120)
-  role     UserRole   @default(CUSTOMER)
-  status   UserStatus @default(ACTIVE)
+  passwordHash String?    @map("password_hash") @db.VarChar(120)
+  role         UserRole   @default(CUSTOMER)
+  status       UserStatus @default(ACTIVE)
 
   /// Set by an admin to bar this customer from Cash on Delivery.
   codBlocked Boolean @default(false) @map("cod_blocked")
@@ -282,8 +282,19 @@ model User {
   /// (PRD §2.2 M3 — Play Store requires a working account-deletion path).
   deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  referredBy   User?  @relation("UserReferral", fields: [referredByUserId], references: [id], onDelete: SetNull)
+  referredBy    User?  @relation("UserReferral", fields: [referredByUserId], references: [id], onDelete: SetNull)
   referredUsers User[] @relation("UserReferral")
+
+  /// Refer & Earn lifecycle rows — see the `Referral` model. `referredBy`
+  /// above is the fast "who referred me" pointer set once at signup;
+  /// `referralsReceived`/`referralsMade` are the fuller lifecycle/reward
+  /// audit trail (status, reward coupon, timestamps) built on top of it.
+  referralsMade     Referral[] @relation("ReferralsMade")
+  referralsReceived Referral?  @relation("ReferralsReceived")
+  /// Coupons minted FOR this user specifically (e.g. a ₹50 referral reward)
+  /// — distinct from `couponRedemptions` above, which is "coupons this user
+  /// has SPENT" (any global promo code, not just ones issued to them).
+  issuedCoupons     Coupon[]   @relation("IssuedCoupons")
 
   addresses          Address[]
   refreshTokens      RefreshToken[]
@@ -389,10 +400,10 @@ model Store {
   name String @db.VarChar(120)
   code String @unique @db.VarChar(40)
 
-  addressLine String @map("address_line") @db.VarChar(300)
-  city        String @db.VarChar(80)
-  state       String @db.VarChar(80)
-  pincode     String @db.VarChar(6)
+  addressLine String  @map("address_line") @db.VarChar(300)
+  city        String  @db.VarChar(80)
+  state       String  @db.VarChar(80)
+  pincode     String  @db.VarChar(6)
   latitude    Float
   longitude   Float
   phone       String? @db.VarChar(15)
@@ -410,14 +421,14 @@ model Store {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  hours          StoreHours[]
-  closures       StoreClosure[]
-  storeVariants  StoreVariant[]
-  carts          Cart[]
-  orders         Order[]
-  deliveryAgents DeliveryAgent[]
-  configurations Configuration[]
-  categories     Category[]
+  hours           StoreHours[]
+  closures        StoreClosure[]
+  storeVariants   StoreVariant[]
+  carts           Cart[]
+  orders          Order[]
+  deliveryAgents  DeliveryAgent[]
+  configurations  Configuration[]
+  categories      Category[]
   backInStockSubs BackInStockSubscription[]
 
   @@map("stores")
@@ -562,7 +573,7 @@ model Product {
 
   /// Merchandising ranks for the Home rails. Maintained by admin/report jobs,
   /// not computed per request.
-  popularityScore Int @default(0) @map("popularity_score")
+  popularityScore  Int     @default(0) @map("popularity_score")
   isDailyEssential Boolean @default(false) @map("is_daily_essential")
 
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
@@ -587,7 +598,7 @@ model ProductVariant {
   id        String @id @default(uuid()) @db.Uuid
   productId String @map("product_id") @db.Uuid
 
-  sku String @unique @db.VarChar(60)
+  sku         String   @unique @db.VarChar(60)
   /// Display label: "1 kg", "500 ml", "Pack of 6".
   variantName String   @map("variant_name") @db.VarChar(80)
   unit        UnitType @default(PIECE)
@@ -661,8 +672,8 @@ model StoreVariant {
   /// This is what makes the online-payment window safe without overselling.
   reservedQty Int @default(0) @map("reserved_qty")
 
-  lowStockThreshold Int  @default(5) @map("low_stock_threshold")
-  maxQtyPerOrder    Int  @default(10) @map("max_qty_per_order")
+  lowStockThreshold Int     @default(5) @map("low_stock_threshold")
+  maxQtyPerOrder    Int     @default(10) @map("max_qty_per_order")
   isAvailable       Boolean @default(true) @map("is_available")
 
   allowCod CodPolicy @default(INHERIT) @map("allow_cod")
@@ -790,14 +801,74 @@ model Coupon {
 
   isActive Boolean @default(true) @map("is_active")
 
+  /// Null for today's global promo codes (SAVE50, FREESHIP, ...), anyone may
+  /// redeem those subject to the usage limits above. Set for a coupon minted
+  /// FOR one specific user (e.g. a ₹50 Refer & Earn reward) — `resolveCoupon`
+  /// rejects it for any other user, on top of the usage-limit checks that
+  /// already apply to every coupon.
+  issuedToUserId      String?      @map("issued_to_user_id") @db.Uuid
+  /// Back-link to the Referral that earned this coupon. `@unique` is what
+  /// makes "a referral can mint at most one reward coupon" a DB guarantee,
+  /// not just application logic — a concurrent duplicate reward attempt
+  /// fails on this constraint even if the app-level check races.
+  issuedForReferralId String?      @unique @map("issued_for_referral_id") @db.Uuid
+  origin              CouponOrigin @default(PROMO)
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  issuedToUser      User?     @relation("IssuedCoupons", fields: [issuedToUserId], references: [id], onDelete: Cascade)
+  issuedForReferral Referral? @relation(fields: [issuedForReferralId], references: [id], onDelete: SetNull)
 
   redemptions CouponRedemption[]
   orders      Order[]
 
   @@index([isActive, validTo])
+  @@index([issuedToUserId])
   @@map("coupons")
+}
+
+// =============================================================================
+// Referrals (Refer & Earn)
+// =============================================================================
+
+enum ReferralStatus {
+  REGISTERED
+  FIRST_ORDER_PENDING
+  COMPLETED
+  REWARD_ISSUED
+}
+
+enum CouponOrigin {
+  PROMO
+  REFERRAL_REWARD
+}
+
+model Referral {
+  id             String @id @default(uuid()) @db.Uuid
+  referrerUserId String @map("referrer_user_id") @db.Uuid
+  /// `@unique` — a user can be referred exactly once, enforced at the DB
+  /// level, not just checked in application code.
+  referredUserId String @unique @map("referred_user_id") @db.Uuid
+  /// The code as typed at signup — denormalized for audit even though it's
+  /// derivable from `referrer.referralCode` today (codes are immutable).
+  referralCode   String @map("referral_code") @db.VarChar(16)
+
+  status ReferralStatus @default(REGISTERED)
+
+  /// The referred user's first order that satisfied the reward conditions.
+  firstEligibleOrderId String?   @map("first_eligible_order_id") @db.Uuid
+  completedAt          DateTime? @map("completed_at") @db.Timestamptz(3)
+  rewardIssuedAt       DateTime? @map("reward_issued_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  referrer     User    @relation("ReferralsMade", fields: [referrerUserId], references: [id], onDelete: Cascade)
+  referred     User    @relation("ReferralsReceived", fields: [referredUserId], references: [id], onDelete: Cascade)
+  rewardCoupon Coupon?
+
+  @@index([referrerUserId])
+  @@map("referrals")
 }
 
 model CouponRedemption {
@@ -840,32 +911,32 @@ model Order {
   paymentStatus OrderPaymentStatus @default(PENDING) @map("payment_status")
 
   // --- money, all paise, all computed server-side at creation --------------
-  itemsSubtotalPaise Int  @map("items_subtotal_paise")
-  itemDiscountPaise  Int  @default(0) @map("item_discount_paise")
-  couponId           String? @map("coupon_id") @db.Uuid
-  couponCode         String? @map("coupon_code") @db.VarChar(40)
-  couponDiscountPaise Int @default(0) @map("coupon_discount_paise")
-  deliveryFeePaise   Int  @default(0) @map("delivery_fee_paise")
-  platformFeePaise   Int  @default(0) @map("platform_fee_paise")
+  itemsSubtotalPaise  Int     @map("items_subtotal_paise")
+  itemDiscountPaise   Int     @default(0) @map("item_discount_paise")
+  couponId            String? @map("coupon_id") @db.Uuid
+  couponCode          String? @map("coupon_code") @db.VarChar(40)
+  couponDiscountPaise Int     @default(0) @map("coupon_discount_paise")
+  deliveryFeePaise    Int     @default(0) @map("delivery_fee_paise")
+  platformFeePaise    Int     @default(0) @map("platform_fee_paise")
   /// Tax contained WITHIN the item prices, extracted for the receipt.
-  taxPaise           Int  @default(0) @map("tax_paise")
-  totalPaise         Int  @map("total_paise")
+  taxPaise            Int     @default(0) @map("tax_paise")
+  totalPaise          Int     @map("total_paise")
 
   // --- immutable delivery address snapshot --------------------------------
   // Copied at placement so editing or deleting the saved address later cannot
   // rewrite where an order was actually sent.
-  deliveryFullName  String  @map("delivery_full_name") @db.VarChar(120)
-  deliveryMobile    String  @map("delivery_mobile") @db.VarChar(15)
-  deliveryAddressLine String @map("delivery_address_line") @db.VarChar(500)
-  deliveryLandmark  String? @map("delivery_landmark") @db.VarChar(160)
-  deliveryCity      String  @map("delivery_city") @db.VarChar(80)
-  deliveryState     String  @map("delivery_state") @db.VarChar(80)
-  deliveryPincode   String  @map("delivery_pincode") @db.VarChar(6)
-  deliveryLatitude  Float   @map("delivery_latitude")
-  deliveryLongitude Float   @map("delivery_longitude")
+  deliveryFullName    String  @map("delivery_full_name") @db.VarChar(120)
+  deliveryMobile      String  @map("delivery_mobile") @db.VarChar(15)
+  deliveryAddressLine String  @map("delivery_address_line") @db.VarChar(500)
+  deliveryLandmark    String? @map("delivery_landmark") @db.VarChar(160)
+  deliveryCity        String  @map("delivery_city") @db.VarChar(80)
+  deliveryState       String  @map("delivery_state") @db.VarChar(80)
+  deliveryPincode     String  @map("delivery_pincode") @db.VarChar(6)
+  deliveryLatitude    Float   @map("delivery_latitude")
+  deliveryLongitude   Float   @map("delivery_longitude")
 
-  distanceKm Float @map("distance_km")
-  etaMinutes Int?  @map("eta_minutes")
+  distanceKm Float     @map("distance_km")
+  etaMinutes Int?      @map("eta_minutes")
   /// The promise made to the customer, stored so it is auditable afterwards.
   promisedAt DateTime? @map("promised_at") @db.Timestamptz(3)
 
@@ -875,13 +946,13 @@ model Order {
   notes String? @db.VarChar(500)
 
   // --- lifecycle timestamps ------------------------------------------------
-  placedAt        DateTime? @map("placed_at") @db.Timestamptz(3)
-  acceptedAt      DateTime? @map("accepted_at") @db.Timestamptz(3)
-  preparingAt     DateTime? @map("preparing_at") @db.Timestamptz(3)
-  readyAt         DateTime? @map("ready_at") @db.Timestamptz(3)
-  outForDeliveryAt DateTime? @map("out_for_delivery_at") @db.Timestamptz(3)
-  deliveredAt     DateTime? @map("delivered_at") @db.Timestamptz(3)
-  cancelledAt     DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  placedAt             DateTime? @map("placed_at") @db.Timestamptz(3)
+  acceptedAt           DateTime? @map("accepted_at") @db.Timestamptz(3)
+  preparingAt          DateTime? @map("preparing_at") @db.Timestamptz(3)
+  readyAt              DateTime? @map("ready_at") @db.Timestamptz(3)
+  outForDeliveryAt     DateTime? @map("out_for_delivery_at") @db.Timestamptz(3)
+  deliveredAt          DateTime? @map("delivered_at") @db.Timestamptz(3)
+  cancelledAt          DateTime? @map("cancelled_at") @db.Timestamptz(3)
   /// When an unpaid online order's stock reservation expires.
   reservationExpiresAt DateTime? @map("reservation_expires_at") @db.Timestamptz(3)
 
@@ -922,8 +993,8 @@ model Order {
 }
 
 model OrderItem {
-  id      String @id @default(uuid()) @db.Uuid
-  orderId String @map("order_id") @db.Uuid
+  id        String  @id @default(uuid()) @db.Uuid
+  orderId   String  @map("order_id") @db.Uuid
   /// Kept for reporting; every displayed field below is a snapshot, so the
   /// order still renders correctly if the variant is later renamed or removed.
   variantId String? @map("variant_id") @db.Uuid
@@ -985,8 +1056,8 @@ model Payment {
   id      String @id @default(uuid()) @db.Uuid
   orderId String @map("order_id") @db.Uuid
 
-  provider        String  @db.VarChar(40)
-  providerOrderId String? @map("provider_order_id") @db.VarChar(120)
+  provider          String  @db.VarChar(40)
+  providerOrderId   String? @map("provider_order_id") @db.VarChar(120)
   /// Unique with provider — makes a double capture impossible at the storage
   /// layer rather than relying on application checks.
   providerPaymentId String? @map("provider_payment_id") @db.VarChar(120)
@@ -1041,11 +1112,11 @@ model Refund {
   paymentId String @map("payment_id") @db.Uuid
   orderId   String @map("order_id") @db.Uuid
 
-  providerRefundId String? @unique @map("provider_refund_id") @db.VarChar(120)
-  amountPaise      Int     @map("amount_paise")
+  providerRefundId String?      @unique @map("provider_refund_id") @db.VarChar(120)
+  amountPaise      Int          @map("amount_paise")
   status           RefundStatus @default(PENDING)
-  reason           String? @db.VarChar(300)
-  failureReason    String? @map("failure_reason") @db.VarChar(300)
+  reason           String?      @db.VarChar(300)
+  failureReason    String?      @map("failure_reason") @db.VarChar(300)
 
   completedAt DateTime? @map("completed_at") @db.Timestamptz(3)
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
@@ -1094,7 +1165,7 @@ model DeliveryAssignment {
   orderId String @map("order_id") @db.Uuid
   agentId String @map("agent_id") @db.Uuid
 
-  assignedByUserId String? @map("assigned_by_user_id") @db.Uuid
+  assignedByUserId String?                  @map("assigned_by_user_id") @db.Uuid
   status           DeliveryAssignmentStatus @default(ASSIGNED)
 
   /// COD cash actually handed over, recorded at delivery. Without this, money
@@ -1102,12 +1173,12 @@ model DeliveryAssignment {
   cashCollectedPaise Int?    @map("cash_collected_paise")
   notes              String? @db.VarChar(300)
 
-  assignedAt   DateTime  @default(now()) @map("assigned_at") @db.Timestamptz(3)
-  acceptedAt   DateTime? @map("accepted_at") @db.Timestamptz(3)
-  pickedUpAt   DateTime? @map("picked_up_at") @db.Timestamptz(3)
-  deliveredAt  DateTime? @map("delivered_at") @db.Timestamptz(3)
-  cancelledAt  DateTime? @map("cancelled_at") @db.Timestamptz(3)
-  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  assignedAt  DateTime  @default(now()) @map("assigned_at") @db.Timestamptz(3)
+  acceptedAt  DateTime? @map("accepted_at") @db.Timestamptz(3)
+  pickedUpAt  DateTime? @map("picked_up_at") @db.Timestamptz(3)
+  deliveredAt DateTime? @map("delivered_at") @db.Timestamptz(3)
+  cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   order      Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
   agent      DeliveryAgent @relation(fields: [agentId], references: [id], onDelete: Restrict)
@@ -1234,7 +1305,7 @@ model IdempotencyKey {
   userId String @map("user_id") @db.Uuid
   key    String @db.VarChar(120)
 
-  endpoint String @db.VarChar(120)
+  endpoint    String @db.VarChar(120)
   /// SHA-256 of the request body. A reused key with different content is a bug
   /// on the client and is rejected rather than silently replayed.
   requestHash String @map("request_hash") @db.Char(64)

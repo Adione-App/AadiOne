@@ -38,11 +38,36 @@ export function generateReferralCode(random: () => number = Math.random): string
   return `ADI${randomFrom(UNAMBIGUOUS_ALPHABET, 5, random)}`;
 }
 
+/** A referral reward coupon's code — same alphabet/shape as an order number
+ * or a referral code, distinct prefix so it reads clearly as a reward. */
+export function generateRewardCouponCode(random: () => number = Math.random): string {
+  return `REF${randomFrom(UNAMBIGUOUS_ALPHABET, 6, random)}`;
+}
+
 /** Numeric OTP of the requested length, using a caller-supplied RNG. */
 export function generateNumericOtp(length: number, random: () => number = Math.random): string {
   let out = '';
   for (let i = 0; i < length; i += 1) out += Math.floor(random() * 10);
   return out;
+}
+
+/**
+ * The specific, house/street part of an address, shown FIRST wherever an
+ * address appears compactly (Cart's address bar, the address picker, Order
+ * Tracking, the COD confirm popup) — `area` alone is what the customer typed
+ * as "Address Line 2" on the address form (see AddressFormScreen), so
+ * showing only `area, city` was really showing line 2 while dropping line 1
+ * (house number/street) entirely. Falls back to `area` only when there's no
+ * house/street at all, so an older address saved without one still shows
+ * something.
+ */
+export function addressPrimaryLine(parts: {
+  houseNo?: string | null;
+  street?: string | null;
+  area?: string | null;
+}): string {
+  const line = [parts.houseNo, parts.street].filter((v): v is string => Boolean(v && v.trim())).join(', ');
+  return line || parts.area || '';
 }
 
 /** "Near Shiv Mandir, Main Road, Sikar, Rajasthan 332001" from address parts. */

@@ -221,6 +221,13 @@ export async function resolveCoupon(
     throw new AppError(ErrorCode.COUPON_INVALID);
   }
 
+  // A coupon minted for one specific user (e.g. a Refer & Earn reward — see
+  // referral.service.ts) is invisible/unusable to everyone else. Global promo
+  // codes (`issuedToUserId === null`) are unaffected.
+  if (coupon.issuedToUserId && coupon.issuedToUserId !== userId) {
+    throw new AppError(ErrorCode.COUPON_INVALID);
+  }
+
   const now = new Date();
   if (coupon.validFrom > now || (coupon.validTo && coupon.validTo < now)) {
     throw new AppError(ErrorCode.COUPON_EXPIRED);

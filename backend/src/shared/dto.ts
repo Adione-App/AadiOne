@@ -10,6 +10,7 @@
 
 import type {
   CodPolicy,
+  CouponOrigin,
   CouponType,
   DeliveryAssignmentStatus,
   NotificationType,
@@ -17,6 +18,7 @@ import type {
   OrderStatus,
   PaymentMethod,
   ProductStatus,
+  ReferralStatus,
   UnitType,
   UserRole,
 } from './enums';
@@ -553,6 +555,79 @@ export interface CouponDto {
   maxDiscountPaise: number | null;
   minOrderPaise: number;
   validTo: string | null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Referrals & reward coupons                                                 */
+/* -------------------------------------------------------------------------- */
+
+export type RewardCouponStatus = 'ACTIVE' | 'USED' | 'EXPIRED';
+
+/**
+ * A coupon issued to one specific user — a referral reward today, the same
+ * shape a future user-targeted promo would use (see `origin`). Status is
+ * always computed fresh from `validTo`/redemption state, never stored, so a
+ * coupon that has simply aged past its expiry is never shown as usable.
+ */
+export interface RewardCouponDto {
+  code: string;
+  origin: CouponOrigin;
+  status: RewardCouponStatus;
+  discountValue: number;
+  maxDiscountPaise: number | null;
+  minOrderPaise: number;
+  issuedAt: string;
+  expiresAt: string | null;
+  /** e.g. "Expires in 6 days" / "Expires tomorrow" / "Expires today". Null once USED/EXPIRED. */
+  expiresInLabel: string | null;
+  usedAt: string | null;
+}
+
+export interface ApplyReferralCodeRequest {
+  code: string;
+}
+
+/** One row in "your referrals" — never exposes the referred user's full contact details. */
+export interface ReferralHistoryRowDto {
+  referredDisplayName: string;
+  status: ReferralStatus;
+  rewardCouponCode: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface ReferralSummaryDto {
+  referralCode: string | null;
+  referredCount: number;
+  completedCount: number;
+  rewardsIssuedCount: number;
+  history: ReferralHistoryRowDto[];
+}
+
+/** Admin's Referrals table row — full detail, unmasked (staff-only surface). */
+export interface ReferralAdminRowDto {
+  id: string;
+  referrerMobile: string;
+  referrerName: string | null;
+  referredMobile: string;
+  referredName: string | null;
+  referralCode: string;
+  status: ReferralStatus;
+  firstEligibleOrderId: string | null;
+  rewardCouponCode: string | null;
+  rewardCouponStatus: RewardCouponStatus | null;
+  createdAt: string;
+  completedAt: string | null;
+  rewardIssuedAt: string | null;
+}
+
+export interface ReferralAdminStatsDto {
+  totalReferrals: number;
+  completedReferrals: number;
+  pendingReferrals: number;
+  rewardsIssued: number;
+  couponsUsed: number;
+  couponsExpired: number;
 }
 
 /* -------------------------------------------------------------------------- */

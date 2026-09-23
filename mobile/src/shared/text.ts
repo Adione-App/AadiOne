@@ -45,6 +45,12 @@ export function generateReferralCode(random: () => number = Math.random): string
   return `ADI${randomFrom(UNAMBIGUOUS_ALPHABET, 5, random)}`;
 }
 
+/** A referral reward coupon's code — same alphabet/shape as an order number
+ * or a referral code, distinct prefix so it reads clearly as a reward. */
+export function generateRewardCouponCode(random: () => number = Math.random): string {
+  return `REF${randomFrom(UNAMBIGUOUS_ALPHABET, 6, random)}`;
+}
+
 /** Numeric OTP of the requested length, using a caller-supplied RNG. */
 export function generateNumericOtp(length: number, random: () => number = Math.random): string {
   let out = '';

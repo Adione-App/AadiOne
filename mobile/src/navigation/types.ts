@@ -61,6 +61,14 @@ export type AccountStackParamList = {
   Help: undefined;
   About: undefined;
   Legal: { slug: "privacy" | "terms" };
+  ReferEarn: undefined;
+};
+
+/** The Wishlist tab's own stack — "My Wishlist" on Account (see stacks.tsx)
+ * jumps to this same tab rather than duplicating it inside AccountStack. */
+export type WishlistStackParamList = {
+  WishlistHome: undefined;
+  ProductDetail: { productId: string };
 };
 
 export type AuthScreenProps<T extends keyof AuthStackParamList> =

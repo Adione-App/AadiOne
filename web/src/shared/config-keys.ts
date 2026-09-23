@@ -63,6 +63,11 @@ export const ConfigKey = {
   /* delivery */
   DELIVERY_OTP_REQUIRED_FOR_COD: "DELIVERY_OTP_REQUIRED_FOR_COD",
 
+  /* referral rewards */
+  REFERRAL_REWARD_PAISE: "REFERRAL_REWARD_PAISE",
+  REFERRAL_MIN_ORDER_PAISE: "REFERRAL_MIN_ORDER_PAISE",
+  REFERRAL_COUPON_EXPIRY_DAYS: "REFERRAL_COUPON_EXPIRY_DAYS",
+
   /* feature flags */
   FEATURE_REFERRAL_ENABLED: "FEATURE_REFERRAL_ENABLED",
   FEATURE_COUPONS_ENABLED: "FEATURE_COUPONS_ENABLED",
@@ -117,6 +122,10 @@ export interface ConfigValues {
   LOW_STOCK_THRESHOLD: number;
 
   DELIVERY_OTP_REQUIRED_FOR_COD: boolean;
+
+  REFERRAL_REWARD_PAISE: number;
+  REFERRAL_MIN_ORDER_PAISE: number;
+  REFERRAL_COUPON_EXPIRY_DAYS: number;
 
   FEATURE_REFERRAL_ENABLED: boolean;
   FEATURE_COUPONS_ENABLED: boolean;
@@ -175,6 +184,10 @@ export const CONFIG_DEFAULTS: ConfigValues = {
 
   DELIVERY_OTP_REQUIRED_FOR_COD: true,
 
+  REFERRAL_REWARD_PAISE: 5000,
+  REFERRAL_MIN_ORDER_PAISE: 9900,
+  REFERRAL_COUPON_EXPIRY_DAYS: 7,
+
   FEATURE_REFERRAL_ENABLED: false,
   FEATURE_COUPONS_ENABLED: true,
   FEATURE_RATINGS_ENABLED: false,
@@ -197,6 +210,9 @@ export const PUBLIC_CONFIG_KEYS: readonly ConfigKey[] = [
   ConfigKey.PLATFORM_FEE_PAISE,
   ConfigKey.DEFAULT_MAX_QTY_PER_ORDER,
   ConfigKey.MAX_ADDRESSES_PER_USER,
+  ConfigKey.REFERRAL_REWARD_PAISE,
+  ConfigKey.REFERRAL_MIN_ORDER_PAISE,
+  ConfigKey.REFERRAL_COUPON_EXPIRY_DAYS,
   ConfigKey.FEATURE_REFERRAL_ENABLED,
   ConfigKey.FEATURE_COUPONS_ENABLED,
   ConfigKey.FEATURE_RATINGS_ENABLED,
@@ -281,6 +297,15 @@ export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
 
   DELIVERY_OTP_REQUIRED_FOR_COD:
     "Require a delivery OTP before marking COD orders delivered.",
+
+  REFERRAL_REWARD_PAISE:
+    "Coupon value credited to the referrer once their referred friend completes a qualifying first order, in paise.",
+
+  REFERRAL_MIN_ORDER_PAISE:
+    "Minimum eligible order value (items subtotal) the referred friend's first order must reach to trigger the reward, in paise.",
+
+  REFERRAL_COUPON_EXPIRY_DAYS:
+    "Days after issuance before a referral reward coupon expires.",
 
   FEATURE_REFERRAL_ENABLED:
     "Show the Refer & Earn rewards programme in the app.",

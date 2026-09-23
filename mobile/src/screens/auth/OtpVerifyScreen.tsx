@@ -26,10 +26,11 @@ import type { AuthResponse, SendOtpResponse } from "@shared";
 import { formatIndianMobile } from "@shared/phone";
 import { colors, radius, spacing } from "@shared/theme";
 
-import { api, ApiRequestError } from "@/lib/api";
+import { api, ApiRequestError, setAccessToken } from "@/lib/api";
 import { useAuth } from "@/lib/store";
 import { AppText, Button, Screen } from "@/components/ui";
 import type { AuthScreenProps } from "@/navigation/types";
+import ReferralCodeStep from "./ReferralCodeStep";
 
 import enterOtpBackground from "../../../assets/enterOtp-background.png";
 
@@ -50,6 +51,14 @@ export default function OtpVerifyScreen({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [resendBusy, setResendBusy] = useState(false);
+
+  // Holds a brand-new account's auth response while the referral-code step
+  // (below) is shown in its place — `setSession` (which is what flips the
+  // whole app from AuthStack to MainTabs) is deliberately deferred until
+  // that step finishes, so it never gets a chance to unmount this screen
+  // before the referral step has been shown. Stays null for every existing
+  // (non-`isNewUser`) login, which never sees this step at all.
+  const [pendingNewUserAuth, setPendingNewUserAuth] = useState<AuthResponse | null>(null);
 
   const [secondsLeft, setSecondsLeft] = useState(
     route.params.resendAfterSeconds,
@@ -144,6 +153,18 @@ export default function OtpVerifyScreen({
         otp: code,
       });
 
+      if (result.user.isNewUser) {
+        // Makes the referral-code step's own authenticated `/referrals/apply`
+        // call work (it needs a bearer token) without yet running the rest
+        // of `setSession`'s side effects (refresh-token save, socket
+        // connect, push registration, and — critically — the `status` flip
+        // that swaps this whole screen away). Those all still happen, just
+        // once `finishSignup` below runs.
+        setAccessToken(result.tokens.accessToken);
+        setPendingNewUserAuth(result);
+        return;
+      }
+
       await setSession(result);
 
       /*
@@ -163,6 +184,16 @@ export default function OtpVerifyScreen({
     } finally {
       setBusy(false);
     }
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Referral-code step (new users only)                                    */
+  /* ---------------------------------------------------------------------- */
+
+  async function finishSignup(): Promise<void> {
+    if (!pendingNewUserAuth) return;
+    await setSession(pendingNewUserAuth);
+    // Root navigator changes automatically once `status` flips above.
   }
 
   /* ---------------------------------------------------------------------- */
@@ -212,6 +243,19 @@ export default function OtpVerifyScreen({
   /* ---------------------------------------------------------------------- */
   /* UI                                                                      */
   /* ---------------------------------------------------------------------- */
+
+  if (pendingNewUserAuth) {
+    return (
+      <Screen style={[styles.screen, { paddingTop: insets.top }]}>
+        <ImageBackground
+          source={enterOtpBackground}
+          style={styles.illustration}
+          resizeMode="cover"
+        />
+        <ReferralCodeStep onDone={finishSignup} />
+      </Screen>
+    );
+  }
 
   return (
     <Screen

@@ -77,6 +77,10 @@ const DISPLAY_LABELS: Partial<Record<ConfigKey, string>> = {
 
   DELIVERY_OTP_REQUIRED_FOR_COD: "Delivery OTP Required For COD",
 
+  REFERRAL_REWARD_PAISE: "Referral Reward Amount",
+  REFERRAL_MIN_ORDER_PAISE: "Referral Minimum Order Value",
+  REFERRAL_COUPON_EXPIRY_DAYS: "Referral Coupon Expiry",
+
   FEATURE_REFERRAL_ENABLED: "Referral Feature",
   FEATURE_COUPONS_ENABLED: "Coupons Feature",
   FEATURE_RATINGS_ENABLED: "Ratings Feature",
@@ -162,6 +166,14 @@ const DISPLAY_DESCRIPTIONS: Partial<Record<ConfigKey, string>> = {
   DELIVERY_OTP_REQUIRED_FOR_COD:
     "Require a delivery OTP before marking COD orders delivered.",
 
+  REFERRAL_REWARD_PAISE:
+    "Coupon value credited to the referrer once their friend completes a qualifying first order, in rupees.",
+
+  REFERRAL_MIN_ORDER_PAISE:
+    "Minimum order value (items subtotal) the referred friend's first order must reach, in rupees.",
+
+  REFERRAL_COUPON_EXPIRY_DAYS: "Days after issuance before a referral reward coupon expires.",
+
   FEATURE_REFERRAL_ENABLED:
     "Show the Refer & Earn rewards programme in the app.",
 
@@ -195,6 +207,8 @@ const MONEY_KEYS = new Set<string>([
   "PLATFORM_FEE_PAISE",
   "COD_MAX_ORDER_VALUE_PAISE",
   "COD_FIRST_ORDER_MAX_PAISE",
+  "REFERRAL_REWARD_PAISE",
+  "REFERRAL_MIN_ORDER_PAISE",
 ]);
 
 /**
@@ -329,12 +343,18 @@ const GROUPS: {
     title: "Pricing & fees",
     match: (k) =>
       (k.includes("PAISE") || k === "DELIVERY_FEE_SLABS") &&
-      !k.startsWith("COD_"),
+      !k.startsWith("COD_") &&
+      !k.startsWith("REFERRAL_"),
   },
 
   {
     title: "Cash on Delivery",
     match: (k) => k.startsWith("COD_") || k === "DEFAULT_COD_POLICY",
+  },
+
+  {
+    title: "Refer & Earn",
+    match: (k) => k.startsWith("REFERRAL_"),
   },
 
   {

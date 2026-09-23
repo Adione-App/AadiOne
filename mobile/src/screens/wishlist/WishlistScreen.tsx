@@ -1,40 +1,44 @@
 /**
- * "See All" for a Home rail (Popular, Offers, …).
- *
- * Shows the exact same ranking as the Home preview, just without the 10-item
- * cap — see `catalogService.listRailProducts` on the backend.
+ * Wishlist tab — every product saved via the heart icon on its card (see
+ * ProductCard.tsx), read straight from the shared local store (useWishlist.ts).
+ * Same grid/card/header shape as RailProductsScreen and CategoriesScreen's
+ * own product grid, so a saved product looks and behaves identically here —
+ * same ProductCard, same Add/stepper, same navigation into Product Detail.
  */
 
-import { FlatList, Pressable, StyleSheet, View } from "react-native";
+import { Pressable, FlatList, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { HomeFeedDto, ProductSummaryDto } from "@shared";
+import { Heart } from "lucide-react-native";
+import type { ProductSummaryDto } from "@shared";
 import { colors, spacing } from "@shared/theme";
-import { useRailProducts } from "@/lib/queries";
+import { useWishlist } from "@/lib/useWishlist";
 import { useCartActions } from "@/lib/useCartActions";
 import { useGridColumns } from "@/lib/useGridColumns";
-import { AppText, EmptyState, ErrorState, NoticeStrip, Screen } from "@/components/ui";
+import { AppText, EmptyState, NoticeStrip, Screen } from "@/components/ui";
 import { ProductCard } from "@/components/ProductCard";
-import { ProductGridSkeleton } from "@/components/ProductCardSkeleton";
 
-export default function RailProductsScreen({
-  railKey,
-  fallbackTitle,
-  onBack,
+export default function WishlistScreen({
   onOpenProduct,
+  onBrowse,
 }: {
-  railKey: HomeFeedDto["rails"][number]["key"];
-  fallbackTitle: string;
-  onBack: () => void;
   onOpenProduct: (productId: string) => void;
+  onBrowse: () => void;
 }) {
   const insets = useSafeAreaInsets();
-  const rail = useRailProducts(railKey);
+  const order = useWishlist((state) => state.order);
+  const products = useWishlist((state) => state.products);
+  const clearWishlist = useWishlist((state) => state.clear);
   const cart = useCartActions();
   const columns = useGridColumns();
 
+  const items = order
+    .map((id) => products[id])
+    .filter((product): product is ProductSummaryDto => product !== undefined);
+
   // Percentage width, not flex:1 — an incomplete last row (odd item count)
   // would otherwise stretch its lone card to the full row width instead of
-  // its own column's share (see CategoriesScreen for the same fix).
+  // its own column's share (see CategoriesScreen/RailProductsScreen for the
+  // same fix).
   const renderItem = ({ item }: { item: ProductSummaryDto }) => (
     <View style={[styles.cardWrapper, { width: `${100 / columns}%` }]}>
       <ProductCard
@@ -52,10 +56,22 @@ export default function RailProductsScreen({
   return (
     <Screen>
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
-        <Pressable onPress={onBack} hitSlop={12} style={styles.back}>
-          <AppText variant="h2">←</AppText>
-        </Pressable>
-        <AppText variant="h3">{rail.data?.title ?? fallbackTitle}</AppText>
+        <AppText variant="h1" numberOfLines={1} style={{ flex: 1 }}>
+          Wishlist
+        </AppText>
+
+        {items.length > 0 && (
+          <Pressable
+            onPress={clearWishlist}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Clear wishlist"
+          >
+            <AppText variant="bodyStrong" color={colors.primary}>
+              Clear all
+            </AppText>
+          </Pressable>
+        )}
       </View>
 
       {cart.error && (
@@ -64,16 +80,20 @@ export default function RailProductsScreen({
         </View>
       )}
 
-      {rail.isLoading ? (
-        <ProductGridSkeleton columns={columns} />
-      ) : rail.isError ? (
-        <ErrorState message="We could not load this." onRetry={() => void rail.refetch()} />
-      ) : (rail.data?.products.length ?? 0) === 0 ? (
-        <EmptyState title="Nothing here yet" hint="Check back in a little while." />
+      {items.length === 0 ? (
+        <EmptyState
+          icon={<Heart size={48} color={colors.primary} strokeWidth={2} />}
+          title="Your wishlist is empty"
+          hint="Tap the heart on any product to save it here for later."
+          action={{
+            label: "Browse products",
+            onPress: onBrowse,
+          }}
+        />
       ) : (
         <FlatList
           key={`grid-${columns}`}
-          data={rail.data?.products ?? []}
+          data={items}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
           numColumns={columns}
@@ -101,8 +121,8 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.divider,
     backgroundColor: colors.surface,
   },
-  back: { width: 40, height: 40, justifyContent: "center" },
   // Bigger vertical than horizontal padding — more breathing room BETWEEN
-  // ROWS specifically (matches CategoriesScreen/SearchScreen's grids).
+  // ROWS specifically (matches CategoriesScreen/SearchScreen/RailProducts's
+  // grids).
   cardWrapper: { paddingHorizontal: spacing.xs, paddingVertical: spacing.sm },
 });

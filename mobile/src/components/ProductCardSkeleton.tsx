@@ -52,7 +52,9 @@ export function ProductCardSkeleton({ pulse: sharedPulse }: { pulse?: Animated.V
 
   return (
     <View style={styles.card}>
-      <Animated.View style={[styles.imageBox, { opacity: pulse }]} />
+      <View style={styles.media}>
+        <Animated.View style={[styles.imageBox, { opacity: pulse }]} />
+      </View>
 
       <View style={styles.nameContainer}>
         <Bone pulse={pulse} style={{ width: "90%", height: 12 }} />
@@ -66,6 +68,10 @@ export function ProductCardSkeleton({ pulse: sharedPulse }: { pulse?: Animated.V
       <View style={styles.priceRow}>
         <Bone pulse={pulse} style={{ width: 50, height: 14 }} />
       </View>
+
+      {/* Matches ProductCard's own reserved discount-row height, so a
+          real card replacing this doesn't shift the grid by that amount. */}
+      <View style={styles.discountContainer} />
 
       <Animated.View style={[styles.button, { opacity: pulse }]} />
     </View>
@@ -109,16 +115,20 @@ const styles = StyleSheet.create({
   card: {
     flex: 1,
     width: "100%",
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
+  },
+  // Mirrors ProductCard's `media` — the border lives on the image area
+  // only, not the whole card (see ProductCard.tsx for why).
+  media: {
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.divider,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
     padding: spacing.sm,
     overflow: "hidden",
   },
   imageBox: {
     width: "100%",
-    height: 96,
+    height: 92,
     borderRadius: radius.md,
     backgroundColor: colors.skeleton,
   },
@@ -136,6 +146,10 @@ const styles = StyleSheet.create({
     height: 22,
     marginTop: 2,
     justifyContent: "center",
+  },
+  discountContainer: {
+    height: 18,
+    marginTop: 4,
   },
   button: {
     width: "100%",

@@ -7,9 +7,16 @@ import {
   View,
   type StyleProp,
   type TextStyle,
+  type ViewStyle,
 } from "react-native";
+import ReanimatedAnimated, {
+  Easing as ReanimatedEasing,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from "react-native-reanimated";
 import { Image } from "expo-image";
-import { Info, ShoppingCart } from "lucide-react-native";
+import { Heart, Plus } from "lucide-react-native";
 
 import type { ProductSummaryDto } from "@shared";
 import { formatPaise } from "@shared/money";
@@ -20,7 +27,8 @@ import {
   type CartItemSnapshot,
   snapshotFromProduct,
 } from "../lib/useCartActions";
-import { flyToCart } from "../lib/flyToCart";
+import { flyFromCart, flyToCart } from "../lib/flyToCart";
+import { useWishlist } from "../lib/useWishlist";
 import { AppText } from "./ui";
 
 /* =====================================================================
@@ -43,11 +51,18 @@ function AnimatedQuantity({
   textStyle,
   color,
   lineHeight,
+  clipWidth,
 }: {
   qty: number;
   textStyle: StyleProp<TextStyle>;
   color: string;
   lineHeight: number;
+  /** FIXED (not min) width for the clip box both digits share — this is
+   * what makes "1" -> "10" resize NOTHING: the box never grows/shrinks, so
+   * there's nothing for the surrounding flex row to reflow around. Centered
+   * text inside a fixed box also means the glyph itself never drifts
+   * left/right as digit count changes. */
+  clipWidth: number;
 }) {
   const [displayQty, setDisplayQty] = useState(qty);
   const [outgoingQty, setOutgoingQty] = useState<number | null>(null);
@@ -101,7 +116,7 @@ function AnimatedQuantity({
   });
 
   return (
-    <View style={[styles.qtyClip, { height: lineHeight }]}>
+    <View style={[styles.qtyClip, { height: lineHeight, width: clipWidth }]}>
       {outgoingQty !== null && (
         <Animated.Text
           style={[
@@ -152,6 +167,8 @@ export function QuantityStepper({
   onIncrement,
   onDecrement,
   fullWidth,
+  flatButtons,
+  style,
 }: {
   qty: number;
   max: number;
@@ -162,16 +179,37 @@ export function QuantityStepper({
    * from. Kept so existing call sites don't need to change. */
   busy?: boolean;
   fullWidth?: boolean;
+  /** Drops the `-`/`+` buttons' own circular background in `fullWidth`
+   * mode, leaving just the symbol on the shared pill behind it — the app-
+   * wide stepper look (ProductCard's floating overlay, ProductDetailScreen's
+   * footer). Opt-in (default off, unused elsewhere currently) rather than
+   * the new default so a future `fullWidth` caller that DOES want the
+   * circular buttons doesn't have to fight this. The buttons keep the SAME
+   * touch-target size either way — only the background/radius drops. */
+  flatButtons?: boolean;
+  /** Extends/overrides the container's own style — e.g. a different
+   * corner radius for one specific usage (see ProductCard's floating
+   * overlay) without touching the shared pill shape every other caller
+   * relies on. */
+  style?: StyleProp<ViewStyle>;
 }) {
+  const buttonStyle = [
+    styles.stepperButton,
+    fullWidth && (flatButtons ? styles.stepperButtonFullWidthFlat : styles.stepperButtonFullWidth),
+  ];
+
   return (
-    <View style={[styles.stepper, fullWidth && styles.stepperFullWidth]}>
+    <View
+      style={[
+        styles.stepper,
+        fullWidth ? styles.stepperFullWidth : styles.stepperCompactWidth,
+        style,
+      ]}
+    >
       <Pressable
         onPress={onDecrement}
         hitSlop={8}
-        style={[
-          styles.stepperButton,
-          fullWidth && styles.stepperButtonFullWidth,
-        ]}
+        style={buttonStyle}
         accessibilityLabel="Decrease quantity"
       >
         <AppText
@@ -183,24 +221,29 @@ export function QuantityStepper({
         </AppText>
       </Pressable>
 
-      <AnimatedQuantity
-        qty={qty}
-        color={colors.onPrimary}
-        lineHeight={fullWidth ? 18 : 16}
-        textStyle={[
-          styles.quantityText,
-          fullWidth && styles.quantityTextFullWidth,
-        ]}
-      />
+      {/* `flex: 1` between two FIXED-width buttons (identical width on both
+          sides) is what GUARANTEES the number sits exactly centered — by
+          construction, not by relying on `justifyContent` math staying
+          balanced. Growing/shrinking for "1" vs "10" happens symmetrically
+          inside this slot; the buttons on either side never move. */}
+      <View style={styles.qtyCenterSlot}>
+        <AnimatedQuantity
+          qty={qty}
+          color={colors.onPrimary}
+          lineHeight={fullWidth ? 18 : 16}
+          clipWidth={fullWidth ? 28 : 16}
+          textStyle={[
+            styles.quantityText,
+            fullWidth && styles.quantityTextFullWidth,
+          ]}
+        />
+      </View>
 
       <Pressable
         onPress={onIncrement}
         disabled={qty >= max}
         hitSlop={8}
-        style={[
-          styles.stepperButton,
-          fullWidth && styles.stepperButtonFullWidth,
-        ]}
+        style={buttonStyle}
         accessibilityLabel="Increase quantity"
       >
         <AppText
@@ -220,6 +263,38 @@ export function QuantityStepper({
 /* =====================================================================
    PRODUCT CARD
 ===================================================================== */
+
+/** The floating overlay's compact ("+") size — the morph's starting point. */
+const COMPACT_WIDTH = 34;
+/**
+ * The expanded "− N +" pill's width — a FIXED constant, not a percentage of
+ * the card/media box. It used to be computed as ~60% of the measured media
+ * width (capped at a hard floor for narrow cards), which meant the SAME
+ * control rendered at a different pixel width on every screen — ~100px on
+ * Home's 132px-wide rail cards (the floor), but grown out past 130px+ on
+ * Category/Search's wider grid cards, since those comfortably clear 60%.
+ * Every card everywhere must show a pixel-identical stepper, so there is no
+ * ratio to compute at all: this is the one width every card uses.
+ *
+ * The value itself (100) is still content-driven: two 32px flat buttons +
+ * the quantity digit (>= 16px) + the pill's own 4px horizontal padding on
+ * each side = 88px minimum, plus a little headroom so there's genuine
+ * breathing room rather than zero-overflow. It's comfortably under 60% of
+ * every grid card width in the app (~140-160px, see useGridColumns); Home's
+ * own rail cards are narrower still (132px, ~76%) — a legible, tappable
+ * stepper takes priority over the 60% target there, same trade-off the old
+ * floor already made, just without a wider ratio-driven value anywhere else
+ * to be inconsistent with.
+ */
+const STEPPER_EXPANDED_WIDTH = 100;
+/** How far the floating Add/stepper overlay hangs below the media box's
+ * bottom edge (`floatingActionWrap.bottom` below) — reused by `priceRow`'s
+ * `marginTop` so the two can never drift out of sync and leave the text
+ * sitting under the button, regardless of how wide the stepper gets. */
+const BUTTON_OVERHANG = 16;
+/** The reserved breathing room between the media box and the text below it
+ * — on top of `BUTTON_OVERHANG`, not instead of it. */
+const IMAGE_TEXT_GAP = spacing.sm;
 
 function ProductCardImpl({
   product,
@@ -251,90 +326,225 @@ function ProductCardImpl({
 
   const openDetails = () => onPress(product.id);
 
-  const imageWrapRef = useRef<View>(null);
+  // Shared across every card/screen (see useWishlist.ts) — subscribed via
+  // a selector keyed to THIS product's own id, so a toggle on one card only
+  // re-renders that card, not every other visible one.
+  const wishlisted = useWishlist((state) => product.id in state.products);
+  const toggleWishlist = useWishlist((state) => state.toggle);
 
-  // Fires the flying-image animation from this card's own product image to
-  // the cart tab icon — purely decorative (see flyToCart.tsx); the real
-  // Add/+ handler below always still runs regardless of whether the
-  // measurement succeeds.
-  const triggerFly = () => {
-    imageWrapRef.current?.measureInWindow((x, y, width, height) => {
-      if (width > 0 && height > 0) flyToCart({ x, y, width, height }, imageUrl);
+  // Morphs the floating Add/stepper overlay's WIDTH between the compact
+  // 34px "+" circle and the fixed-width stepper pill — a real UI-thread
+  // width animation (Reanimated can animate `width` directly; RN's classic
+  // native driver can't, which is what used to make this a
+  // `LayoutAnimation` call instead). `morph` drives the interpolation and
+  // reacts ONLY when `qtyInCart` crosses the 0 boundary (matches
+  // `ActionBarTransition`'s own add/stepper mode split) — a same-mode qty
+  // change (e.g. 2 -> 3) never re-triggers it.
+  const morph = useSharedValue(qtyInCart > 0 ? 1 : 0);
+
+  useEffect(() => {
+    morph.value = withTiming(qtyInCart > 0 ? 1 : 0, {
+      duration: 220,
+      easing: ReanimatedEasing.out(ReanimatedEasing.cubic),
     });
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qtyInCart > 0]);
+
+  const morphStyle = useAnimatedStyle(() => {
+    // Out of stock shows the (differently-sized, auto-width) "Sold Out"
+    // pill instead of the Add/stepper pair this morph is for — leave its
+    // width alone rather than forcing it into the compact 34px target.
+    if (outOfStock) return {};
+    return { width: COMPACT_WIDTH + (STEPPER_EXPANDED_WIDTH - COMPACT_WIDTH) * morph.value };
+  }, [outOfStock]);
 
   return (
-    // Plain View, not Pressable: navigation belongs to the image and the
-    // More Details icon alone (see below), never to the card as a whole. A
-    // Pressable here previously wrapped everything, including the
-    // Add/stepper buttons — and a DISABLED nested Pressable (mid-request)
-    // doesn't claim the touch, so the tap fell through to this outer
-    // Pressable's onPress and opened Product Details instead of doing
-    // nothing. Removing the outer handler entirely closes that hole rather
-    // than working around it.
+    // Plain View, not Pressable: navigation belongs to the image alone (see
+    // below), never to the card as a whole. A Pressable here previously
+    // wrapped everything, including the Add/stepper buttons — and a
+    // DISABLED nested Pressable (mid-request) doesn't claim the touch, so
+    // the tap fell through to this outer Pressable's onPress and opened
+    // Product Details instead of doing nothing. Removing the outer handler
+    // entirely closes that hole rather than working around it.
     <View style={styles.card}>
       {/* =============================================================
-          IMAGE + MORE DETAILS — the only two things that open Product
-          Details. Siblings, not nested: the icon is its own independent
-          Pressable layered on top of the image's corner, not a Pressable
-          inside a Pressable, so neither can ever intercept the other's
-          touch or accidentally disable itself against the image beneath.
+          IMAGE + WISHLIST HEART + FLOATING ADD/STEPPER
+
+          The heart and the Add/+ control float OVER the image's bottom
+          edge (not below it, in normal flow) — matches the quick-commerce
+          reference: a compact circular "+" before anything's in the cart,
+          which becomes the full-width "− N +" stepper the instant it is,
+          both anchored to the same spot so nothing else on the card moves.
       ============================================================= */}
 
-      <View style={styles.imageWrap} ref={imageWrapRef} collapsable={false}>
-        <Pressable
-          onPress={openDetails}
-          style={styles.imageBox}
-          accessibilityRole="button"
-          accessibilityLabel={`Open ${product.name}`}
-        >
-          {imageUrl ? (
-            <Image
-              source={{ uri: imageUrl }}
-              style={[styles.image, outOfStock && styles.imageFaded]}
-              contentFit="contain"
-              transition={150}
-              cachePolicy="memory-disk"
-            />
-          ) : (
-            <View style={styles.imagePlaceholder} />
-          )}
+      <View style={styles.mediaWrap}>
+        {/* The ONLY bordered surface on the whole card — a dedicated media
+            box, not the card as a whole (see `card`'s own style below: no
+            border there anymore). Everything below stays open/borderless. */}
+        <View style={styles.media}>
+          <Pressable
+            onPress={openDetails}
+            style={styles.imageBox}
+            accessibilityRole="button"
+            accessibilityLabel={`Open ${product.name}`}
+          >
+            {imageUrl ? (
+              <Image
+                source={{ uri: imageUrl }}
+                style={[styles.image, outOfStock && styles.imageFaded]}
+                contentFit="contain"
+                transition={150}
+                cachePolicy="memory-disk"
+              />
+            ) : (
+              <View style={styles.imagePlaceholder} />
+            )}
 
-          {outOfStock ? (
-            <View style={styles.outOfStockBadge}>
-              <AppText
-                variant="overline"
-                color={colors.textSecondary}
-                style={styles.badgeText}
-              >
-                Out of Stock
-              </AppText>
-            </View>
-          ) : (
-            variant &&
-            variant.discountPercent > 0 && (
-              <View style={styles.discountBadge}>
+            {outOfStock && (
+              <View style={styles.outOfStockBadge}>
                 <AppText
                   variant="overline"
-                  color={colors.discountBadgeText}
+                  color={colors.textSecondary}
                   style={styles.badgeText}
                 >
-                  {variant.discountPercent}% OFF
+                  Out of Stock
                 </AppText>
               </View>
-            )
-          )}
-        </Pressable>
+            )}
+          </Pressable>
+        </View>
 
+        {/* Saves/removes this product in the shared, device-persisted
+            wishlist (see useWishlist.ts) — read on the Wishlist tab. Sits on
+            `mediaWrap` (not `media`) so it isn't clipped by the media box's
+            own `overflow: hidden`. */}
         <Pressable
-          onPress={openDetails}
-          style={styles.detailsButton}
+          onPress={() => toggleWishlist(product)}
+          style={styles.heartButton}
           hitSlop={6}
           accessibilityRole="button"
-          accessibilityLabel={`View details for ${product.name}`}
+          accessibilityLabel={
+            wishlisted ? `Remove ${product.name} from wishlist` : `Save ${product.name} to wishlist`
+          }
         >
-          <Info size={13} color={colors.textSecondary} strokeWidth={2.2} />
+          <Heart
+            size={14}
+            color={wishlisted ? colors.danger : colors.textSecondary}
+            fill={wishlisted ? colors.danger : "none"}
+            strokeWidth={2.2}
+          />
         </Pressable>
+
+        {/* Also on `mediaWrap`, not `media` — this straddles the media
+            box's bottom-right corner on purpose (see `floatingActionWrap`'s
+            own comment), which `media`'s `overflow: hidden` would clip. */}
+        <ReanimatedAnimated.View
+          style={[styles.floatingActionWrap, morphStyle]}
+          pointerEvents="box-none"
+        >
+          <ActionBarTransition
+            mode={outOfStock ? "outOfStock" : qtyInCart > 0 ? "stepper" : "add"}
+          >
+            {outOfStock ? (
+              <View style={styles.floatingOutOfStock}>
+                <AppText
+                  variant="caption"
+                  color={colors.textSecondary}
+                  style={styles.floatingOutOfStockText}
+                >
+                  Sold Out
+                </AppText>
+              </View>
+            ) : qtyInCart > 0 ? (
+              <QuantityStepper
+                qty={qtyInCart}
+                max={variant?.maxQtyPerOrder ?? 10}
+                onIncrement={() => {
+                  if (!variant) return;
+                  flyToCart(imageUrl);
+                  onIncrement(variant.id);
+                }}
+                onDecrement={() => {
+                  if (!variant) return;
+                  // Only the tap that's about to empty the line plays the
+                  // "leaving the cart" flight — every other decrement just
+                  // changes the number in place (its own AnimatedQuantity
+                  // digit-roll handles that already). The overlay's own
+                  // morph back down to the compact "+" reacts automatically
+                  // to `qtyInCart` crossing 0 (see `morph` above), so it
+                  // needs no imperative trigger here.
+                  if (qtyInCart === 1) {
+                    flyFromCart(imageUrl);
+                  }
+                  onDecrement(variant.id);
+                }}
+                busy={busy}
+                fullWidth
+                flatButtons
+                style={styles.floatingStepperShape}
+              />
+            ) : (
+              <Pressable
+                onPress={() => {
+                  if (!variant) return;
+                  flyToCart(imageUrl);
+                  onAdd(variant.id, snapshotFromProduct(product, variant));
+                }}
+                style={styles.floatingAddButton}
+                accessibilityRole="button"
+                accessibilityLabel={`Add ${product.name} to cart`}
+              >
+                <Plus size={18} color={colors.primary} strokeWidth={2.6} />
+              </Pressable>
+            )}
+          </ActionBarTransition>
+        </ReanimatedAnimated.View>
+      </View>
+
+      {/* =============================================================
+          PRICE — shown first, matching the reference layout.
+      ============================================================= */}
+
+      <View style={styles.priceRow}>
+        {variant && (
+          <>
+            <AppText variant="price" numberOfLines={1} style={styles.price}>
+              {formatPaise(variant.pricePaise)}
+            </AppText>
+
+            {variant.mrpPaise > variant.pricePaise && (
+              <AppText
+                variant="caption"
+                color={colors.textMuted}
+                numberOfLines={1}
+                style={styles.mrp}
+              >
+                {formatPaise(variant.mrpPaise)}
+              </AppText>
+            )}
+          </>
+        )}
+      </View>
+
+      {/* =============================================================
+          DISCOUNT — lives in the info section now, not overlaid on the
+          image (see `media` above). Fixed height, same pattern as
+          `nameContainer`/`variantContainer` below, so a product WITHOUT a
+          discount doesn't end up a row shorter than one that has it.
+      ============================================================= */}
+
+      <View style={styles.discountContainer}>
+        {!outOfStock && variant && variant.discountPercent > 0 && (
+          <View style={styles.discountBadge}>
+            <AppText
+              variant="overline"
+              color={colors.discountBadgeText}
+              style={styles.badgeText}
+            >
+              {variant.discountPercent}% OFF
+            </AppText>
+          </View>
+        )}
       </View>
 
       {/* =============================================================
@@ -367,94 +577,6 @@ function ProductCardImpl({
           </AppText>
         )}
       </View>
-
-      {/* =============================================================
-          PRICE
-      ============================================================= */}
-
-      <View style={styles.priceRow}>
-        {variant && (
-          <>
-            <AppText variant="price" numberOfLines={1} style={styles.price}>
-              {formatPaise(variant.pricePaise)}
-            </AppText>
-
-            {variant.mrpPaise > variant.pricePaise && (
-              <AppText
-                variant="caption"
-                color={colors.textMuted}
-                numberOfLines={1}
-                style={styles.mrp}
-              >
-                {formatPaise(variant.mrpPaise)}
-              </AppText>
-            )}
-          </>
-        )}
-      </View>
-
-      {/* =============================================================
-          ACTION BAR — full width, matches the reference design.
-
-          Wrapped in ActionBarTransition so switching between "Add",
-          the stepper, and "Out of Stock" is a quick fade/scale instead
-          of an abrupt swap — covers both directions: the stepper
-          appearing after a tap on Add, and Add reappearing when a
-          decrement empties the line.
-      ============================================================= */}
-
-      <ActionBarTransition
-        mode={outOfStock ? "outOfStock" : qtyInCart > 0 ? "stepper" : "add"}
-      >
-        {outOfStock ? (
-          <View style={styles.outOfStockBar}>
-            <AppText
-              variant="bodyStrong"
-              color={colors.textSecondary}
-              style={styles.outOfStockBarText}
-            >
-              Out of Stock
-            </AppText>
-          </View>
-        ) : qtyInCart > 0 ? (
-          <QuantityStepper
-            qty={qtyInCart}
-            max={variant?.maxQtyPerOrder ?? 10}
-            onIncrement={() => {
-              if (!variant) return;
-              triggerFly();
-              onIncrement(variant.id);
-            }}
-            onDecrement={() => variant && onDecrement(variant.id)}
-            busy={busy}
-            fullWidth
-          />
-        ) : (
-          <Pressable
-            onPress={() => {
-              if (!variant) return;
-              triggerFly();
-              onAdd(variant.id, snapshotFromProduct(product, variant));
-            }}
-            style={styles.addButton}
-            accessibilityRole="button"
-            accessibilityLabel={`Add ${product.name} to cart`}
-          >
-            <ShoppingCart
-              size={14}
-              color={colors.onPrimary}
-              strokeWidth={2.3}
-            />
-            <AppText
-              variant="bodyStrong"
-              color={colors.onPrimary}
-              style={styles.addText}
-            >
-              Add
-            </AppText>
-          </Pressable>
-        )}
-      </ActionBarTransition>
     </View>
   );
 }
@@ -539,20 +661,41 @@ const styles = StyleSheet.create({
      correctly in:
        - Home horizontal rails
        - Category 2-column grid
+
+     Deliberately NO border/background/shadow here anymore — quick-
+     commerce reference apps (Instamart/Blinkit/Zepto/BigBasket) put that
+     treatment on the IMAGE area only, never around the whole card. See
+     `media` below for where it actually lives now. The product info below
+     the image stays visually open, not boxed in.
   ================================================================ */
 
   card: {
     flex: 1,
 
     width: "100%",
+  },
 
-    backgroundColor: colors.surface,
+  /* ================================================================
+     MEDIA — the one bordered surface on the card. `mediaWrap` is the
+     plain, unclipped positioning root (heart button + floating Add/
+     stepper both anchor to IT, not to `media`, specifically so the
+     stepper can still straddle `media`'s bottom edge without being cut
+     off by `media`'s own `overflow: hidden`). `media` is the actual
+     bordered/padded box the image sits inside.
+  ================================================================ */
 
-    borderRadius: radius.lg,
+  mediaWrap: {
+    position: "relative",
+  },
 
+  media: {
     borderWidth: 1,
 
-    borderColor: colors.border,
+    borderColor: colors.divider,
+
+    borderRadius: radius.md,
+
+    backgroundColor: colors.surface,
 
     padding: spacing.sm,
 
@@ -561,18 +704,10 @@ const styles = StyleSheet.create({
     ...shadow.sm,
   },
 
-  /* ================================================================
-     IMAGE
-  ================================================================ */
-
-  imageWrap: {
-    position: "relative",
-  },
-
   imageBox: {
     width: "100%",
 
-    height: 70,
+    height: 92,
 
     alignItems: "center",
 
@@ -582,30 +717,107 @@ const styles = StyleSheet.create({
   },
 
   /* ================================================================
-     MORE DETAILS — its own Pressable, layered over the image's corner,
-     not nested inside the image's Pressable (see file header).
+     WISHLIST HEART — its own Pressable, layered over the image's
+     corner, not nested inside the image's Pressable (see file header).
+     Decorative only — see the JSX comment above its usage.
   ================================================================ */
 
-  detailsButton: {
+  heartButton: {
     position: "absolute",
 
     top: 4,
 
     right: 4,
 
-    width: 22,
+    width: 24,
 
-    height: 22,
+    height: 24,
 
     borderRadius: radius.circle,
 
-    backgroundColor: "rgba(255,255,255,0.85)",
+    backgroundColor: "rgba(255,255,255,0.9)",
 
     alignItems: "center",
 
     justifyContent: "center",
 
     zIndex: 3,
+  },
+
+  /* ================================================================
+     FLOATING ADD/STEPPER — straddles the image's bottom edge (half on
+     the image, half below it — `bottom: -BUTTON_OVERHANG` is deliberate,
+     not a mistake) instead of sitting fully inside the image or fully
+     below it in normal flow. `right` (no `left`) anchors this box's RIGHT
+     edge in place while its own `width` is animated (see `morphStyle` in
+     ProductCardImpl) between the compact 34px "+" and the (~60%-capped)
+     stepper pill — that's what makes it visibly grow LEFTWARD from a fixed
+     right edge instead of the old hug-content layout snapping between the
+     two. Only WIDTH ever animates here — height/position are fixed — so
+     the button's bottom edge sits at the same `BUTTON_OVERHANG` distance
+     below the media box regardless of quantity, and `priceRow`'s
+     `marginTop` (== `BUTTON_OVERHANG + IMAGE_TEXT_GAP`) reserves a
+     CONSTANT, quantity-independent gap for it. `mediaWrap` has no
+     `overflow: hidden`, so this bottom half hanging below it is never
+     clipped.
+  ================================================================ */
+
+  floatingActionWrap: {
+    position: "absolute",
+
+    right: spacing.xs,
+
+    bottom: -BUTTON_OVERHANG,
+
+    zIndex: 3,
+  },
+
+  floatingAddButton: {
+    width: 34,
+
+    height: 34,
+
+    borderRadius: radius.sm,
+
+    backgroundColor: colors.surface,
+
+    borderWidth: 1.5,
+
+    borderColor: colors.primary,
+
+    alignItems: "center",
+
+    justifyContent: "center",
+
+    ...shadow.sm,
+  },
+
+  // Overrides QuantityStepper's own (pill-shaped) corners for this one
+  // usage only — ProductDetailScreen's footer stepper stays pill-shaped
+  // to match the Cart button beside it, so this can't just change the
+  // shared `stepper`/`stepperFullWidth` styles those both draw from.
+  floatingStepperShape: {
+    borderRadius: radius.sm,
+  },
+
+  floatingOutOfStock: {
+    height: 28,
+
+    paddingHorizontal: spacing.sm,
+
+    borderRadius: radius.pill,
+
+    backgroundColor: "rgba(255,255,255,0.92)",
+
+    alignItems: "center",
+
+    justifyContent: "center",
+  },
+
+  floatingOutOfStockText: {
+    fontSize: 10,
+
+    fontWeight: "700",
   },
 
   image: {
@@ -632,12 +844,10 @@ const styles = StyleSheet.create({
      BADGES (discount / out of stock)
   ================================================================ */
 
+  // In-flow now (see the DISCOUNT section above) — no longer overlaid on
+  // the image, so no `position: absolute`/`zIndex` here anymore.
   discountBadge: {
-    position: "absolute",
-
-    top: 0,
-
-    left: 0,
+    alignSelf: "flex-start",
 
     backgroundColor: colors.discountBadge,
 
@@ -646,8 +856,14 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
 
     borderRadius: radius.sm,
+  },
 
-    zIndex: 2,
+  discountContainer: {
+    height: 18,
+
+    marginTop: 4,
+
+    justifyContent: "center",
   },
 
   outOfStockBadge: {
@@ -731,7 +947,11 @@ const styles = StyleSheet.create({
 
     height: 22,
 
-    marginTop: 2,
+    // Clears the floating Add/stepper overlay's overhang (see
+    // `floatingActionWrap`) PLUS a real gap on top of it — constant
+    // regardless of the stepper's current width, since only its width
+    // (never its vertical position) ever animates.
+    marginTop: BUTTON_OVERHANG + IMAGE_TEXT_GAP,
   },
 
   price: {
@@ -753,64 +973,6 @@ const styles = StyleSheet.create({
   },
 
   /* ================================================================
-     ADD BUTTON — full width, matches the reference design.
-  ================================================================ */
-
-  addButton: {
-    width: "100%",
-
-    height: 36,
-
-    marginTop: spacing.sm,
-
-    borderRadius: radius.pill,
-
-    backgroundColor: colors.primary,
-
-    flexDirection: "row",
-
-    alignItems: "center",
-
-    justifyContent: "center",
-
-    gap: 6,
-  },
-
-  addText: {
-    fontSize: 13,
-
-    lineHeight: 17,
-
-    fontWeight: "700",
-  },
-
-  /* ================================================================
-     OUT OF STOCK BAR
-  ================================================================ */
-
-  outOfStockBar: {
-    width: "100%",
-
-    height: 36,
-
-    marginTop: spacing.sm,
-
-    borderRadius: radius.pill,
-
-    backgroundColor: colors.surfaceSunken,
-
-    alignItems: "center",
-
-    justifyContent: "center",
-  },
-
-  outOfStockBarText: {
-    fontSize: 12,
-
-    lineHeight: 16,
-  },
-
-  /* ================================================================
      QUANTITY STEPPER
 
      Default size: compact pill for tight rows (the cart screen's line
@@ -818,16 +980,16 @@ const styles = StyleSheet.create({
      action bar and the product-detail footer.
   ================================================================ */
 
+  // No `justifyContent` needed — the center slot between the two buttons is
+  // `flex: 1` (see `qtyCenterSlot`), which already consumes 100% of
+  // whatever space is left, so there's nothing left for `justifyContent`
+  // to distribute.
   stepper: {
-    width: 62,
-
     height: 30,
 
     flexDirection: "row",
 
     alignItems: "center",
-
-    justifyContent: "space-between",
 
     paddingHorizontal: 2,
 
@@ -836,12 +998,24 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
   },
 
+  // The compact (non-`fullWidth`) size's own width — split out from
+  // `stepper` so `fullWidth` mode (below) never has a competing explicit
+  // `width` left over to fight its `alignSelf: "stretch"`.
+  stepperCompactWidth: {
+    width: 62,
+  },
+
+  // `alignSelf: "stretch"`, not `width: "100%"` — a percentage width has to
+  // RESOLVE against the parent's width, which raced visibly (a flash to
+  // ~full card width before settling) the instant this mounted under
+  // ProductCard's Reanimated-animated `floatingActionWrap`. `stretch` is
+  // plain Yoga flex fill: it's recalculated as part of the SAME layout pass
+  // as the parent's own (possibly still-animating) width, so there's never
+  // a frame where the two disagree.
   stepperFullWidth: {
-    width: "100%",
+    alignSelf: "stretch",
 
     height: 36,
-
-    marginTop: spacing.sm,
 
     paddingHorizontal: 4,
   },
@@ -866,6 +1040,14 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.18)",
   },
 
+  // Same touch-target footprint as `stepperButtonFullWidth`, just with no
+  // background/radius of its own — see `flatButtons` on QuantityStepper.
+  stepperButtonFullWidthFlat: {
+    width: 32,
+
+    height: 32,
+  },
+
   stepperSymbol: {
     fontSize: 18,
 
@@ -881,8 +1063,6 @@ const styles = StyleSheet.create({
 
     fontWeight: "700",
 
-    minWidth: 16,
-
     textAlign: "center",
   },
 
@@ -892,8 +1072,19 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
 
+  // Fills the flex:1 gap `qtyCenterSlot` reserves between the two buttons —
+  // this is what makes the number sit dead-center regardless of the
+  // stepper's overall width.
+  qtyCenterSlot: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  // `width` is set inline per-instance (see AnimatedQuantity's `clipWidth`
+  // prop) — FIXED, not `minWidth`, so the box itself never resizes between
+  // "1" and "10".
   qtyClip: {
-    minWidth: 16,
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",

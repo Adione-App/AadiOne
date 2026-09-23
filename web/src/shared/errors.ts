@@ -67,6 +67,11 @@ export const ErrorCode = {
   COUPON_LIMIT_REACHED: 'COUPON_LIMIT_REACHED',
   COUPON_MIN_ORDER_NOT_MET: 'COUPON_MIN_ORDER_NOT_MET',
 
+  /* referrals ------------------------------------------------------------ */
+  REFERRAL_CODE_INVALID: 'REFERRAL_CODE_INVALID',
+  REFERRAL_SELF_REFERRAL: 'REFERRAL_SELF_REFERRAL',
+  REFERRAL_ALREADY_LINKED: 'REFERRAL_ALREADY_LINKED',
+
   /* address ------------------------------------------------------------- */
   ADDRESS_LIMIT_REACHED: 'ADDRESS_LIMIT_REACHED',
   ADDRESS_NOT_SERVICEABLE: 'ADDRESS_NOT_SERVICEABLE',
@@ -137,6 +142,10 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   COUPON_EXPIRED: 422,
   COUPON_LIMIT_REACHED: 422,
   COUPON_MIN_ORDER_NOT_MET: 422,
+
+  REFERRAL_CODE_INVALID: 422,
+  REFERRAL_SELF_REFERRAL: 422,
+  REFERRAL_ALREADY_LINKED: 422,
 
   ADDRESS_LIMIT_REACHED: 422,
   ADDRESS_NOT_SERVICEABLE: 422,
@@ -209,6 +218,10 @@ export const ERROR_DEFAULT_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   COUPON_EXPIRED: 'This coupon has expired.',
   COUPON_LIMIT_REACHED: 'This coupon can no longer be used.',
   COUPON_MIN_ORDER_NOT_MET: 'Your order value is below this coupon’s minimum.',
+
+  REFERRAL_CODE_INVALID: 'This referral code is not valid.',
+  REFERRAL_SELF_REFERRAL: 'You cannot use your own referral code.',
+  REFERRAL_ALREADY_LINKED: 'A referral code has already been applied to this account.',
 
   ADDRESS_LIMIT_REACHED: 'You can save up to 5 addresses.',
   ADDRESS_NOT_SERVICEABLE: 'We do not deliver to this address yet.',

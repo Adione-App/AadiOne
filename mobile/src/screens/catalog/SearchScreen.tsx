@@ -289,6 +289,11 @@ export default function SearchScreen({
               paddingBottom: spacing.xxl,
             }}
             keyboardShouldPersistTaps="handled"
+            removeClippedSubviews
+            initialNumToRender={8}
+            maxToRenderPerBatch={8}
+            windowSize={7}
+            updateCellsBatchingPeriod={50}
           />
         </>
       )}
@@ -389,7 +394,10 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     marginHorizontal: -spacing.xs,
   },
+  // Bigger vertical than horizontal padding — more breathing room BETWEEN
+  // ROWS specifically (matches CategoriesScreen/RailProductsScreen's grids).
   popularCell: {
-    padding: spacing.xs,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.sm,
   },
 });

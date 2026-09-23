@@ -21,6 +21,8 @@ import type {
   OrderSummaryDto,
   ProductDetailDto,
   ProductSummaryDto,
+  ReferralSummaryDto,
+  RewardCouponDto,
 } from "@shared";
 import { api } from "./api";
 
@@ -34,6 +36,8 @@ export const keys = {
   cart: ["cart"] as const,
   orders: ["orders"] as const,
   order: (id: string) => ["order", id] as const,
+  referralSummary: ["referral-summary"] as const,
+  myCoupons: ["my-coupons"] as const,
 };
 
 export function useHomeFeed() {
@@ -319,12 +323,32 @@ export function useCartMutations() {
     onSuccess: (data, _vars, context) => guardedWrite(data, context),
   });
 
+  // Applying a DIFFERENT code while one is already active naturally replaces
+  // it (the backend's `Cart.couponCode` is a single field) — this mutation
+  // only needs to exist for the explicit "remove" affordance.
+  const removeCoupon = useMutation({
+    mutationFn: (input: { distanceKm?: number | null } = {}) => {
+      const distanceKm = input.distanceKm ?? null;
+
+      const query =
+        distanceKm !== null
+          ? `?distanceKm=${encodeURIComponent(distanceKm)}`
+          : "";
+
+      return api.delete<CartDto>(`/cart/coupon${query}`);
+    },
+
+    onMutate: captureEpoch,
+    onSuccess: (data, _vars, context) => guardedWrite(data, context),
+  });
+
   return {
     addItem,
     updateQty,
     removeItem,
     clearCart,
     applyCoupon,
+    removeCoupon,
   };
 }
 
@@ -351,5 +375,34 @@ export function useOrder(id: string, live: boolean) {
     // updating is worse than one that costs a request every 30 seconds.
     refetchInterval: live ? 30_000 : false,
     refetchOnMount: "always",
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Referrals & Rewards                                                       */
+/*                                                                             */
+/* Deliberately NOT fetched globally (e.g. from MainTabs or App.tsx) — see    */
+/* the performance requirement: this loads only when the Rewards screen or    */
+/* Cart's coupon section actually mounts, same as every other feature-scoped  */
+/* query in this file.                                                       */
+/* -------------------------------------------------------------------------- */
+
+export function useReferralSummary() {
+  return useQuery({
+    queryKey: keys.referralSummary,
+    queryFn: () => api.get<ReferralSummaryDto>("/referrals/me"),
+  });
+}
+
+export function useMyCoupons() {
+  return useQuery({
+    queryKey: keys.myCoupons,
+    queryFn: () => api.get<RewardCouponDto[]>("/rewards/coupons"),
+  });
+}
+
+export function useApplyReferralCode() {
+  return useMutation({
+    mutationFn: (code: string) => api.post<{ applied: boolean }>("/referrals/apply", { code }),
   });
 }

@@ -12,6 +12,7 @@ import type {
   AccountStackParamList,
   CartStackParamList,
   CatalogStackParamList,
+  WishlistStackParamList,
 } from "./types";
 
 import HomeScreen from "@/screens/home/HomeScreen";
@@ -34,6 +35,8 @@ import PersonalInfoScreen from "@/screens/account/PersonalInfoScreen";
 import LegalScreen from "@/screens/account/LegalScreen";
 import AccountScreen from "@/screens/account/AccountScreen";
 import UpiPaymentScreen from "@/screens/checkout/UpiPaymentScreen";
+import WishlistScreen from "@/screens/wishlist/WishlistScreen";
+import RewardsScreen from "@/screens/account/RewardsScreen";
 
 /* =====================================================================
    NAVIGATORS
@@ -42,6 +45,7 @@ import UpiPaymentScreen from "@/screens/checkout/UpiPaymentScreen";
 const CatalogStack = createNativeStackNavigator<CatalogStackParamList>();
 const CartNav = createNativeStackNavigator<CartStackParamList>();
 const AccountNav = createNativeStackNavigator<AccountStackParamList>();
+const WishlistNav = createNativeStackNavigator<WishlistStackParamList>();
 
 const noHeader = {
   headerShown: false,
@@ -198,7 +202,6 @@ export function CategoriesStack() {
                 productId,
               })
             }
-            onOpenCart={() => navigation.getParent()?.navigate("Cart")}
           />
         )}
       </CatalogStack.Screen>
@@ -218,6 +221,42 @@ export function CategoriesStack() {
         )}
       </CatalogStack.Screen>
     </CatalogStack.Navigator>
+  );
+}
+
+/* =====================================================================
+   WISHLIST STACK
+===================================================================== */
+
+export function WishlistStack() {
+  return (
+    <WishlistNav.Navigator screenOptions={noHeader}>
+      <WishlistNav.Screen name="WishlistHome">
+        {({ navigation }) => (
+          <WishlistScreen
+            onOpenProduct={(productId) =>
+              navigation.navigate("ProductDetail", { productId })
+            }
+            onBrowse={() => navigation.getParent()?.navigate("Home")}
+          />
+        )}
+      </WishlistNav.Screen>
+
+      <WishlistNav.Screen name="ProductDetail">
+        {({ navigation, route }) => (
+          <ProductDetailScreen
+            productId={route.params.productId}
+            onBack={() => navigation.goBack()}
+            onOpenProduct={(productId) =>
+              navigation.push("ProductDetail", {
+                productId,
+              })
+            }
+            onGoToCart={() => navigation.getParent()?.navigate("Cart")}
+          />
+        )}
+      </WishlistNav.Screen>
+    </WishlistNav.Navigator>
   );
 }
 
@@ -374,7 +413,31 @@ export function AccountStack() {
                   slug: "terms",
                 });
               }
+
+              if (key === "wishlist") {
+                // Its own bottom tab now (see MainTabs) — not a screen
+                // inside AccountStack, so this hops up to the parent
+                // Tab.Navigator instead of pushing locally.
+                navigation.getParent()?.navigate("Wishlist");
+              }
+
+              if (key === "refer") {
+                navigation.navigate("ReferEarn");
+              }
             }}
+          />
+        )}
+      </AccountNav.Screen>
+
+      {/* ---------------------------------------------------------------
+          REFER & EARN / REWARDS
+      --------------------------------------------------------------- */}
+
+      <AccountNav.Screen name="ReferEarn">
+        {({ navigation }) => (
+          <RewardsScreen
+            onBack={() => navigation.goBack()}
+            onGoToCart={() => navigation.getParent()?.navigate("Cart")}
           />
         )}
       </AccountNav.Screen>

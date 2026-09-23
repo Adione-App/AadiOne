@@ -8,6 +8,13 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
+import ReanimatedAnimated, {
+  Extrapolation,
+  interpolate,
+  useAnimatedScrollHandler,
+  useAnimatedStyle,
+  useSharedValue,
+} from "react-native-reanimated";
 import React, { useEffect, useRef, useState } from "react";
 
 import { Image } from "expo-image";
@@ -42,6 +49,7 @@ import {
 
 import { ProductCard } from "@/components/ProductCard";
 import CategoryIcon from "@/components/CategoryIcon";
+import { tabBarHiddenByScroll } from "@/lib/tabBarVisibility";
 
 import adioneHomeBanner from "../../../assets/adione-homebar.png";
 import bannerDailyEssentials from "../../../assets/home-banner-daily-essentials.png";
@@ -102,7 +110,10 @@ function AnimatedSearchPlaceholder() {
     return () => clearInterval(timer);
   }, [anim]);
 
-  const translateY = anim.interpolate({ inputRange: [0, 1], outputRange: [8, 0] });
+  const translateY = anim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [8, 0],
+  });
 
   return (
     <View style={styles.searchPlaceholderClip}>
@@ -110,7 +121,11 @@ function AnimatedSearchPlaceholder() {
         numberOfLines={1}
         style={[
           styles.searchPlaceholder,
-          { color: colors.textMuted, opacity: anim, transform: [{ translateY }] },
+          {
+            color: colors.textMuted,
+            opacity: anim,
+            transform: [{ translateY }],
+          },
         ]}
       >
         {SEARCH_PLACEHOLDERS[index]}
@@ -144,13 +159,16 @@ export default function HomeScreen({
 
   const feed = useHomeFeed();
   const cart = useCartActions();
+  const cartItemCount = cart.cart?.bill.itemCount ?? 0;
 
   const { location, serviceability, refresh } = useLocation();
 
   const { width: windowWidth } = useWindowDimensions();
   const [activeBanner, setActiveBanner] = useState(0);
   const bannerScrollRef = useRef<ScrollView>(null);
-  const bannerAutoplayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const bannerAutoplayTimerRef = useRef<ReturnType<typeof setInterval> | null>(
+    null,
+  );
 
   // Collapses the address/profile row as the page scrolls, leaving the
   // search bar (moved OUT of the ScrollView below, so it never scrolls away
@@ -158,8 +176,89 @@ export default function HomeScreen({
   // measured once from the row's own natural layout (it varies by device —
   // depends on `insets.top`) rather than hard-coded, so the collapse always
   // starts from its real expanded height with no jump.
-  const scrollY = useRef(new Animated.Value(0)).current;
+  //
+  // `scrollY` is a Reanimated SHARED VALUE, not an RN `Animated.Value` —
+  // `headerAnimatedStyle`/`searchBarAnimatedStyle` below read it inside
+  // `useAnimatedStyle` worklets, which run the height/opacity/margin
+  // recalculation directly on the UI thread every frame. The old
+  // `Animated.event({ useNativeDriver: false })` version had no choice but
+  // to do that same recalculation on the JS thread instead (RN's native
+  // driver can't animate `height`), which is exactly the kind of
+  // scroll-tied JS-thread work that reads as stutter on a busy frame.
+  const scrollY = useSharedValue(0);
   const [headerHeight, setHeaderHeight] = useState(0);
+
+  // Bottom tab bar hides on scroll-down, reappears on scroll-up or back
+  // near the top — see MainTabs' `AnimatedTabBar`, which reads
+  // `tabBarHiddenByScroll` (a module-scoped Reanimated shared value, see
+  // tabBarVisibility.ts) directly. `lastScrollY`/`lastDirectionCheckMs` are
+  // shared values purely so this worklet has somewhere to keep its own
+  // running state between calls — using React refs here wouldn't work,
+  // refs aren't reachable from the UI-thread worklet this runs in.
+  //
+  // Time-gated to roughly 8/sec — `scrollEventThrottle` below still fires
+  // this on every native scroll event (needed for the header-collapse
+  // animation's own smoothness), but re-running direction detection on
+  // literally every one of those has no visible benefit: nobody can
+  // perceive "hide the tab bar" reacting inside 16ms vs ~120ms. This all
+  // runs as a worklet on the UI thread — the 120ms gate is just to avoid
+  // redundant comparisons, not to protect the JS thread (there's no JS
+  // thread involvement here at all).
+  const lastScrollY = useSharedValue(0);
+  const lastDirectionCheckMs = useSharedValue(0);
+
+  const scrollHandler = useAnimatedScrollHandler({
+    onScroll: (event) => {
+      const y = event.contentOffset.y;
+      scrollY.value = y;
+
+      const now = Date.now();
+      if (now - lastDirectionCheckMs.value < 120) return;
+      lastDirectionCheckMs.value = now;
+
+      const delta = y - lastScrollY.value;
+      lastScrollY.value = y;
+
+      if (y <= 4) {
+        tabBarHiddenByScroll.value = false;
+      } else if (delta > 6) {
+        tabBarHiddenByScroll.value = true;
+      } else if (delta < -6) {
+        tabBarHiddenByScroll.value = false;
+      }
+    },
+  });
+
+  const headerAnimatedStyle = useAnimatedStyle(() => {
+    if (headerHeight === 0) return {};
+    return {
+      height: interpolate(
+        scrollY.value,
+        [0, headerHeight],
+        [headerHeight, 0],
+        Extrapolation.CLAMP,
+      ),
+      opacity: interpolate(
+        scrollY.value,
+        [0, headerHeight * 0.6],
+        [1, 0],
+        Extrapolation.CLAMP,
+      ),
+      overflow: "hidden",
+    };
+  }, [headerHeight]);
+
+  const searchBarAnimatedStyle = useAnimatedStyle(() => {
+    if (headerHeight === 0) return { marginTop: spacing.md };
+    return {
+      marginTop: interpolate(
+        scrollY.value,
+        [0, headerHeight],
+        [spacing.md, spacing.xs],
+        Extrapolation.CLAMP,
+      ),
+    };
+  }, [headerHeight]);
 
   useEffect(() => {
     void refresh();
@@ -175,15 +274,20 @@ export default function HomeScreen({
   // `onMomentumScrollEnd` below) calls this again to restart the countdown,
   // so autoplay doesn't fight a swipe the customer just made.
   const startBannerAutoplay = () => {
-    if (bannerAutoplayTimerRef.current) clearInterval(bannerAutoplayTimerRef.current);
+    if (bannerAutoplayTimerRef.current)
+      clearInterval(bannerAutoplayTimerRef.current);
     if (HOME_BANNER_COUNT <= 1) return;
 
-    const slideStep = Math.min(640, windowWidth - spacing.base * 2) + spacing.sm;
+    const slideStep =
+      Math.min(640, windowWidth - spacing.base * 2) + spacing.sm;
 
     bannerAutoplayTimerRef.current = setInterval(() => {
       setActiveBanner((current) => {
         const next = (current + 1) % HOME_BANNER_COUNT;
-        bannerScrollRef.current?.scrollTo({ x: next * slideStep, animated: true });
+        bannerScrollRef.current?.scrollTo({
+          x: next * slideStep,
+          animated: true,
+        });
         return next;
       });
     }, 2000);
@@ -192,7 +296,8 @@ export default function HomeScreen({
   useEffect(() => {
     startBannerAutoplay();
     return () => {
-      if (bannerAutoplayTimerRef.current) clearInterval(bannerAutoplayTimerRef.current);
+      if (bannerAutoplayTimerRef.current)
+        clearInterval(bannerAutoplayTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [windowWidth]);
@@ -262,15 +367,25 @@ export default function HomeScreen({
   ================================================================ */
 
   const allCategoryRails = feed.data.categoryRails ?? [];
-  const isGroceryShelf = (title: string) => title.trim().toLowerCase() === "grocery";
+  const isGroceryShelf = (title: string) =>
+    title.trim().toLowerCase() === "grocery";
   const isProduceShelf = (title: string) => /fruit|vegetable/i.test(title);
   const isElectronicsShelf = (title: string) => /electronic/i.test(title);
-  const isClothesShelf = (title: string) => /cloth|fashion|apparel/i.test(title);
+  const isClothesShelf = (title: string) =>
+    /cloth|fashion|apparel/i.test(title);
 
-  const produceRail = allCategoryRails.find((rail) => isProduceShelf(rail.title));
-  const electronicsRail = allCategoryRails.find((rail) => isElectronicsShelf(rail.title));
-  const clothesRail = allCategoryRails.find((rail) => isClothesShelf(rail.title));
-  const groceryRail = allCategoryRails.find((rail) => isGroceryShelf(rail.title));
+  const produceRail = allCategoryRails.find((rail) =>
+    isProduceShelf(rail.title),
+  );
+  const electronicsRail = allCategoryRails.find((rail) =>
+    isElectronicsShelf(rail.title),
+  );
+  const clothesRail = allCategoryRails.find((rail) =>
+    isClothesShelf(rail.title),
+  );
+  const groceryRail = allCategoryRails.find((rail) =>
+    isGroceryShelf(rail.title),
+  );
   const otherCategoryRails = allCategoryRails.filter(
     (rail) => rail !== produceRail && !isGroceryShelf(rail.title),
   );
@@ -291,7 +406,9 @@ export default function HomeScreen({
     {
       id: "clothes",
       image: promoClothes,
-      onPress: clothesRail ? () => onOpenCategory(clothesRail.categoryId) : onOpenAllCategories,
+      onPress: clothesRail
+        ? () => onOpenCategory(clothesRail.categoryId)
+        : onOpenAllCategories,
     },
     {
       id: "electronics",
@@ -303,12 +420,16 @@ export default function HomeScreen({
     {
       id: "fresh-produce",
       image: promoFreshProduce,
-      onPress: produceRail ? () => onOpenCategory(produceRail.categoryId) : onOpenAllCategories,
+      onPress: produceRail
+        ? () => onOpenCategory(produceRail.categoryId)
+        : onOpenAllCategories,
     },
     {
       id: "grocery",
       image: promoGrocery,
-      onPress: groceryRail ? () => onOpenCategory(groceryRail.categoryId) : onOpenAllCategories,
+      onPress: groceryRail
+        ? () => onOpenCategory(groceryRail.categoryId)
+        : onOpenAllCategories,
     },
   ];
 
@@ -400,110 +521,93 @@ export default function HomeScreen({
       ============================================================ */}
 
       <View style={{ paddingTop: insets.top }}>
-        <Animated.View
+        <ReanimatedAnimated.View
           onLayout={(event) => {
             // Only ever captured once — a later layout pass while the row is
             // already mid-collapse would otherwise overwrite the real
             // expanded height with whatever shrunken height it has at that
             // moment.
-            if (headerHeight === 0) setHeaderHeight(event.nativeEvent.layout.height);
+            if (headerHeight === 0)
+              setHeaderHeight(event.nativeEvent.layout.height);
           }}
-          style={[
-            styles.header,
-            {
-              paddingTop: 4,
-            },
-            headerHeight > 0 && {
-              height: scrollY.interpolate({
-                inputRange: [0, headerHeight],
-                outputRange: [headerHeight, 0],
-                extrapolate: "clamp",
-              }),
-              opacity: scrollY.interpolate({
-                inputRange: [0, headerHeight * 0.6],
-                outputRange: [1, 0],
-                extrapolate: "clamp",
-              }),
-              overflow: "hidden",
-            },
-          ]}
+          style={[styles.header, { paddingTop: 4 }, headerAnimatedStyle]}
         >
-        {/* ----------------------------------------------------------
+          {/* ----------------------------------------------------------
             LOCATION
         ---------------------------------------------------------- */}
 
-        <Pressable
-          onPress={onOpenLocation}
-          style={styles.locationSection}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel="Change delivery location"
-        >
-          {/* Location Icon */}
+          <Pressable
+            onPress={onOpenLocation}
+            style={styles.locationSection}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Change delivery location"
+          >
+            {/* Location Icon */}
 
-          <View style={styles.locationPin}>
-            <Ionicons
-              name="location-outline"
-              size={19}
-              color={colors.primary}
-            />
-          </View>
+            <View style={styles.locationPin}>
+              <Ionicons
+                name="location-outline"
+                size={19}
+                color={colors.primary}
+              />
+            </View>
 
-          {/* Location Text */}
+            {/* Location Text */}
 
-          <View style={styles.locationText}>
-            <AppText
-              variant="caption"
-              color={colors.textSecondary}
-              style={styles.deliveringText}
-            >
-              Delivering to
-            </AppText>
-
-            <AppText
-              variant="bodyStrong"
-              numberOfLines={1}
-              style={styles.locationLabel}
-            >
-              {location?.label ?? "Select a location"}
-            </AppText>
-
-            {serviceability?.serviceable && (
+            <View style={styles.locationText}>
               <AppText
                 variant="caption"
-                color={colors.primary}
-                style={styles.distanceText}
+                color={colors.textSecondary}
+                style={styles.deliveringText}
               >
-                {formatDistance(serviceability.distanceKm)} away from store
+                Delivering to
               </AppText>
-            )}
-          </View>
 
-          {/* Chevron */}
+              <AppText
+                variant="bodyStrong"
+                numberOfLines={1}
+                style={styles.locationLabel}
+              >
+                {location?.label ?? "Select a location"}
+              </AppText>
 
-          <View style={styles.chevronContainer}>
-            <Ionicons
-              name="chevron-down"
-              size={18}
-              color={colors.textSecondary}
-            />
-          </View>
-        </Pressable>
+              {serviceability?.serviceable && (
+                <AppText
+                  variant="caption"
+                  color={colors.primary}
+                  style={styles.distanceText}
+                >
+                  {formatDistance(serviceability.distanceKm)} away from store
+                </AppText>
+              )}
+            </View>
 
-        {/* ----------------------------------------------------------
+            {/* Chevron */}
+
+            <View style={styles.chevronContainer}>
+              <Ionicons
+                name="chevron-down"
+                size={18}
+                color={colors.textSecondary}
+              />
+            </View>
+          </Pressable>
+
+          {/* ----------------------------------------------------------
             ACCOUNT
         ---------------------------------------------------------- */}
 
-        <Pressable
-          onPress={onOpenProfile}
-          style={styles.profileButton}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel="Open account"
-        >
-          <Ionicons name="person-circle" size={38} color={colors.primary} />
-        </Pressable>
-        </Animated.View>
+          <Pressable
+            onPress={onOpenProfile}
+            style={styles.profileButton}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Open account"
+          >
+            <Ionicons name="person-circle" size={38} color={colors.primary} />
+          </Pressable>
+        </ReanimatedAnimated.View>
 
         {/* ==========================================================
             SEARCH — deliberately OUTSIDE the ScrollView below, so it
@@ -513,19 +617,7 @@ export default function HomeScreen({
             staying fixed, so no dead gap is left above it once scrolled.
         ========================================================== */}
 
-        <Animated.View
-          style={
-            headerHeight > 0
-              ? {
-                  marginTop: scrollY.interpolate({
-                    inputRange: [0, headerHeight],
-                    outputRange: [spacing.md, spacing.xs],
-                    extrapolate: "clamp",
-                  }),
-                }
-              : { marginTop: spacing.md }
-          }
-        >
+        <ReanimatedAnimated.View style={searchBarAnimatedStyle}>
           <Pressable
             onPress={onOpenSearch}
             style={styles.searchBar}
@@ -541,22 +633,24 @@ export default function HomeScreen({
 
             <AnimatedSearchPlaceholder />
           </Pressable>
-        </Animated.View>
+        </ReanimatedAnimated.View>
       </View>
 
       {/* ============================================================
           SCROLLABLE HOME
       ============================================================ */}
 
-      <ScrollView
-        onScroll={Animated.event(
-          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-          { useNativeDriver: false },
-        )}
+      <ReanimatedAnimated.ScrollView
+        onScroll={scrollHandler}
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{
-          paddingBottom: insets.bottom + spacing.xxl,
+          // Extra room for MiniCartBar floating over the last of this
+          // content — only reserved once the cart actually has something in
+          // it (MiniCartBar itself renders nothing at all when empty), so an
+          // empty cart doesn't leave a dead gap at the bottom of the page.
+          paddingBottom:
+            insets.bottom + spacing.xxl + (cartItemCount > 0 ? 76 : 0),
         }}
       >
         {/* ========================================================
@@ -602,9 +696,7 @@ export default function HomeScreen({
                 event.nativeEvent.contentOffset.x /
                   (bannerSlideWidth + bannerSlideGap),
               );
-              setActiveBanner(
-                Math.max(0, Math.min(banners.length - 1, index)),
-              );
+              setActiveBanner(Math.max(0, Math.min(banners.length - 1, index)));
               // A manual swipe shouldn't be immediately undone by autoplay
               // jumping to the next slide moments later — restart the timer.
               startBannerAutoplay();
@@ -621,7 +713,8 @@ export default function HomeScreen({
                   // graphics' taller ratio zoomed the image in via `cover`
                   // and cut its baked-in title/clock artwork off the edge.
                   aspectRatio: hasOverlay ? 1653 / 569 : 2000 / 760,
-                  marginRight: index === banners.length - 1 ? 0 : bannerSlideGap,
+                  marginRight:
+                    index === banners.length - 1 ? 0 : bannerSlideGap,
                 },
               ];
 
@@ -799,7 +892,10 @@ export default function HomeScreen({
             SHOP BY CATEGORY — promo tile strip
         ======================================================== */}
 
-        <SectionHeader title="Shop by Category" onSeeAll={onOpenAllCategories} />
+        <SectionHeader
+          title="Shop by Category"
+          onSeeAll={onOpenAllCategories}
+        />
         <PromoTileStrip tiles={promoTiles} />
 
         {/* ========================================================
@@ -824,7 +920,7 @@ export default function HomeScreen({
             hint="Supporting our community"
           />
         </View>
-      </ScrollView>
+      </ReanimatedAnimated.ScrollView>
     </Screen>
   );
 }
@@ -945,8 +1041,18 @@ function PromoTileStrip({
             style={{
               opacity: value,
               transform: [
-                { scale: value.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1] }) },
-                { translateY: value.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) },
+                {
+                  scale: value.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0.85, 1],
+                  }),
+                },
+                {
+                  translateY: value.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [16, 0],
+                  }),
+                },
               ],
             }}
           >
@@ -1024,7 +1130,7 @@ const styles = StyleSheet.create({
 
     // Keeps the location area shorter and creates
     // clear space before the account button.
-    marginRight: 90,
+    marginRight: 50,
   },
 
   /* ================================================================

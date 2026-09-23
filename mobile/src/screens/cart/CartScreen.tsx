@@ -31,6 +31,7 @@ import {
   Modal,
   Pressable,
   StyleSheet,
+  TextInput,
   View,
 } from "react-native";
 import { Image } from "expo-image";
@@ -46,13 +47,14 @@ import {
   type CartItemDto,
   type CheckoutQuoteResponse,
   type OrderDetailDto,
+  type RewardCouponDto,
 } from "@shared";
 import { formatPaise } from "@shared/money";
 import { colors, radius, shadow, spacing } from "@shared/theme";
 import { addressPrimaryLine } from "@shared/text";
 
 import { api, ApiRequestError, resolveImageUrl } from "@/lib/api";
-import { clearCartAfterOrder, keys } from "@/lib/queries";
+import { clearCartAfterOrder, keys, useCartMutations, useMyCoupons } from "@/lib/queries";
 import { useCartActions } from "@/lib/useCartActions";
 import { useLocation } from "@/lib/store";
 
@@ -494,6 +496,7 @@ export default function CartScreen({
         }
         ListFooterComponent={
           <View>
+            <CouponSection bill={displayBill} addressId={addressId} />
             <BillDetails bill={displayBill} />
           </View>
         }
@@ -987,6 +990,194 @@ function ConfirmOrderModal({
         </Card>
       </View>
     </Modal>
+  );
+}
+
+/* ================================================================
+ * COUPONS & OFFERS
+ *
+ * Lists the customer's own ACTIVE reward coupons (Refer & Earn today — see
+ * useWishlist.ts's sibling, useMyCoupons()) as one-tap selectable rows, plus
+ * a manual code-entry fallback. Selecting one calls the SAME `applyCoupon`
+ * mutation cart items already use; applying a second code simply replaces
+ * the first, because the backend's `Cart.couponCode` is a single field —
+ * there is no separate "only one coupon" rule to enforce here, it is
+ * structurally impossible to have two. `bill.couponCode` already reflects
+ * whichever one is currently applied (via the same merge CartScreen's own
+ * `bill` memo already does), so this section never keeps its own copy of
+ * "which coupon is active".
+ * ================================================================ */
+
+function CouponSection({ bill, addressId }: { bill: BillDto; addressId: string | null }) {
+  const queryClient = useQueryClient();
+  const { serviceability } = useLocation();
+  const distanceKm = serviceability?.distanceKm ?? null;
+
+  const coupons = useMyCoupons();
+  const { applyCoupon, removeCoupon } = useCartMutations();
+
+  const [manualCode, setManualCode] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  const afterChange = () => {
+    // `bill` is `quote.data.bill` merged with the cart — `/checkout/quote`
+    // is its own separate query, so it needs its own refetch to pick up the
+    // coupon the mutation above just changed on the cart (see the `bill`
+    // memo's own comment higher in this file).
+    void queryClient.invalidateQueries({ queryKey: ["checkout-quote", addressId] });
+  };
+
+  const applying = applyCoupon.isPending || removeCoupon.isPending;
+
+  async function applyCode(code: string): Promise<void> {
+    setError(null);
+    try {
+      await applyCoupon.mutateAsync({ code, distanceKm });
+      setManualCode("");
+      afterChange();
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : "Could not apply this coupon.");
+    }
+  }
+
+  async function handleRemove(): Promise<void> {
+    setError(null);
+    try {
+      await removeCoupon.mutateAsync({ distanceKm });
+      afterChange();
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : "Could not remove this coupon.");
+    }
+  }
+
+  const availableCoupons = (coupons.data ?? []).filter((c) => c.status === "ACTIVE");
+
+  return (
+    <View style={styles.billWrapper}>
+      <Card style={styles.couponCard}>
+        <Pressable
+          onPress={() => setExpanded((value) => !value)}
+          style={styles.couponHeader}
+          accessibilityRole="button"
+        >
+          <View style={styles.billIconContainer}>
+            <Ionicons name="pricetag-outline" size={18} color={colors.primary} />
+          </View>
+
+          <View style={styles.couponHeaderText}>
+            <AppText variant="h2" style={styles.billTitle}>
+              Coupons & Offers
+            </AppText>
+            <AppText variant="caption" color={colors.textSecondary}>
+              {bill.couponCode
+                ? `${bill.couponCode} applied`
+                : availableCoupons.length > 0
+                  ? `${availableCoupons.length} coupon${availableCoupons.length === 1 ? "" : "s"} available`
+                  : "Enter a coupon code"}
+            </AppText>
+          </View>
+
+          <Ionicons
+            name={expanded ? "chevron-up" : "chevron-down"}
+            size={18}
+            color={colors.textMuted}
+          />
+        </Pressable>
+
+        {expanded && (
+          <View style={styles.couponBody}>
+            {bill.couponCode ? (
+              <View style={styles.appliedCouponRow}>
+                <View style={styles.appliedCouponBadge}>
+                  <Ionicons name="checkmark-circle" size={16} color={colors.primary} />
+                  <AppText variant="bodyStrong" color={colors.primary} style={{ marginLeft: 6 }}>
+                    {bill.couponCode}
+                  </AppText>
+                </View>
+
+                <Pressable onPress={handleRemove} disabled={applying} hitSlop={8}>
+                  <AppText variant="caption" color={colors.danger}>
+                    Remove
+                  </AppText>
+                </Pressable>
+              </View>
+            ) : (
+              <>
+                {availableCoupons.map((coupon) => (
+                  <RewardCouponRow
+                    key={coupon.code}
+                    coupon={coupon}
+                    disabled={applying}
+                    onApply={() => void applyCode(coupon.code)}
+                  />
+                ))}
+
+                <View style={styles.manualCouponRow}>
+                  <TextInput
+                    value={manualCode}
+                    onChangeText={(value) => {
+                      setManualCode(value.toUpperCase());
+                      setError(null);
+                    }}
+                    placeholder="Enter coupon code"
+                    placeholderTextColor={colors.textMuted}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    style={styles.manualCouponInput}
+                  />
+                  <Pressable
+                    onPress={() => void applyCode(manualCode.trim())}
+                    disabled={applying || manualCode.trim().length === 0}
+                    style={[
+                      styles.manualCouponApply,
+                      (applying || manualCode.trim().length === 0) && { opacity: 0.5 },
+                    ]}
+                  >
+                    {applying ? (
+                      <ActivityIndicator size="small" color={colors.onPrimary} />
+                    ) : (
+                      <AppText variant="bodyStrong" color={colors.onPrimary}>
+                        Apply
+                      </AppText>
+                    )}
+                  </Pressable>
+                </View>
+              </>
+            )}
+
+            {error && (
+              <AppText variant="caption" color={colors.danger} style={{ marginTop: spacing.xs }}>
+                {error}
+              </AppText>
+            )}
+          </View>
+        )}
+      </Card>
+    </View>
+  );
+}
+
+function RewardCouponRow({
+  coupon,
+  disabled,
+  onApply,
+}: {
+  coupon: RewardCouponDto;
+  disabled: boolean;
+  onApply: () => void;
+}) {
+  return (
+    <Pressable onPress={onApply} disabled={disabled} style={styles.rewardCouponRow}>
+      <View style={styles.rewardCouponRadio} />
+      <View style={{ flex: 1 }}>
+        <AppText variant="bodyStrong">{formatPaise(coupon.discountValue)} OFF</AppText>
+        <AppText variant="caption" color={colors.textSecondary}>
+          Min order {formatPaise(coupon.minOrderPaise)}
+          {coupon.expiresInLabel ? ` · ${coupon.expiresInLabel}` : ""}
+        </AppText>
+      </View>
+    </Pressable>
   );
 }
 
@@ -1521,6 +1712,81 @@ const styles = StyleSheet.create({
   },
 
   billTitle: { marginLeft: spacing.md, fontSize: 16, lineHeight: 24, fontWeight: "800" },
+
+  /* --------------------------------------------------------------
+     COUPONS & OFFERS
+  -------------------------------------------------------------- */
+
+  couponCard: {
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+
+  couponHeader: { flexDirection: "row", alignItems: "center" },
+
+  couponHeaderText: { flex: 1, marginLeft: spacing.md },
+
+  couponBody: { marginTop: spacing.md },
+
+  appliedCouponRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary + "0F",
+  },
+
+  appliedCouponBadge: { flexDirection: "row", alignItems: "center" },
+
+  rewardCouponRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+  },
+
+  rewardCouponRadio: {
+    width: 18,
+    height: 18,
+    borderRadius: radius.circle,
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+    marginRight: spacing.md,
+  },
+
+  manualCouponRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: spacing.sm,
+    gap: spacing.sm,
+  },
+
+  manualCouponInput: {
+    flex: 1,
+    height: 44,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    fontSize: 14,
+    fontWeight: "600",
+    color: colors.textPrimary,
+  },
+
+  manualCouponApply: {
+    height: 44,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 
   billRows: { paddingBottom: spacing.sm },
 

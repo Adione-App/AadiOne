@@ -52,7 +52,8 @@ export type IconName =
   | 'phone'
   | 'pin'
   | 'user'
-  | 'check';
+  | 'check'
+  | 'gift';
 
 const PATHS: Record<IconName, string> = {
   dashboard: 'M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z',
@@ -88,6 +89,7 @@ const PATHS: Record<IconName, string> = {
   pin: 'M12 21s7-6.2 7-11a7 7 0 1 0-14 0c0 4.8 7 11 7 11zM12 12a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z',
   user: 'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
   check: 'M20 6L9 17l-5-5',
+  gift: 'M3 8h18v4H3zM5 12h14v9H5zM12 8v13M12 8c-2-4-7-4-7 0h7zM12 8c2-4 7-4 7 0h-7z',
 };
 
 export function Icon({

@@ -303,6 +303,27 @@ export const CouponType = {
 } as const;
 export type CouponType = (typeof CouponType)[keyof typeof CouponType];
 
+/** Distinguishes a coupon minted for one specific user (`REFERRAL_REWARD`,
+ * see `issuedToUserId`/`issuedForReferralId`) from today's global promo
+ * codes (`PROMO`, unchanged behaviour). */
+export const CouponOrigin = {
+  PROMO: 'PROMO',
+  REFERRAL_REWARD: 'REFERRAL_REWARD',
+} as const;
+export type CouponOrigin = (typeof CouponOrigin)[keyof typeof CouponOrigin];
+
+/* -------------------------------------------------------------------------- */
+/* Referrals (Refer & Earn)                                                   */
+/* -------------------------------------------------------------------------- */
+
+export const ReferralStatus = {
+  REGISTERED: 'REGISTERED',
+  FIRST_ORDER_PENDING: 'FIRST_ORDER_PENDING',
+  COMPLETED: 'COMPLETED',
+  REWARD_ISSUED: 'REWARD_ISSUED',
+} as const;
+export type ReferralStatus = (typeof ReferralStatus)[keyof typeof ReferralStatus];
+
 /* -------------------------------------------------------------------------- */
 /* Idempotency                                                                */
 /* -------------------------------------------------------------------------- */

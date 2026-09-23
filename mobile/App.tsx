@@ -25,6 +25,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { onSessionExpired } from "@/lib/api";
 import { useAuth, useLocation } from "@/lib/store";
 import { useRecentSearches } from "@/lib/recentSearches";
+import { useWishlist } from "@/lib/useWishlist";
 
 import { StartupLoading } from "@/components/ui";
 import { FlyToCartOverlay } from "@/lib/flyToCart";
@@ -35,6 +36,7 @@ import OtpVerifyScreen from "@/screens/auth/OtpVerifyScreen";
 import LocationScreen from "@/screens/location/LocationScreen";
 
 import { MainTabs } from "@/navigation/MainTabs";
+import { navigationRef } from "@/navigation/navigationRef";
 import type { AuthStackParamList } from "@/navigation/types";
 
 /* -------------------------------------------------------------------------- */
@@ -138,7 +140,7 @@ function RootNavigator({
   const isRestoring = useIsRestoring();
 
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navigationRef}>
       {status === "loading" || !startupReady || isRestoring ? (
         <StartupLoading />
       ) : status === "authenticated" ? (
@@ -194,6 +196,7 @@ export default function App() {
           restore(),
           useLocation.getState().hydrate(),
           useRecentSearches.getState().hydrate(),
+          useWishlist.getState().hydrate(),
         ]);
       } finally {
         if (!mounted) {

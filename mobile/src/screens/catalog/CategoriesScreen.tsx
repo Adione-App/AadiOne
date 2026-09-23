@@ -6,9 +6,13 @@
  * left sidebar with its products on the right — the original browsing
  * pattern, just reached through the showcase instead of being the landing
  * view. A category with none (e.g. "Vegetables & Fruits", added as its own
- * root with no children) goes straight to a full-width product grid. The
- * sticky "N items in cart" bar sits above the tab bar at every level so
- * checkout is always one tap away while browsing.
+ * root with no children) goes straight to a full-width product grid.
+ *
+ * The floating mini-cart (same shared component as Home — see
+ * MiniCartBar.tsx's `MiniCartOverlay`, mounted once at the MainTabs level)
+ * covers "checkout is always one tap away" at every drill level here now;
+ * this screen used to have its own bespoke sticky bar for that, which is
+ * exactly the kind of per-screen duplicate the shared overlay replaced.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -25,7 +29,6 @@ import {
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { CategoryDto, ProductSummaryDto } from '@shared';
-import { formatPaise } from '@shared/money';
 import { colors, radius, spacing } from '@shared/theme';
 import { useCategories, useProducts } from '@/lib/queries';
 import { useCartActions } from '@/lib/useCartActions';
@@ -52,11 +55,9 @@ type Drill =
 
 export default function CategoriesScreen({
   onOpenProduct,
-  onOpenCart,
   initialCategoryId,
 }: {
   onOpenProduct: (productId: string) => void;
-  onOpenCart: () => void;
   initialCategoryId?: string;
 }) {
   const insets = useSafeAreaInsets();
@@ -196,6 +197,14 @@ export default function CategoriesScreen({
           paddingBottom: cartCount > 0 ? 96 : spacing.xxl,
         }}
         showsVerticalScrollIndicator={false}
+        // Off-screen rows get unmounted from the native tree instead of
+        // staying rendered — a real memory/scroll-cost win on a long grid,
+        // safe here since every row is a fixed, uniform ProductCard height.
+        removeClippedSubviews
+        initialNumToRender={8}
+        maxToRenderPerBatch={8}
+        windowSize={7}
+        updateCellsBatchingPeriod={50}
       />
     );
 
@@ -275,21 +284,6 @@ export default function CategoriesScreen({
         </View>
       )}
 
-      {cartCount > 0 && (
-        <Pressable onPress={onOpenCart} style={[styles.stickyBar, { bottom: spacing.sm }]}>
-          <View>
-            <AppText variant="bodyStrong" color={colors.onPrimary}>
-              {cartCount} item{cartCount === 1 ? '' : 's'} in cart
-            </AppText>
-            <AppText variant="caption" color={colors.onPrimary}>
-              {formatPaise(cart.cart?.bill.totalPaise ?? 0)}
-            </AppText>
-          </View>
-          <AppText variant="bodyStrong" color={colors.onPrimary}>
-            Checkout →
-          </AppText>
-        </Pressable>
-      )}
     </Screen>
   );
 }
@@ -406,8 +400,13 @@ const styles = StyleSheet.create({
   back: { width: 32, height: 32, justifyContent: 'center', marginRight: spacing.xs },
 
   /* Product grid — see renderProduct for why this wraps every card. */
+  // Vertical padding is deliberately bigger than horizontal — the ask was
+  // specifically for more breathing room BETWEEN ROWS (card 1/card 3, card
+  // 2/card 4), not between columns, which already read fine at the
+  // smaller gap.
   productCell: {
-    padding: spacing.xs,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.sm,
   },
 
   /* Category showcase grid — big images */
@@ -465,19 +464,5 @@ const styles = StyleSheet.create({
   sidebarItemActive: {
     backgroundColor: colors.primarySurface,
     borderLeftColor: colors.primary,
-  },
-
-  stickyBar: {
-    position: 'absolute',
-    left: spacing.base,
-    right: spacing.base,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: colors.primary,
-    borderRadius: radius.lg,
-    paddingHorizontal: spacing.base,
-    paddingVertical: spacing.md,
-    minHeight: 56,
   },
 });

@@ -7,7 +7,7 @@
     "orientation": "portrait",
     "scheme": "adione",
     "userInterfaceStyle": "light",
-    "icon": "./assets/adione-icon.png",
+    "icon": "./assets/icon-ios.png",
     "assetBundlePatterns": [
       "**/*"
     ],
@@ -16,7 +16,7 @@
       "googleServicesFile": "./android/app/google-services.json",
       "versionCode": 5,
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adione-icon.png",
+        "foregroundImage": "./assets/adaptive-icon-foreground.png",
         "backgroundColor": "#FFFFFF"
       },
       "permissions": [

@@ -14,9 +14,12 @@ import { useQuery } from "@tanstack/react-query";
 import type { ProductSummaryDto, VariantDto } from "@shared";
 import { formatPaise } from "@shared/money";
 import { colors, layout, radius, spacing } from "@shared/theme";
-import { api } from "@/lib/api";
+import { api, resolveImageUrl } from "@/lib/api";
 import { useProduct } from "@/lib/queries";
 import { snapshotFromProduct, useCartActions } from "@/lib/useCartActions";
+import { flyFromCart, flyToCart } from "@/lib/flyToCart";
+import { productDetailFooterHeight } from "@/lib/tabBarVisibility";
+import { useGridColumns } from "@/lib/useGridColumns";
 import {
   AppText,
   Button,
@@ -47,6 +50,7 @@ export default function ProductDetailScreen({
   const insets = useSafeAreaInsets();
   const product = useProduct(productId);
   const cart = useCartActions();
+  const relatedColumns = useGridColumns();
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(
     null,
   );
@@ -83,6 +87,12 @@ export default function ProductDetailScreen({
   const detail = product.data;
   const outOfStock = !variant?.inStock;
   const cartItemCount = cart.cart?.bill.itemCount ?? 0;
+  // Same "small square thumbnail drops into the cart" flourish the card's
+  // own Add/stepper already has (see ProductCard.tsx) — lands on the global
+  // mini-cart overlay (MiniCartBar.tsx), which is what registers the actual
+  // landing target on this screen now (it renders here too — see
+  // `useMiniCartScreen`'s "productDetail" case).
+  const flightImageUrl = resolveImageUrl(variant?.imageUrl ?? detail.imageUrl);
 
   async function requestNotify(): Promise<void> {
     if (!variant) return;
@@ -101,7 +111,16 @@ export default function ProductDetailScreen({
         <AppText variant="h3">Product Details</AppText>
       </View>
 
-      <ScrollView contentContainerStyle={{ paddingBottom: 140 }}>
+      <ScrollView
+        contentContainerStyle={{
+          // Clears the footer as before, PLUS the global mini-cart overlay
+          // now floating above it once the cart has anything in it (same
+          // 76px allowance HomeScreen uses for the identical pill) — the
+          // last "You may also like" row would otherwise end up partly
+          // hidden behind the two of them stacked.
+          paddingBottom: 140 + (cartItemCount > 0 ? 76 : 0),
+        }}
+      >
         <ProductGallery
           images={detail.images}
           fallbackUrl={detail.imageUrl}
@@ -237,9 +256,23 @@ export default function ProductDetailScreen({
           {(related.data?.length ?? 0) > 0 && (
             <View style={{ marginTop: spacing.lg }}>
               <AppText variant="h3">You may also like</AppText>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+
+              {/* A responsive wrapping grid (same card, same component —
+                  see CategoriesScreen/SearchScreen for the identical
+                  pattern), not a single horizontal row: card 1/card 2 side
+                  by side, card 3/card 4 below with real row spacing, same
+                  as everywhere else products are browsed. A plain
+                  `flexWrap` grid, not FlatList — this is already inside the
+                  screen's own ScrollView, and nesting a VirtualizedList
+                  inside another ScrollView prints RN's "VirtualizedLists
+                  should never be nested" warning for no benefit at this
+                  size (a handful of related items, not a long list). */}
+              <View style={styles.relatedGrid}>
                 {(related.data ?? []).map((item) => (
-                  <View key={item.id} style={{ width: 160 }}>
+                  <View
+                    key={item.id}
+                    style={[styles.relatedCell, { width: `${100 / relatedColumns}%` }]}
+                  >
                     <ProductCard
                       product={item}
                       qtyInCart={
@@ -259,7 +292,7 @@ export default function ProductDetailScreen({
                     />
                   </View>
                 ))}
-              </ScrollView>
+              </View>
             </View>
           )}
         </View>
@@ -269,9 +302,19 @@ export default function ProductDetailScreen({
           bar hides itself whenever "ProductDetail" is the focused nested
           route), so "Go to Cart" is the only way back to the cart from
           here — it has to stay visible next to Add/the stepper no matter
-          what state the item is in. */}
+          what state the item is in.
+
+          `onLayout` reports this footer's REAL height into
+          `productDetailFooterHeight` (tabBarVisibility.ts) — the global
+          mini-cart overlay (MiniCartBar.tsx) rests directly above whatever
+          that measures, instead of guessing a fixed value that could drift
+          out of sync (e.g. once the error NoticeStrip above makes the
+          footer taller). */}
       <View
         style={[styles.footer, { paddingBottom: insets.bottom + spacing.base }]}
+        onLayout={(event) => {
+          productDetailFooterHeight.value = event.nativeEvent.layout.height;
+        }}
       >
         {cart.error && <NoticeStrip message={cart.error} />}
 
@@ -297,17 +340,30 @@ export default function ProductDetailScreen({
                       qty={qtyInCart}
                       max={variant.maxQtyPerOrder}
                       busy={cart.isBusy(variant.id)}
-                      onIncrement={() => void cart.increment(variant.id)}
-                      onDecrement={() => void cart.decrement(variant.id)}
+                      onIncrement={() => {
+                        flyToCart(flightImageUrl);
+                        cart.increment(variant.id);
+                      }}
+                      onDecrement={() => {
+                        // Only the tap about to empty the line plays the
+                        // "leaving the cart" flight — matches ProductCard's
+                        // own stepper exactly.
+                        if (qtyInCart === 1) {
+                          flyFromCart(flightImageUrl);
+                        }
+                        cart.decrement(variant.id);
+                      }}
                       fullWidth
+                      flatButtons
                     />
                   </View>
                 ) : (
                   <Button
                     label="Add to Cart"
-                    onPress={() =>
-                      cart.add(variant.id, snapshotFromProduct(detail, variant))
-                    }
+                    onPress={() => {
+                      flyToCart(flightImageUrl);
+                      cart.add(variant.id, snapshotFromProduct(detail, variant));
+                    }}
                     style={styles.footerAddButton}
                   />
                 )
@@ -361,6 +417,19 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   back: { width: 40, height: 40, justifyContent: "center" },
+  // "You may also like" — same responsive wrapping-grid pattern as
+  // CategoriesScreen/SearchScreen. Bigger vertical than horizontal padding
+  // for real breathing room BETWEEN ROWS specifically.
+  relatedGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginHorizontal: -spacing.xs,
+    marginTop: spacing.xs,
+  },
+  relatedCell: {
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.sm,
+  },
   priceRow: {
     flexDirection: "row",
     alignItems: "center",

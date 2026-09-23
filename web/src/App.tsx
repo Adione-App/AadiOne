@@ -22,6 +22,7 @@ import CategoriesPage from '@/pages/Categories';
 import InventoryPage from '@/pages/Inventory';
 import CustomersPage from '@/pages/Customers';
 import DeliveryPage from '@/pages/Delivery';
+import ReferralsPage from '@/pages/Referrals';
 import ConfigPage from '@/pages/Config';
 
 interface NavItem {
@@ -84,6 +85,13 @@ const NAV: NavItem[] = [
     icon: 'delivery',
     title: 'Delivery',
     subtitle: 'Agents, assignments and cash settlement',
+  },
+  {
+    to: '/referrals',
+    label: 'Referrals',
+    icon: 'gift',
+    title: 'Referrals',
+    subtitle: 'Refer & Earn activity and rewards issued',
   },
   {
     to: '/settings',
@@ -373,6 +381,7 @@ export default function App() {
         <Route path="/inventory" element={<InventoryPage />} />
         <Route path="/customers" element={<CustomersPage />} />
         <Route path="/delivery" element={<DeliveryPage />} />
+        <Route path="/referrals" element={<ReferralsPage />} />
         <Route path="/settings" element={<ConfigPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

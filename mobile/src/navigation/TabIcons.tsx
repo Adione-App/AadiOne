@@ -36,6 +36,12 @@ export function CartIcon({ color, focused }: IconProps) {
   );
 }
 
+export function WishlistIcon({ color, focused }: IconProps) {
+  return (
+    <Ionicons name={focused ? 'heart' : 'heart-outline'} size={SIZE} color={color} />
+  );
+}
+
 export function AccountIcon({ color, focused }: IconProps) {
   return (
     <Ionicons name={focused ? 'person' : 'person-outline'} size={SIZE} color={color} />

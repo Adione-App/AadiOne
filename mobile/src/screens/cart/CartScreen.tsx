@@ -51,6 +51,7 @@ import {
 } from "@shared";
 import { formatPaise } from "@shared/money";
 import { colors, radius, shadow, spacing } from "@shared/theme";
+import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { addressPrimaryLine } from "@shared/text";
 
 import { api, ApiRequestError, resolveImageUrl } from "@/lib/api";
@@ -102,6 +103,7 @@ export default function CartScreen({
   onOpenSearch: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
   const queryClient = useQueryClient();
 
   const { serviceability } = useLocation();
@@ -466,8 +468,11 @@ export default function CartScreen({
           paddingTop: spacing.sm,
           // Tall enough to clear the floating checkout bar (address row +
           // total/buttons row + its own padding) so the last item / Bill
-          // Details card is never hidden behind it.
-          paddingBottom: 290 + insets.bottom,
+          // Details card is never hidden behind it. `tabBarClearance` added
+          // on top now that the checkout bar itself rests `tabBarClearance`
+          // above the true screen bottom (see `bottomCheckout`'s own
+          // comment) instead of flush against it.
+          paddingBottom: 290 + insets.bottom + tabBarClearance,
         }}
         ItemSeparatorComponent={() => <View style={styles.productSeparator} />}
         ListHeaderComponent={
@@ -506,9 +511,21 @@ export default function CartScreen({
           FLOATING CHECKOUT BAR — delivery address on top, total + the
           two payment buttons below. Sits above the tab bar as one
           rounded, elevated card rather than a flat strip.
+
+          `bottom: tabBarClearance` (not `0`) — the tab bar is now a
+          floating overlay in its own right (see MainTabs.tsx's
+          `AnimatedTabBar`) instead of reserving its own flex space, so this
+          card's `position: absolute, bottom: 0` would otherwise land
+          directly underneath the tab bar's own opaque, higher-zIndex plate
+          rather than above it.
       ============================================================ */}
 
-      <View style={[styles.bottomCheckout, { paddingBottom: insets.bottom + spacing.sm }]}>
+      <View
+        style={[
+          styles.bottomCheckout,
+          { bottom: tabBarClearance, paddingBottom: insets.bottom + spacing.sm },
+        ]}
+      >
         <DeliveryAddressSection
           address={selectedAddress}
           loading={addresses.isLoading}

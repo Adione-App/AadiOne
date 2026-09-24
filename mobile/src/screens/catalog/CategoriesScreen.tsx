@@ -33,6 +33,7 @@ import { colors, radius, spacing } from '@shared/theme';
 import { useCategories, useProducts } from '@/lib/queries';
 import { useCartActions } from '@/lib/useCartActions';
 import { useGridColumns } from '@/lib/useGridColumns';
+import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { resolveImageUrl } from '@/lib/api';
 import { AppText, EmptyState, ErrorState, Loading, NoticeStrip, Screen } from '@/components/ui';
 import { ProductCard } from '@/components/ProductCard';
@@ -61,6 +62,7 @@ export default function CategoriesScreen({
   initialCategoryId?: string;
 }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
   const { width } = useWindowDimensions();
   const categories = useCategories();
   const cart = useCartActions();
@@ -145,8 +147,6 @@ export default function CategoriesScreen({
     );
   }
 
-  const cartCount = cart.cart?.bill.itemCount ?? 0;
-
   const headerTitle =
     drill.level === 'root'
       ? 'Categories'
@@ -183,6 +183,17 @@ export default function CategoriesScreen({
   const productPane =
     products.isLoading ? (
       <ProductGridSkeleton columns={productGridColumns} />
+    ) : products.isError && !products.data ? (
+      // Only reachable with NOTHING cached for this category — `data`
+      // stays whatever was last cached through a failed BACKGROUND
+      // refetch (see `useProducts`), so a cache-exists-but-API-failed
+      // case never hits this branch at all; it just keeps rendering the
+      // FlatList below with the (still perfectly good) cached items,
+      // exactly as if nothing had gone wrong.
+      <ErrorState
+        message="We could not load these products."
+        onRetry={() => void products.refetch()}
+      />
     ) : (products.data?.items.length ?? 0) === 0 ? (
       <EmptyState title="Nothing here yet" hint="Try another category." />
     ) : (
@@ -194,7 +205,17 @@ export default function CategoriesScreen({
         numColumns={productGridColumns}
         contentContainerStyle={{
           padding: spacing.xs,
-          paddingBottom: cartCount > 0 ? 96 : spacing.xxl,
+          // `tabBarClearance` — the tab bar is a floating overlay (see
+          // MainTabs.tsx's `AnimatedTabBar`), not a flex sibling that
+          // reserves its own space, so this grid's last row needs its own
+          // clearance to not sit underneath the bar's visible plate at
+          // rest. The `+ spacing.xxl` on top covers MiniCartBar, which also
+          // floats over this screen (see `useMiniCartScreen`'s "categories"
+          // case) — reserved UNCONDITIONALLY from the very first render, not
+          // toggled on `cartCount > 0`: the cart query resolves independently
+          // of this screen's own loading gate, and toggling this after first
+          // paint was the cause of an intermittent first-scroll jump/blink.
+          paddingBottom: tabBarClearance + spacing.xxl,
         }}
         showsVerticalScrollIndicator={false}
         // Off-screen rows get unmounted from the native tree instead of
@@ -235,7 +256,7 @@ export default function CategoriesScreen({
         <View style={{ flex: 1, flexDirection: 'row' }}>
           <ScrollView
             style={[styles.sidebar, { width: railWidth }]}
-            contentContainerStyle={{ paddingBottom: spacing.xxl }}
+            contentContainerStyle={{ paddingBottom: tabBarClearance + spacing.xxl }}
             showsVerticalScrollIndicator={false}
           >
             {drill.parent.children!.map((child) => {
@@ -299,6 +320,13 @@ function CategoryGrid({
   categories: CategoryDto[];
   onSelect: (category: CategoryDto) => void;
 }) {
+  // The tab bar is a floating overlay now (see MainTabs.tsx's
+  // `AnimatedTabBar`), not a flex sibling that reserves its own space — this
+  // is the landing view for the Categories tab, so its last row needs its
+  // own clearance to not sit underneath the bar's visible plate at rest,
+  // same as every other tab root (see HomeScreen's identical `paddingTop`).
+  const tabBarClearance = useTabBarClearance();
+
   if (categories.length === 0) {
     return <EmptyState title="Nothing here yet" hint="Check back in a little while." />;
   }
@@ -309,7 +337,10 @@ function CategoryGrid({
       keyExtractor={(item) => item.id}
       numColumns={2}
       columnWrapperStyle={styles.categoryRow}
-      contentContainerStyle={styles.categoryGrid}
+      contentContainerStyle={[
+        styles.categoryGrid,
+        { paddingBottom: tabBarClearance + spacing.xxl },
+      ]}
       renderItem={({ item }) => (
         <CategoryGridCard category={item} onPress={() => onSelect(item)} />
       )}
@@ -409,10 +440,12 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
 
-  /* Category showcase grid — big images */
+  /* Category showcase grid — big images. `paddingBottom` is overridden
+     inline (see `CategoryGrid`) with the tab bar's own clearance added on
+     top — this base value is never actually used, kept only so the other
+     three sides of `padding` above don't need repeating inline. */
   categoryGrid: {
     padding: spacing.base,
-    paddingBottom: spacing.xxl,
   },
   categoryRow: {
     gap: spacing.md,

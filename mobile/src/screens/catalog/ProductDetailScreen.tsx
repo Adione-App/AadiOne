@@ -6,10 +6,9 @@
  * and choose which size they are buying.
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import type { ProductSummaryDto, VariantDto } from "@shared";
 import { formatPaise } from "@shared/money";
@@ -17,7 +16,7 @@ import { colors, layout, radius, spacing } from "@shared/theme";
 import { api, resolveImageUrl } from "@/lib/api";
 import { useProduct } from "@/lib/queries";
 import { snapshotFromProduct, useCartActions } from "@/lib/useCartActions";
-import { flyFromCart, flyToCart } from "@/lib/flyToCart";
+import { flyToCart } from "@/lib/flyToCart";
 import { productDetailFooterHeight } from "@/lib/tabBarVisibility";
 import { useGridColumns } from "@/lib/useGridColumns";
 import {
@@ -40,12 +39,10 @@ export default function ProductDetailScreen({
   productId,
   onBack,
   onOpenProduct,
-  onGoToCart,
 }: {
   productId: string;
   onBack: () => void;
   onOpenProduct: (productId: string) => void;
-  onGoToCart: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const product = useProduct(productId);
@@ -55,6 +52,11 @@ export default function ProductDetailScreen({
     null,
   );
   const [notifyRequested, setNotifyRequested] = useState(false);
+
+  // The exact element `flyToCart` measures on Add/+ below — see
+  // ProductGallery's own comment for exactly what this points at (whichever
+  // slide is currently visible).
+  const galleryRef = useRef<View>(null);
 
   const related = useQuery({
     queryKey: ["related", productId],
@@ -86,7 +88,6 @@ export default function ProductDetailScreen({
 
   const detail = product.data;
   const outOfStock = !variant?.inStock;
-  const cartItemCount = cart.cart?.bill.itemCount ?? 0;
   // Same "small square thumbnail drops into the cart" flourish the card's
   // own Add/stepper already has (see ProductCard.tsx) — lands on the global
   // mini-cart overlay (MiniCartBar.tsx), which is what registers the actual
@@ -113,15 +114,20 @@ export default function ProductDetailScreen({
 
       <ScrollView
         contentContainerStyle={{
-          // Clears the footer as before, PLUS the global mini-cart overlay
-          // now floating above it once the cart has anything in it (same
-          // 76px allowance HomeScreen uses for the identical pill) — the
-          // last "You may also like" row would otherwise end up partly
-          // hidden behind the two of them stacked.
-          paddingBottom: 140 + (cartItemCount > 0 ? 76 : 0),
+          // Clears the footer, PLUS the global mini-cart overlay that may
+          // float above it (same 76px allowance HomeScreen uses for the
+          // identical pill) — reserved UNCONDITIONALLY from the very first
+          // render rather than toggled on `cartItemCount > 0`. The cart
+          // query (useCartActions) resolves independently of this screen's
+          // own `product.isLoading` gate, so toggling this padding once it
+          // settles changed the ScrollView's content-container size after
+          // first paint — see HomeScreen's identical fix for why that's
+          // exactly what caused the intermittent first-scroll jump/blink.
+          paddingBottom: 140 + 76,
         }}
       >
         <ProductGallery
+          ref={galleryRef}
           images={detail.images}
           fallbackUrl={detail.imageUrl}
           productName={detail.name}
@@ -319,11 +325,53 @@ export default function ProductDetailScreen({
         {cart.error && <NoticeStrip message={cart.error} />}
 
         <View style={styles.footerRow}>
-          {/* Same width as the Cart button on the right, in every state —
-              ActionBarTransition (native-driven fade+scale) handles making
-              the Add-button-to-stepper swap itself feel smooth; the row
-              layout around it never changes size. */}
-          <View style={styles.footerActionFlex}>
+          {/* LEFT — price, discount and the unit/weight this price is for.
+              No separate "Go to Cart" button anymore: the global MiniCartBar
+              overlay (see the file header) already covers that job on this
+              screen, so this footer is free to spend its whole width on
+              price info + the Add/stepper control instead of splitting it
+              three ways. */}
+          {variant && (
+            <View style={styles.footerPriceBlock}>
+              <View style={styles.footerPriceLine}>
+                <AppText variant="h2" numberOfLines={1}>
+                  {formatPaise(variant.pricePaise)}
+                </AppText>
+                {variant.mrpPaise > variant.pricePaise && (
+                  <AppText
+                    variant="caption"
+                    color={colors.textMuted}
+                    numberOfLines={1}
+                    style={styles.footerMrp}
+                  >
+                    {formatPaise(variant.mrpPaise)}
+                  </AppText>
+                )}
+              </View>
+
+              <View style={styles.footerPriceLine}>
+                {variant.discountPercent > 0 && (
+                  <AppText
+                    variant="caption"
+                    color={colors.discountBadgeText}
+                    style={styles.footerDiscount}
+                  >
+                    {variant.discountPercent}% OFF
+                  </AppText>
+                )}
+                <AppText variant="caption" color={colors.textSecondary} numberOfLines={1}>
+                  {variant.variantName}
+                </AppText>
+              </View>
+            </View>
+          )}
+
+          {/* RIGHT — Add / the stepper it becomes once qty > 0. Fixed-width
+              box (not flex:1 anymore — there's no "Cart" button on this row
+              to match widths with) so the rectangular shape never resizes
+              between the two states, just like ProductCard's own floating
+              overlay. */}
+          <View style={styles.footerActionBox}>
             <ActionBarTransition
               mode={
                 outOfStock || !variant
@@ -335,36 +383,34 @@ export default function ProductDetailScreen({
             >
               {variant && !outOfStock ? (
                 qtyInCart > 0 ? (
-                  <View style={styles.footerStepperFlex}>
-                    <QuantityStepper
-                      qty={qtyInCart}
-                      max={variant.maxQtyPerOrder}
-                      busy={cart.isBusy(variant.id)}
-                      onIncrement={() => {
-                        flyToCart(flightImageUrl);
-                        cart.increment(variant.id);
-                      }}
-                      onDecrement={() => {
-                        // Only the tap about to empty the line plays the
-                        // "leaving the cart" flight — matches ProductCard's
-                        // own stepper exactly.
-                        if (qtyInCart === 1) {
-                          flyFromCart(flightImageUrl);
-                        }
-                        cart.decrement(variant.id);
-                      }}
-                      fullWidth
-                      flatButtons
-                    />
-                  </View>
+                  <QuantityStepper
+                    qty={qtyInCart}
+                    max={variant.maxQtyPerOrder}
+                    busy={cart.isBusy(variant.id)}
+                    onIncrement={() => {
+                      flyToCart(flightImageUrl, variant.id);
+                      cart.increment(variant.id);
+                    }}
+                    onDecrement={() => {
+                      // No "leaving the cart" flight here — matches
+                      // ProductCard's own stepper: MiniCartBar's real
+                      // thumbnail already plays a correctly position-aware
+                      // exit on its own, see its comment for why a second,
+                      // generic flying dot only duplicated that.
+                      cart.decrement(variant.id);
+                    }}
+                    fullWidth
+                    flatButtons
+                    style={styles.footerRectShape}
+                  />
                 ) : (
                   <Button
                     label="Add to Cart"
                     onPress={() => {
-                      flyToCart(flightImageUrl);
+                      flyToCart(flightImageUrl, variant.id);
                       cart.add(variant.id, snapshotFromProduct(detail, variant));
                     }}
-                    style={styles.footerAddButton}
+                    style={[styles.footerAddButton, styles.footerRectShape]}
                   />
                 )
               ) : (
@@ -376,29 +422,6 @@ export default function ProductDetailScreen({
               )}
             </ActionBarTransition>
           </View>
-
-          <Pressable
-            onPress={onGoToCart}
-            style={styles.goToCartButton}
-            accessibilityRole="button"
-            accessibilityLabel="Go to cart"
-          >
-            <Ionicons name="cart" size={19} color={colors.onPrimary} />
-            <AppText variant="bodyStrong" color={colors.onPrimary}>
-              Cart
-            </AppText>
-            {cartItemCount > 0 && (
-              <View style={styles.goToCartBadge}>
-                <AppText
-                  variant="overline"
-                  color={colors.primary}
-                  style={styles.goToCartBadgeText}
-                >
-                  {cartItemCount > 99 ? "99+" : cartItemCount}
-                </AppText>
-              </View>
-            )}
-          </Pressable>
         </View>
       </View>
     </Screen>
@@ -473,40 +496,28 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: colors.border,
   },
-  footerRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  // Same flex:1 on this AND goToCartButton below — equal width in every
-  // state (before and after Add is tapped), never a size change.
-  footerActionFlex: { flex: 1 },
-  footerStepperFlex: { flex: 1 },
-  footerAddButton: { flex: 1 },
+  footerRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+
+  // LEFT — price / discount / unit. Takes whatever width the fixed-width
+  // action box on the right doesn't need.
+  footerPriceBlock: { flex: 1 },
+  footerPriceLine: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  footerMrp: { textDecorationLine: "line-through" },
+  footerDiscount: { fontWeight: "700" },
+
+  // RIGHT — Add / the stepper it becomes. A fixed width (not flex:1 — there
+  // is no longer a "Cart" button on this row to match widths with) so the
+  // rectangular shape never resizes between the two states.
+  footerActionBox: { width: 150 },
+  footerAddButton: { width: "100%" },
+  // Overrides Button's/QuantityStepper's own default PILL corners — see
+  // ProductCard.tsx's identical `floatingStepperShape` for the card's own
+  // version of this same rectangular look.
+  footerRectShape: { borderRadius: radius.md },
   footerUnavailable: {
-    flex: 1,
+    width: "100%",
     height: layout.minTouchTarget,
     alignItems: "center",
     justifyContent: "center",
-  },
-  goToCartButton: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: spacing.xs,
-    height: layout.minTouchTarget,
-    paddingHorizontal: spacing.base,
-    borderRadius: radius.pill,
-    backgroundColor: colors.primary,
-  },
-  goToCartBadge: {
-    minWidth: 18,
-    height: 18,
-    paddingHorizontal: 4,
-    borderRadius: radius.circle,
-    backgroundColor: colors.onPrimary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  goToCartBadgeText: {
-    color: colors.primary,
-    fontWeight: "700",
   },
 });

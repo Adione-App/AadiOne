@@ -1,381 +1,657 @@
 /**
- * Floating mini-cart — shows the most recently added product thumbnails +
- * running count once there's at least one item, so the customer always has
- * a one-tap way to reach checkout. Renders nothing at all when the cart is
- * empty, not just visually hidden.
+ * Floating Mini Cart — bottom-right pink card: a single "latest product"
+ * thumbnail on the left, "Cart" / "N items" on the right.
  *
- * `MiniCartOverlay` (the default export) is a ROOT-LEVEL overlay — mounted
- * once in MainTabs.tsx as a sibling of `Tab.Navigator`, not inside
- * HomeScreen — specifically so its position is never subject to the same
- * per-tab content resize `AnimatedTabBar`'s own height collapse drives
- * (`react-native-screens` wraps each tab's content in an absolutely-
- * positioned native view sized off that resize; observed in practice as a
- * multi-second lag / the bar getting stuck mid-transition, since that
- * native layer doesn't track a continuously-animating sibling's size the
- * way a plain RN view does). Instead, `MiniCartOverlay` computes its OWN
- * `bottom` offset directly from `tabBarHiddenByScroll` — the EXACT SAME
- * Reanimated shared value `AnimatedTabBar` reads for its own collapse, with
- * the same duration/easing — so the two are provably one coordinated
- * animation with no cross-tree layout dependency to lag behind.
+ * Behaviour:
  *
- * It only renders on the three screens registered in `useMiniCartScreen`
- * (Home's own feed, Categories' landing/drill-down views, and Product
- * Detail) — every other screen (Search, Rail, Cart, Account, …) renders
- * nothing. This is the ONE mini-cart implementation used everywhere it
- * appears — Categories used to have its own separate bespoke sticky bar,
- * and Product Detail its own separate "Go to Cart" landing-target
- * registration; both were replaced by this shared overlay rather than kept
- * as parallel implementations. What changes per screen is only WHERE it
- * rests (see `positionStyle` below): above the tab bar on Home/Categories
- * (collapsing with it on Home specifically), above Product Detail's own
- * fixed Add-to-Cart footer on that screen.
+ * 1. First cart item:
+ *    Mini Cart smoothly enters from below.
  *
- * Also registers its own on-screen position as the "fly to cart" landing
- * target (see flyToCart.tsx) — it's the thing that's actually visible
- * wherever an add happens, so that's what the flying item should land on.
+ * 2. New (or re-incremented) product:
+ *    - flyToCart()'s overlay drops the product's image into the thumbnail
+ *      slot (see @/lib/flyToCart) while the slot keeps showing whatever
+ *      it was already showing.
+ *    - The instant the overlay lands, the slot swaps straight to the new
+ *      image and the overlay disappears — never both visible at once, and
+ *      never a second entrance animation on the slot itself.
+ *    - A flight's landing only ever applies if it's still the MOST
+ *      RECENTLY requested add — see `latestAddFlightId`/`landedFlightId`
+ *      in flyToCart.tsx. An older, superseded flight landing late can
+ *      never overwrite a newer image.
  *
- * ANIMATION: entirely Reanimated (UI-thread worklets), not RN's `Animated`.
- * The pill itself plays a custom `entering`/`exiting` transition (mounts on
- * the first item, unmounts on the last one leaving/Clear Cart).
+ * 3. Remove:
+ *    The Mini Cart stays put — only the item count updates. The slot
+ *    keeps showing the last product that was actually ADDED (not
+ *    necessarily "whatever's still in the cart") until a new add
+ *    replaces it.
  *
- * A NEWLY ADDED thumbnail (cart state updates synchronously, so it's in
- * `items` well before `flyToCart.tsx`'s flying dot finishes its flight)
- * stays INVISIBLE until that flight's exact `ADD_DURATION` has elapsed,
- * then plays a quick settle-in. Two earlier attempts both looked wrong for
- * opposite reasons: playing the thumbnail's own entrance immediately (at
- * t=0) had it visibly competing with the flying dot for the whole flight —
- * two things clearly moving into the same spot at once; showing it with NO
- * entrance at all (instantly, at t=0) fixed that competition but introduced
- * a different bug — the real thumbnail sitting there, fully visible, for
- * the ~420ms the dot is STILL visibly in the air, i.e. "the cart shows the
- * item before the drop animation finishes". Delaying the reveal to land
- * exactly when the dot disappears is what makes it read as ONE continuous
- * handoff: the dot arrives and fades out, and that's the same instant the
- * real thumbnail appears — never both at once, never one before the other.
- * `isFirstRender` (see `MiniCartPill`) skips the delay for whatever's
- * ALREADY in the cart the very first time this renders (app cold start
- * with existing items) — there's no flying dot to sync with then, so
- * waiting 420ms to show them would just be a pointless empty-looking pill.
+ * 4. Last item removed:
+ *    Mini Cart exits downward.
  *
- * A REMOVED thumbnail still plays its own `exiting` (a short upward fade —
- * that one isn't decorated by anything else, so it stays as-is), and every
- * thumbnail still gets a `layout` transition so the REMAINING ones slide
- * smoothly into their new slots instead of snapping when a sibling leaves.
- * None of this touches React state per frame — Reanimated drives all of it
- * off the native layout commit itself.
+ * Position: flyToCart()'s flights never read a cached position from here at
+ * all — this only ever registers a stable `AnimatedRef` (see
+ * `useAnimatedRef` below) for its own card and thumbnail slot, once, on
+ * mount. Every flight calls Reanimated's `measure()` on those refs itself,
+ * fresh, every frame — see flyToCart.tsx's file header for why a
+ * cached-and-periodically-refreshed position (the previous approach here)
+ * couldn't reliably stay in sync with a Reanimated-driven `transform` like
+ * `positionStyle` below.
  */
 
-import { useEffect, useRef } from "react";
-import { Image } from "expo-image";
+import { useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Image } from "expo-image";
+
 import ReanimatedAnimated, {
   Easing as ReanimatedEasing,
-  LinearTransition,
+  useAnimatedRef,
   useAnimatedStyle,
-  useSharedValue,
-  withDelay,
-  withSpring,
   withTiming,
   type EntryAnimationsValues,
   type ExitAnimationsValues,
 } from "react-native-reanimated";
-import { ChevronRight } from "lucide-react-native";
+
 import type { CartItemDto } from "@shared";
+
 import { colors, layout, radius, shadow, spacing } from "@shared/theme";
+
 import { resolveImageUrl } from "@/lib/api";
 import { useCartActions } from "@/lib/useCartActions";
+
 import { ADD_DURATION, useFlyToCartStore } from "@/lib/flyToCart";
+
 import {
   productDetailFooterHeight,
   tabBarHiddenByScroll,
   useMiniCartScreen,
+  type MiniCartScreen,
 } from "@/lib/tabBarVisibility";
+
 import { navigateToCart } from "@/navigation/navigationRef";
 import { AppText } from "./ui";
 
-const MAX_THUMBNAILS = 3;
-const THUMB_SIZE = 34;
-const THUMB_OVERLAP = 10;
-/** Gap kept above whatever the bar is currently resting on — the visible
- * tab bar when it's shown, the raw screen bottom edge when it's hidden. */
-const BOTTOM_GAP = spacing.sm;
-/** Matches `AnimatedTabBar`'s own collapse exactly — see its comment in
- * MainTabs.tsx for why these two need to move in lockstep. */
+/**
+ * Single product-image slot size — MUST exactly match flyToCart's own
+ * `DOT_SIZE`, which is what the flying image animates at.
+ */
+const IMAGE_SIZE = 28;
+
+/**
+ * Mini Cart's own accent color, per an explicit request — deliberately
+ * local to this component rather than routed through `colors.primary`
+ * (which stays the app's regular brand green everywhere else).
+ */
+const MINI_CART_BG = "#DA9100";
+/**
+ * Dark ink, not `colors.onPrimary` (white) — `MINI_CART_BG` above is a
+ * bright, light gold, so white text/icons drawn on top of it would be
+ * unreadable.
+ */
+const MINI_CART_FG = "#141816";
+
+// A bit more than the bare minimum (`spacing.md`, 12px) — the card sat
+// visibly too close to the true screen bottom, especially once its own
+// resting line stopped depending on the tab bar at all (see
+// `positionStyle`'s "hidden" branch, which now also adds `insets.bottom` on
+// top of this).
+const BOTTOM_GAP = spacing.md;
+
 const FOLLOW_DURATION = 240;
 
-/* =====================================================================
-   CUSTOM LAYOUT ANIMATIONS
+/**
+ * How long the image slot waits for its matching flyToCart() flight to
+ * report landing before swapping to the new image anyway. Pure safety net
+ * for a lost/late signal — under normal operation `landedFlightId` fires
+ * well before this.
+ */
+const REVEAL_SAFETY_MARGIN = 200;
 
-   Raw worklet builders (Reanimated's documented escape hatch) rather than
-   the preset builders (`FadeIn`, `SlideInUp`, …) — none of those combine
-   the exact "small translate + fade + slight scale" all three specs below
-   ask for without fighting preset composition, and these need to be small/
-   subtle (a 34px thumbnail, not a full-screen sheet), never the bouncy/
-   dramatic feel a bare preset defaults to.
-===================================================================== */
-
+/**
+ * Mini Cart enters from a small distance below.
+ */
 function barEntering(values: EntryAnimationsValues) {
   "worklet";
+
   return {
     initialValues: {
       opacity: 0,
       originY: values.targetOriginY + 18,
-      transform: [{ scale: 0.94 }],
+      transform: [
+        {
+          scale: 0.96,
+        },
+      ],
     },
+
     animations: {
-      opacity: withTiming(1, { duration: 220 }),
-      originY: withSpring(values.targetOriginY, { damping: 16, stiffness: 180 }),
-      transform: [{ scale: withSpring(1, { damping: 16, stiffness: 180 }) }],
+      opacity: withTiming(1, {
+        duration: 200,
+      }),
+
+      originY: withTiming(values.targetOriginY, {
+        duration: 240,
+        easing: ReanimatedEasing.out(ReanimatedEasing.cubic),
+      }),
+
+      transform: [
+        {
+          scale: withTiming(1, {
+            duration: 240,
+            easing: ReanimatedEasing.out(ReanimatedEasing.cubic),
+          }),
+        },
+      ],
     },
   };
 }
 
+/**
+ * Mini Cart leaves downward when the final item is removed. This is the
+ * ONLY Mini Cart exit animation — removing one item out of several never
+ * triggers this; the bar just stays put and the count updates.
+ */
 function barExiting(values: ExitAnimationsValues) {
   "worklet";
+
   return {
     initialValues: {
       opacity: 1,
       originY: values.currentOriginY,
-      transform: [{ scale: 1 }],
+      transform: [
+        {
+          scale: 1,
+        },
+      ],
     },
+
     animations: {
-      opacity: withTiming(0, { duration: 180 }),
-      originY: withTiming(values.currentOriginY + 18, { duration: 200 }),
-      transform: [{ scale: withTiming(0.94, { duration: 200 }) }],
+      opacity: withTiming(0, {
+        duration: 170,
+      }),
+
+      originY: withTiming(values.currentOriginY + 18, {
+        duration: 200,
+        easing: ReanimatedEasing.in(ReanimatedEasing.cubic),
+      }),
+
+      transform: [
+        {
+          scale: withTiming(0.96, {
+            duration: 200,
+          }),
+        },
+      ],
     },
   };
 }
 
-function thumbnailExiting(values: ExitAnimationsValues) {
-  "worklet";
-  return {
-    initialValues: {
-      opacity: 1,
-      originY: values.currentOriginY,
-      transform: [{ scale: 1 }],
-    },
-    animations: {
-      opacity: withTiming(0, { duration: 160 }),
-      originY: withTiming(values.currentOriginY - 14, { duration: 180 }),
-      transform: [{ scale: withTiming(0.7, { duration: 180 }) }],
-    },
-  };
-}
-
-/** The visual pill itself — no positioning opinion of its own, that's
- * `MiniCartOverlay`'s job below. */
 function MiniCartPill({
   items,
   itemCount,
+  screen,
   onPress,
 }: {
   items: CartItemDto[];
   itemCount: number;
+  screen: MiniCartScreen;
   onPress: () => void;
 }) {
-  // Measured directly on the thumbnail stack (not the whole pill) so a
-  // dropped item lands exactly where the stacked images are, not in the
-  // dead space over the "CART / N ITEMS" label.
-  const thumbRowRef = useRef<View>(null);
-  const setCartTargetPosition = useFlyToCartStore((state) => state.setCartTargetPosition);
+  /**
+   * The whole card and its thumbnail slot — Reanimated refs, not plain
+   * `useRef`s. `useAnimatedRef` is what lets flyToCart.tsx's flights call
+   * Reanimated's `measure()` on these directly, from a worklet, on demand —
+   * see flyToCart.tsx's file header for why that (rather than caching a
+   * `measureInWindow()` result here) is what actually fixes stale-position
+   * flights. Both identities stay stable for as long as this component is
+   * mounted, which is exactly what's registered below — never a measured
+   * value, only the means to measure one whenever a flight needs it.
+   */
+  const barRef = useAnimatedRef<View>();
+  const imageBoxRef = useAnimatedRef<View>();
 
-  const measure = () => {
-    thumbRowRef.current?.measureInWindow((x, y, width, height) => {
-      if (width > 0 && height > 0) setCartTargetPosition({ x, y, width, height });
+  const setMiniCartRefs = useFlyToCartStore((state) => state.setMiniCartRefs);
+
+  const latestAddFlightId = useFlyToCartStore(
+    (state) => state.latestAddFlightId,
+  );
+  const landedFlightId = useFlyToCartStore((state) => state.landedFlightId);
+
+  /**
+   * Registered once, on mount, and cleared on unmount — `barRef`/
+   * `imageBoxRef`'s own identities never change across this component's
+   * re-renders (that's `useAnimatedRef`'s whole contract), so there is
+   * nothing to re-register when item count, screen, or scroll position
+   * change. Those are exactly the cases the OLD `measureInWindow`-based
+   * version had to explicitly re-run for — no longer necessary, since a
+   * flight now measures fresh on its own instead of reading anything cached
+   * here.
+   */
+  useEffect(() => {
+    setMiniCartRefs({ barRef, imageBoxRef });
+    return () => setMiniCartRefs(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * The most recently ADDED distinct product. Cart lines only ever get
+   * appended at the tail when a brand-new variant is added — incrementing
+   * an existing line's quantity never reorders it (see useCartActions'
+   * cart selector) — so `items[items.length - 1]` is exactly "the latest
+   * product" for seeding the slot on mount (see the lazy useState
+   * initializer below), and for the removed-item fallback right below.
+   * Every ADD updates the displayed image through the flight id system
+   * further down instead of through re-reading this on every render.
+   */
+  const latestItem = items[items.length - 1] ?? null;
+
+  /**
+   * TWO-LAYER IMAGE SLOT.
+   *
+   * Why a single `<Image source={{ uri }}>` (the previous approach) could
+   * still blink even with `Image.prefetch()` + waiting for the FLYING
+   * dot's own `onLoad`: `Image.prefetch()` only proves expo-image's SHARED
+   * cache has the bytes decoded somewhere — it says nothing about THIS
+   * PARTICULAR native `<Image>` VIEW. The real slot below is a completely
+   * separate mounted component from the flying dot in flyToCart.tsx; the
+   * instant `source` on it changes from A's uri to B's, THAT view still
+   * has to go through its own native attach/decode/paint cycle for B,
+   * regardless of how "ready" B supposedly was elsewhere. On a slow
+   * device/frame, that's a real (if brief) gap where the view has already
+   * dropped A but hasn't painted B yet — the reported blink.
+   *
+   * The fix: never let the VISIBLE `<Image>`'s own `source` change at all.
+   * Two `<Image>` layers are permanently mounted here, stacked exactly on
+   * top of each other (see `imageLayer` below) — `slots[0]` and `slots[1]`
+   * — and `frontIndex` (below) says which one is currently OPAQUE
+   * (visible) vs fully transparent (hidden). A new product is written into
+   * whichever slot ISN'T currently front — that slot's OWN `<Image>` loads
+   * it in the background, invisible — and only that SAME view's own
+   * `onLoad`/`onError` (see the JSX below) flips `frontIndex` to reveal
+   * it. The previously-front slot doesn't disappear until that exact
+   * moment; it just becomes the new hidden slot, still holding whatever
+   * it last showed, ready to receive the NEXT product. Neither `<Image>`
+   * ever remounts or has its `source` swapped out from under itself while
+   * visible — only their SHARED opacity/z-index role toggles.
+   */
+  interface Slot {
+    /** Identifies which WRITE to this slot this is — compared inside its
+     * own onLoad/onError (see the JSX below) against
+     * `latestRequestedTokenRef` so a load event for an image this slot has
+     * since moved on from (a newer product overwrote it before this one
+     * finished) can never wrongly promote stale content to front. */
+    token: number;
+    imageUrl: string | null;
+    variantId: string | null;
+  }
+
+  const [slots, setSlots] = useState<[Slot, Slot]>(() => [
+    {
+      token: 0,
+      imageUrl: latestItem?.imageUrl ?? null,
+      variantId: latestItem?.variantId ?? null,
+    },
+    { token: -1, imageUrl: null, variantId: null },
+  ]);
+  const [frontIndex, setFrontIndex] = useState<0 | 1>(0);
+  // Mirrors `frontIndex` synchronously for `requestDisplay` below — it
+  // needs "which slot is the hidden BACK one" at the exact instant it's
+  // called, which React's own (batched, next-render) state can't
+  // guarantee already reflects a promotion from earlier in the same tick.
+  const frontIndexRef = useRef<0 | 1>(0);
+
+  const nextTokenRef = useRef(1);
+  const latestRequestedTokenRef = useRef(0);
+
+  const frontSlot = slots[frontIndex];
+
+  /**
+   * Writes a new candidate product into the current BACK slot and arms it
+   * to become front the moment ITS OWN `<Image>` (see the JSX below)
+   * confirms it actually loaded — never before, never on a guess. A no-op
+   * if this is already what's showing.
+   *
+   * The variantId check (not a url-string comparison) is deliberate: the
+   * OPTIMISTIC line (ProductCard's own snapshot) and the eventual
+   * server-confirmed line can legitimately resolve to two DIFFERENT url
+   * strings for the exact same product (the client's own fallback chain
+   * isn't identical to the backend's) — comparing by url alone would
+   * treat that as a genuinely new product and run it through a pointless
+   * swap for an image that's visually identical.
+   */
+  const requestDisplay = (imageUrl: string | null, variantId: string | null) => {
+    if (variantId !== null && variantId === frontSlot.variantId) return;
+
+    const backIndex: 0 | 1 = frontIndexRef.current === 0 ? 1 : 0;
+    const token = nextTokenRef.current++;
+    latestRequestedTokenRef.current = token;
+
+    setSlots((prev) => {
+      const next = [...prev] as [Slot, Slot];
+      next[backIndex] = { token, imageUrl, variantId };
+      return next;
     });
+
+    // No image at all (e.g. a product with no thumbnail) — there is no
+    // `<Image>`/`onLoad` to wait for (the JSX below renders the plain
+    // placeholder View instead in that case), so promote immediately.
+    if (!resolveImageUrl(imageUrl)) {
+      promote(backIndex, token);
+    }
   };
 
-  // Small pulse whenever the count actually changes (add OR remove) — a
-  // quiet confirmation that the bar itself reacted, on top of the flying
-  // thumbnail. Guarded so it doesn't fire on the FIRST render (there's no
-  // "change" to react to when the bar first appears with 1 item already
-  // in it) — only on a genuine transition between two counts. A shared
-  // value driven from a `useEffect`, not a per-frame binding — this only
-  // ever updates on an actual count change, never during scroll.
-  const pulse = useSharedValue(1);
-  const prevCountRef = useRef(itemCount);
-  useEffect(() => {
-    if (prevCountRef.current === itemCount) return;
-    prevCountRef.current = itemCount;
-
-    pulse.value = 0.94;
-    pulse.value = withSpring(1, { damping: 12, stiffness: 260 });
-  }, [itemCount, pulse]);
-
-  const pulseStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: pulse.value }],
-  }));
-
-  // Flips to `false` once, right after the FIRST commit — see the file
-  // header for why a thumbnail's entrance is delayed to land exactly when
-  // `flyToCart.tsx`'s flying dot does, EXCEPT for whatever's already in the
-  // cart on this very first render (nothing flew in for those, so there's
-  // nothing to sync with — showing them immediately is correct there).
-  const isFirstRender = useSharedValue(true);
-  useEffect(() => {
-    isFirstRender.value = false;
-  }, [isFirstRender]);
-
-  // Defined per-render (not hoisted to module scope) specifically so it can
-  // close over `isFirstRender` above — Reanimated's babel plugin still
-  // workletizes it correctly wherever it's defined.
-  const thumbnailEntering = (values: EntryAnimationsValues) => {
-    "worklet";
-    const delay = isFirstRender.value ? 0 : ADD_DURATION;
-    return {
-      initialValues: {
-        opacity: 0,
-        originY: values.targetOriginY - 14,
-        transform: [{ scale: 0.85 }],
-      },
-      animations: {
-        opacity: withDelay(delay, withTiming(1, { duration: 180 })),
-        originY: withDelay(delay, withTiming(values.targetOriginY, { duration: 200 })),
-        transform: [{ scale: withDelay(delay, withTiming(1, { duration: 200 })) }],
-      },
-    };
+  /**
+   * Makes `index`'s slot the visible one — but ONLY if `token` still
+   * matches the most recently REQUESTED write for it (see
+   * `latestRequestedTokenRef` above). Safe to call for the ALREADY-front
+   * slot too (its own steady-state `onLoad` calls this too) — promoting a
+   * slot to the role it already holds is a harmless no-op.
+   */
+  const promote = (index: 0 | 1, token: number) => {
+    if (latestRequestedTokenRef.current !== token) return;
+    frontIndexRef.current = index;
+    setFrontIndex(index);
   };
 
-  if (itemCount === 0) return null;
+  /**
+   * If the product currently shown in the slot is the one that was just
+   * removed from the cart entirely (its line no longer appears in
+   * `items`), swap to another remaining item's image instead of
+   * continuing to display a product that's no longer in the cart. Fires
+   * ONLY in that case — removing a DIFFERENT product never touches the
+   * front slot. `items` here is already the optimistic list (see
+   * useCartActions' `optimisticCart`), so this reacts the instant a
+   * removal is tapped, not once the network confirms it. Deliberately
+   * independent of the remove-flight animation in flyToCart.tsx — that's
+   * a separate, purely visual flight and stays completely untouched by
+   * this.
+   */
+  useEffect(() => {
+    if (frontSlot.variantId === null) return;
+    if (items.some((item) => item.variantId === frontSlot.variantId)) return;
 
-  // Last 3 distinct LINES (not remaining quantity), oldest-of-the-three
-  // first — `cart.items` is already append-ordered, so this slice reads
-  // left-to-right as oldest-behind to newest-on-top once stacked below.
-  const thumbnails = items.slice(-MAX_THUMBNAILS);
+    const fallback = items[items.length - 1] ?? null;
+    requestDisplay(fallback?.imageUrl ?? null, fallback?.variantId ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, frontSlot.variantId]);
+
+  /**
+   * Which flight's image has already been requested, if any — guards
+   * against applying the same reveal twice (once from the landing effect,
+   * once from the safety-timeout racing it).
+   */
+  const appliedFlightIdRef = useRef<number | null>(null);
+
+  const revealTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearRevealTimeout = () => {
+    if (revealTimeoutRef.current) {
+      clearTimeout(revealTimeoutRef.current);
+      revealTimeoutRef.current = null;
+    }
+  };
+
+  const applyReveal = (
+    flightId: number,
+    imageUrl: string | null,
+    variantId: string | null,
+  ) => {
+    if (appliedFlightIdRef.current === flightId) return;
+    appliedFlightIdRef.current = flightId;
+    requestDisplay(imageUrl, variantId);
+  };
+
+  const prevLatestAddFlightIdRef = useRef(latestAddFlightId);
+
+  /**
+   * A NEW add flight was just REQUESTED (flyToCart() was actually called —
+   * see flyToCart.tsx). Arms a safety-net timeout in case its landing
+   * signal is ever lost. Does NOT touch the front slot itself — it keeps
+   * showing whatever it already was until a landing (or this timeout)
+   * confirms the swap, exactly matching "Mini Cart image only changes
+   * according to the latest-added logic," never a guess.
+   */
+  useEffect(() => {
+    if (latestAddFlightId === prevLatestAddFlightIdRef.current) return;
+    prevLatestAddFlightIdRef.current = latestAddFlightId;
+
+    if (latestAddFlightId === null) return;
+
+    const thisFlightId = latestAddFlightId;
+
+    clearRevealTimeout();
+    revealTimeoutRef.current = setTimeout(() => {
+      revealTimeoutRef.current = null;
+
+      // Only force-reveal if THIS flight is still the latest one
+      // requested — a superseded flight (a newer add already started) is
+      // simply dropped, never allowed to overwrite a fresher image.
+      const store = useFlyToCartStore.getState();
+      if (store.latestAddFlightId === thisFlightId) {
+        applyReveal(
+          thisFlightId,
+          store.latestAddImageUrl,
+          store.latestAddVariantId,
+        );
+      }
+    }, ADD_DURATION + REVEAL_SAFETY_MARGIN);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latestAddFlightId]);
+
+  const prevLandedFlightIdRef = useRef(landedFlightId);
+
+  /**
+   * A flyToCart() flight just reported landing (see flyToCart.tsx's
+   * onDone) — reveal ONLY if it's still the CURRENT latest requested add.
+   * An older flight landing late (rapid adds, jittery JS-thread
+   * scheduling) is ignored outright: it can never overwrite a newer
+   * image, whether or not that newer one has landed yet.
+   *
+   * Applied DURING RENDER, deliberately NOT inside a `useEffect` — this is
+   * React's own documented pattern for syncing state to a change in the
+   * SAME commit (see "You Might Not Need an Effect" / adjusting state
+   * when a prop changes). `onDone` (flyToCart.tsx) sets `landedFlightId`
+   * AND removes the flying dot from `FlyToCartOverlay`'s own state in the
+   * same synchronous call, so both updates land in the same React batch —
+   * but an EFFECT here would still only run AFTER that batch's commit had
+   * already painted, meaning the slot was visibly still showing the OLD
+   * image for one full frame right after the dot landed on top of it and
+   * disappeared: a flash back to the old image before snapping to the
+   * new one. That flash was the reported blink. Reading and reacting to
+   * `landedFlightId` here instead makes React redo this render with the
+   * new image BEFORE committing anything, so the dot's disappearance and
+   * the slot's new image reach the screen in the exact same paint.
+   */
+  if (landedFlightId !== prevLandedFlightIdRef.current) {
+    prevLandedFlightIdRef.current = landedFlightId;
+
+    if (landedFlightId !== null && landedFlightId === latestAddFlightId) {
+      clearRevealTimeout();
+      const store = useFlyToCartStore.getState();
+      applyReveal(landedFlightId, store.latestAddImageUrl, store.latestAddVariantId);
+    }
+  }
+
+  useEffect(() => {
+    return () => clearRevealTimeout();
+  }, []);
+
+  if (itemCount === 0) {
+    return null;
+  }
+
+  const slotAUri = resolveImageUrl(slots[0].imageUrl);
+  const slotBUri = resolveImageUrl(slots[1].imageUrl);
 
   return (
-    // `alignItems: "center"` is what keeps the pill hugging its content
-    // width (like the reference) instead of stretching edge to edge — the
-    // Pressable below has no flex/width of its own.
     <ReanimatedAnimated.View
-      style={styles.pillWrap}
+      ref={barRef}
+      collapsable={false}
       pointerEvents="box-none"
       entering={barEntering}
       exiting={barExiting}
     >
-      <ReanimatedAnimated.View style={pulseStyle}>
-        <Pressable
-          style={styles.bar}
-          onPress={onPress}
-          accessibilityRole="button"
-          accessibilityLabel={`Go to cart, ${itemCount} item${itemCount === 1 ? "" : "s"}`}
+      <Pressable
+        style={styles.bar}
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={`Go to cart, ${itemCount} item${
+          itemCount === 1 ? "" : "s"
+        }`}
+      >
+        <View
+          ref={imageBoxRef}
+          collapsable={false}
+          style={styles.imageBox}
         >
-          <View style={styles.textBlock}>
-            <AppText variant="bodyStrong" color={colors.onPrimary} numberOfLines={1} style={styles.cartLabel}>
-              CART
-            </AppText>
-            <AppText variant="caption" color={colors.onPrimary} numberOfLines={1} style={styles.itemsLabel}>
-              {itemCount} ITEM{itemCount === 1 ? "" : "S"}
-            </AppText>
-          </View>
-
-          {/* `collapsable={false}` — otherwise Android may optimize this
-              View out of the native tree, silently breaking
-              `measureInWindow` (it would measure the wrong/parent node). */}
-          <ReanimatedAnimated.View
-            ref={thumbRowRef}
-            onLayout={measure}
-            collapsable={false}
-            style={styles.thumbRow}
-            layout={LinearTransition.duration(220)}
+          {/* SLOT A and SLOT B — two permanently mounted layers, stacked
+              exactly on top of each other (`imageLayer` is an absolute
+              fill of this 28x28 box). Neither ever remounts and neither's
+              `source` ever changes while it's the visible one — see the
+              `Slot`/`requestDisplay`/`promote` architecture note above for
+              why that's the actual fix. Which one is on top is purely
+              `opacity`/`zIndex`, toggled by `frontIndex`; both stay
+              mounted always so the hidden one can keep loading the next
+              candidate without ever being torn down and rebuilt. */}
+          <View
+            pointerEvents="none"
+            style={[
+              styles.imageLayer,
+              { opacity: frontIndex === 0 ? 1 : 0, zIndex: frontIndex === 0 ? 1 : 0 },
+            ]}
           >
-            {thumbnails.map((item, index) => {
-              const uri = resolveImageUrl(item.imageUrl);
-              return (
-                <ReanimatedAnimated.View
-                  // Keyed by VARIANT, not `item.id` — a brand-new line's
-                  // `id` is a synthetic `pending-${variantId}` placeholder
-                  // (see useCartActions' `optimisticCart`) until the
-                  // server confirms it and swaps in the real cart-item id.
-                  // Keying by the id would make that swap look like the
-                  // placeholder thumbnail exiting and a new one entering
-                  // for the SAME product a moment later — the exact
-                  // "blinks again after landing" glitch this avoids.
-                  // `variantId` never changes across that transition.
-                  key={item.variantId}
-                  entering={thumbnailEntering}
-                  exiting={thumbnailExiting}
-                  layout={LinearTransition.duration(220)}
-                  style={[styles.thumbBox, index > 0 && { marginLeft: -THUMB_OVERLAP, zIndex: index }]}
-                >
-                  {uri ? (
-                    <Image
-                      source={{ uri }}
-                      style={styles.thumbImage}
-                      contentFit="cover"
-                      cachePolicy="memory-disk"
-                    />
-                  ) : (
-                    <View style={styles.thumbPlaceholder} />
-                  )}
-                </ReanimatedAnimated.View>
-              );
-            })}
-          </ReanimatedAnimated.View>
-
-          <View style={styles.arrowButton}>
-            <ChevronRight size={18} color={colors.primary} strokeWidth={2.6} />
+            {slotAUri ? (
+              <Image
+                source={{ uri: slotAUri }}
+                style={styles.image}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                onLoad={() => promote(0, slots[0].token)}
+                onError={() => promote(0, slots[0].token)}
+              />
+            ) : (
+              <View style={styles.imagePlaceholder} />
+            )}
           </View>
-        </Pressable>
-      </ReanimatedAnimated.View>
+
+          <View
+            pointerEvents="none"
+            style={[
+              styles.imageLayer,
+              { opacity: frontIndex === 1 ? 1 : 0, zIndex: frontIndex === 1 ? 1 : 0 },
+            ]}
+          >
+            {slotBUri ? (
+              <Image
+                source={{ uri: slotBUri }}
+                style={styles.image}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                onLoad={() => promote(1, slots[1].token)}
+                onError={() => promote(1, slots[1].token)}
+              />
+            ) : (
+              <View style={styles.imagePlaceholder} />
+            )}
+          </View>
+        </View>
+
+        <View style={styles.textBlock}>
+          <AppText
+            variant="bodyStrong"
+            color={MINI_CART_FG}
+            numberOfLines={1}
+            style={styles.cartLabel}
+          >
+            Cart
+          </AppText>
+
+          <AppText
+            variant="caption"
+            color={MINI_CART_FG}
+            numberOfLines={1}
+            style={styles.itemsLabel}
+          >
+            {itemCount} item{itemCount === 1 ? "" : "s"}
+          </AppText>
+        </View>
+      </Pressable>
     </ReanimatedAnimated.View>
   );
 }
 
-/**
- * Root-level positioning wrapper — see the file header. Reads cart state
- * itself (same shared optimistic store every other cart-touching screen
- * uses, via `useCartActions`) rather than taking it as props, since it no
- * longer has a parent screen handing it down.
- */
 export default function MiniCartOverlay() {
   const insets = useSafeAreaInsets();
+
   const cart = useCartActions();
+
   const screen = useMiniCartScreen((state) => state.screen);
 
   const barHeight = layout.tabBarHeight + insets.bottom;
 
-  // Reads `tabBarHiddenByScroll`/`productDetailFooterHeight` — the SAME
-  // shared values `AnimatedTabBar`'s own collapse and Product Detail's
-  // footer respectively already maintain — directly inside the worklet,
-  // with the SAME duration/easing as the footer. Nothing here goes through
-  // React state or a parent screen's layout at all, so there's no
-  // cross-tree cascade left to lag: this recalculates on the UI thread in
-  // the same frame whatever it's tracking does. `screen` is captured as a
-  // plain JS value (via the dependency array) since it only changes on
-  // navigation focus, not per frame.
+  /**
+   * Mini Cart follows the bottom/tab-bar position.
+   *
+   * This animation is independent of the thumbnail animation.
+   *
+   * `styles.overlayWrap`'s own `bottom` is a CONSTANT (`BOTTOM_GAP`) — this
+   * only ever animates `transform: translateY`, shifting the whole card
+   * UP off that fixed resting line by however much room the tab bar (or
+   * Product Detail's footer) currently needs. Same reasoning as
+   * AnimatedTabBar's own fix (see MainTabs.tsx): a transform never touches
+   * layout, so this can never itself be the cause of anything else on
+   * screen moving, no matter how often `restingOn` changes underneath it.
+   */
   const positionStyle = useAnimatedStyle(() => {
     let restingOn: number;
+
     if (screen === "productDetail") {
-      // Falls back to the tab-bar height before the footer's very first
-      // `onLayout` has landed, rather than momentarily resting on 0 (the
-      // very bottom edge, right where the real footer will appear).
       restingOn = productDetailFooterHeight.value || barHeight;
     } else if (screen === "categories") {
-      // The tab bar never hides on scroll here — always rest above it.
       restingOn = barHeight;
     } else {
-      // "home" (or "none", irrelevant — nothing renders below anyway).
-      restingOn = tabBarHiddenByScroll.value ? 0 : barHeight;
+      // Even with the tab bar fully hidden (scrolled down on Home), still
+      // lift clear of the device's own safe-area inset (gesture-nav bar /
+      // home indicator) — this used to drop all the way to `0` here, so the
+      // card's only clearance from the true screen bottom was
+      // `BOTTOM_GAP` alone with no `insets.bottom` at all, unlike the
+      // tab-bar-visible case above (`barHeight` already bakes it in). On a
+      // gesture-nav device that read as sitting right on top of the system
+      // bar — too low.
+      restingOn = tabBarHiddenByScroll.value ? insets.bottom : barHeight;
     }
 
     return {
-      bottom: withTiming(BOTTOM_GAP + restingOn, {
-        duration: FOLLOW_DURATION,
-        easing: ReanimatedEasing.out(ReanimatedEasing.cubic),
-      }),
+      transform: [
+        {
+          translateY: withTiming(-restingOn, {
+            duration: FOLLOW_DURATION,
+            easing: ReanimatedEasing.out(ReanimatedEasing.cubic),
+          }),
+        },
+      ],
     };
-  }, [screen, barHeight]);
+  }, [screen, barHeight, insets.bottom]);
 
-  if (screen === "none") return null;
+  if (screen === "none") {
+    return null;
+  }
 
   const items = cart.cart?.items ?? [];
+
   const itemCount = cart.cart?.bill.itemCount ?? 0;
 
   return (
-    <ReanimatedAnimated.View style={[styles.overlayWrap, positionStyle]} pointerEvents="box-none">
-      <MiniCartPill items={items} itemCount={itemCount} onPress={navigateToCart} />
+    <ReanimatedAnimated.View
+      pointerEvents="box-none"
+      style={[styles.overlayWrap, positionStyle]}
+    >
+      <MiniCartPill
+        items={items}
+        itemCount={itemCount}
+        screen={screen}
+        onPress={navigateToCart}
+      />
     </ReanimatedAnimated.View>
   );
 }
@@ -383,65 +659,89 @@ export default function MiniCartOverlay() {
 const styles = StyleSheet.create({
   overlayWrap: {
     position: "absolute",
-    left: 0,
+
+    // Flush against the screen's right edge — no margin, no safe-area
+    // spacing, no `left` (the wrapper hugs the card's own intrinsic width).
     right: 0,
+    
+    // The one constant resting line — `positionStyle`'s `translateY` moves
+    // the card UP from here, it never changes this itself (see that
+    // style's own comment).
+    bottom: BOTTOM_GAP,
   },
-  pillWrap: {
-    alignItems: "center",
-  },
+
   bar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.base,
+
+    gap: spacing.sm,
+
     height: 56,
-    paddingLeft: spacing.base + 2,
-    paddingRight: 6,
-    borderRadius: radius.pill,
-    backgroundColor: colors.primary,
+
+    paddingHorizontal: spacing.sm,
+    paddingRight: spacing.base,
+
+    // Right edge touches the screen edge, so only the left corners round.
+    borderTopLeftRadius: radius.lg,
+    borderBottomLeftRadius: radius.lg,
+    borderTopRightRadius: 0,
+    borderBottomRightRadius: 0,
+
+    backgroundColor: MINI_CART_BG,
+
     ...shadow.lg,
   },
-  textBlock: {
-    alignItems: "flex-start",
-  },
-  cartLabel: {
-    fontWeight: "800",
-    letterSpacing: 0.3,
-  },
-  itemsLabel: {
-    opacity: 0.85,
-    fontWeight: "700",
-    letterSpacing: 0.2,
-  },
-  thumbRow: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  thumbBox: {
-    width: THUMB_SIZE,
-    height: THUMB_SIZE,
+
+  imageBox: {
+    width: IMAGE_SIZE,
+    height: IMAGE_SIZE,
+
     borderRadius: radius.sm,
+
     backgroundColor: colors.surface,
-    borderWidth: 1.5,
-    borderColor: colors.primaryLight,
+
     alignItems: "center",
     justifyContent: "center",
+
     overflow: "hidden",
   },
-  thumbImage: {
+
+  // One of the two stacked slot layers inside `imageBox` — absolutely
+  // fills it (same 28x28 bounds `imageBox` itself defines) so both layers
+  // sit pixel-for-pixel on top of each other regardless of which is
+  // currently visible. See the `Slot`/`requestDisplay` architecture note
+  // above `MiniCartPill`'s own state for why there are two of these.
+  imageLayer: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+
+  image: {
     width: "100%",
     height: "100%",
   },
-  thumbPlaceholder: {
+
+  imagePlaceholder: {
     width: "100%",
     height: "100%",
     backgroundColor: colors.skeleton,
   },
-  arrowButton: {
-    width: 40,
-    height: 40,
-    borderRadius: radius.circle,
-    backgroundColor: colors.onPrimary,
-    alignItems: "center",
-    justifyContent: "center",
+
+  textBlock: {
+    alignItems: "flex-start",
+  },
+
+  cartLabel: {
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+
+  itemsLabel: {
+    opacity: 0.85,
+    fontWeight: "700",
+    letterSpacing: 0.1,
   },
 });

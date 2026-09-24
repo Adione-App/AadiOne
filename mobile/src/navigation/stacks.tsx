@@ -115,7 +115,6 @@ export function HomeStack() {
                 productId,
               })
             }
-            onGoToCart={() => navigation.getParent()?.navigate("Cart")}
           />
         )}
       </CatalogStack.Screen>
@@ -216,7 +215,6 @@ export function CategoriesStack() {
                 productId,
               })
             }
-            onGoToCart={() => navigation.getParent()?.navigate("Cart")}
           />
         )}
       </CatalogStack.Screen>
@@ -252,7 +250,6 @@ export function WishlistStack() {
                 productId,
               })
             }
-            onGoToCart={() => navigation.getParent()?.navigate("Cart")}
           />
         )}
       </WishlistNav.Screen>

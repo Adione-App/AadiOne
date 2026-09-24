@@ -35,6 +35,7 @@ import { formatDistance } from '@shared/distance';
 import { colors, radius, spacing } from '@shared/theme';
 import { api, ApiRequestError } from '@/lib/api';
 import { useLocation } from '@/lib/store';
+import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, Button, Input, NoticeStrip, Screen } from '@/components/ui';
 
 /** Address Type chips from the mockup. Stored in `label`. */
@@ -62,6 +63,7 @@ export default function AddressFormScreen({
   onBack: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
   const queryClient = useQueryClient();
   const location = useLocation((state) => state.location);
   const isEditing = addressId !== undefined;
@@ -293,7 +295,9 @@ export default function AddressFormScreen({
       <ScrollView
         contentContainerStyle={{
           padding: spacing.base,
-          paddingBottom: insets.bottom + spacing.xxl,
+          // The tab bar floats over this screen now (see MainTabs.tsx's
+          // `AnimatedTabBar`) rather than reserving its own flex space.
+          paddingBottom: tabBarClearance + spacing.xxl,
           gap: spacing.base,
         }}
         keyboardShouldPersistTaps="handled"

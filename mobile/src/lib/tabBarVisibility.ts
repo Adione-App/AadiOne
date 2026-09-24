@@ -21,8 +21,33 @@
 
 import { makeMutable } from "react-native-reanimated";
 import { create } from "zustand";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+import { layout } from "@shared/theme";
 
 export const tabBarHiddenByScroll = makeMutable(false);
+
+/**
+ * How much bottom clearance a tab-root screen's own scrollable content needs
+ * to reserve so its last row doesn't render underneath the floating tab bar
+ * at rest (see MainTabs.tsx's `AnimatedTabBar`, a `position: absolute`
+ * overlay that no longer reserves its own flex space — screens get their
+ * full height and are responsible for their own bottom clearance now,
+ * exactly like they already are for MiniCartBar). Matches the tab bar's own
+ * real footprint (`layout.tabBarHeight + insets.bottom`) exactly — no extra
+ * buffer baked in here, since MiniCart's own clearance is a SEPARATE, much
+ * smaller concern each screen already adds on top of this where relevant
+ * (see HomeScreen's own `paddingBottom`, for instance).
+ *
+ * NOT applicable to Product Detail — it already replaces the tab bar with
+ * its own fixed footer and was always built assuming full scene height (see
+ * `productDetailFooterHeight` above), so it manages its own clearance
+ * instead of calling this.
+ */
+export function useTabBarClearance() {
+  const insets = useSafeAreaInsets();
+  return layout.tabBarHeight + insets.bottom;
+}
 
 /**
  * Which screen (if any) the global mini-cart overlay should show itself on

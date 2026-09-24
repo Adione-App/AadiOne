@@ -18,10 +18,12 @@ import { formatIndianMobile } from '@shared/phone';
 import { colors, radius, spacing } from '@shared/theme';
 import { api, ApiRequestError } from '@/lib/api';
 import { useAuth } from '@/lib/store';
+import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, Button, Card, Input, NoticeStrip, Screen } from '@/components/ui';
 
 export default function PersonalInfoScreen({ onBack }: { onBack: () => void }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
   const user = useAuth((state) => state.user);
   const clear = useAuth((state) => state.clear);
 
@@ -96,7 +98,9 @@ export default function PersonalInfoScreen({ onBack }: { onBack: () => void }) {
         contentContainerStyle={{
           padding: spacing.base,
           gap: spacing.base,
-          paddingBottom: insets.bottom + spacing.xxl,
+          // The tab bar floats over this screen now (see MainTabs.tsx's
+          // `AnimatedTabBar`) rather than reserving its own flex space.
+          paddingBottom: tabBarClearance + spacing.xxl,
         }}
       >
         {error && <NoticeStrip message={error} />}

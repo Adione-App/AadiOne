@@ -74,10 +74,12 @@
  *    different product's quantity changes.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
-import type { CartDto, ProductSummaryDto, VariantDto } from "@shared";
-import { ApiRequestError } from "./api";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import type { CartDto, CartItemDto, ProductSummaryDto, VariantDto } from "@shared";
+import { ApiRequestError, resolveImageUrl } from "./api";
+import { flyFromCart } from "./flyToCart";
 import { useCart, useCartMutations } from "./queries";
 import { useLocation } from "@/lib/store";
 
@@ -126,6 +128,160 @@ export function snapshotFromProduct(
     maxQtyPerOrder: variant.maxQtyPerOrder,
     allowCod: variant.allowCod,
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* CART HYDRATION — restoring the last known (server-confirmed) cart from    */
+/* disk at app startup, so Product Cards and the Mini Cart don't have to sit */
+/* on their empty defaults for the 2-3s the first `/cart` request takes.     */
+/*                                                                            */
+/* This is DELIBERATELY separate from the React Query disk cache (see        */
+/* App.tsx's `shouldDehydrateQuery`, which explicitly EXCLUDES "cart" — a     */
+/* stale/cancelled cart snapshot previously reappeared as if it were still   */
+/* live). That persister would have re-served the cached RESULT indefinitely */
+/* under its own normal cache/staleness rules; this instead only ever seeds  */
+/* the very FIRST paint and is discarded the instant real `/cart` data has   */
+/* been observed this session — every read after that is genuine server      */
+/* truth, exactly as before this existed.                                    */
+/* -------------------------------------------------------------------------- */
+
+const CART_HYDRATION_STORAGE_KEY = "adione.cart-hydration.v1";
+
+interface HydratedCartItem {
+  variantId: string;
+  qty: number;
+  snapshot: CartItemSnapshot;
+}
+
+/**
+ * variantId -> qty, for `qtyForImpl`'s fallback below. Empty until
+ * `hydrateCartFromDisk()` (awaited in App.tsx's startup effect, alongside
+ * auth/location restore — BEFORE any cart-dependent screen ever mounts)
+ * finds something to restore.
+ */
+let hydratedQtyByVariant = new Map<string, number>();
+
+/**
+ * A full `CartDto`-shaped stand-in for `cart` (see `optimisticCart` below),
+ * built once from whatever was restored. Business-rule fields nothing
+ * before checkout depends on (`checkoutEnabled`, delivery/platform fees,
+ * coupon, …) get safe placeholders — Product Cards and the Mini Cart only
+ * ever need `items`/`bill.itemCount`, and by the time anyone could
+ * plausibly reach an actual checkout screen, the real `/cart` response
+ * (fired immediately once any screen mounts) has long since replaced this.
+ */
+let hydratedFallbackCart: CartDto | null = null;
+
+/**
+ * Called once at app startup (see App.tsx) alongside the other local-only
+ * restores it already runs in parallel — a single, cheap AsyncStorage read,
+ * same cost class as the location/wishlist/recent-searches hydration next
+ * to it.
+ */
+export async function hydrateCartFromDisk(): Promise<void> {
+  try {
+    const raw = await AsyncStorage.getItem(CART_HYDRATION_STORAGE_KEY);
+    if (!raw) return;
+
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return;
+
+    const entries = parsed as HydratedCartItem[];
+
+    hydratedQtyByVariant = new Map(
+      entries.map((entry) => [entry.variantId, entry.qty]),
+    );
+
+    const items: CartItemDto[] = entries.map((entry) => ({
+      id: `hydrated-${entry.variantId}`,
+      variantId: entry.variantId,
+      qty: entry.qty,
+      lineTotalPaise: entry.snapshot.unitPricePaise * entry.qty,
+      lineDiscountPaise: Math.max(
+        0,
+        (entry.snapshot.mrpPaise - entry.snapshot.unitPricePaise) * entry.qty,
+      ),
+      ...entry.snapshot,
+    }));
+
+    const itemsSubtotalPaise = items.reduce(
+      (sum, item) => sum + item.lineTotalPaise,
+      0,
+    );
+    const itemDiscountPaise = items.reduce(
+      (sum, item) => sum + item.lineDiscountPaise,
+      0,
+    );
+    const itemCount = items.reduce((sum, item) => sum + item.qty, 0);
+
+    hydratedFallbackCart = {
+      id: "hydrated",
+      items,
+      bill: {
+        itemCount,
+        itemsSubtotalPaise,
+        itemDiscountPaise,
+        couponCode: null,
+        couponDiscountPaise: 0,
+        deliveryFeePaise: 0,
+        deliveryFeeWaivedReason: null,
+        platformFeePaise: 0,
+        taxPaise: 0,
+        totalPaise: itemsSubtotalPaise,
+        totalSavingsPaise: itemDiscountPaise,
+      },
+      changes: [],
+      checkoutEnabled: false,
+      checkoutBlockedReason: "Loading your cart…",
+      minOrderValuePaise: 0,
+      shortfallPaise: 0,
+    };
+  } catch {
+    // Corrupt/unreadable snapshot — proceed with nothing restored, same as
+    // a first-ever launch.
+  }
+}
+
+/**
+ * Persists the CURRENT real (server-confirmed) cart's items so the next
+ * cold start can restore them instantly — see the effect in
+ * `useCartActions` that calls this whenever `cart` changes. Built from the
+ * real `cart.items`, never from `pendingQty`/optimistic state, so a request
+ * that never actually confirmed can't get persisted as if it had.
+ */
+let lastPersistedCartJson: string | null = null;
+
+function persistCartSnapshot(items: CartItemDto[]): void {
+  const entries: HydratedCartItem[] = items.map((item) => ({
+    variantId: item.variantId,
+    qty: item.qty,
+    snapshot: {
+      productId: item.productId,
+      productName: item.productName,
+      variantName: item.variantName,
+      brandName: item.brandName,
+      imageUrl: item.imageUrl,
+      mrpPaise: item.mrpPaise,
+      unitPricePaise: item.unitPricePaise,
+      inStock: item.inStock,
+      availableQty: item.availableQty,
+      maxQtyPerOrder: item.maxQtyPerOrder,
+      allowCod: item.allowCod,
+    },
+  }));
+
+  const json = JSON.stringify(entries);
+  // `useCartActions()` is called from several places at once (the tab
+  // badge, every screen) — every mounted instance's own effect reacts to
+  // the SAME `cart` change, so this guard is what keeps that from writing
+  // the same snapshot to disk redundantly once per instance.
+  if (json === lastPersistedCartJson) return;
+  lastPersistedCartJson = json;
+
+  AsyncStorage.setItem(CART_HYDRATION_STORAGE_KEY, json).catch(() => {
+    // Best-effort — a failed write just means the NEXT cold start falls
+    // back to the normal network-loading behavior, not a functional bug.
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -251,13 +407,63 @@ export function useCartActions() {
   const mutationsRef = useRef(mutations);
   mutationsRef.current = mutations;
 
+  // Keeps the on-disk hydration snapshot (see hydrateCartFromDisk above)
+  // up to date with the real, server-confirmed cart, so the NEXT cold
+  // start restores from here rather than an older session. Deliberately
+  // keyed on `cart` (the real data), never `optimisticCart` — see
+  // `persistCartSnapshot`'s own comment for why an unconfirmed, still-in-
+  // flight change must never be what gets written to disk.
+  useEffect(() => {
+    if (!cart) return;
+    persistCartSnapshot(cart.items);
+  }, [cart]);
+
+  // Drops a variant's optimistic `pendingQty` override the INSTANT the
+  // real, server-confirmed `cart` (this same render's fresh React Query
+  // data, not a callback-timing guess) already shows that exact quantity —
+  // see `dispatch`'s own `finally` block for why it no longer clears this
+  // itself right after its mutation resolves. Runs on every `cart` change
+  // (not just after a mutation this hook instance started — a different
+  // screen's tap, or the badge, needs the exact same reconciliation), and
+  // is a no-op for every variant already reconciled (`clearPending` bails
+  // out immediately if there's nothing pending for it).
+  useEffect(() => {
+    if (!cart) return;
+
+    const pending = usePendingCartStore.getState().pendingQty;
+    for (const variantId of Object.keys(pending)) {
+      const knownQty =
+        cart.items.find((item) => item.variantId === variantId)?.qty ?? 0;
+      if (knownQty === pending[variantId]) {
+        clearPending(variantId);
+      }
+    }
+  }, [cart]);
+
   // Always the absolute-latest value, whether called during render or from
   // an event handler / async continuation — see file header, point 1.
   const qtyForImpl = (variantId: string): number => {
     const pending = usePendingCartStore.getState().pendingQty;
-    return variantId in pending
-      ? pending[variantId]!
-      : (linesRef.current.get(variantId)?.qty ?? 0);
+    if (variantId in pending) return pending[variantId]!;
+
+    const known = linesRef.current.get(variantId)?.qty;
+    if (known !== undefined) return known;
+
+    // The real `/cart` response hasn't landed yet THIS SESSION
+    // (`cartRef.current` — see file header, point 5, for why this reads a
+    // ref rather than `cart` directly) — fall back to whatever was
+    // restored from disk at startup (see hydrateCartFromDisk above), so a
+    // returning customer's Product Cards show their actual last quantity
+    // immediately instead of "Add". The instant `cartRef.current` is
+    // defined, this branch is never reached again for the rest of the
+    // session — every read after that reflects genuine server truth
+    // exactly as it always has.
+    if (cartRef.current === undefined) {
+      const hydratedQty = hydratedQtyByVariant.get(variantId);
+      if (hydratedQty !== undefined) return hydratedQty;
+    }
+
+    return 0;
   };
 
   const setPending = (variantId: string, qty: number): void => {
@@ -293,13 +499,22 @@ export function useCartActions() {
    * confirms it).
    */
   const optimisticCart = useMemo<CartDto | undefined>(() => {
-    if (!cart) return cart;
+    // Prefer the real server cart the instant it exists. Until then — and
+    // ONLY until then, for the rest of this session — fall back to
+    // whatever was restored from disk at startup (see
+    // hydrateCartFromDisk/hydratedFallbackCart above), so the Mini Cart and
+    // any other consumer of the full cart shape don't have to sit on
+    // "empty" while the first `/cart` request is still in flight. The
+    // moment `cart` is defined, `baseCart` is `cart` from then on, forever
+    // — this never reintroduces stale data once real data exists.
+    const baseCart = cart ?? hydratedFallbackCart;
+    if (!baseCart) return cart;
 
     let itemsSubtotalPaise = 0;
     let itemDiscountPaise = 0;
     let itemCount = 0;
 
-    const items = cart.items
+    const items = baseCart.items
       .map((item) => {
         const qty =
           item.variantId in pendingQty ? pendingQty[item.variantId]! : item.qty;
@@ -354,19 +569,19 @@ export function useCartActions() {
       });
     }
 
-    const netItemsPaise = itemsSubtotalPaise - cart.bill.couponDiscountPaise;
+    const netItemsPaise = itemsSubtotalPaise - baseCart.bill.couponDiscountPaise;
     const totalPaise =
-      netItemsPaise + cart.bill.deliveryFeePaise + cart.bill.platformFeePaise;
+      netItemsPaise + baseCart.bill.deliveryFeePaise + baseCart.bill.platformFeePaise;
 
     return {
-      ...cart,
+      ...baseCart,
       items,
       bill: {
-        ...cart.bill,
+        ...baseCart.bill,
         itemCount,
         itemsSubtotalPaise,
         itemDiscountPaise,
-        totalSavingsPaise: itemDiscountPaise + cart.bill.couponDiscountPaise,
+        totalSavingsPaise: itemDiscountPaise + baseCart.bill.couponDiscountPaise,
         totalPaise,
       },
     };
@@ -456,8 +671,18 @@ export function useCartActions() {
 
       if (usePendingCartStore.getState().pendingQty[variantId] === targetQty) {
         // Nothing changed while this was in flight — the response we just
-        // applied IS the current truth, so the optimistic cover can drop.
-        clearPending(variantId);
+        // applied IS the current truth. Don't clear the optimistic cover
+        // HERE, though: the query cache write this same response triggers
+        // (`onSuccess` -> `guardedWrite` in queries.ts) is scheduled
+        // independently of this synchronous `finally` block, and isn't
+        // guaranteed to have already re-rendered `cart` by this exact
+        // point. Clearing right away risked `optimisticCart` (below)
+        // falling back to reading `cart.items`' still-stale qty for one
+        // frame before the fresh cache data actually landed — a visible
+        // regress-then-correct blink on every tap. The reconciliation
+        // effect below drops this override instead, the INSTANT `cart`
+        // itself (not a guess about callback timing) actually reflects it
+        // — never a frame too early. See that effect's own comment.
       } else {
         // A newer tap landed while this request was in flight. Do NOT let
         // the response we just got settle the UI — it's already stale.
@@ -504,12 +729,53 @@ export function useCartActions() {
     void dispatch(variantId);
   }, []);
 
+  /**
+   * The removed line's own image — read synchronously from `linesRef`
+   * (the last server-confirmed cart, unaffected by anything pending) with
+   * a fallback to `pendingSnapshots` for a variant whose first-ever add
+   * hasn't been confirmed by the server yet (see `add` above / the file
+   * header's point 3). Used to fire the Mini Cart's remove-flight
+   * animation with the ACTUAL removed product's image, never the Mini
+   * Cart's own currently-displayed "latest added" image — those are
+   * unrelated: removing Apple must animate Apple's image out even while
+   * the Mini Cart is still showing Milk.
+   *
+   * Passed through `resolveImageUrl` — `flyToCart`/`flyFromCart` render
+   * whatever URL they're given as-is (see flyToCart.tsx: it never resolves
+   * anything itself), so every OTHER caller already pre-resolves before
+   * calling (e.g. ProductCard's `resolveImageUrl(product.thumbUrl)`). The
+   * raw `CartItemDto.imageUrl` field is un-resolved (e.g. a bare
+   * `localhost` URL that isn't reachable from a device/emulator) — without
+   * this, the flying dot's <Image> silently fails to load, so the flight
+   * still fires and moves correctly but is invisible.
+   */
+  const removedLineImageUrl = (variantId: string): string | null =>
+    resolveImageUrl(
+      linesRef.current.get(variantId)?.imageUrl ??
+        usePendingCartStore.getState().pendingSnapshots[variantId]?.imageUrl ??
+        null,
+    );
+
   const decrement = useCallback((variantId: string): void => {
-    setPending(variantId, Math.max(0, qtyForImpl(variantId) - 1));
+    const prevQty = qtyForImpl(variantId);
+    const nextQty = Math.max(0, prevQty - 1);
+
+    // Only a decrement that actually EMPTIES the line is a removal — a
+    // qty-3-to-2 decrement isn't "removing a product," so it doesn't fire
+    // the remove-flight animation. Fired here, synchronously, before
+    // `dispatch()` below starts its async request — the visual never
+    // waits on the network.
+    if (nextQty === 0 && prevQty > 0) {
+      flyFromCart(removedLineImageUrl(variantId));
+    }
+
+    setPending(variantId, nextQty);
     void dispatch(variantId);
   }, []);
 
   const remove = useCallback((variantId: string): void => {
+    flyFromCart(removedLineImageUrl(variantId));
+
     // Instant, unconditional: whatever this variant was showing, it's gone
     // from the list the moment this runs — see CartScreen's displayItems.
     setPending(variantId, 0);

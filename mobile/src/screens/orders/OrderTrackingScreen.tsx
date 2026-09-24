@@ -41,6 +41,7 @@ import { formatAddressLine } from "@shared/text";
 import { colors, radius, spacing } from "@shared/theme";
 
 import { keys, useOrder } from "@/lib/queries";
+import { useTabBarClearance } from "@/lib/tabBarVisibility";
 
 import { useOrderSocket } from "@/lib/socket";
 
@@ -139,6 +140,7 @@ export default function OrderTrackingScreen({
   onChangeAddress?: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
   const queryClient = useQueryClient();
 
   /*
@@ -408,7 +410,9 @@ export default function OrderTrackingScreen({
         contentContainerStyle={[
           styles.scrollContent,
           {
-            paddingBottom: insets.bottom + spacing.xxl,
+            // The tab bar floats over this screen now (see MainTabs.tsx's
+            // `AnimatedTabBar`) rather than reserving its own flex space.
+            paddingBottom: tabBarClearance + spacing.xxl,
           },
         ]}
       >

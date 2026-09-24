@@ -14,6 +14,7 @@ import { colors, radius, spacing } from "@shared/theme";
 import { addressPrimaryLine } from "@shared/text";
 import { api } from "@/lib/api";
 import { useLocation } from "@/lib/store";
+import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { AppText, Button, Card, Loading, Screen } from "@/components/ui";
 
 export default function SelectLocationScreen({
@@ -24,6 +25,7 @@ export default function SelectLocationScreen({
   onAddAddress: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
 
   const { location, selectedAddressId, setLocation, selectAddress, checking } =
     useLocation();
@@ -122,7 +124,9 @@ export default function SelectLocationScreen({
       <ScrollView
         contentContainerStyle={{
           padding: spacing.base,
-          paddingBottom: insets.bottom + spacing.xxl,
+          // The tab bar floats over this screen now (see MainTabs.tsx's
+          // `AnimatedTabBar`) rather than reserving its own flex space.
+          paddingBottom: tabBarClearance + spacing.xxl,
         }}
         showsVerticalScrollIndicator={false}
       >

@@ -26,6 +26,7 @@ import {
 import { formatIndianMobile } from '@shared/phone';
 import { colors, radius, spacing } from '@shared/theme';
 import { useAuth } from '@/lib/store';
+import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, NoticeStrip, Screen } from '@/components/ui';
 
 interface MenuItem {
@@ -75,6 +76,7 @@ function MenuCard({ items, onSelect }: { items: MenuItem[]; onSelect: (key: stri
 
 export default function AccountScreen({ onSelect }: { onSelect: (key: string) => void }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
   const user = useAuth((state) => state.user);
   const logout = useAuth((state) => state.logout);
 
@@ -85,7 +87,12 @@ export default function AccountScreen({ onSelect }: { onSelect: (key: string) =>
         contentContainerStyle={{
           paddingTop: insets.top + spacing.base,
           paddingHorizontal: spacing.base,
-          paddingBottom: insets.bottom + spacing.xxl,
+          // The tab bar floats over this screen now (see MainTabs.tsx's
+          // `AnimatedTabBar`) rather than reserving its own flex space, so
+          // this needs its OWN clearance to keep the last menu row clear of
+          // its visible plate at rest — `insets.bottom` alone (the old
+          // value) no longer accounts for `layout.tabBarHeight` on top of it.
+          paddingBottom: tabBarClearance + spacing.xxl,
         }}
       >
         <AppText variant="h1">My Account</AppText>

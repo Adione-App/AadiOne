@@ -49,7 +49,10 @@ import {
 
 import { ProductCard } from "@/components/ProductCard";
 import CategoryIcon from "@/components/CategoryIcon";
-import { tabBarHiddenByScroll } from "@/lib/tabBarVisibility";
+import {
+  tabBarHiddenByScroll,
+  useTabBarClearance,
+} from "@/lib/tabBarVisibility";
 
 import adioneHomeBanner from "../../../assets/adione-homebar.png";
 import bannerDailyEssentials from "../../../assets/home-banner-daily-essentials.png";
@@ -156,10 +159,10 @@ export default function HomeScreen({
   onOpenProfile: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
 
   const feed = useHomeFeed();
   const cart = useCartActions();
-  const cartItemCount = cart.cart?.bill.itemCount ?? 0;
 
   const { location, serviceability, refresh } = useLocation();
 
@@ -171,22 +174,45 @@ export default function HomeScreen({
   );
 
   // Collapses the address/profile row as the page scrolls, leaving the
-  // search bar (moved OUT of the ScrollView below, so it never scrolls away
-  // itself) as the only thing left pinned at the top. `headerHeight` is
-  // measured once from the row's own natural layout (it varies by device —
-  // depends on `insets.top`) rather than hard-coded, so the collapse always
-  // starts from its real expanded height with no jump.
+  // search bar as the only thing left looking pinned at the top.
+  // `headerHeight` is measured once from the row's own natural layout (it
+  // varies by device — depends on `insets.top`) rather than hard-coded, so
+  // the collapse always starts from its real expanded distance with no
+  // jump. `overlayHeight` is the SAME kind of one-time measurement, but of
+  // the whole header+search-bar block — see its own use below.
+  //
+  // This whole block (header + search bar) is rendered as an ABSOLUTELY
+  // POSITIONED OVERLAY on top of the ScrollView, not a normal-flow sibling
+  // above it (see the JSX below) — deliberately, so that collapsing it can
+  // only ever move ITSELF via `transform`, never resize or reflow the
+  // ScrollView (and therefore the product content) underneath. An earlier
+  // version animated this block's actual `height`/`marginTop` in normal
+  // flow: since the ScrollView was a flex sibling right below it, every
+  // point those layout properties changed shifted the ScrollView's own top
+  // edge too — and because they were driven directly off raw `scrollY` with
+  // no threshold or smoothing at all (unlike `tabBarHiddenByScroll` below,
+  // which already had hysteresis), even the smallest sub-pixel scrollY
+  // wobble during a slow drag or a held-finger tremor reflowed the entire
+  // page beneath it on every single frame — reading as constant product-card/
+  // image jitter, exactly the "whole page shakes" bug this fixes.
   //
   // `scrollY` is a Reanimated SHARED VALUE, not an RN `Animated.Value` —
   // `headerAnimatedStyle`/`searchBarAnimatedStyle` below read it inside
-  // `useAnimatedStyle` worklets, which run the height/opacity/margin
-  // recalculation directly on the UI thread every frame. The old
-  // `Animated.event({ useNativeDriver: false })` version had no choice but
-  // to do that same recalculation on the JS thread instead (RN's native
-  // driver can't animate `height`), which is exactly the kind of
-  // scroll-tied JS-thread work that reads as stutter on a busy frame.
+  // `useAnimatedStyle` worklets, which run the transform/opacity
+  // recalculation directly on the UI thread every frame, with no layout
+  // pass at all (a `transform` is purely a compositor-level change) — even
+  // cheaper than the old height-based version was, on top of no longer
+  // being able to move anything else on screen.
   const scrollY = useSharedValue(0);
   const [headerHeight, setHeaderHeight] = useState(0);
+  // The whole overlay's own natural (untransformed) height — insets.top +
+  // the header row + the search bar. Used as the ScrollView's constant
+  // `paddingTop` (see its `contentContainerStyle` below) so the first row
+  // of real content starts exactly where this overlay visually ends at
+  // scrollY=0, and stays in sync with it at every scroll position after
+  // that — since both the overlay's collapse progress and the ScrollView's
+  // own contentOffset are driven by the identical `scrollY` value.
+  const [overlayHeight, setOverlayHeight] = useState(0);
 
   // Bottom tab bar hides on scroll-down, reappears on scroll-up or back
   // near the top — see MainTabs' `AnimatedTabBar`, which reads
@@ -195,6 +221,10 @@ export default function HomeScreen({
   // shared values purely so this worklet has somewhere to keep its own
   // running state between calls — using React refs here wouldn't work,
   // refs aren't reachable from the UI-thread worklet this runs in.
+  //
+  // `lastScrollY` is a HYSTERESIS ANCHOR, not "the position last sample" —
+  // see `scrollHandler` below for why it only ever moves when a direction
+  // decision has actually been acted on, never on every sample.
   //
   // Time-gated to roughly 8/sec — `scrollEventThrottle` below still fires
   // this on every native scroll event (needed for the header-collapse
@@ -206,6 +236,10 @@ export default function HomeScreen({
   // thread involvement here at all).
   const lastScrollY = useSharedValue(0);
   const lastDirectionCheckMs = useSharedValue(0);
+  // Separate cooldown on the FLIP itself (not just the 120ms sampling gate
+  // above) — see `scrollHandler` below for why this is what actually stops
+  // the visible blinking during a slow, tightly-held drag.
+  const lastFlipMs = useSharedValue(0);
 
   const scrollHandler = useAnimatedScrollHandler({
     onScroll: (event) => {
@@ -216,15 +250,51 @@ export default function HomeScreen({
       if (now - lastDirectionCheckMs.value < 120) return;
       lastDirectionCheckMs.value = now;
 
+      // Measured against the ANCHOR (see below), not "y 120ms ago".
       const delta = y - lastScrollY.value;
+
+      // A slow, tightly-held drag isn't one smooth direction — natural hand
+      // tremor at low speed makes the delta wobble back and forth across
+      // the +/-6px threshold from one 120ms sample to the next. This
+      // cooldown rate-limits how often a flip can fire, but on its own it
+      // doesn't stop the wobble from RE-tripping a flip every time it
+      // expires — with the old code re-anchoring `lastScrollY` to the
+      // current position on every single sample (a rolling ~120ms window),
+      // tremor kept crossing the threshold again and again, so the bar
+      // (and MiniCartBar, and the tab bar's own reserved layout height —
+      // see AnimatedTabBar) kept pulsing hidden/visible for as long as the
+      // hold continued, reading as the whole page jittering. A confident
+      // scroll, fast or slow, never trips this: its deltas stay
+      // consistently one-directional, so it only ever needs to flip once
+      // every so often anyway.
+      if (now - lastFlipMs.value < 320) return;
+
+      let next = tabBarHiddenByScroll.value;
+      if (y <= 4) {
+        next = false;
+      } else if (delta > 6) {
+        next = true;
+      } else if (delta < -6) {
+        next = false;
+      } else {
+        // No meaningful net movement since the anchor — leave it exactly
+        // where it is. This is what makes the threshold a real "moved 6px
+        // since the last decision" check instead of "moved 6px since
+        // whatever arbitrary instant the last 120ms-gated sample landed
+        // on" — tremor that wobbles back and forth around a roughly fixed
+        // position can never accumulate past the threshold no matter how
+        // many samples it crosses, because it's always measured from the
+        // same fixed point rather than from itself one sample ago.
+        return;
+      }
+
+      // Only re-anchor once a real decision (a threshold crossing, or the
+      // near-top reset) has actually been acted on — never unconditionally.
       lastScrollY.value = y;
 
-      if (y <= 4) {
-        tabBarHiddenByScroll.value = false;
-      } else if (delta > 6) {
-        tabBarHiddenByScroll.value = true;
-      } else if (delta < -6) {
-        tabBarHiddenByScroll.value = false;
+      if (next !== tabBarHiddenByScroll.value) {
+        tabBarHiddenByScroll.value = next;
+        lastFlipMs.value = now;
       }
     },
   });
@@ -232,31 +302,81 @@ export default function HomeScreen({
   const headerAnimatedStyle = useAnimatedStyle(() => {
     if (headerHeight === 0) return {};
     return {
-      height: interpolate(
-        scrollY.value,
-        [0, headerHeight],
-        [headerHeight, 0],
-        Extrapolation.CLAMP,
-      ),
+      // Slides fully out of its own natural slot over exactly its own
+      // height of scroll — replaces the old `height: headerHeight -> 0`
+      // collapse with a transform that moves the SAME visual distance
+      // without ever changing this view's actual layout size.
+      //
+      // Deliberately NO `opacity` here anymore (see `headerContentAnimatedStyle`
+      // below for where that moved) — this view's own `backgroundColor:
+      // colors.surface` (see `styles.header`) needs to stay fully opaque as
+      // it translates, not fade away with its content. Its bottom edge
+      // moves by the exact same `headerHeight` as the search bar below
+      // (`searchBarAnimatedStyle`), so it always ends exactly at the search
+      // bar's current top edge, never past it — that's what turns this
+      // view's own natural white background into the fill for the empty
+      // gap that otherwise opens up above the search bar once the address/
+      // profile content (now faded, see below) has visually "collapsed"
+      // but the geometry hasn't finished catching up yet. No extra view,
+      // no height change: the SAME translateY this already had, just no
+      // longer fading the surface color along with the text.
+      transform: [
+        {
+          translateY: interpolate(
+            scrollY.value,
+            [0, headerHeight],
+            [0, -headerHeight],
+            Extrapolation.CLAMP,
+          ),
+        },
+      ],
+    };
+  }, [headerHeight]);
+
+  // Fades ONLY the address/profile row's own content — the outer
+  // `headerAnimatedStyle` view it sits inside keeps its background fully
+  // opaque throughout (see that style's own comment for why). Same
+  // interpolation range as before, so the content fades exactly as it
+  // already did.
+  const headerContentAnimatedStyle = useAnimatedStyle(() => {
+    if (headerHeight === 0) return {};
+    return {
       opacity: interpolate(
         scrollY.value,
         [0, headerHeight * 0.6],
         [1, 0],
         Extrapolation.CLAMP,
       ),
-      overflow: "hidden",
     };
   }, [headerHeight]);
 
+  // Static `marginTop: spacing.md` lives in `styles.searchBarRow` (constant
+  // — never animated, see the JSX below). This moves the search bar by
+  // EXACTLY the same distance as `headerAnimatedStyle` above (`headerHeight`
+  // — not `headerHeight` plus some extra "tightening" amount, which an
+  // earlier version of this had). That match matters beyond just the visual
+  // motion: the ScrollView's own `paddingTop` (see its contentContainerStyle
+  // below) is the header+search-bar block's FULL NATURAL height, and the
+  // content's effective top edge only ends up flush against the collapsed
+  // search bar's bottom edge if BOTH move by the identical amount. Any
+  // mismatch between the two leaves a permanent gap between the docked
+  // search bar and the scrolled content for the rest of the scroll — which
+  // is exactly the "white space under the search bar" bug this fixes; it
+  // was never a header/content sync issue, purely this row moving a few
+  // extra pixels further than the header did.
   const searchBarAnimatedStyle = useAnimatedStyle(() => {
-    if (headerHeight === 0) return { marginTop: spacing.md };
+    if (headerHeight === 0) return {};
     return {
-      marginTop: interpolate(
-        scrollY.value,
-        [0, headerHeight],
-        [spacing.md, spacing.xs],
-        Extrapolation.CLAMP,
-      ),
+      transform: [
+        {
+          translateY: interpolate(
+            scrollY.value,
+            [0, headerHeight],
+            [0, -headerHeight],
+            Extrapolation.CLAMP,
+          ),
+        },
+      ],
     };
   }, [headerHeight]);
 
@@ -511,17 +631,72 @@ export default function HomeScreen({
   return (
     <Screen style={styles.screen}>
       {/* ============================================================
-          TOP LOCATION HEADER
+          TOP LOCATION HEADER + SEARCH
 
-          `insets.top` lives on this OUTER, never-animated wrapper — not on
-          the collapsing row itself — so the safe-area gap at the very top
-          of the screen stays correct and constant whether the row below is
-          fully expanded, mid-collapse, or fully collapsed. Only the row's
-          OWN content height collapses.
+          An ABSOLUTELY POSITIONED OVERLAY on top of the ScrollView below,
+          not a normal-flow sibling above it — see `scrollY`'s own comment
+          for why. The status-bar-height gap lives on this OUTER, never-
+          animated wrapper as an explicit backed spacer (its own comment
+          below) — not as the collapsing row's own padding — so the safe-
+          area gap at the very top of the screen stays correct and constant
+          whether the row below is fully expanded, mid-collapse, or fully
+          collapsed. `overflow: hidden` clips the header row once its
+          `translateY` carries it up past this wrapper's own top edge.
+          `topOverlay` itself carries no `backgroundColor` — see its own
+          style comment for why painting one there (covering this whole
+          wrapper's constant, never-shrinking natural height) was what left
+          a stale white block on screen after the header collapsed.
       ============================================================ */}
 
-      <View style={{ paddingTop: insets.top }}>
+      <View
+        collapsable={false}
+        pointerEvents="box-none"
+        onLayout={(event) => {
+          // Captured once, same reasoning as `headerHeight` below — this is
+          // the overlay's own full natural (untransformed) height, used as
+          // the ScrollView's constant top padding so real content starts
+          // exactly where this overlay visually ends.
+          if (overlayHeight === 0)
+            setOverlayHeight(event.nativeEvent.layout.height);
+        }}
+        style={styles.topOverlay}
+      >
+        {/* Status-bar-height spacer — deliberately its OWN backed view
+            rather than `topOverlay`'s `paddingTop`. `topOverlay` itself
+            carries NO backgroundColor (see its own comment): a `View`'s
+            `backgroundColor` always paints that view's full, untransformed
+            layout box, no matter what `transform`/`opacity` its CHILDREN
+            are animated to. The header row and search bar below are
+            translated via `transform` as the page scrolls (never resized —
+            that's what keeps the scroll jitter fixed), which means their
+            OWN backgrounds correctly track exactly where they're visually
+            drawn. `topOverlay` painting a blanket background across its
+            full original height regardless was the bug: once the header
+            fully collapses, only the search bar's own (smaller) footprint
+            was actually occupied, but the wrapper kept painting solid white
+            across the whole original header+search height anyway — a
+            static white block sitting on top of the product rails
+            scrolling underneath, right where the header used to be. This
+            spacer only ever needs to cover the truly constant, never-
+            animated status-bar strip at the very top. */}
+        <View style={{ height: insets.top, backgroundColor: colors.surface }} />
+
         <ReanimatedAnimated.View
+          // Android specifically: this view has NO dynamic style at all
+          // until `headerHeight` is measured (`headerAnimatedStyle` returns
+          // `{}` — see its own comment), which makes it eligible for
+          // Android's view-flattening optimisation (merged into its parent
+          // as a plain, non-animatable node). The INSTANT scrolling starts
+          // and `headerAnimatedStyle` begins returning real transform/
+          // opacity values, Android has to un-flatten it back into a real
+          // native view to animate it — that flatten-to-unflatten promotion
+          // is a well-documented one-frame flicker on Android, and only
+          // ever happens right at this transition, which is exactly the
+          // scrollY-leaves-0 blink being fixed here. `collapsable={false}`
+          // opts this view out of flattening from the very first frame, so
+          // there is never a promotion to cause one — the same fix already
+          // used in MiniCartBar.tsx's thumbRowRef for the same reason.
+          collapsable={false}
           onLayout={(event) => {
             // Only ever captured once — a later layout pass while the row is
             // already mid-collapse would otherwise overwrite the real
@@ -532,92 +707,113 @@ export default function HomeScreen({
           }}
           style={[styles.header, { paddingTop: 4 }, headerAnimatedStyle]}
         >
-          {/* ----------------------------------------------------------
+          {/* Wraps just the address/profile CONTENT with the opacity fade
+              that used to sit on the outer view above (see
+              `headerContentAnimatedStyle`'s own comment) — the outer view's
+              `backgroundColor` (styles.header) now stays opaque through the
+              whole scroll instead of fading with this. `flex: 1,
+              flexDirection: "row", alignItems: "center"` reproduces exactly
+              the row layout `styles.header` itself provides, so LOCATION/
+              ACCOUNT below lay out identically to before. */}
+          <ReanimatedAnimated.View
+            style={[
+              { flex: 1, flexDirection: "row", alignItems: "center" },
+              headerContentAnimatedStyle,
+            ]}
+          >
+            {/* ----------------------------------------------------------
             LOCATION
         ---------------------------------------------------------- */}
 
-          <Pressable
-            onPress={onOpenLocation}
-            style={styles.locationSection}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Change delivery location"
-          >
-            {/* Location Icon */}
+            <Pressable
+              onPress={onOpenLocation}
+              style={styles.locationSection}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Change delivery location"
+            >
+              {/* Location Icon */}
 
-            <View style={styles.locationPin}>
-              <Ionicons
-                name="location-outline"
-                size={19}
-                color={colors.primary}
-              />
-            </View>
+              <View style={styles.locationPin}>
+                <Ionicons
+                  name="location-outline"
+                  size={19}
+                  color={colors.primary}
+                />
+              </View>
 
-            {/* Location Text */}
+              {/* Location Text */}
 
-            <View style={styles.locationText}>
-              <AppText
-                variant="caption"
-                color={colors.textSecondary}
-                style={styles.deliveringText}
-              >
-                Delivering to
-              </AppText>
-
-              <AppText
-                variant="bodyStrong"
-                numberOfLines={1}
-                style={styles.locationLabel}
-              >
-                {location?.label ?? "Select a location"}
-              </AppText>
-
-              {serviceability?.serviceable && (
+              <View style={styles.locationText}>
                 <AppText
                   variant="caption"
-                  color={colors.primary}
-                  style={styles.distanceText}
+                  color={colors.textSecondary}
+                  style={styles.deliveringText}
                 >
-                  {formatDistance(serviceability.distanceKm)} away from store
+                  Delivering to
                 </AppText>
-              )}
-            </View>
 
-            {/* Chevron */}
+                <AppText
+                  variant="bodyStrong"
+                  numberOfLines={1}
+                  style={styles.locationLabel}
+                >
+                  {location?.label ?? "Select a location"}
+                </AppText>
 
-            <View style={styles.chevronContainer}>
-              <Ionicons
-                name="chevron-down"
-                size={18}
-                color={colors.textSecondary}
-              />
-            </View>
-          </Pressable>
+                {serviceability?.serviceable && (
+                  <AppText
+                    variant="caption"
+                    color={colors.primary}
+                    style={styles.distanceText}
+                  >
+                    {formatDistance(serviceability.distanceKm)} away from store
+                  </AppText>
+                )}
+              </View>
 
-          {/* ----------------------------------------------------------
+              {/* Chevron */}
+
+              <View style={styles.chevronContainer}>
+                <Ionicons
+                  name="chevron-down"
+                  size={18}
+                  color={colors.textSecondary}
+                />
+              </View>
+            </Pressable>
+
+            {/* ----------------------------------------------------------
             ACCOUNT
         ---------------------------------------------------------- */}
 
-          <Pressable
-            onPress={onOpenProfile}
-            style={styles.profileButton}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Open account"
-          >
-            <Ionicons name="person-circle" size={38} color={colors.primary} />
-          </Pressable>
+            <Pressable
+              onPress={onOpenProfile}
+              style={styles.profileButton}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Open account"
+            >
+              <Ionicons name="person-circle" size={38} color={colors.primary} />
+            </Pressable>
+          </ReanimatedAnimated.View>
         </ReanimatedAnimated.View>
 
         {/* ==========================================================
-            SEARCH — deliberately OUTSIDE the ScrollView below, so it
-            never scrolls away itself: once the address/profile row above
-            has collapsed, this is the only thing left pinned at the top.
-            Its own top margin shrinks as the row collapses instead of
-            staying fixed, so no dead gap is left above it once scrolled.
+            SEARCH — once the address/profile row above has collapsed,
+            this is the only thing left looking pinned at the top (it's
+            still part of the same overlay — see the wrapper's own comment
+            — it just stops moving once its own `translateY` clamps).
         ========================================================== */}
 
-        <ReanimatedAnimated.View style={searchBarAnimatedStyle}>
+        {/* Same `collapsable={false}` reasoning as the header row above —
+            its `transform` is also continuously animated in lockstep with
+            the header's collapse, so it is exposed to the exact same
+            Android flatten/unflatten flicker risk. */}
+        <ReanimatedAnimated.View
+          collapsable={false}
+          style={[styles.searchBarRow, searchBarAnimatedStyle]}
+        >
           <Pressable
             onPress={onOpenSearch}
             style={styles.searchBar}
@@ -644,13 +840,32 @@ export default function HomeScreen({
         onScroll={scrollHandler}
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
+        style={styles.scroll}
         contentContainerStyle={{
-          // Extra room for MiniCartBar floating over the last of this
-          // content — only reserved once the cart actually has something in
-          // it (MiniCartBar itself renders nothing at all when empty), so an
-          // empty cart doesn't leave a dead gap at the bottom of the page.
-          paddingBottom:
-            insets.bottom + spacing.xxl + (cartItemCount > 0 ? 76 : 0),
+          // Constant reservation matching the overlay's own full natural
+          // height (measured once — see `overlayHeight` above), so real
+          // content starts exactly where the overlay visually ends at
+          // scrollY=0. This is what lets the overlay float ABOVE the
+          // ScrollView (rather than push it down) without covering the
+          // first row of content while fully expanded.
+          paddingTop: overlayHeight,
+          // `tabBarClearance` (`layout.tabBarHeight + insets.bottom`, see
+          // tabBarVisibility.ts) — NOT `MiniCartBar`'s own footprint. The tab
+          // bar is now a genuine floating OVERLAY (see MainTabs.tsx's
+          // `AnimatedTabBar`, design #4) with no reserved flex space of its
+          // own, so this ScrollView's real content would otherwise render
+          // underneath its visible plate at rest — this is what keeps the
+          // last product row clear of it, the same job the old flex slot
+          // used to do for free. A flat `+ 5` on top covers MiniCartBar:
+          // its own resting footprint (`BOTTOM_GAP` 12 + 56px card = 68px,
+          // see MiniCartBar.tsx) is ≤ `tabBarClearance` on every device with
+          // `insets.bottom >= 4` (effectively all of them), so only the
+          // theoretical `insets.bottom === 0` shortfall needs covering —
+          // real content should never sit flush against MiniCartBar with
+          // zero breathing room. MiniCartBar itself still floats freely over
+          // the LAST few px of this padding, exactly as designed — this
+          // isn't reserving its full footprint a second time.
+          paddingBottom: tabBarClearance + 5,
         }}
       >
         {/* ========================================================
@@ -812,41 +1027,41 @@ export default function HomeScreen({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.categoryRow}
         >
-          {feed.data.categories
-            // `children` is `[]` (not undefined) for a top-level category
-            // that has no subcategories of its own — e.g. "Vegetables &
-            // Fruits", added as its own root with no children beneath it.
-            // `?? [category]` only catches null/undefined, so an empty
-            // array silently produced zero icons for it. `.length` catches
-            // both cases.
-            .flatMap((category) =>
-              category.children?.length ? category.children : [category],
-            )
-            .map((category) => (
-              <Pressable
-                key={category.id}
-                onPress={() => onOpenCategory(category.id)}
-                style={styles.categoryTile}
-                accessibilityRole="button"
-                accessibilityLabel={`Open ${category.name}`}
-              >
-                <View style={styles.categoryCircle}>
-                  <CategoryIcon
-                    name={category.name}
-                    imageUrl={category.imageUrl}
-                    size={56}
-                  />
-                </View>
+          {[
+            // PASS 1 — every level-0 top category, unconditionally (Grocery,
+            // Electronics, Clothing, Vegetables & Fruits, ...), in the
+            // server's own order.
+            ...feed.data.categories,
+            // PASS 2 — every subcategory of every top category, flattened,
+            // appended AFTER all of pass 1 — never interleaved per-parent.
+            ...feed.data.categories.flatMap(
+              (category) => category.children ?? [],
+            ),
+          ].map((category) => (
+            <Pressable
+              key={category.id}
+              onPress={() => onOpenCategory(category.id)}
+              style={styles.categoryTile}
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${category.name}`}
+            >
+              <View style={styles.categoryCircle}>
+                <CategoryIcon
+                  name={category.name}
+                  imageUrl={category.imageUrl}
+                  size={56}
+                />
+              </View>
 
-                <AppText
-                  variant="caption"
-                  numberOfLines={2}
-                  style={styles.categoryName}
-                >
-                  {category.name}
-                </AppText>
-              </Pressable>
-            ))}
+              <AppText
+                variant="caption"
+                numberOfLines={2}
+                style={styles.categoryName}
+              >
+                {category.name}
+              </AppText>
+            </Pressable>
+          ))}
         </ScrollView>
 
         {/* ========================================================
@@ -1097,6 +1312,40 @@ const styles = StyleSheet.create({
   },
 
   /* ================================================================
+     SCROLLABLE HOME — explicit `flex: 1` so it always fills the full
+     Screen height from y=0, with the (absolutely positioned) top overlay
+     floating on top of its first portion — see `topOverlay` below.
+  ================================================================ */
+
+  scroll: {
+    flex: 1,
+  },
+
+  /* ================================================================
+     TOP OVERLAY — header + search bar, floating over the ScrollView.
+     Its own size never animates (only its children's `transform`/`opacity`
+     do), so it can never itself cause the ScrollView to resize — see
+     `scrollY`'s own comment above for the full reasoning.
+
+     Deliberately NO `backgroundColor` here — see the status-bar spacer's
+     own comment in the JSX for why painting one on this wrapper (rather
+     than on each piece that actually needs it: the spacer, `header`,
+     `searchBarRow`) was what created a solid white block that outlived the
+     header's own collapse and sat on top of the product rails underneath.
+     `overflow: hidden` still clips the header once it translates above this
+     wrapper's own top edge.
+  ================================================================ */
+
+  topOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+    overflow: "hidden",
+  },
+
+  /* ================================================================
      HEADER
   ================================================================ */
 
@@ -1227,6 +1476,24 @@ const styles = StyleSheet.create({
      SEARCH
   ================================================================ */
 
+  // Wraps `searchBar` — this is what carries the (now-constant) top margin;
+  // `searchBarAnimatedStyle`'s `translateY` handles the rest of the visual
+  // collapse distance on top of it (see its own comment).
+  //
+  // `backgroundColor` here (rather than only on `topOverlay`, see its own
+  // comment) is what keeps this row opaque across ITS OWN full footprint —
+  // the top margin above the pill and the bottom margin below it included —
+  // as it translates to dock under the status bar, independent of whatever
+  // `topOverlay`'s own (now transparent) box is doing.
+  // searchBarRow: {
+  //   marginTop: spacing.md,
+  //   backgroundColor: colors.success,
+  // },
+searchBarRow: {
+  marginTop: spacing.md - 12,
+  paddingTop: 10,
+  backgroundColor: colors.surface,
+},
   searchBar: {
     marginHorizontal: spacing.base,
 
@@ -1234,7 +1501,10 @@ const styles = StyleSheet.create({
 
     minHeight: 44,
 
-    borderRadius: radius.pill,
+    // Rounded rectangle, not a full pill — matches the radius already used
+    // elsewhere for card-shaped surfaces (banner slides, product media
+    // boxes use this same `radius.lg`/14 scale).
+    borderRadius: radius.lg,
 
     borderWidth: 1,
 

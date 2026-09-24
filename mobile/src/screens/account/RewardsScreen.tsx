@@ -16,6 +16,7 @@ import { Copy, Gift, Share2 } from 'lucide-react-native';
 import type { RewardCouponDto, RewardCouponStatus } from '@shared';
 import { colors, radius, spacing } from '@shared/theme';
 import { useMyCoupons, useReferralSummary } from '@/lib/queries';
+import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, Card, EmptyState, Loading, Screen } from '@/components/ui';
 
 const TABS: { key: RewardCouponStatus; label: string }[] = [
@@ -32,6 +33,7 @@ export default function RewardsScreen({
   onGoToCart: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
   const summary = useReferralSummary();
   const coupons = useMyCoupons();
   const [tab, setTab] = useState<RewardCouponStatus>('ACTIVE');
@@ -69,7 +71,13 @@ export default function RewardsScreen({
       </View>
 
       <ScrollView
-        contentContainerStyle={{ padding: spacing.base, paddingBottom: insets.bottom + spacing.xxl, gap: spacing.base }}
+        contentContainerStyle={{
+          padding: spacing.base,
+          // The tab bar floats over this screen now (see MainTabs.tsx's
+          // `AnimatedTabBar`) rather than reserving its own flex space.
+          paddingBottom: tabBarClearance + spacing.xxl,
+          gap: spacing.base,
+        }}
         showsVerticalScrollIndicator={false}
       >
         {/* ------------------------------------------------------------

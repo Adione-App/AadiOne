@@ -26,6 +26,7 @@ import { onSessionExpired } from "@/lib/api";
 import { useAuth, useLocation } from "@/lib/store";
 import { useRecentSearches } from "@/lib/recentSearches";
 import { useWishlist } from "@/lib/useWishlist";
+import { hydrateCartFromDisk } from "@/lib/useCartActions";
 
 import { StartupLoading } from "@/components/ui";
 import { FlyToCartOverlay } from "@/lib/flyToCart";
@@ -192,11 +193,20 @@ export default function App() {
         // returning customer's Home should wait for it to finish before the
         // auth check does. `refresh()` (the actual network re-verification)
         // happens later, once Home mounts — see HomeScreen's own effect.
+        //
+        // `hydrateCartFromDisk()` is the same kind of local-only read —
+        // restoring the last known cart so Product Cards/Mini Cart don't
+        // render their empty defaults while the first `/cart` request is
+        // still in flight (see useCartActions.ts's own comment on this).
+        // It has to finish before `startupReady` flips true below, since
+        // that's what gates MainTabs (and therefore every cart-dependent
+        // screen) from mounting at all.
         await Promise.all([
           restore(),
           useLocation.getState().hydrate(),
           useRecentSearches.getState().hydrate(),
           useWishlist.getState().hydrate(),
+          hydrateCartFromDisk(),
         ]);
       } finally {
         if (!mounted) {

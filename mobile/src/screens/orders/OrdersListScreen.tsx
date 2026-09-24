@@ -17,6 +17,7 @@ import { formatDateTimeInZone } from "@shared/datetime";
 import { colors, radius, spacing } from "@shared/theme";
 import { useOrders } from "@/lib/queries";
 import { resolveImageUrl } from "@/lib/api";
+import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import {
   AppText,
   Card,
@@ -51,6 +52,7 @@ export default function OrdersListScreen({
   onBrowse: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
   const { data, isLoading, isError, refetch, isRefetching } = useOrders();
 
   if (isLoading) return <Loading label="Loading your orders…" />;
@@ -165,7 +167,9 @@ export default function OrdersListScreen({
         renderItem={renderItem}
         contentContainerStyle={{
           padding: spacing.base,
-          paddingBottom: insets.bottom + spacing.xxl,
+          // The tab bar floats over this screen now (see MainTabs.tsx's
+          // `AnimatedTabBar`) rather than reserving its own flex space.
+          paddingBottom: tabBarClearance + spacing.xxl,
         }}
         refreshing={isRefetching}
         onRefresh={() => void refetch()}

@@ -11,6 +11,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 import { colors, spacing } from '@shared/theme';
 import { api } from '@/lib/api';
+import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, ErrorState, Loading, Screen } from '@/components/ui';
 
 interface LegalDocument {
@@ -28,6 +29,7 @@ export default function LegalScreen({
   onBack: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
 
   const document = useQuery({
     queryKey: ['legal', slug],
@@ -59,7 +61,9 @@ export default function LegalScreen({
       <ScrollView
         contentContainerStyle={{
           padding: spacing.base,
-          paddingBottom: insets.bottom + spacing.xxl,
+          // The tab bar floats over this screen now (see MainTabs.tsx's
+          // `AnimatedTabBar`) rather than reserving its own flex space.
+          paddingBottom: tabBarClearance + spacing.xxl,
         }}
       >
         <AppText variant="caption" color={colors.textSecondary}>

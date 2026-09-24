@@ -197,43 +197,66 @@ function CartTabIcon({
 }
 
 /**
- * Wraps the default bottom tab bar in a smooth HEIGHT collapse (0 <->
- * `barHeight`, plus a fade) instead of the instant `tabBarStyle: { display:
- * "none" }` swap this originally replaced.
+ * Hides/shows the bottom tab bar via `transform: translateY` (+ opacity) on
+ * a `position: absolute` overlay — a true floating overlay, exactly like
+ * MiniCartBar's own `MiniCartOverlay`, not a flex sibling that reserves its
+ * own layout space at all.
  *
- * This went through two designs before landing here:
+ * This went through FOUR designs before landing here:
  *
  * 1. The original `display: "none"` toggle removed the bar from layout
- *    instantly, snapping the screen content to fill the freed space with no
+ *    instantly, snapping screen content to fill the freed space with no
  *    animation at all — read as a jump/shake.
- * 2. A `translateY` slide on a permanently-reserved, constant-height slot
- *    fixed the jump (content never resized), but traded it for a NEW bug: a
- *    blank, unclipped `barHeight`-tall gap stayed reserved in the layout
- *    forever once the bar had visually slid out of it, revealing whatever's
- *    behind the app (typically flashing white) — a leftover "dead" area
- *    that never actually became part of the scrollable screen content.
+ * 2. A `translateY` slide on a permanently-reserved, constant-height FLEX
+ *    slot (a plain sibling of the screen content, sized to `barHeight`)
+ *    fixed the jump, but traded it for a blank, unclipped gap once the bar
+ *    had slid out of it: the slot's own space was still reserved (and still
+ *    needed a solid `backgroundColor` so hiding the bar didn't flash
+ *    whatever was behind the whole app through it), but nothing else ever
+ *    rendered into that reserved band — so once the bar's own icons faded
+ *    away on a Home scroll-down, that band read as a plain dead white strip
+ *    sitting right above MiniCartBar, hiding nothing but LOOKING exactly
+ *    like it was hiding the last bit of product content.
+ * 3. Animating that same slot's actual `height` (0 <-> `barHeight`) instead
+ *    of leaving it constant "fixed" #2 by having the screen content's
+ *    `flex: 1` container smoothly grow to reclaim the space the instant the
+ *    bar hid — but that's a DIFFERENT bug: HomeScreen's `ScrollView` lived
+ *    inside that same resizing flex container, so every hide/show tween
+ *    resized the ScrollView's own viewport out from under already-rendered
+ *    content, reading as the whole page shaking during a slow/held drag.
+ * 4. (Here.) Stop reserving ANY flex space for the tab bar at all — make it
+ *    a `position: absolute` overlay floating over the full-height screen
+ *    content beneath it, the exact same pattern MiniCartBar already uses.
+ *    This gets both wins at once: nothing ever resizes when the bar hides
+ *    (its own bounds just translate/fade, same as before — screen content's
+ *    own size never depends on it, so #3's jitter can't happen), AND once
+ *    it's hidden there's no more separate "reserved slot" left over to go
+ *    blank — the space is just wherever the screen's OWN content already
+ *    is, which is genuinely there and genuinely visible once the bar
+ *    translates/fades out of the way, not a dead reserved band. The
+ *    tradeoff: every tab's own screen content is now responsible for its
+ *    own bottom clearance (so it doesn't sit underneath the bar's visible
+ *    plate at rest) instead of getting it for free from the old flex slot —
+ *    see `useTabBarClearance` (tabBarVisibility.ts), which each tab-root
+ *    screen now calls for exactly this.
  *
- * The fix is to actually animate the wrapper's `height` (Reanimated can
- * drive `height` on the UI thread — the classic `Animated` native driver
- * can't). Since this wrapper is a normal flex sibling of the screen content
- * (not absolutely positioned), the screen content's own `flex: 1` container
- * smoothly grows to reclaim the space as this shrinks, and smoothly cedes
- * it back on show — no screen anywhere needs its own bottom-padding
- * adjusted for this, because there's never a moment where space is reserved
- * but empty: the reservation itself animates in lockstep with the visual
- * collapse. `overflow: "hidden"` clips `BottomTabBar`'s own (fixed-height)
- * content as the wrapper shrinks, and the simultaneous opacity fade hides
- * the clipping itself being visible mid-transition.
+ * Product Detail needs no special case here anymore either — it already
+ * replaces the tab bar with its own fixed footer and was always built
+ * assuming full scene height (see ProductDetailScreen.tsx), which is
+ * automatically true now for every route, not just Product Detail. Its
+ * `hidden` branch below still exists purely to translate/fade the (now
+ * overlapping, would otherwise double up with its own footer) tab bar out
+ * of the way.
  *
  * The scroll-driven half of `hidden` (`tabBarHiddenByScroll`, see
  * tabBarVisibility.ts) is a Reanimated SHARED VALUE, read here inside
- * `useAnimatedStyle`'s worklet — so a scroll-direction change collapses
- * this bar entirely on the UI thread, with no React re-render of this
- * component (or of HomeScreen, which is what actually sets it) on every
- * crossing. `isProductDetail`/`isHomeRoute` stay plain JS values: they only
- * change on navigation focus changes (rare, not a hot path), so there's no
- * benefit to routing those through a shared value too — `useAnimatedStyle`'s
- * own dependency array already re-runs the worklet when they change.
+ * `useAnimatedStyle`'s worklet — so a scroll-direction change slides this
+ * bar entirely on the UI thread, with no React re-render of this component
+ * (or of HomeScreen, which is what actually sets it) on every crossing.
+ * `isProductDetail`/`isHomeRoute` stay plain JS values: they only change on
+ * navigation focus changes (rare, not a hot path), so there's no benefit to
+ * routing those through a shared value too — `useAnimatedStyle`'s own
+ * dependency array already re-runs the worklet when they change.
  */
 function AnimatedTabBar(props: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
@@ -268,13 +291,22 @@ function AnimatedTabBar(props: BottomTabBarProps) {
     setMiniCartScreen(miniCartScreen);
   }, [miniCartScreen, setMiniCartScreen]);
 
+  // Both the bar's own UI (`BottomTabBar`) AND its backdrop (`tabBarFloat`'s
+  // own `backgroundColor`, see its style) live inside this SAME animated
+  // view now — so hiding it hides the backdrop right along with the icons,
+  // instead of leaving a colored plate behind with nothing on it (see
+  // design #2 above).
   const animatedStyle = useAnimatedStyle(() => {
     const hidden = isProductDetail || (isHomeRoute && tabBarHiddenByScroll.value);
     return {
-      height: withTiming(hidden ? 0 : barHeight, {
-        duration: 240,
-        easing: ReanimatedEasing.out(ReanimatedEasing.cubic),
-      }),
+      transform: [
+        {
+          translateY: withTiming(hidden ? barHeight : 0, {
+            duration: 240,
+            easing: ReanimatedEasing.out(ReanimatedEasing.cubic),
+          }),
+        },
+      ],
       opacity: withTiming(hidden ? 0 : 1, {
         duration: hidden ? 160 : 220,
         easing: ReanimatedEasing.out(ReanimatedEasing.cubic),
@@ -283,7 +315,10 @@ function AnimatedTabBar(props: BottomTabBarProps) {
   }, [isProductDetail, isHomeRoute, barHeight]);
 
   return (
-    <ReanimatedAnimated.View style={[{ overflow: "hidden" }, animatedStyle]}>
+    <ReanimatedAnimated.View
+      pointerEvents="box-none"
+      style={[styles.tabBarFloat, { height: barHeight }, animatedStyle]}
+    >
       <BottomTabBar {...props} />
     </ReanimatedAnimated.View>
   );
@@ -311,12 +346,13 @@ export function MainTabs() {
     <View style={styles.root}>
       <Tab.Navigator
         // Visibility (Product Detail's own footer, Home's hide-on-scroll) is
-        // handled entirely inside AnimatedTabBar now, as an animated HEIGHT
-        // collapse on an always-mounted bar rather than a `tabBarStyle` swap
-        // — see its comment above. `tabBarStyle.height` below stays constant:
-        // it's `BottomTabBar`'s OWN fixed content height (what AnimatedTabBar
-        // clips down from), not the reserved layout space, which now tracks
-        // the animation instead of being fixed.
+        // handled entirely inside AnimatedTabBar now, by translating the
+        // actual bar within an always-constant-height reserved slot, rather
+        // than animating that slot's own height — see its own comment for
+        // why. Every tab screen's content is sized against that constant
+        // slot exactly as it always was, so nothing here needs to change
+        // per-screen. `tabBarStyle.height` below stays constant too: it's
+        // `BottomTabBar`'s OWN fixed content height, matching the slot.
         tabBar={(props) => <AnimatedTabBar {...props} />}
         screenOptions={{
           headerShown: false,
@@ -493,6 +529,20 @@ export function MainTabs() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
+  },
+  // A true floating overlay now — see `AnimatedTabBar`'s own comment (design
+  // #4) for why this no longer reserves any flex space of its own.
+  // `backgroundColor` lives HERE (not on a separate always-present slot)
+  // specifically so it hides/fades away together with the bar's own icons
+  // via `animatedStyle`, rather than staying behind as a blank plate once
+  // the bar itself is gone.
+  tabBarFloat: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 10,
+    backgroundColor: colors.surface,
   },
   iconWrapper: {
     width: 44,

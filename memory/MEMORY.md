@@ -1,0 +1,2 @@
+- [Mobile scroll jitter fix](project_mobile_scroll_jitter_fix.md) — HomeScreen tab-bar/header height-animation root causes, transform-only fix pattern
+- [Scroll animation architecture feedback](feedback_scroll_animation_architecture.md) — user wants root-cause fixes, not threshold tuning, for scroll/animation bugs

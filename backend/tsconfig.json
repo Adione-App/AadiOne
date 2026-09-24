@@ -21,6 +21,7 @@
       "@shared": ["./src/shared/index.ts"],
       "@shared/*": ["./src/shared/*"]
     },
+    
 
     "strict": true,
     "noUncheckedIndexedAccess": true,

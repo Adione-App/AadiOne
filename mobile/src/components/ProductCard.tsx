@@ -16,6 +16,7 @@ import ReanimatedAnimated, {
   withTiming,
 } from "react-native-reanimated";
 import { Image } from "expo-image";
+import * as Haptics from "expo-haptics";
 import { Heart, Plus } from "lucide-react-native";
 
 import type { ProductSummaryDto } from "@shared";
@@ -27,7 +28,7 @@ import {
   type CartItemSnapshot,
   snapshotFromProduct,
 } from "../lib/useCartActions";
-import { flyFromCart, flyToCart } from "../lib/flyToCart";
+import { flyToCart } from "../lib/flyToCart";
 import { useWishlist } from "../lib/useWishlist";
 import { AppText } from "./ui";
 
@@ -240,11 +241,21 @@ export function QuantityStepper({
       </View>
 
       <Pressable
-        onPress={onIncrement}
-        disabled={qty >= max}
+        // Not `disabled={qty >= max}` — a disabled Pressable never claims
+        // the touch at all, so (now that ProductCard's whole card is one
+        // outer Pressable — see its own comment) a tap here at max quantity
+        // would fall straight through to the card's `onPress` and open
+        // Product Details instead of doing nothing. Always claiming the
+        // touch and no-op'ing internally keeps "+ at max does nothing"
+        // without that fallthrough.
+        onPress={() => {
+          if (qty >= max) return;
+          onIncrement();
+        }}
         hitSlop={8}
         style={buttonStyle}
         accessibilityLabel="Increase quantity"
+        accessibilityState={{ disabled: qty >= max }}
       >
         <AppText
           variant="h3"
@@ -286,7 +297,7 @@ const COMPACT_WIDTH = 34;
  * floor already made, just without a wider ratio-driven value anywhere else
  * to be inconsistent with.
  */
-const STEPPER_EXPANDED_WIDTH = 100;
+const STEPPER_EXPANDED_WIDTH = 85;
 /** How far the floating Add/stepper overlay hangs below the media box's
  * bottom edge (`floatingActionWrap.bottom` below) — reused by `priceRow`'s
  * `marginTop` so the two can never drift out of sync and leave the text
@@ -295,6 +306,30 @@ const BUTTON_OVERHANG = 16;
 /** The reserved breathing room between the media box and the text below it
  * — on top of `BUTTON_OVERHANG`, not instead of it. */
 const IMAGE_TEXT_GAP = spacing.sm;
+
+/**
+ * How long the floating overlay's WIDTH takes to morph between the compact
+ * "+" and the expanded "− N +" pill — see `morph`/`morphStyle` below.
+ * Deliberately asymmetric: revealing the stepper (tapping Add) is a hair
+ * slower than collapsing it back (the last unit's "−"), which is what quick-
+ * commerce apps (Blinkit/Zepto/Instamart) actually do — collapsing reads as
+ * "done, snap away," revealing reads as "here's your control, settle in."
+ * Both stay well under a quarter second — this is a tap-response animation,
+ * not a decorative one.
+ */
+const MORPH_ENTER_DURATION = 180;
+const MORPH_EXIT_DURATION = 160;
+
+/**
+ * Fires a light haptic tick on Add/+/- taps — best-effort, fire-and-forget,
+ * same pattern as `Image.prefetch(...).catch(() => undefined)` elsewhere in
+ * this codebase. `Light` (not Medium/Heavy) because this fires on every
+ * single tap of a frequently-used control, not a rare/destructive action —
+ * anything stronger would feel like noise rather than confirmation.
+ */
+function tapHaptic() {
+  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
+}
 
 function ProductCardImpl({
   product,
@@ -324,6 +359,16 @@ function ProductCardImpl({
 
   const imageUrl = resolveImageUrl(product.thumbUrl);
 
+  // The exact element `flyToCart` measures on Add/+ — see its own tap
+  // handlers below. `imageBox` (not the `<Image>` itself) is refed: it's
+  // the image's own tight bounding box (same size, no extra `media`
+  // padding), and a plain `Pressable` ref is a safer, more universally
+  // `measureInWindow`-compatible target than trusting expo-image's own ref
+  // forwarding. One stable ref per card instance — never shared across
+  // cards, so a tap on THIS card can never measure a DIFFERENT one's image,
+  // even under rapid taps across several cards.
+  const imageBoxRef = useRef<View>(null);
+
   const openDetails = () => onPress(product.id);
 
   // Shared across every card/screen (see useWishlist.ts) — subscribed via
@@ -340,11 +385,24 @@ function ProductCardImpl({
   // reacts ONLY when `qtyInCart` crosses the 0 boundary (matches
   // `ActionBarTransition`'s own add/stepper mode split) — a same-mode qty
   // change (e.g. 2 -> 3) never re-triggers it.
+  //
+  // This wrapper's `right` position is fixed (see `floatingActionWrap`), so
+  // animating `width` alone already grows/shrinks it toward the LEFT with
+  // its right edge stationary — that part was always correct. What made it
+  // look wrong was everything INSIDE also stretching to match the
+  // in-between width on every frame (a 32px button squeezed into a 50px box
+  // reads as a warped, distorting blob, not a clean reveal). The fix is
+  // `floatingActionMask` below: the actual content (Add button or stepper)
+  // now renders at its own FINAL size always, right-anchored and clipped by
+  // this wrapper's `overflow: hidden` — so what's actually animating is how
+  // much of that fixed-size content is currently visible, not the content's
+  // own shape.
   const morph = useSharedValue(qtyInCart > 0 ? 1 : 0);
 
   useEffect(() => {
-    morph.value = withTiming(qtyInCart > 0 ? 1 : 0, {
-      duration: 220,
+    const entering = qtyInCart > 0;
+    morph.value = withTiming(entering ? 1 : 0, {
+      duration: entering ? MORPH_ENTER_DURATION : MORPH_EXIT_DURATION,
       easing: ReanimatedEasing.out(ReanimatedEasing.cubic),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -359,14 +417,24 @@ function ProductCardImpl({
   }, [outOfStock]);
 
   return (
-    // Plain View, not Pressable: navigation belongs to the image alone (see
-    // below), never to the card as a whole. A Pressable here previously
-    // wrapped everything, including the Add/stepper buttons — and a
-    // DISABLED nested Pressable (mid-request) doesn't claim the touch, so
-    // the tap fell through to this outer Pressable's onPress and opened
-    // Product Details instead of doing nothing. Removing the outer handler
-    // entirely closes that hole rather than working around it.
-    <View style={styles.card}>
+    // The WHOLE card opens Product Details now — image, price, name,
+    // variant, anywhere that isn't the heart or the Add/stepper control.
+    // Those two are separate, absolutely-positioned Pressables layered on
+    // top (see below); RN gives a nested Pressable's touch to the
+    // innermost one, so tapping them fires ONLY their own onPress, never
+    // this outer one too. An EARLIER version of this outer Pressable had a
+    // real bug here, but it wasn't nesting itself — it was the "+" button
+    // being genuinely `disabled` at max quantity, which makes a Pressable
+    // refuse to claim the touch at all, letting it fall through to this
+    // outer one and open Product Details instead of doing nothing. Fixed
+    // at the source (see QuantityStepper's "+" button, which no longer
+    // uses `disabled`) rather than by removing this outer handler.
+    <Pressable
+      style={styles.card}
+      onPress={openDetails}
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${product.name}`}
+    >
       {/* =============================================================
           IMAGE + WISHLIST HEART + FLOATING ADD/STEPPER
 
@@ -382,11 +450,9 @@ function ProductCardImpl({
             box, not the card as a whole (see `card`'s own style below: no
             border there anymore). Everything below stays open/borderless. */}
         <View style={styles.media}>
-          <Pressable
-            onPress={openDetails}
+          <View
+            ref={imageBoxRef}
             style={styles.imageBox}
-            accessibilityRole="button"
-            accessibilityLabel={`Open ${product.name}`}
           >
             {imageUrl ? (
               <Image
@@ -411,7 +477,7 @@ function ProductCardImpl({
                 </AppText>
               </View>
             )}
-          </Pressable>
+          </View>
         </View>
 
         {/* Saves/removes this product in the shared, device-persisted
@@ -437,9 +503,27 @@ function ProductCardImpl({
 
         {/* Also on `mediaWrap`, not `media` — this straddles the media
             box's bottom-right corner on purpose (see `floatingActionWrap`'s
-            own comment), which `media`'s `overflow: hidden` would clip. */}
+            own comment), which `media`'s `overflow: hidden` would clip.
+
+            `floatingActionMask` (skipped for "Sold Out", which keeps its own
+            auto-width/height sizing exactly as before) is what turns this
+            wrapper into a RIGHT-ANCHORED REVEAL WINDOW: `flexDirection: row`
+            + `justifyContent: flex-end` right-anchors whichever content is
+            currently rendered, `alignItems: flex-end` bottom-anchors it
+            without stretching it, and `overflow: hidden` clips it as
+            `morphStyle`'s animated `width` narrows. `ActionBarTransition`'s
+            own View sizes itself to whatever its child's real, final size is
+            (the compact Add button or the (now fixed-width, see
+            `floatingStepperWidth`) stepper) — it is NEVER stretched to match
+            the wrap's current mid-animation width, which is what makes the
+            reveal read as "more of a stable control becomes visible" instead
+            of the control itself warping as it grows. */}
         <ReanimatedAnimated.View
-          style={[styles.floatingActionWrap, morphStyle]}
+          style={[
+            styles.floatingActionWrap,
+            !outOfStock && styles.floatingActionMask,
+            morphStyle,
+          ]}
           pointerEvents="box-none"
         >
           <ActionBarTransition
@@ -461,33 +545,36 @@ function ProductCardImpl({
                 max={variant?.maxQtyPerOrder ?? 10}
                 onIncrement={() => {
                   if (!variant) return;
-                  flyToCart(imageUrl);
+                  tapHaptic();
+                  flyToCart(imageUrl, variant.id);
                   onIncrement(variant.id);
                 }}
                 onDecrement={() => {
                   if (!variant) return;
-                  // Only the tap that's about to empty the line plays the
-                  // "leaving the cart" flight — every other decrement just
-                  // changes the number in place (its own AnimatedQuantity
-                  // digit-roll handles that already). The overlay's own
-                  // morph back down to the compact "+" reacts automatically
-                  // to `qtyInCart` crossing 0 (see `morph` above), so it
-                  // needs no imperative trigger here.
-                  if (qtyInCart === 1) {
-                    flyFromCart(imageUrl);
-                  }
+                  tapHaptic();
+                  // No "leaving the cart" flight on the last-unit decrement
+                  // — MiniCartBar's own thumbnail already plays a correctly
+                  // POSITION-AWARE exit (it's a real thumbnail leaving its
+                  // real slot, not a synthesized effect); a separate dot
+                  // flying away from a generic point near the cart icon
+                  // only duplicated that and read as two disconnected
+                  // animations instead of one. The overlay's own morph back
+                  // down to the compact "+" reacts automatically to
+                  // `qtyInCart` crossing 0 (see `morph` above), so it needs
+                  // no imperative trigger here either.
                   onDecrement(variant.id);
                 }}
                 busy={busy}
                 fullWidth
                 flatButtons
-                style={styles.floatingStepperShape}
+                style={[styles.floatingStepperShape, styles.floatingStepperWidth]}
               />
             ) : (
               <Pressable
                 onPress={() => {
                   if (!variant) return;
-                  flyToCart(imageUrl);
+                  tapHaptic();
+                  flyToCart(imageUrl, variant.id);
                   onAdd(variant.id, snapshotFromProduct(product, variant));
                 }}
                 style={styles.floatingAddButton}
@@ -577,7 +664,7 @@ function ProductCardImpl({
           </AppText>
         )}
       </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -772,6 +859,38 @@ const styles = StyleSheet.create({
     zIndex: 3,
   },
 
+  // Applied on top of `floatingActionWrap` for every mode EXCEPT "Sold
+  // Out" (which keeps its own auto-width/height pill, unaffected — see
+  // ProductCardImpl's JSX). This is what turns the wrap into a right-
+  // anchored REVEAL WINDOW rather than a box whose own content stretches
+  // to fill it:
+  //
+  // - `flexDirection: "row"` + `justifyContent: "flex-end"` right-anchors
+  //   `ActionBarTransition`'s View along the horizontal (main) axis — it
+  //   auto-sizes to its own child's real width (34px Add button, or the
+  //   fixed-width stepper — see `floatingStepperWidth`), so `justifyContent`
+  //   always has a definite box to push against the wrap's right edge,
+  //   regardless of the wrap's own current (mid-animation) width.
+  // - `alignItems: "flex-end"` bottom-anchors it along the vertical (cross)
+  //   axis WITHOUT stretching it — deliberately not the Yoga default
+  //   (`stretch`), which would force-resize it to this box's fixed `height`
+  //   and was exactly the earlier bug (content squeezed to whatever width/
+  //   height the box currently had while mid-morph).
+  // - `overflow: "hidden"` clips that same fixed-size content as
+  //   `morphStyle`'s animated `width` narrows.
+  //
+  // A fixed `height` (tall enough for either the 34px Add button or the
+  // 36px stepper) is required simply because `justifyContent`/`alignItems`
+  // need a real box to position within — this box's own children still
+  // never resize; only how much of it is currently exposed does.
+  floatingActionMask: {
+    height: 36,
+    overflow: "hidden",
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "flex-end",
+  },
+
   floatingAddButton: {
     width: 34,
 
@@ -798,6 +917,14 @@ const styles = StyleSheet.create({
   // shared `stepper`/`stepperFullWidth` styles those both draw from.
   floatingStepperShape: {
     borderRadius: radius.sm,
+  },
+
+  // Overrides `stepperFullWidth`'s `alignSelf: "stretch"` for this one
+  // usage — see `floatingActionMask`'s own comment for why the stepper
+  // must render at its real final width always, not whatever width the
+  // (mid-animation) wrap currently has.
+  floatingStepperWidth: {
+    width: STEPPER_EXPANDED_WIDTH,
   },
 
   floatingOutOfStock: {

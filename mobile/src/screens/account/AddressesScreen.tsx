@@ -14,6 +14,7 @@ import type { AddressDto, PublicConfig } from "@shared";
 import { formatIndianMobile } from "@shared/phone";
 import { colors, radius, shadow, spacing } from "@shared/theme";
 import { api } from "@/lib/api";
+import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { AppText, Button, EmptyState, Loading, Screen } from "@/components/ui";
 
 export default function AddressesScreen({
@@ -26,6 +27,7 @@ export default function AddressesScreen({
   onEditAddress: (addressId: string) => void;
 }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
   const queryClient = useQueryClient();
 
   // Only one card's menu open at a time — opening another closes the last.
@@ -112,7 +114,9 @@ export default function AddressesScreen({
           contentContainerStyle={{
             paddingHorizontal: spacing.base,
             paddingTop: spacing.base,
-            paddingBottom: insets.bottom + spacing.xxl,
+            // The tab bar floats over this screen now (see MainTabs.tsx's
+            // `AnimatedTabBar`) rather than reserving its own flex space.
+            paddingBottom: tabBarClearance + spacing.xxl,
           }}
           renderItem={({ item }) => (
             <AddressCard

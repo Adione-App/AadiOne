@@ -33,6 +33,7 @@ import { useCartActions } from '@/lib/useCartActions';
 import { useGridColumns } from '@/lib/useGridColumns';
 import { useRecentSearches } from '@/lib/recentSearches';
 import { suggestSearchTerms } from '@/lib/searchSuggestions';
+import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, EmptyState, Loading, NoticeStrip, Screen } from '@/components/ui';
 import { ProductCard } from '@/components/ProductCard';
 import { ProductGridSkeleton } from '@/components/ProductCardSkeleton';
@@ -47,6 +48,7 @@ export default function SearchScreen({
   onOpenProduct: (productId: string) => void;
 }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
 
   // What the TextInput shows — updates on every keystroke, never debounced.
   const [text, setText] = useState('');
@@ -184,7 +186,9 @@ export default function SearchScreen({
       {!hasQuery ? (
         <ScrollView
           keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{ paddingBottom: spacing.xxl }}
+          // The tab bar floats over this screen now (see MainTabs.tsx's
+          // `AnimatedTabBar`) rather than reserving its own flex space.
+          contentContainerStyle={{ paddingBottom: tabBarClearance + spacing.xxl }}
           showsVerticalScrollIndicator={false}
         >
           {recentTerms.length > 0 && (
@@ -244,7 +248,7 @@ export default function SearchScreen({
           <Loading />
         ) : (
           <ScrollView
-            contentContainerStyle={{ paddingBottom: spacing.xxl }}
+            contentContainerStyle={{ paddingBottom: tabBarClearance + spacing.xxl }}
             showsVerticalScrollIndicator={false}
           >
             <EmptyState
@@ -286,7 +290,7 @@ export default function SearchScreen({
             numColumns={columns}
             contentContainerStyle={{
               paddingHorizontal: spacing.sm,
-              paddingBottom: spacing.xxl,
+              paddingBottom: tabBarClearance + spacing.xxl,
             }}
             keyboardShouldPersistTaps="handled"
             removeClippedSubviews

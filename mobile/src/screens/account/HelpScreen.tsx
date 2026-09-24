@@ -15,6 +15,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { PublicConfig } from '@shared';
 import { colors, radius, spacing } from '@shared/theme';
 import { api } from '@/lib/api';
+import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, Card, Screen } from '@/components/ui';
 
 const FAQ: { q: string; a: string }[] = [
@@ -82,6 +83,7 @@ function FaqItem({ item }: { item: { q: string; a: string } }) {
 
 export default function HelpScreen({ onBack }: { onBack: () => void }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
 
   const { data } = useQuery({
     queryKey: ['public-config'],
@@ -114,7 +116,9 @@ export default function HelpScreen({ onBack }: { onBack: () => void }) {
       <ScrollView
         contentContainerStyle={{
           padding: spacing.base,
-          paddingBottom: insets.bottom + spacing.xxl,
+          // The tab bar floats over this screen now (see MainTabs.tsx's
+          // `AnimatedTabBar`) rather than reserving its own flex space.
+          paddingBottom: tabBarClearance + spacing.xxl,
         }}
       >
         <AppText variant="body" color={colors.textSecondary}>

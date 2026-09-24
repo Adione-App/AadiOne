@@ -12,6 +12,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
+import Constants from "expo-constants";
 import type {
   CartDto,
   CategoryDto,
@@ -26,10 +27,28 @@ import type {
 } from "@shared";
 import { api } from "./api";
 
+/**
+ * Tags the Categories/Products cache keys below with the installed app
+ * version (same `Constants.expoConfig?.version` source push.ts already
+ * reads for its own `appVersion` field) — NOT the persister's own global
+ * `buster` in App.tsx, which would also invalidate Home's cache on every
+ * update; this only needs to reach Category/Subcategory. An app update
+ * changes this string, which changes these two query keys, which means a
+ * disk-persisted entry under the OLD version is simply never looked up
+ * again — the first Category open after an update naturally lands on a
+ * fresh, empty key (real skeleton, real fetch, real cache write) exactly
+ * once, then behaves cache-first as normal from then on. The old-versioned
+ * entries aren't explicitly deleted; they just stop being written into any
+ * future persisted snapshot the moment they're garbage-collected from
+ * memory, same as any other query that falls out of use.
+ */
+const CATALOG_CACHE_VERSION = Constants.expoConfig?.version ?? "1.0.0";
+
 export const keys = {
   home: ["home"] as const,
-  categories: ["categories"] as const,
-  products: (params: string) => ["products", params] as const,
+  categories: ["categories", CATALOG_CACHE_VERSION] as const,
+  products: (params: string) =>
+    ["products", CATALOG_CACHE_VERSION, params] as const,
   product: (id: string) => ["product", id] as const,
   search: (term: string) => ["search", term] as const,
   rail: (key: string) => ["rail", key] as const,
@@ -57,6 +76,14 @@ export function useCategories() {
     // The category tree changes a few times a month; refetching it on every
     // screen entry would waste a round trip the customer waits for.
     staleTime: 10 * 60_000,
+    // Without an explicit override this falls back to react-query's own
+    // 5-minute default gcTime — plenty short to get garbage-collected from
+    // the in-memory cache during a normal browsing session spent on other
+    // tabs (Home, Cart, Account, …), which forced a full refetch AND the
+    // Categories screen's own full-screen loading state the next time it
+    // was opened, even though the tree hadn't changed at all. Matches
+    // `useProducts`' own 30-minute window below for the same reason.
+    gcTime: 30 * 60_000,
   });
 }
 

@@ -14,6 +14,7 @@ import { colors, spacing } from "@shared/theme";
 import { useWishlist } from "@/lib/useWishlist";
 import { useCartActions } from "@/lib/useCartActions";
 import { useGridColumns } from "@/lib/useGridColumns";
+import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { AppText, EmptyState, NoticeStrip, Screen } from "@/components/ui";
 import { ProductCard } from "@/components/ProductCard";
 
@@ -25,6 +26,7 @@ export default function WishlistScreen({
   onBrowse: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
   const order = useWishlist((state) => state.order);
   const products = useWishlist((state) => state.products);
   const clearWishlist = useWishlist((state) => state.clear);
@@ -97,7 +99,15 @@ export default function WishlistScreen({
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
           numColumns={columns}
-          contentContainerStyle={{ padding: spacing.sm, paddingBottom: spacing.xxl }}
+          contentContainerStyle={{
+            padding: spacing.sm,
+            // The tab bar floats over this screen now (see MainTabs.tsx's
+            // `AnimatedTabBar`) rather than reserving its own flex space —
+            // this is what keeps the last row clear of its visible plate at
+            // rest. No MiniCartBar clearance needed here: it never shows on
+            // Wishlist (see `useMiniCartScreen`'s "none" case).
+            paddingBottom: tabBarClearance + spacing.xxl,
+          }}
           showsVerticalScrollIndicator={false}
           removeClippedSubviews
           initialNumToRender={8}

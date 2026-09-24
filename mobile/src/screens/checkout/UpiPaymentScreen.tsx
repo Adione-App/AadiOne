@@ -18,6 +18,7 @@ import { OrderStatus, type CreatePaymentResponse } from "@shared";
 import { formatPaise } from "@shared/money";
 import { colors, radius, spacing } from "@shared/theme";
 import { api, ApiRequestError } from "@/lib/api";
+import { useTabBarClearance } from "@/lib/tabBarVisibility";
 
 import {
   AppText,
@@ -56,6 +57,7 @@ export default function UpiPaymentScreen({
   onCancelled: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
 
   const [stage, setStage] = useState<Stage>("ready");
   const [utr, setUtr] = useState("");
@@ -332,7 +334,12 @@ export default function UpiPaymentScreen({
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[
+          styles.scrollContent,
+          // The tab bar floats over this screen now (see MainTabs.tsx's
+          // `AnimatedTabBar`) rather than reserving its own flex space.
+          { paddingBottom: tabBarClearance + 50 },
+        ]}
       >
         {error && <NoticeStrip message={error} />}
 

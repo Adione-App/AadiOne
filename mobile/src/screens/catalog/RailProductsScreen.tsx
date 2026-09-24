@@ -12,6 +12,7 @@ import { colors, spacing } from "@shared/theme";
 import { useRailProducts } from "@/lib/queries";
 import { useCartActions } from "@/lib/useCartActions";
 import { useGridColumns } from "@/lib/useGridColumns";
+import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { AppText, EmptyState, ErrorState, NoticeStrip, Screen } from "@/components/ui";
 import { ProductCard } from "@/components/ProductCard";
 import { ProductGridSkeleton } from "@/components/ProductCardSkeleton";
@@ -28,6 +29,7 @@ export default function RailProductsScreen({
   onOpenProduct: (productId: string) => void;
 }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
   const rail = useRailProducts(railKey);
   const cart = useCartActions();
   const columns = useGridColumns();
@@ -77,7 +79,12 @@ export default function RailProductsScreen({
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
           numColumns={columns}
-          contentContainerStyle={{ padding: spacing.sm, paddingBottom: spacing.xxl }}
+          contentContainerStyle={{
+            padding: spacing.sm,
+            // The tab bar floats over this screen now (see MainTabs.tsx's
+            // `AnimatedTabBar`) rather than reserving its own flex space.
+            paddingBottom: tabBarClearance + spacing.xxl,
+          }}
           showsVerticalScrollIndicator={false}
           removeClippedSubviews
           initialNumToRender={8}

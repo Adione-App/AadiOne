@@ -15,6 +15,7 @@ import { Headphones, ShieldCheck, Tag, Zap, type LucideIcon } from 'lucide-react
 import type { PublicConfig } from '@shared';
 import { colors, radius, spacing } from '@shared/theme';
 import { api } from '@/lib/api';
+import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, Card, Screen } from '@/components/ui';
 import BrandMark from '@/components/BrandMark';
 
@@ -46,6 +47,7 @@ const FEATURES: { icon: LucideIcon; title: string; body: (promise: string) => st
 
 export default function AboutScreen({ onBack }: { onBack: () => void }) {
   const insets = useSafeAreaInsets();
+  const tabBarClearance = useTabBarClearance();
 
   const { data } = useQuery({
     queryKey: ['public-config'],
@@ -69,7 +71,9 @@ export default function AboutScreen({ onBack }: { onBack: () => void }) {
       <ScrollView
         contentContainerStyle={{
           padding: spacing.base,
-          paddingBottom: insets.bottom + spacing.xxl,
+          // The tab bar floats over this screen now (see MainTabs.tsx's
+          // `AnimatedTabBar`) rather than reserving its own flex space.
+          paddingBottom: tabBarClearance + spacing.xxl,
         }}
       >
         <View style={{ alignItems: 'center' }}>

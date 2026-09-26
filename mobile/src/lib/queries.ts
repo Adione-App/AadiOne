@@ -165,15 +165,72 @@ export function useSearch(term: string) {
 /* Cart                                                                       */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Bumped every time the cart becomes authoritatively empty from OUTSIDE a
+ * per-item mutation's own response — a successful order, or Clear Cart.
+ *
+ * Why this exists: a per-item add/update/remove request (or, see `useCart`
+ * below, even the plain `GET /cart` itself) can still be in flight when the
+ * user checks out or taps Clear Cart (e.g. they tapped `+` then immediately
+ * hit Checkout before that request's response arrived, or this screen's own
+ * cart fetch was mid-retry — see api.ts's GET backoff/retry). That response
+ * reflects the cart as it was BEFORE the clear/order — applying it
+ * afterward would resurrect an item/count into a cart that has since been
+ * correctly emptied. Each mutation (and `useCart`'s own query) captures the
+ * epoch it started with and compares that to the current epoch before
+ * writing to the cache; a mismatch means an authoritative clear happened in
+ * between, so the response is dropped.
+ */
+let cartEpoch = 0;
+
+function bumpCartEpoch(): number {
+  cartEpoch += 1;
+  return cartEpoch;
+}
+
 export function useCart(distanceKm: number | null = null) {
+  const queryClient = useQueryClient();
+  const queryKey = [...keys.cart, distanceKm];
+
   return useQuery({
-    queryKey: [...keys.cart, distanceKm],
-    queryFn: () =>
-      api.get<CartDto>(
+    queryKey,
+    queryFn: async () => {
+      // Same protection `guardedWrite` (below) already gives per-item
+      // mutation responses, extended to this plain GET — which had none.
+      // `api.ts`'s own GETs retry twice with backoff on a transient
+      // failure, so a cart fetch that was ALREADY in flight when the
+      // customer placed an order (e.g. fired by this screen's own mount,
+      // or a slow/retrying attempt) can easily resolve AFTER
+      // `clearCartAfterOrder` has already correctly emptied the cache —
+      // its response reflects the cart as it was AT REQUEST TIME, before
+      // the order converted it, which is now stale. Without this guard,
+      // React Query would still happily write that stale snapshot over
+      // the correct empty one the instant it arrived — resurrecting the
+      // just-placed order's items back into the Mini Cart/Cart screen,
+      // which is exactly the "cart still shows the in-progress order"
+      // bug this fixes for the query path (`resetPendingCartAfterOrder`
+      // in useCartActions.ts covers the other, optimistic-overlay half).
+      const epochAtStart = cartEpoch;
+
+      const data = await api.get<CartDto>(
         distanceKm !== null
           ? `/cart?distanceKm=${encodeURIComponent(distanceKm)}`
           : "/cart",
-      ),
+      );
+
+      if (cartEpoch !== epochAtStart) {
+        // An authoritative clear/order happened while this request was in
+        // flight. Keep whatever's ALREADY in the cache (correct) instead
+        // of overwriting it with this now-superseded snapshot — falling
+        // back to the just-fetched `data` only if there's nothing cached
+        // yet at all (shouldn't happen in practice, since
+        // `clearCartAfterOrder` always writes something first).
+        const current = queryClient.getQueryData<CartDto>(queryKey);
+        if (current) return current;
+      }
+
+      return data;
+    },
     // The cart must never sit on a stale answer just because it was already
     // in memory — every screen that shows it refetches fresh the instant
     // it's observed, regardless of the app's default 30s staleTime. Without
@@ -182,27 +239,6 @@ export function useCart(distanceKm: number | null = null) {
     // the Cart tab right after checkout).
     refetchOnMount: "always",
   });
-}
-
-/**
- * Bumped every time the cart becomes authoritatively empty from OUTSIDE a
- * per-item mutation's own response — a successful order, or Clear Cart.
- *
- * Why this exists: a per-item add/update/remove request can still be in
- * flight when the user checks out or taps Clear Cart (e.g. they tapped `+`
- * then immediately hit Checkout before that request's response arrived).
- * That response is a `CartDto` computed against the cart as it was BEFORE
- * the clear/order — applying it afterward would resurrect an item/count
- * into a cart that has since been correctly emptied. Each mutation captures
- * the epoch it started with (`onMutate`) and its `onSuccess` compares that
- * to the current epoch before writing to the cache; a mismatch means an
- * authoritative clear happened in between, so the response is dropped.
- */
-let cartEpoch = 0;
-
-function bumpCartEpoch(): number {
-  cartEpoch += 1;
-  return cartEpoch;
 }
 
 /**
@@ -224,8 +260,35 @@ function bumpCartEpoch(): number {
 export function clearCartAfterOrder(queryClient: QueryClient): void {
   bumpCartEpoch();
 
+  // Every monetary/coupon field zeroed, not just `items`/`itemCount` — a
+  // real empty cart has no subtotal, discount, coupon, or total either.
+  // Leaving the OLD (pre-order) totals in place here was a second,
+  // smaller instance of the same bug this function exists to fix: the
+  // Cart screen's own bill summary kept showing the just-placed order's
+  // amount for the same brief window before the following `GET /cart`
+  // (see the `invalidateQueries` call right after this one) overwrote it
+  // with the server's real (already-empty) totals.
   queryClient.setQueriesData<CartDto>({ queryKey: keys.cart }, (old) =>
-    old ? { ...old, items: [], bill: { ...old.bill, itemCount: 0 } } : old,
+    old
+      ? {
+          ...old,
+          items: [],
+          bill: {
+            ...old.bill,
+            itemCount: 0,
+            itemsSubtotalPaise: 0,
+            itemDiscountPaise: 0,
+            couponCode: null,
+            couponDiscountPaise: 0,
+            deliveryFeePaise: 0,
+            deliveryFeeWaivedReason: null,
+            platformFeePaise: 0,
+            taxPaise: 0,
+            totalPaise: 0,
+            totalSavingsPaise: 0,
+          },
+        }
+      : old,
   );
 }
 

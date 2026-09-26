@@ -71,6 +71,18 @@ orderRouter.post(
       notes: z.string().trim().max(500).nullable().optional(),
       // A safety check only. Never used as the charged amount.
       expectedTotalPaise: z.number().int().min(0).optional(),
+      // Same safety-check role, per item — see PlaceOrderRequest's own
+      // comment in shared/dto.ts for why this is what lets PRICE_CHANGED
+      // name which product changed instead of only "the total didn't
+      // match".
+      expectedItems: z
+        .array(
+          z.object({
+            variantId: uuid,
+            unitPricePaise: z.number().int().min(0),
+          }),
+        )
+        .optional(),
     }),
   }),
   idempotency('POST /orders'),
@@ -82,6 +94,7 @@ orderRouter.post(
       couponCode?: string | null;
       notes?: string | null;
       expectedTotalPaise?: number;
+      expectedItems?: { variantId: string; unitPricePaise: number }[];
     };
 
     const result = await service.placeOrder({
@@ -91,6 +104,7 @@ orderRouter.post(
       couponCode: body.couponCode ?? null,
       notes: body.notes ?? null,
       expectedTotalPaise: body.expectedTotalPaise,
+      expectedItems: body.expectedItems,
       idempotencyKey: req.idempotencyKey as string,
     });
 

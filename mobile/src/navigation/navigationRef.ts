@@ -24,5 +24,18 @@ export function navigateToCart(): void {
   // to a tab by name (e.g. HomeScreen's `navigation.getParent()?.navigate
   // ("Cart")`) is in the same boat — this cast matches that existing,
   // pre-existing looseness rather than inventing a new one.
-  navigationRef.navigate("Cart" as never);
+  //
+  // Explicitly pinning `{ screen: "CartHome" }` is required, not cosmetic:
+  // placing an order `navigation.replace()`s the Cart tab's own stack from
+  // "CartHome" to "OrderTracking" (or "UpiPayment") so the customer can't
+  // back-button into re-placing it — see stacks.tsx's CartStack. That
+  // replacement sticks around as the tab's current screen indefinitely.
+  // MiniCartBar (the app's main way of reaching Cart) calls this function,
+  // and a bare `navigate("Cart")` would just re-focus whatever screen is
+  // already on top — landing back on that same finished/cancelled order
+  // instead of an actual cart, no matter what the order's status is now.
+  (navigationRef.navigate as (name: string, params?: object) => void)(
+    "Cart",
+    { screen: "CartHome" },
+  );
 }

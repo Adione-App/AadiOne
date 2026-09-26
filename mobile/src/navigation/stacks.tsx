@@ -97,6 +97,9 @@ export function HomeStack() {
              */
             onOpenLocation={() => navigation.navigate("SelectLocation")}
             onOpenProfile={() => navigation.getParent()?.navigate("Account")}
+            onOpenOrderTracking={(orderId) =>
+              navigation.navigate("OrderTracking", { orderId })
+            }
           />
         )}
       </CatalogStack.Screen>
@@ -158,6 +161,22 @@ export function HomeStack() {
             onOpenProduct={(productId) =>
               navigation.navigate("ProductDetail", { productId })
             }
+          />
+        )}
+      </CatalogStack.Screen>
+
+      {/* ---------------------------------------------------------------
+          ORDER TRACKING — reachable from Home's own "order in progress"
+          banner (see HomeScreen's onOpenOrderTracking), so its "back"
+          returns to Home rather than jumping to the Cart/Account stack's
+          own copy of this same screen.
+      --------------------------------------------------------------- */}
+
+      <CatalogStack.Screen name="OrderTracking">
+        {({ navigation, route }) => (
+          <OrderTrackingScreen
+            orderId={route.params.orderId}
+            onBack={() => navigation.goBack()}
           />
         )}
       </CatalogStack.Screen>
@@ -434,7 +453,14 @@ export function AccountStack() {
         {({ navigation }) => (
           <RewardsScreen
             onBack={() => navigation.goBack()}
-            onGoToCart={() => navigation.getParent()?.navigate("Cart")}
+            // Pinned to CartHome for the same reason navigationRef.ts's
+            // `navigateToCart` is: a bare `navigate("Cart")` re-focuses
+            // whatever screen an earlier order's `replace()` left on top of
+            // the Cart tab's stack (OrderTracking/UpiPayment), not an
+            // actual cart.
+            onGoToCart={() =>
+              navigation.getParent()?.navigate("Cart", { screen: "CartHome" })
+            }
           />
         )}
       </AccountNav.Screen>

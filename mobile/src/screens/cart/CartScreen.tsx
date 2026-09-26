@@ -22,7 +22,8 @@
  * - checkoutEnabled
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
 import * as Crypto from "expo-crypto";
 import {
   ActivityIndicator,
@@ -56,7 +57,7 @@ import { addressPrimaryLine } from "@shared/text";
 
 import { api, ApiRequestError, resolveImageUrl } from "@/lib/api";
 import { clearCartAfterOrder, keys, useCartMutations, useMyCoupons } from "@/lib/queries";
-import { useCartActions } from "@/lib/useCartActions";
+import { useCartActions, resetPendingCartAfterOrder } from "@/lib/useCartActions";
 import { useLocation } from "@/lib/store";
 
 import {
@@ -86,6 +87,49 @@ const CART_ROW_REMOVE_ANIMATION = {
     property: LayoutAnimation.Properties.opacity,
   },
 } as const;
+
+/** How long the short "prices were updated" confirmation stays on screen
+ * before clearing itself — see `showSyncNotice`. Long enough to actually
+ * read, short enough that it never reads as a permanent warning. */
+const SYNC_NOTICE_DURATION_MS = 4000;
+
+/**
+ * Turns an auto-recoverable order-placement failure into the short,
+ * reassuring confirmation `showSyncNotice` displays — using the server's
+ * own structured `details` (see order.service.ts's PRICE_CHANGED/
+ * ITEM_OUT_OF_STOCK, now plumbed through by api.ts) when present, falling
+ * back to a generic line when it isn't (an older server build, or the
+ * total-only PRICE_CHANGED fallback that has no per-item breakdown).
+ */
+function buildSyncNoticeMessage(err: ApiRequestError): string {
+  const details = err.details ?? [];
+
+  if (err.code === ErrorCode.PRICE_CHANGED) {
+    const [first] = details;
+    const currentPrice = typeof first?.["currentPrice"] === "number" ? first["currentPrice"] : null;
+    const name = typeof first?.["name"] === "string" ? first["name"] : null;
+
+    if (details.length === 1 && name && currentPrice !== null) {
+      return `${name}'s price was updated to ${formatPaise(currentPrice)}. Your total has been refreshed.`;
+    }
+    if (details.length > 1) {
+      return `${details.length} item prices were updated. Your cart total has been refreshed.`;
+    }
+    return "Some prices were updated. Your cart total has been refreshed.";
+  }
+
+  if (err.code === ErrorCode.ITEM_OUT_OF_STOCK || err.code === ErrorCode.INSUFFICIENT_STOCK) {
+    const [first] = details;
+    const available = typeof first?.["available"] === "number" ? first["available"] : null;
+
+    return available !== null
+      ? `Only ${available} item${available === 1 ? "" : "s"} available. Your cart has been updated.`
+      : "An item's availability changed. Your cart has been updated.";
+  }
+
+  // PRODUCT_UNAVAILABLE
+  return "An item in your cart is no longer available and was removed.";
+}
 
 /* ================================================================
  * MAIN CART SCREEN
@@ -123,7 +167,74 @@ export default function CartScreen({
   const [addressPickerOpen, setAddressPickerOpen] = useState(false);
   const [confirmOrderOpen, setConfirmOrderOpen] = useState(false);
   const [placing, setPlacing] = useState<PaymentMethod | null>(null);
+
+  /**
+   * A GENUINE problem the customer must act on — product unavailable,
+   * minimum order not met, COD not allowed, a bad coupon, no connection,
+   * a server error. Persists on screen until one of the "clears" below
+   * fires; NEVER for a price/stock mismatch, which this screen can (and
+   * does) resolve on its own — see `syncNotice` below for that case
+   * instead. This is the ONE place this error is ever set outside the
+   * clears — see the effect/focus-effect further down for the single
+   * source of truth on how it stops being stale.
+   */
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
+
+  /**
+   * A SHORT-LIVED, non-alarming confirmation that the cart was just
+   * resynced against current prices/stock on the customer's behalf — e.g.
+   * "Grapes price updated to ₹100. Your total has been refreshed." Clears
+   * itself after `SYNC_NOTICE_DURATION_MS`; never left permanently on
+   * screen the way `checkoutError` can be.
+   */
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const syncNoticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showSyncNotice = useCallback((message: string) => {
+    if (syncNoticeTimeoutRef.current) clearTimeout(syncNoticeTimeoutRef.current);
+    setSyncNotice(message);
+    syncNoticeTimeoutRef.current = setTimeout(() => {
+      syncNoticeTimeoutRef.current = null;
+      setSyncNotice(null);
+    }, SYNC_NOTICE_DURATION_MS);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (syncNoticeTimeoutRef.current) clearTimeout(syncNoticeTimeoutRef.current);
+    };
+  }, []);
+
+  /**
+   * Clears the persistent error the moment the SITUATION it was about
+   * changes — the cart's own contents (a qty tap, a delete, Clear Cart, or
+   * this screen's own price/stock resync all produce a new `cart`
+   * reference here, see useCartActions.ts's `optimisticCart`). Previously
+   * `checkoutError` was ONLY ever cleared at the very top of `placeOrder`
+   * itself — meaning quantity changes, deleting the affected item, or
+   * simply going back and returning never touched it at all, which was
+   * the actual cause of the error banner appearing "stuck" no matter what
+   * the customer did short of a successful reorder.
+   */
+  useEffect(() => {
+    setCheckoutError(null);
+    // Deliberately keyed on `cart` alone — re-running this because
+    // `checkoutError` itself changed would defeat the point.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cart]);
+
+  /**
+   * Also clears on RETURNING to this screen — tab switches/back navigation
+   * keep this component mounted (it's the root of the Cart tab's own
+   * stack), so local state like `checkoutError` would otherwise silently
+   * survive a trip to Home and back, resurrecting an old error the
+   * customer has no way to connect to whatever they're doing now.
+   */
+  useFocusEffect(
+    useCallback(() => {
+      setCheckoutError(null);
+    }, []),
+  );
 
   /**
    * One idempotency key per checkout attempt. Regenerated only when the
@@ -183,7 +294,7 @@ export default function CartScreen({
   }, [quote.data, cart]);
 
   const placeOrder = useCallback(async (method: PaymentMethod): Promise<void> => {
-    if (!addressId || !quote.data || placing) return;
+    if (!addressId || !quote.data || !cart || placing) return;
 
     setPlacing(method);
     setCheckoutError(null);
@@ -201,6 +312,16 @@ export default function CartScreen({
           // the merged bill (`bill`, not the possibly-stale `quote.data.bill`)
           // so it matches exactly what the customer is looking at on screen.
           expectedTotalPaise: bill?.totalPaise ?? quote.data.bill.totalPaise,
+          // Same safety-check role, per item — lets the server's
+          // PRICE_CHANGED response say WHICH product changed and by how
+          // much (see order.service.ts) instead of only "the total didn't
+          // match". Built from the same optimistic `cart` the screen is
+          // currently displaying, so it always matches what the customer
+          // actually sees.
+          expectedItems: cart.items.map((item) => ({
+            variantId: item.variantId,
+            unitPricePaise: item.unitPricePaise,
+          })),
         },
         idempotencyKey,
       );
@@ -208,24 +329,52 @@ export default function CartScreen({
       // The order transaction already marked the cart CONVERTED server-side,
       // so this is a known-correct state, not an optimistic guess — write it
       // directly instead of only invalidating, so the badge and every
-      // cart-reading screen update in this same tick.
+      // cart-reading screen update in this same tick. `resetPendingCartAfterOrder`
+      // right alongside it is what actually fixes the just-placed order's
+      // items lingering in the Mini Cart/badge — see its own doc comment
+      // for why `clearCartAfterOrder` alone was never enough.
       clearCartAfterOrder(queryClient);
+      resetPendingCartAfterOrder();
       void queryClient.invalidateQueries({ queryKey: keys.cart });
       await queryClient.invalidateQueries({ queryKey: keys.orders });
 
       onPlaced(result.order, result.requiresPayment);
     } catch (err) {
       if (err instanceof ApiRequestError) {
-        setCheckoutError(err.message);
-
-        // Prices/items changed — refresh the quote and start a fresh
-        // checkout attempt with a new idempotency key.
-        if (
+        if (err.isOffline) {
+          // A genuine connectivity failure — the request may or may not
+          // have actually reached the server, so the idempotency key is
+          // deliberately NOT regenerated here (see its own comment above):
+          // retrying reuses it, so if the original attempt DID land
+          // server-side, the retry safely returns that same order instead
+          // of risking a second one.
+          setCheckoutError(err.message);
+        } else if (
           err.code === ErrorCode.PRICE_CHANGED ||
-          err.code === ErrorCode.ITEM_OUT_OF_STOCK
+          err.code === ErrorCode.ITEM_OUT_OF_STOCK ||
+          err.code === ErrorCode.INSUFFICIENT_STOCK ||
+          err.code === ErrorCode.PRODUCT_UNAVAILABLE
         ) {
-          await quote.refetch();
+          // AUTO-RECOVERABLE — the server already knows exactly what
+          // changed (see order.service.ts's per-item `details` on
+          // PRICE_CHANGED/ITEM_OUT_OF_STOCK). Resync the ACTUAL cart (not
+          // just the delivery-fee quote — `bill` above reads its item
+          // figures straight from `cart`, so refetching only `quote`
+          // never touched what was actually displayed or actually sent as
+          // `expectedTotalPaise`/`expectedItems` on the next attempt,
+          // which is why retrying used to fail with the exact same error
+          // forever) and the quote together, then let the customer retry
+          // with a clean, genuinely-current cart. Never surfaced as a
+          // persistent `checkoutError` — see `syncNotice`.
+          await Promise.all([refetch(), quote.refetch()]);
           setIdempotencyKey(Crypto.randomUUID());
+          showSyncNotice(buildSyncNoticeMessage(err));
+        } else {
+          // Everything else (bad coupon, minimum order not met, COD not
+          // allowed, unauthorized, a genuine server error, …) needs the
+          // customer's OWN action — nothing here can silently fix an
+          // invalid coupon or a store that doesn't allow COD.
+          setCheckoutError(err.message);
         }
       } else {
         setCheckoutError("Could not place your order. Please try again.");
@@ -234,7 +383,7 @@ export default function CartScreen({
       setPlacing(null);
       setConfirmOrderOpen(false);
     }
-  }, [addressId, quote, placing, bill, idempotencyKey, queryClient, onPlaced]);
+  }, [addressId, quote, placing, bill, cart, refetch, idempotencyKey, queryClient, onPlaced, showSyncNotice]);
 
   // Double-tap / rapid re-press guard: tapping "Cash on Delivery" asks for
   // confirmation first (see the popup below); "Pay Online" goes straight to
@@ -486,6 +635,16 @@ export default function CartScreen({
             {(actions.error || checkoutError) && (
               <View style={styles.noticeContainer}>
                 <NoticeStrip message={checkoutError ?? actions.error ?? ""} />
+              </View>
+            )}
+
+            {/* Short-lived, non-alarming — see `showSyncNotice`. Deliberately
+                `tone="info"` (blue), never the same "warning" look as the
+                error above it, so a resolved price/stock mismatch never
+                reads as if something's still wrong. */}
+            {syncNotice && (
+              <View style={styles.noticeContainer}>
+                <NoticeStrip message={syncNotice} tone="info" />
               </View>
             )}
 

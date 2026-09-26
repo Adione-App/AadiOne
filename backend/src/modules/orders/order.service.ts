@@ -263,6 +263,8 @@ export interface PlaceOrderInput {
   couponCode?: string | null;
   notes?: string | null;
   expectedTotalPaise?: number | undefined;
+  /** See PlaceOrderRequest's own comment in shared/dto.ts. */
+  expectedItems?: { variantId: string; unitPricePaise: number }[] | undefined;
   idempotencyKey: string;
 }
 
@@ -344,6 +346,28 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
       const reservations: { storeVariantId: string; variantId: string; qty: number }[] = [];
       const orderItemData: Prisma.OrderItemCreateManyOrderInput[] = [];
 
+      // Keyed by variantId — the per-item prices the customer's cart was
+      // showing (see PlaceOrderRequest's own comment). Only ever a SAFETY
+      // CHECK, same as `expectedTotalPaise` below: `cart_items` itself
+      // stores no price of its own (see the CartItem model's own comment,
+      // "resolved live from store_variants"), so this is the only way to
+      // know what the customer actually saw for THIS specific product.
+      const expectedPriceByVariant = new Map(
+        (input.expectedItems ?? []).map((entry) => [entry.variantId, entry.unitPricePaise]),
+      );
+      const priceMismatches: {
+        /** Required by `ApiErrorDetail` — same style as ITEM_OUT_OF_STOCK's
+         * own per-item `message` above. */
+        message: string;
+        variantId: string;
+        productId: string;
+        name: string;
+        qty: number;
+        oldPrice: number;
+        currentPrice: number;
+        availableQty: number;
+      }[] = [];
+
       for (const item of cart.items) {
         const variant = item.variant;
         const product = variant.product;
@@ -376,6 +400,27 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
                 available: offer.availableQty,
               },
             ],
+          });
+        }
+
+        // Per-item price check — only runs for a variant the client actually
+        // sent an expected price for (older clients that only send
+        // `expectedTotalPaise` fall through to the total-level check further
+        // below instead, unchanged).
+        const expectedUnitPricePaise = expectedPriceByVariant.get(item.variantId);
+        if (
+          expectedUnitPricePaise !== undefined &&
+          expectedUnitPricePaise !== offer.pricePaise
+        ) {
+          priceMismatches.push({
+            message: `${displayName}: price changed from ₹${(expectedUnitPricePaise / 100).toFixed(2)} to ₹${(offer.pricePaise / 100).toFixed(2)}`,
+            variantId: item.variantId,
+            productId: product.id,
+            name: displayName,
+            qty: item.qty,
+            oldPrice: expectedUnitPricePaise,
+            currentPrice: offer.pricePaise,
+            availableQty: offer.availableQty,
           });
         }
 
@@ -434,6 +479,17 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
         });
       }
 
+      // Reported ALL AT ONCE (not on the first mismatch found) so the
+      // client can refresh and show every affected product in one go,
+      // rather than the customer retrying repeatedly to discover each
+      // changed price one at a time.
+      if (priceMismatches.length > 0) {
+        throw new AppError(ErrorCode.PRICE_CHANGED, {
+          message: 'Prices have changed since you reviewed your order. Please check and try again.',
+          details: priceMismatches,
+        });
+      }
+
       /* --- coupon ------------------------------------------------------ */
       // Re-validated INSIDE the transaction: usage limits can only be enforced
       // race-free if the check and the redemption commit together.
@@ -455,9 +511,13 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
         });
       }
 
-      // The client's figure is a SAFETY CHECK, never the charged amount. A
-      // mismatch means prices moved while they were on the review screen, so
-      // they are asked to confirm again rather than silently charged more.
+      // Fallback for whatever the per-item check above can't catch: an older
+      // client that only sends `expectedTotalPaise` (no `expectedItems` at
+      // all), or every item's own price matching while the TOTAL still
+      // moved (a delivery fee/coupon/tax change, not a product price). The
+      // client's figure is a SAFETY CHECK either way, never the charged
+      // amount — a mismatch means something moved since the review screen,
+      // so they're asked to confirm again rather than silently charged more.
       if (
         input.expectedTotalPaise !== undefined &&
         input.expectedTotalPaise !== bill.totalPaise

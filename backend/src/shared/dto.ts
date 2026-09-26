@@ -427,6 +427,18 @@ export interface PlaceOrderRequest {
    * the customer re-confirms. It is NEVER used as the charged amount.
    */
   expectedTotalPaise?: number;
+  /**
+   * Per-item prices the customer's cart was showing, keyed by variant.
+   * Optional, and purely a safety check like `expectedTotalPaise` above — the
+   * charged amount always comes from the server's own live lookup, never
+   * from this. What this DOES enable: when a price genuinely changed, the
+   * server can say WHICH product and by how much (see PRICE_CHANGED's
+   * `details` in order.service.ts) instead of only "the total didn't
+   * match" — there is nowhere to read an "old price" from otherwise, since
+   * cart_items deliberately stores no price of its own (see the CartItem
+   * model's own comment).
+   */
+  expectedItems?: { variantId: string; unitPricePaise: number }[];
 }
 
 export interface OrderItemDto {

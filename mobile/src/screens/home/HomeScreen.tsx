@@ -23,6 +23,7 @@ import {
   ArrowRight,
   ChevronRight,
   Leaf,
+  Package,
   ShieldCheck,
   MapPin,
   Zap,
@@ -35,7 +36,7 @@ type RailKey = HomeFeedDto["rails"][number]["key"];
 import { colors, radius, shadow, spacing } from "@shared/theme";
 import { formatDistance } from "@shared/distance";
 
-import { useHomeFeed } from "@/lib/queries";
+import { useHomeFeed, useOrders } from "@/lib/queries";
 import { useCartActions } from "@/lib/useCartActions";
 import { useLocation } from "@/lib/store";
 
@@ -149,6 +150,7 @@ export default function HomeScreen({
   onOpenSearch,
   onOpenLocation,
   onOpenProfile,
+  onOpenOrderTracking,
 }: {
   onOpenProduct: (productId: string) => void;
   onOpenCategory: (categoryId: string) => void;
@@ -157,12 +159,26 @@ export default function HomeScreen({
   onOpenSearch: () => void;
   onOpenLocation: () => void;
   onOpenProfile: () => void;
+  onOpenOrderTracking: (orderId: string) => void;
 }) {
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
 
   const feed = useHomeFeed();
   const cart = useCartActions();
+
+  // The most recent order that's still ONGOING (not delivered/cancelled/
+  // rejected/failed/refunded — see `bucket`, computed server-side in
+  // OrderSummaryDto) — surfaced as a banner below so a customer with an
+  // order already in flight can check on it without losing the NEW,
+  // already-empty cart they're free to build in the meantime (see
+  // useCartActions.ts's `resetPendingCartAfterOrder` for the other half of
+  // that: placing an order no longer leaves its own items stuck showing in
+  // the Mini Cart). `orders.data.items` is already newest-first (server
+  // returns them in placement order), so the first ONGOING one found is
+  // the most recent.
+  const orders = useOrders();
+  const ongoingOrder = orders.data?.items.find((order) => order.bucket === "ONGOING") ?? null;
 
   const { location, serviceability, refresh } = useLocation();
 
@@ -894,6 +910,53 @@ export default function HomeScreen({
         )}
 
         {/* ========================================================
+            ORDER IN PROGRESS — a customer can start a brand new order
+            (the Mini Cart is genuinely empty again the instant the last
+            one was placed — see useCartActions.ts's
+            `resetPendingCartAfterOrder`) while an earlier order is still
+            being prepared/delivered. This is the one place that earlier
+            order stays visible/reachable instead of just disappearing
+            from view the moment its own items stopped showing in the
+            cart.
+        ======================================================== */}
+
+        {ongoingOrder && (
+          <View style={styles.noticeContainer}>
+            <Pressable
+              onPress={() => onOpenOrderTracking(ongoingOrder.id)}
+              style={styles.ongoingOrderCard}
+              accessibilityRole="button"
+              accessibilityLabel={`Order ${ongoingOrder.orderNumber}, ${ongoingOrder.statusLabel}. View order`}
+            >
+              <View style={styles.ongoingOrderIcon}>
+                <Package size={20} color={colors.primary} strokeWidth={2} />
+              </View>
+
+              <View style={styles.ongoingOrderText}>
+                <AppText variant="bodyStrong" numberOfLines={1}>
+                  Order #{ongoingOrder.orderNumber}
+                </AppText>
+                <AppText
+                  variant="caption"
+                  color={colors.primary}
+                  numberOfLines={1}
+                  style={styles.ongoingOrderStatus}
+                >
+                  {ongoingOrder.statusLabel}
+                </AppText>
+              </View>
+
+              <View style={styles.ongoingOrderAction}>
+                <AppText variant="bodyStrong" color={colors.primary} style={styles.ongoingOrderActionText}>
+                  Track
+                </AppText>
+                <ChevronRight size={16} color={colors.primary} strokeWidth={2.5} />
+              </View>
+            </Pressable>
+          </View>
+        )}
+
+        {/* ========================================================
             PROMOTIONAL BANNERS — swipeable, with a dot indicator
         ======================================================== */}
 
@@ -1544,6 +1607,61 @@ searchBarRow: {
     paddingHorizontal: spacing.base,
 
     marginTop: spacing.sm,
+  },
+
+  /* ================================================================
+     ORDER IN PROGRESS
+  ================================================================ */
+
+  ongoingOrderCard: {
+    flexDirection: "row",
+    alignItems: "center",
+
+    padding: spacing.sm,
+
+    borderRadius: radius.lg,
+
+    borderWidth: 1,
+    borderColor: colors.primaryLight,
+
+    backgroundColor: colors.primarySurface,
+  },
+
+  ongoingOrderIcon: {
+    width: 40,
+    height: 40,
+
+    borderRadius: radius.circle,
+
+    backgroundColor: colors.surface,
+
+    alignItems: "center",
+    justifyContent: "center",
+
+    marginRight: spacing.sm,
+  },
+
+  ongoingOrderText: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  ongoingOrderStatus: {
+    marginTop: 1,
+    fontWeight: "700",
+  },
+
+  ongoingOrderAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 1,
+
+    marginLeft: spacing.sm,
+  },
+
+  ongoingOrderActionText: {
+    fontSize: 14,
+    lineHeight: 20,
   },
 
   /* ================================================================

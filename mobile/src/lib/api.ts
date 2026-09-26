@@ -16,7 +16,7 @@
 
 import Constants from "expo-constants";
 import * as SecureStore from "expo-secure-store";
-import type { ApiError, ApiResponse, ErrorCode } from "@shared";
+import type { ApiError, ApiErrorDetail, ApiResponse, ErrorCode } from "@shared";
 
 const BASE_URL =
   process.env["EXPO_PUBLIC_API_URL"] ??
@@ -159,6 +159,15 @@ export class ApiRequestError extends Error {
     readonly status: number,
     /** Present on 429 responses — seconds until the request may be retried. */
     readonly retryAfterSeconds?: number,
+    /**
+     * The server's own structured breakdown, when it sent one — e.g.
+     * PRICE_CHANGED's per-item `{ productId, name, oldPrice, currentPrice,
+     * qty, availableQty }` list (see order.service.ts), or
+     * ITEM_OUT_OF_STOCK's `{ variantId, available }`. Previously dropped
+     * entirely here, which is why a catch block could only ever show the
+     * server's generic message, never which specific product changed.
+     */
+    readonly details?: ApiErrorDetail[],
   ) {
     super(message);
     this.name = "ApiRequestError";
@@ -356,6 +365,8 @@ async function performRequest<T>(
         response.status,
 
         error?.retryAfterSeconds,
+
+        error?.details,
       );
     }
 

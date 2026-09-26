@@ -77,7 +77,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import type { CartDto, CartItemDto, ProductSummaryDto, VariantDto } from "@shared";
+import type {
+  CartDto,
+  CartItemDto,
+  ProductSummaryDto,
+  VariantDto,
+} from "@shared";
 import { ApiRequestError, resolveImageUrl } from "./api";
 import { flyFromCart } from "./flyToCart";
 import { useCart, useCartMutations } from "./queries";
@@ -344,6 +349,41 @@ const usePendingCartStore = create<PendingCartState>((set) => ({
 }));
 
 /**
+ * Called right alongside `clearCartAfterOrder` (queries.ts) the instant an
+ * order is placed — see CartScreen.tsx's own call site.
+ *
+ * THE ACTUAL BUG this fixes: `clearCartAfterOrder` only ever rewrote the
+ * React Query cache (the server-shaped `cart`). It never touched this
+ * SHARED Zustand overlay — `pendingQty`/`pendingSnapshots` — which is what
+ * every screen, the tab badge, and MiniCartBar actually render through
+ * `optimisticCart` (see that function below). If ANY per-item tap was still
+ * "pending" at the moment of checkout (a request in flight, or one that
+ * simply hadn't been reconciled against a fresh `cart` yet — see the
+ * reconciliation effect below, which only ever clears an entry once
+ * `cart.items` genuinely confirms the SAME quantity), that entry survived
+ * order placement completely untouched. `optimisticCart` then kept
+ * synthesizing a full line for it out of `pendingSnapshots` — a phantom
+ * line for an item that was JUST included in the order that was just
+ * placed — showing up in the Mini Cart, the cart badge, and the Cart
+ * screen itself, indefinitely (nothing was ever going to reconcile it,
+ * since the new server cart genuinely has qty 0 for that variant forever,
+ * never matching whatever nonzero qty was left pending).
+ *
+ * Deliberately does NOT touch `busyVariants` — a request that's genuinely
+ * still in flight for some variant at this exact moment needs to keep
+ * being tracked as busy so a stray tap can't double-fire a second request
+ * for it; its own `dispatch()` will settle normally once the real response
+ * lands, reads `pendingQty` fresh (now empty), and correctly no-ops rather
+ * than re-dispatching anything. Any response for an ALREADY in-flight
+ * per-item mutation that lands after this point is separately guarded by
+ * `queries.ts`'s own epoch check (`clearCartAfterOrder` bumps it) and gets
+ * dropped before it can write anything back to the cache either way.
+ */
+export function resetPendingCartAfterOrder(): void {
+  usePendingCartStore.setState({ pendingQty: {}, pendingSnapshots: {} });
+}
+
+/**
  * Serializes Clear Cart against every screen's dispatches, not just calls
  * made through the same hook instance — module scope, so there is exactly
  * one of these for the whole app, same reasoning as the store above.
@@ -353,9 +393,7 @@ let clearInFlightPromise: Promise<void> | null = null;
 export function useCartActions() {
   // IMPORTANT: pass the current serviceability distance
   // so cart pricing includes the correct delivery fee.
-  const serviceability = useLocation(
-    (state) => state.serviceability,
-  );
+  const serviceability = useLocation((state) => state.serviceability);
 
   const distanceKm = serviceability?.distanceKm ?? null;
 
@@ -569,9 +607,12 @@ export function useCartActions() {
       });
     }
 
-    const netItemsPaise = itemsSubtotalPaise - baseCart.bill.couponDiscountPaise;
+    const netItemsPaise =
+      itemsSubtotalPaise - baseCart.bill.couponDiscountPaise;
     const totalPaise =
-      netItemsPaise + baseCart.bill.deliveryFeePaise + baseCart.bill.platformFeePaise;
+      netItemsPaise +
+      baseCart.bill.deliveryFeePaise +
+      baseCart.bill.platformFeePaise;
 
     return {
       ...baseCart,
@@ -581,7 +622,8 @@ export function useCartActions() {
         itemCount,
         itemsSubtotalPaise,
         itemDiscountPaise,
-        totalSavingsPaise: itemDiscountPaise + baseCart.bill.couponDiscountPaise,
+        totalSavingsPaise:
+          itemDiscountPaise + baseCart.bill.couponDiscountPaise,
         totalPaise,
       },
     };
@@ -602,7 +644,10 @@ export function useCartActions() {
    * any number of times — it no-ops if a request for this variant is
    * already running or if there is nothing pending.
    */
-  const dispatch = async (variantId: string, chainedKnown?: KnownLine): Promise<void> => {
+  const dispatch = async (
+    variantId: string,
+    chainedKnown?: KnownLine,
+  ): Promise<void> => {
     // A Clear All is in progress — its response must land and be applied
     // before this variant's own request is allowed to go out, or a clear
     // response computed before this tap could later overwrite it.
@@ -617,7 +662,9 @@ export function useCartActions() {
     // after applying its own response — for every other (i.e. real, fresh)
     // call this always reads the live, shared cart data. See file header.
     const known: KnownLine =
-      chainedKnown !== undefined ? chainedKnown : (linesRef.current.get(variantId) ?? null);
+      chainedKnown !== undefined
+        ? chainedKnown
+        : (linesRef.current.get(variantId) ?? null);
 
     if (targetQty <= 0 && !known) {
       // Already empty server-side — nothing to sync for a decrement-to-zero
@@ -708,21 +755,28 @@ export function useCartActions() {
 
   // Stable across every render (empty dep arrays) — see file header, point 5.
   // Everything each closure needs comes from a ref, never from render scope.
-  const qtyFor = useCallback((variantId: string): number => qtyForImpl(variantId), []);
+  const qtyFor = useCallback(
+    (variantId: string): number => qtyForImpl(variantId),
+    [],
+  );
 
   const isBusy = useCallback(
     (variantId: string): boolean => isBusyImpl(variantId),
     [],
   );
 
-  const add = useCallback((variantId: string, snapshot?: CartItemSnapshot): void => {
-    // Stored BEFORE setPending so the same render pass that reacts to the
-    // new pendingQty already has display data to synthesize a line with —
-    // see `optimisticCart` above.
-    if (snapshot) usePendingCartStore.getState().setSnapshot(variantId, snapshot);
-    setPending(variantId, qtyForImpl(variantId) + 1);
-    void dispatch(variantId);
-  }, []);
+  const add = useCallback(
+    (variantId: string, snapshot?: CartItemSnapshot): void => {
+      // Stored BEFORE setPending so the same render pass that reacts to the
+      // new pendingQty already has display data to synthesize a line with —
+      // see `optimisticCart` above.
+      if (snapshot)
+        usePendingCartStore.getState().setSnapshot(variantId, snapshot);
+      setPending(variantId, qtyForImpl(variantId) + 1);
+      void dispatch(variantId);
+    },
+    [],
+  );
 
   const increment = useCallback((variantId: string): void => {
     setPending(variantId, qtyForImpl(variantId) + 1);
@@ -765,7 +819,10 @@ export function useCartActions() {
     // the remove-flight animation. Fired here, synchronously, before
     // `dispatch()` below starts its async request — the visual never
     // waits on the network.
-    if (nextQty === 0 && prevQty > 0) {
+    // Every real decrement gets the same remove animation:
+    // 3→2, 2→1, and 1→0. The animation starts synchronously,
+    // before the async cart update, so it never waits for the network.
+    if (prevQty > 0) {
       flyFromCart(removedLineImageUrl(variantId));
     }
 
@@ -804,7 +861,9 @@ export function useCartActions() {
         // One atomic bulk delete instead of one request per line — both
         // faster and immune to the per-request ordering issues N separate
         // deletes would have.
-        await mutationsRef.current.clearCart.mutateAsync({ distanceKm: distanceKmRef.current });
+        await mutationsRef.current.clearCart.mutateAsync({
+          distanceKm: distanceKmRef.current,
+        });
       } catch (err) {
         setError(
           err instanceof ApiRequestError

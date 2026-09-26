@@ -40,6 +40,7 @@ export type CatalogStackParamList = {
     key: "POPULAR" | "DAILY_ESSENTIALS" | "BEST_SELLERS" | "RECENTLY_ADDED" | "OFFERS";
     title: string;
   };
+  OrderTracking: { orderId: string };
 };
 
 export type CartStackParamList = {

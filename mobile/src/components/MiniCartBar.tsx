@@ -38,7 +38,7 @@
  * `positionStyle` below.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Image } from "expo-image";
@@ -246,40 +246,58 @@ function MiniCartPill({
   const latestItem = items[items.length - 1] ?? null;
 
   /**
-   * TWO-LAYER IMAGE SLOT.
+   * TWO-LAYER IMAGE SLOT, with an explicit READY + LANDED dual gate.
    *
-   * Why a single `<Image source={{ uri }}>` (the previous approach) could
-   * still blink even with `Image.prefetch()` + waiting for the FLYING
-   * dot's own `onLoad`: `Image.prefetch()` only proves expo-image's SHARED
-   * cache has the bytes decoded somewhere — it says nothing about THIS
-   * PARTICULAR native `<Image>` VIEW. The real slot below is a completely
-   * separate mounted component from the flying dot in flyToCart.tsx; the
-   * instant `source` on it changes from A's uri to B's, THAT view still
-   * has to go through its own native attach/decode/paint cycle for B,
-   * regardless of how "ready" B supposedly was elsewhere. On a slow
-   * device/frame, that's a real (if brief) gap where the view has already
-   * dropped A but hasn't painted B yet — the reported blink.
+   * `slots[0]`/`slots[1]` are two permanently mounted `<Image>` layers
+   * (see the JSX below), stacked exactly on top of each other — never
+   * remounted, never key'd by product/quantity/anything that changes.
+   * `frontIndex` says which one is opaque (visible) vs fully transparent
+   * (hidden). A new product is written into whichever slot ISN'T front;
+   * that slot's own `<Image>` loads it in the background, invisible.
    *
-   * The fix: never let the VISIBLE `<Image>`'s own `source` change at all.
-   * Two `<Image>` layers are permanently mounted here, stacked exactly on
-   * top of each other (see `imageLayer` below) — `slots[0]` and `slots[1]`
-   * — and `frontIndex` (below) says which one is currently OPAQUE
-   * (visible) vs fully transparent (hidden). A new product is written into
-   * whichever slot ISN'T currently front — that slot's OWN `<Image>` loads
-   * it in the background, invisible — and only that SAME view's own
-   * `onLoad`/`onError` (see the JSX below) flips `frontIndex` to reveal
-   * it. The previously-front slot doesn't disappear until that exact
-   * moment; it just becomes the new hidden slot, still holding whatever
-   * it last showed, ready to receive the NEXT product. Neither `<Image>`
-   * ever remounts or has its `source` swapped out from under itself while
-   * visible — only their SHARED opacity/z-index role toggles.
+   * A slot becoming the visible one — a PROMOTION — requires BOTH of:
+   *
+   *   pendingReadyRef.current  — the BACK slot's own `<Image>` has fired
+   *                              its own onLoad/onError (see `markReady`).
+   *   pendingLandedRef.current — the flying dot has actually finished its
+   *                              drop onto the Mini Cart (see `markLanded`)
+   *                              — or, for the removed-item fallback below
+   *                              (which has no flight of its own), this is
+   *                              simply always true.
+   *
+   * Loading is kicked off at flight START now (`latestAddFlightId`
+   * changing), not at landing — the back slot gets the image's FULL
+   * ~160ms flight time to load, not just whatever's left once it lands.
+   * That's exactly why the dual gate is needed: without it, a fast-
+   * loading (e.g. already-cached) image could become ready WHILE the
+   * flying dot is still mid-air, and promoting it then would show the
+   * product in the real slot before its own flying copy has visually
+   * arrived — `pendingLandedRef` holds that back regardless of how early
+   * `pendingReadyRef` turns true.
+   *
+   * `pendingTokenRef`/`pendingFlightIdRef` correlate a `markReady`/
+   * `markLanded` call back to the SPECIFIC transition it belongs to — a
+   * rapid A -> B -> C means B's own onLoad (or B's flight landing) can
+   * still arrive AFTER C has already superseded it in the back slot;
+   * both checks bail out immediately if the token/flightId they're
+   * holding no longer matches what's currently pending.
+   *
+   * Every mutation of these refs, and every `setSlots`/`setFrontIndex`
+   * call, happens from a proper effect or a native event callback
+   * (`useEffect`/`useLayoutEffect`/`setTimeout`/`onLoad`/`onError`) —
+   * NEVER during render. An earlier version called this logic directly
+   * from the render body (piggybacking on `landedFlightId` changing) to
+   * dodge an extra frame; that's no longer necessary architecturally,
+   * because the FRONT slot is never touched until an explicit promotion
+   * either way — so there's nothing for a "one frame late" effect to be
+   * late FOR. The visible slot only ever changes at the exact moment
+   * `maybePromote` runs, whether that's triggered synchronously-ish from
+   * a `useLayoutEffect` (landing) or from a native `onLoad` callback
+   * (ready) — both are proper effect/event contexts, and in both cases
+   * the OLD image was never removed in between, so there is no
+   * intermediate frame to leak either way.
    */
   interface Slot {
-    /** Identifies which WRITE to this slot this is — compared inside its
-     * own onLoad/onError (see the JSX below) against
-     * `latestRequestedTokenRef` so a load event for an image this slot has
-     * since moved on from (a newer product overwrote it before this one
-     * finished) can never wrongly promote stale content to front. */
     token: number;
     imageUrl: string | null;
     variantId: string | null;
@@ -294,37 +312,81 @@ function MiniCartPill({
     { token: -1, imageUrl: null, variantId: null },
   ]);
   const [frontIndex, setFrontIndex] = useState<0 | 1>(0);
-  // Mirrors `frontIndex` synchronously for `requestDisplay` below — it
-  // needs "which slot is the hidden BACK one" at the exact instant it's
-  // called, which React's own (batched, next-render) state can't
-  // guarantee already reflects a promotion from earlier in the same tick.
+  // Mirrors `frontIndex` for `requestDisplay` below, which needs "which
+  // slot is the hidden BACK one" — always read via the ref (never the
+  // `frontIndex` state closure), since `requestDisplay` is called from
+  // effects/callbacks that may run after several renders have passed
+  // since their own closure was created.
   const frontIndexRef = useRef<0 | 1>(0);
 
   const nextTokenRef = useRef(1);
-  const latestRequestedTokenRef = useRef(0);
+
+  const pendingTokenRef = useRef<number | null>(null);
+  const pendingSlotIndexRef = useRef<0 | 1 | null>(null);
+  const pendingFlightIdRef = useRef<number | null>(null);
+  const pendingReadyRef = useRef(false);
+  const pendingLandedRef = useRef(false);
 
   const frontSlot = slots[frontIndex];
 
+  // Promotes the pending back slot to front — but only once BOTH gates
+  // (see this whole block's own comment above) are satisfied for the
+  // SAME still-current transition.
+  const maybePromote = (token: number) => {
+    if (pendingTokenRef.current !== token) return;
+    if (!pendingReadyRef.current || !pendingLandedRef.current) return;
+
+    const index = pendingSlotIndexRef.current;
+    if (index === null) return;
+
+    frontIndexRef.current = index;
+    setFrontIndex(index);
+
+    pendingTokenRef.current = null;
+    pendingSlotIndexRef.current = null;
+    pendingFlightIdRef.current = null;
+  };
+
   /**
-   * Writes a new candidate product into the current BACK slot and arms it
-   * to become front the moment ITS OWN `<Image>` (see the JSX below)
-   * confirms it actually loaded — never before, never on a guess. A no-op
-   * if this is already what's showing.
+   * Writes a new candidate product into the current BACK slot and starts
+   * it loading. A no-op if this is already what's showing — the variantId
+   * check (not a url-string comparison) is deliberate: the OPTIMISTIC
+   * line (ProductCard's own snapshot) and the eventual server-confirmed
+   * line can legitimately resolve to two DIFFERENT url strings for the
+   * exact same product, so comparing by url alone would treat that as a
+   * genuinely new product and run it through a pointless swap.
    *
-   * The variantId check (not a url-string comparison) is deliberate: the
-   * OPTIMISTIC line (ProductCard's own snapshot) and the eventual
-   * server-confirmed line can legitimately resolve to two DIFFERENT url
-   * strings for the exact same product (the client's own fallback chain
-   * isn't identical to the backend's) — comparing by url alone would
-   * treat that as a genuinely new product and run it through a pointless
-   * swap for an image that's visually identical.
+   * `flightId`/`waitForLanding` belong only to ADD flights. REMOVE never
+   * calls this function; it directly updates the current front slot.
    */
-  const requestDisplay = (imageUrl: string | null, variantId: string | null) => {
-    if (variantId !== null && variantId === frontSlot.variantId) return;
+  const requestDisplay = (
+    imageUrl: string | null,
+    variantId: string | null,
+    options: { flightId?: number; waitForLanding?: boolean } = {},
+  ) => {
+    // For a real add flight, even if the same product is already visible
+    // (quantity re-increment), we still need to register the flight so the
+    // landing signal stays synchronized with the flying image. For non-flight
+    // fallbacks, the same-product request is still a no-op.
+    if (
+      variantId !== null &&
+      variantId === frontSlot.variantId &&
+      options.flightId == null
+    ) {
+      return;
+    }
 
     const backIndex: 0 | 1 = frontIndexRef.current === 0 ? 1 : 0;
     const token = nextTokenRef.current++;
-    latestRequestedTokenRef.current = token;
+
+    pendingTokenRef.current = token;
+    pendingSlotIndexRef.current = backIndex;
+    pendingFlightIdRef.current = options.flightId ?? null;
+    // No image at all (e.g. a product with no thumbnail) — there's no
+    // `<Image>`/`onLoad` to wait for (the JSX below renders the plain
+    // placeholder View instead in that case), so this gate starts open.
+    pendingReadyRef.current = !resolveImageUrl(imageUrl);
+    pendingLandedRef.current = !options.waitForLanding;
 
     setSlots((prev) => {
       const next = [...prev] as [Slot, Slot];
@@ -332,55 +394,74 @@ function MiniCartPill({
       return next;
     });
 
-    // No image at all (e.g. a product with no thumbnail) — there is no
-    // `<Image>`/`onLoad` to wait for (the JSX below renders the plain
-    // placeholder View instead in that case), so promote immediately.
-    if (!resolveImageUrl(imageUrl)) {
-      promote(backIndex, token);
-    }
+    maybePromote(token);
+  };
+
+  // The back slot's own `<Image>` (see the JSX below) has fired its own
+  // onLoad/onError — i.e. genuinely painted, not merely prefetched.
+  const markReady = (token: number) => {
+    if (pendingTokenRef.current !== token) return;
+    pendingReadyRef.current = true;
+    maybePromote(token);
+  };
+
+  // The flying dot has landed (or the safety timeout below is recovering
+  // from a lost landing signal) for the flight this pending transition is
+  // waiting on.
+  const markLanded = (flightId: number) => {
+    if (pendingFlightIdRef.current !== flightId) return;
+    const token = pendingTokenRef.current;
+    if (token === null) return;
+    pendingLandedRef.current = true;
+    maybePromote(token);
   };
 
   /**
-   * Makes `index`'s slot the visible one — but ONLY if `token` still
-   * matches the most recently REQUESTED write for it (see
-   * `latestRequestedTokenRef` above). Safe to call for the ALREADY-front
-   * slot too (its own steady-state `onLoad` calls this too) — promoting a
-   * slot to the role it already holds is a harmless no-op.
-   */
-  const promote = (index: 0 | 1, token: number) => {
-    if (latestRequestedTokenRef.current !== token) return;
-    frontIndexRef.current = index;
-    setFrontIndex(index);
-  };
-
-  /**
-   * If the product currently shown in the slot is the one that was just
-   * removed from the cart entirely (its line no longer appears in
-   * `items`), swap to another remaining item's image instead of
-   * continuing to display a product that's no longer in the cart. Fires
-   * ONLY in that case — removing a DIFFERENT product never touches the
-   * front slot. `items` here is already the optimistic list (see
-   * useCartActions' `optimisticCart`), so this reacts the instant a
-   * removal is tapped, not once the network confirms it. Deliberately
-   * independent of the remove-flight animation in flyToCart.tsx — that's
-   * a separate, purely visual flight and stays completely untouched by
-   * this.
+   * REMOVE HANDOFF — intentionally independent from ADD.
+   *
+   * When the currently displayed product is removed, the optimistic cart
+   * already contains the remaining items. Switch the FRONT slot immediately.
+   *
+   * REMOVE must never wait for image onLoad, a flying-dot completion, or the
+   * ADD reveal timeout. Any unfinished ADD transition is invalidated first,
+   * so stale onLoad/landing callbacks cannot bring the removed product back.
    */
   useEffect(() => {
     if (frontSlot.variantId === null) return;
     if (items.some((item) => item.variantId === frontSlot.variantId)) return;
 
+    // Cancel any unfinished ADD reveal for the product being removed.
+    if (revealTimeoutRef.current) {
+      clearTimeout(revealTimeoutRef.current);
+      revealTimeoutRef.current = null;
+    }
+
+    pendingTokenRef.current = null;
+    pendingSlotIndexRef.current = null;
+    pendingFlightIdRef.current = null;
+    pendingReadyRef.current = false;
+    pendingLandedRef.current = false;
+
     const fallback = items[items.length - 1] ?? null;
-    requestDisplay(fallback?.imageUrl ?? null, fallback?.variantId ?? null);
+    const index = frontIndexRef.current;
+    const token = nextTokenRef.current++;
+
+    // REMOVE is immediate. Do not send the fallback through requestDisplay(),
+    // because that function is intentionally gated for ADD handoffs.
+    setSlots((prev) => {
+      const next = [...prev] as [Slot, Slot];
+      next[index] = {
+        token,
+        imageUrl: fallback?.imageUrl ?? null,
+        variantId: fallback?.variantId ?? null,
+      };
+      return next;
+    });
+
+    // Keep the other slot untouched so the next ADD can reuse it without
+    // introducing a blank frame.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, frontSlot.variantId]);
-
-  /**
-   * Which flight's image has already been requested, if any — guards
-   * against applying the same reveal twice (once from the landing effect,
-   * once from the safety-timeout racing it).
-   */
-  const appliedFlightIdRef = useRef<number | null>(null);
 
   const revealTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -391,25 +472,18 @@ function MiniCartPill({
     }
   };
 
-  const applyReveal = (
-    flightId: number,
-    imageUrl: string | null,
-    variantId: string | null,
-  ) => {
-    if (appliedFlightIdRef.current === flightId) return;
-    appliedFlightIdRef.current = flightId;
-    requestDisplay(imageUrl, variantId);
-  };
-
   const prevLatestAddFlightIdRef = useRef(latestAddFlightId);
 
   /**
-   * A NEW add flight was just REQUESTED (flyToCart() was actually called —
-   * see flyToCart.tsx). Arms a safety-net timeout in case its landing
-   * signal is ever lost. Does NOT touch the front slot itself — it keeps
-   * showing whatever it already was until a landing (or this timeout)
-   * confirms the swap, exactly matching "Mini Cart image only changes
-   * according to the latest-added logic," never a guess.
+   * A NEW add flight was just REQUESTED (flyToCart() was actually called
+   * — see flyToCart.tsx). Starts loading its image into the back slot
+   * RIGHT NOW — not once it lands — so it has the flight's full duration
+   * to finish rather than whatever's left after landing (see this
+   * section's own architecture comment above for why the ready+landed
+   * dual gate is what makes starting this early safe). Also arms a
+   * safety-net timeout purely to recover from a LOST landing signal —
+   * `markLanded` still requires `pendingReadyRef` too, so this can never
+   * bypass image readiness, only stand in for a missing landing event.
    */
   useEffect(() => {
     if (latestAddFlightId === prevLatestAddFlightIdRef.current) return;
@@ -418,59 +492,50 @@ function MiniCartPill({
     if (latestAddFlightId === null) return;
 
     const thisFlightId = latestAddFlightId;
+    const store = useFlyToCartStore.getState();
+
+    requestDisplay(store.latestAddImageUrl, store.latestAddVariantId, {
+      flightId: thisFlightId,
+      waitForLanding: true,
+    });
 
     clearRevealTimeout();
     revealTimeoutRef.current = setTimeout(() => {
       revealTimeoutRef.current = null;
 
-      // Only force-reveal if THIS flight is still the latest one
-      // requested — a superseded flight (a newer add already started) is
-      // simply dropped, never allowed to overwrite a fresher image.
-      const store = useFlyToCartStore.getState();
-      if (store.latestAddFlightId === thisFlightId) {
-        applyReveal(
-          thisFlightId,
-          store.latestAddImageUrl,
-          store.latestAddVariantId,
-        );
+      // Only recover if THIS flight is still the latest one requested —
+      // a superseded flight (a newer add already started) is simply
+      // dropped, never allowed to overwrite a fresher image.
+      if (useFlyToCartStore.getState().latestAddFlightId === thisFlightId) {
+        markLanded(thisFlightId);
       }
     }, ADD_DURATION + REVEAL_SAFETY_MARGIN);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [latestAddFlightId]);
 
-  const prevLandedFlightIdRef = useRef(landedFlightId);
-
   /**
    * A flyToCart() flight just reported landing (see flyToCart.tsx's
-   * onDone) — reveal ONLY if it's still the CURRENT latest requested add.
-   * An older flight landing late (rapid adds, jittery JS-thread
-   * scheduling) is ignored outright: it can never overwrite a newer
-   * image, whether or not that newer one has landed yet.
-   *
-   * Applied DURING RENDER, deliberately NOT inside a `useEffect` — this is
-   * React's own documented pattern for syncing state to a change in the
-   * SAME commit (see "You Might Not Need an Effect" / adjusting state
-   * when a prop changes). `onDone` (flyToCart.tsx) sets `landedFlightId`
-   * AND removes the flying dot from `FlyToCartOverlay`'s own state in the
-   * same synchronous call, so both updates land in the same React batch —
-   * but an EFFECT here would still only run AFTER that batch's commit had
-   * already painted, meaning the slot was visibly still showing the OLD
-   * image for one full frame right after the dot landed on top of it and
-   * disappeared: a flash back to the old image before snapping to the
-   * new one. That flash was the reported blink. Reading and reacting to
-   * `landedFlightId` here instead makes React redo this render with the
-   * new image BEFORE committing anything, so the dot's disappearance and
-   * the slot's new image reach the screen in the exact same paint.
+   * onDone) — `useLayoutEffect`, not a regular `useEffect`: it still runs
+   * before the screen actually paints (same reasoning flyToCart.tsx's own
+   * `FlightDot` already uses `useLayoutEffect` for), so there's no extra
+   * visible frame versus reacting during render — but it's a genuine
+   * effect, not a state update piggybacked onto the render body. Safe
+   * here specifically because `markLanded` never touches the FRONT slot
+   * directly — it only ever flips one of the two gates a promotion
+   * needs, so there's no "old image was already removed" state for a
+   * one-tick-later effect to be too slow to prevent.
    */
-  if (landedFlightId !== prevLandedFlightIdRef.current) {
-    prevLandedFlightIdRef.current = landedFlightId;
+  useLayoutEffect(() => {
+    if (landedFlightId === null) return;
+    // An older flight landing late (rapid adds, jittery JS-thread
+    // scheduling) is ignored outright — it can never overwrite a newer
+    // image, whether or not that newer one has landed yet.
+    if (landedFlightId !== latestAddFlightId) return;
 
-    if (landedFlightId !== null && landedFlightId === latestAddFlightId) {
-      clearRevealTimeout();
-      const store = useFlyToCartStore.getState();
-      applyReveal(landedFlightId, store.latestAddImageUrl, store.latestAddVariantId);
-    }
-  }
+    clearRevealTimeout();
+    markLanded(landedFlightId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [landedFlightId]);
 
   useEffect(() => {
     return () => clearRevealTimeout();
@@ -499,25 +564,27 @@ function MiniCartPill({
           itemCount === 1 ? "" : "s"
         }`}
       >
-        <View
-          ref={imageBoxRef}
-          collapsable={false}
-          style={styles.imageBox}
-        >
+        <View ref={imageBoxRef} collapsable={false} style={styles.imageBox}>
           {/* SLOT A and SLOT B — two permanently mounted layers, stacked
               exactly on top of each other (`imageLayer` is an absolute
-              fill of this 28x28 box). Neither ever remounts and neither's
-              `source` ever changes while it's the visible one — see the
-              `Slot`/`requestDisplay`/`promote` architecture note above for
-              why that's the actual fix. Which one is on top is purely
-              `opacity`/`zIndex`, toggled by `frontIndex`; both stay
-              mounted always so the hidden one can keep loading the next
-              candidate without ever being torn down and rebuilt. */}
+              fill of this 28x28 box). Neither ever remounts. BOTH layers
+              remain fully opaque; only zIndex changes which already-painted
+              image is on top. This is intentional: changing opacity on the
+              two layers during the landing handoff can expose a compositor
+              blank frame, which is the thumbnail blink we are eliminating. */}
           <View
             pointerEvents="none"
             style={[
               styles.imageLayer,
-              { opacity: frontIndex === 0 ? 1 : 0, zIndex: frontIndex === 0 ? 1 : 0 },
+              {
+                // NEVER fade the currently visible image out.
+                // Both layers stay fully opaque; zIndex alone decides which
+                // already-painted image is on top. This avoids the native
+                // compositor blank-frame that can happen when opacity 0 -> 1
+                // and zIndex change together during the landing handoff.
+                opacity: 1,
+                zIndex: frontIndex === 0 ? 2 : 1,
+              },
             ]}
           >
             {slotAUri ? (
@@ -526,8 +593,8 @@ function MiniCartPill({
                 style={styles.image}
                 contentFit="cover"
                 cachePolicy="memory-disk"
-                onLoad={() => promote(0, slots[0].token)}
-                onError={() => promote(0, slots[0].token)}
+                onLoad={() => markReady(slots[0].token)}
+                onError={() => markReady(slots[0].token)}
               />
             ) : (
               <View style={styles.imagePlaceholder} />
@@ -538,7 +605,13 @@ function MiniCartPill({
             pointerEvents="none"
             style={[
               styles.imageLayer,
-              { opacity: frontIndex === 1 ? 1 : 0, zIndex: frontIndex === 1 ? 1 : 0 },
+              {
+                // Keep this layer painted as well. It stays underneath the
+                // current front image until maybePromote() makes it the top
+                // layer after BOTH ready + landed gates are satisfied.
+                opacity: 1,
+                zIndex: frontIndex === 1 ? 2 : 1,
+              },
             ]}
           >
             {slotBUri ? (
@@ -547,8 +620,8 @@ function MiniCartPill({
                 style={styles.image}
                 contentFit="cover"
                 cachePolicy="memory-disk"
-                onLoad={() => promote(1, slots[1].token)}
-                onError={() => promote(1, slots[1].token)}
+                onLoad={() => markReady(slots[1].token)}
+                onError={() => markReady(slots[1].token)}
               />
             ) : (
               <View style={styles.imagePlaceholder} />
@@ -663,7 +736,7 @@ const styles = StyleSheet.create({
     // Flush against the screen's right edge — no margin, no safe-area
     // spacing, no `left` (the wrapper hugs the card's own intrinsic width).
     right: 0,
-    
+
     // The one constant resting line — `positionStyle`'s `translateY` moves
     // the card UP from here, it never changes this itself (see that
     // style's own comment).

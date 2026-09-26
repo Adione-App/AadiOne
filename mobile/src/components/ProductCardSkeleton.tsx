@@ -9,72 +9,184 @@
  * fetched — a category already in the query cache renders its real cards
  * immediately instead (see CategoriesScreen).
  *
- * Every bone pulses opacity in a loop (a plain `Animated` loop, no gradient
- * library needed) — `ProductGridSkeleton` creates ONE shared pulse and hands
- * it to every card so the whole grid breathes in sync, rather than each
- * card animating independently and looking noisy.
+ * VISUAL DESIGN — a soft light "sheen" sweeping over each bone, not a flat
+ * grey block pulsing on/off. Every card shares ONE Reanimated shared value
+ * (`shimmerProgress`, created once in `ProductGridSkeleton` and handed
+ * down) driving every bone's sweep in lockstep — a single continuous
+ * "light passing over the grid" read, rather than each bone animating
+ * independently and looking busy. There's no gradient library in this
+ * project (`expo-linear-gradient` isn't installed, and this doesn't
+ * warrant adding one) — the sheen is faked with three adjacent bands of
+ * decreasing opacity (`shimmerEdge`/`shimmerCore`), which reads as a soft
+ * highlight rather than a hard-edged flash without needing a real
+ * gradient.
+ *
+ * ALL of this runs on the UI thread via Reanimated — `withRepeat` for the
+ * sweep, a worklet `entering` (see `makeCardEntering`) for the staggered
+ * fade-up each card enters with. Nothing here touches the JS thread on a
+ * per-frame basis, there are no `setInterval`/timers, and the single
+ * shared driver means mounting a 12-card grid still only ever creates ONE
+ * looping animation, not twelve.
  */
 
-import { useEffect, useRef } from "react";
-import { Animated, View, StyleSheet } from "react-native";
+import { useEffect } from "react";
+import { View, StyleSheet, type StyleProp, type ViewStyle } from "react-native";
+import ReanimatedAnimated, {
+  Easing as ReanimatedEasing,
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withRepeat,
+  withTiming,
+  type EntryAnimationsValues,
+  type SharedValue,
+} from "react-native-reanimated";
 import { colors, radius, shadow, spacing } from "@shared/theme";
 
-function useSkeletonPulse(): Animated.Value {
-  const pulse = useRef(new Animated.Value(0.55)).current;
+/**
+ * Explicit skeleton colors, deliberately NOT `colors.skeleton` (grey100,
+ * `#F1F3F2`) — that token sits only ~4 RGB units off `colors.surface`
+ * (white), which is functionally invisible on a real screen: exactly what
+ * read as "random very-light-grey blocks, almost the same as the white
+ * background" rather than a deliberate skeleton. `#F3F4F6` gives real,
+ * clearly-visible-but-still-subtle contrast against white without being
+ * dark grey. The shimmer highlight sweeping over it is genuinely opaque
+ * white at its peak (see `shimmerCore` below) for the same reason — a
+ * translucent highlight on an already-near-white base was invisible on
+ * top of being invisible.
+ */
+const SKELETON_BASE = "#F3F4F6";
+const SKELETON_HIGHLIGHT = "#FFFFFF";
 
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, {
-          toValue: 1,
-          duration: 700,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulse, {
-          toValue: 0.55,
-          duration: 700,
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [pulse]);
+/** One full sweep, left edge to right edge, in ms — slow and gentle, not a
+ * fast blink. */
+const SHIMMER_DURATION = 1400;
 
-  return pulse;
-}
+/** Fixed travel distance for every bone's sweep, in px — deliberately NOT
+ * derived from each bone's own (often percentage-based) width. Every bone
+ * sweeping across the exact same real-pixel range, driven by the same
+ * shared progress, is what makes them read as one coordinated light pass
+ * over the card rather than each bone doing its own independent thing —
+ * and it means no bone ever needs to measure itself before it can animate. */
+const SHIMMER_BAND_WIDTH = 60;
+const SHIMMER_TRAVEL_FROM = -SHIMMER_BAND_WIDTH;
+const SHIMMER_TRAVEL_TO = 200;
 
-function Bone({ style, pulse }: { style?: object; pulse: Animated.Value }) {
-  return <Animated.View style={[styles.bone, style, { opacity: pulse }]} />;
-}
+/** Per-card entrance stagger — capped so a big grid's LAST card still
+ * starts within a fraction of a second, not visibly lagging behind. */
+const STAGGER_MS = 45;
+const STAGGER_CAP = 8;
+const ENTRANCE_DURATION = 240;
 
-export function ProductCardSkeleton({ pulse: sharedPulse }: { pulse?: Animated.Value } = {}) {
-  const ownPulse = useSkeletonPulse();
-  const pulse = sharedPulse ?? ownPulse;
+/**
+ * The moving highlight itself — three adjacent bands (low/high/low
+ * opacity) faking a soft linear gradient. `pointerEvents="none"`: purely
+ * decorative, must never intercept a touch meant for whatever's under it.
+ */
+function ShimmerSweep({ progress }: { progress: SharedValue<number> }) {
+  const sweepStyle = useAnimatedStyle(() => ({
+    transform: [
+      {
+        translateX: interpolate(
+          progress.value,
+          [0, 1],
+          [SHIMMER_TRAVEL_FROM, SHIMMER_TRAVEL_TO],
+        ),
+      },
+    ],
+  }));
 
   return (
-    <View style={styles.card}>
+    <ReanimatedAnimated.View
+      pointerEvents="none"
+      style={[styles.shimmerBand, sweepStyle]}
+    >
+      <View style={styles.shimmerEdge} />
+      <View style={styles.shimmerCore} />
+      <View style={styles.shimmerEdge} />
+    </ReanimatedAnimated.View>
+  );
+}
+
+function Bone({
+  style,
+  progress,
+}: {
+  style?: StyleProp<ViewStyle>;
+  progress: SharedValue<number>;
+}) {
+  return (
+    <View style={[styles.bone, style]}>
+      <ShimmerSweep progress={progress} />
+    </View>
+  );
+}
+
+/**
+ * Fades + rises in, staggered by this card's own position in the grid —
+ * "the products are being prepared" rather than every placeholder just
+ * appearing at once. A worklet FACTORY (not the entering function
+ * itself), matching this codebase's own established custom-entering
+ * pattern (see MiniCartBar.tsx's `barEntering`) — parametrized by `index`
+ * so each card gets its own delay from the SAME shared timing constants.
+ */
+function makeCardEntering(index: number) {
+  return (_values: EntryAnimationsValues) => {
+    "worklet";
+    const delay = Math.min(index, STAGGER_CAP) * STAGGER_MS;
+
+    return {
+      initialValues: {
+        opacity: 0,
+        transform: [{ translateY: 10 }],
+      },
+      animations: {
+        opacity: withDelay(delay, withTiming(1, { duration: ENTRANCE_DURATION })),
+        transform: [
+          {
+            translateY: withDelay(
+              delay,
+              withTiming(0, {
+                duration: ENTRANCE_DURATION,
+                easing: ReanimatedEasing.out(ReanimatedEasing.cubic),
+              }),
+            ),
+          },
+        ],
+      },
+    };
+  };
+}
+
+export function ProductCardSkeleton({
+  progress,
+  index = 0,
+}: {
+  progress: SharedValue<number>;
+  /** This card's position in the grid — purely for the entrance stagger
+   * (see `makeCardEntering`); has no effect on the shimmer sweep itself,
+   * which is driven identically by `progress` for every card. */
+  index?: number;
+}) {
+  return (
+    <ReanimatedAnimated.View style={styles.card} entering={makeCardEntering(index)}>
       {/* `mediaWrap`/`media`/`imageBox` + the floating add-button bone below
           mirror ProductCard.tsx's own structure and exact pixel sizes
           (media padding, 92px image box, the 34x34 button straddling the
-          image's bottom-right corner) piece for piece — this used to be a
-          full-width button below a name-then-price stack, which was
-          ProductCard's OLD layout; it had drifted out of sync with the
-          current floating-button/price-before-name design, which is what
-          actually made the loading state look "off" against the real
-          cards that replace it. */}
+          image's bottom-right corner) piece for piece. */}
       <View style={styles.mediaWrap}>
         <View style={styles.media}>
-          <Animated.View style={[styles.imageBox, { opacity: pulse }]} />
+          <Bone progress={progress} style={styles.imageBox} />
         </View>
 
         <View style={styles.floatingActionWrap}>
-          <Animated.View style={[styles.floatingAddButton, { opacity: pulse }]} />
+          <Bone progress={progress} style={styles.floatingAddButton} />
         </View>
       </View>
 
       <View style={styles.priceRow}>
-        <Bone pulse={pulse} style={{ width: 50, height: 14 }} />
+        <Bone progress={progress} style={{ width: 50, height: 14 }} />
       </View>
 
       {/* Matches ProductCard's own reserved discount-row height, so a
@@ -82,14 +194,14 @@ export function ProductCardSkeleton({ pulse: sharedPulse }: { pulse?: Animated.V
       <View style={styles.discountContainer} />
 
       <View style={styles.nameContainer}>
-        <Bone pulse={pulse} style={{ width: "90%", height: 12 }} />
-        <Bone pulse={pulse} style={{ width: "60%", height: 12, marginTop: 4 }} />
+        <Bone progress={progress} style={{ width: "90%", height: 12 }} />
+        <Bone progress={progress} style={{ width: "60%", height: 12, marginTop: 4 }} />
       </View>
 
       <View style={styles.variantContainer}>
-        <Bone pulse={pulse} style={{ width: "40%", height: 10 }} />
+        <Bone progress={progress} style={{ width: "40%", height: 10 }} />
       </View>
-    </View>
+    </ReanimatedAnimated.View>
   );
 }
 
@@ -101,18 +213,39 @@ export function ProductGridSkeleton({
   columns: number;
   count?: number;
 }) {
-  const pulse = useSkeletonPulse();
+  // ONE shared driver for the whole grid — every card's every bone reads
+  // this same value, so mounting any number of cards still only ever
+  // starts a single looping animation. `withRepeat(..., -1, false)` loops
+  // the sweep continuously (0 -> 1, restart) for as long as this
+  // component stays mounted; Reanimated tears it down automatically on
+  // unmount (when `products.isLoading` flips false and this whole tree is
+  // replaced by the real grid — see CategoriesScreen), nothing to clean
+  // up by hand.
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    progress.value = withRepeat(
+      withTiming(1, { duration: SHIMMER_DURATION, easing: ReanimatedEasing.linear }),
+      -1,
+      false,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const rows = Math.ceil(count / columns);
 
   return (
     <View style={{ padding: spacing.xs }}>
       {Array.from({ length: rows }, (_, rowIndex) => (
         <View key={rowIndex} style={styles.row}>
-          {Array.from({ length: columns }, (_, colIndex) => (
-            <View key={colIndex} style={styles.cell}>
-              <ProductCardSkeleton pulse={pulse} />
-            </View>
-          ))}
+          {Array.from({ length: columns }, (_, colIndex) => {
+            const index = rowIndex * columns + colIndex;
+            return (
+              <View key={colIndex} style={styles.cell}>
+                <ProductCardSkeleton progress={progress} index={index} />
+              </View>
+            );
+          })}
         </View>
       ))}
     </View>
@@ -152,7 +285,6 @@ const styles = StyleSheet.create({
   imageBox: {
     width: "100%",
     height: 92,
-    backgroundColor: colors.skeleton,
   },
   // Mirrors ProductCard's `floatingActionWrap` — same straddle-the-corner
   // position (`right`/`bottom` offsets) as the real Add button, so this
@@ -167,8 +299,6 @@ const styles = StyleSheet.create({
   floatingAddButton: {
     width: 34,
     height: 34,
-    borderRadius: radius.sm,
-    backgroundColor: colors.skeleton,
   },
   // Price now comes BEFORE name/variant, matching ProductCard's current
   // order — `marginTop` is the same `BUTTON_OVERHANG + IMAGE_TEXT_GAP`
@@ -193,8 +323,36 @@ const styles = StyleSheet.create({
     marginTop: 2,
     justifyContent: "center",
   },
+  // Clearly visible neutral base — NOT a dark/flat grey block, NOT the
+  // near-white `colors.skeleton` this used to be (see `SKELETON_BASE`'s own
+  // comment). `overflow: hidden` + `position: relative` is what lets
+  // `ShimmerSweep` clip to exactly this bone's own rounded bounds.
   bone: {
     borderRadius: radius.sm,
-    backgroundColor: colors.skeleton,
+    backgroundColor: SKELETON_BASE,
+    overflow: "hidden",
+    position: "relative",
+  },
+  shimmerBand: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    width: SHIMMER_BAND_WIDTH,
+    flexDirection: "row",
+  },
+  // Tapers in from fully transparent — `shimmerCore` (below) is the
+  // genuinely bright part; these two just soften its leading/trailing
+  // edge so the sweep reads as a smooth highlight, not a hard-edged bar.
+  shimmerEdge: {
+    flex: 1,
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
+  // Fully opaque white at its peak — against `SKELETON_BASE`, this is what
+  // actually makes the sweep clearly visible in motion, the way it never
+  // was as a 0.45-alpha tint over an already near-white base.
+  shimmerCore: {
+    flex: 1.4,
+    backgroundColor: SKELETON_HIGHLIGHT,
+    opacity: 0.85,
   },
 });

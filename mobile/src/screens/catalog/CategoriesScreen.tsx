@@ -27,6 +27,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
+import ReanimatedAnimated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { CategoryDto, ProductSummaryDto } from '@shared';
 import { colors, radius, spacing } from '@shared/theme';
@@ -182,7 +183,14 @@ export default function CategoriesScreen({
 
   const productPane =
     products.isLoading ? (
-      <ProductGridSkeleton columns={productGridColumns} />
+      // `exiting`/`entering` below give this hand-off a short, deliberate
+      // cross-fade instead of the skeleton just vanishing the instant real
+      // data arrives — Reanimated's own layout-animation system (not a
+      // manual timer), so it costs nothing on the JS thread and can never
+      // delay `products.data` actually rendering underneath it.
+      <ReanimatedAnimated.View style={styles.productPaneFill} exiting={FadeOut.duration(130)}>
+        <ProductGridSkeleton columns={productGridColumns} />
+      </ReanimatedAnimated.View>
     ) : products.isError && !products.data ? (
       // Only reachable with NOTHING cached for this category — `data`
       // stays whatever was last cached through a failed BACKGROUND
@@ -197,36 +205,43 @@ export default function CategoriesScreen({
     ) : (products.data?.items.length ?? 0) === 0 ? (
       <EmptyState title="Nothing here yet" hint="Try another category." />
     ) : (
-      <FlatList
-        key={`grid-${productGridColumns}`}
-        data={products.data?.items ?? []}
-        keyExtractor={(item) => item.id}
-        renderItem={renderProduct}
-        numColumns={productGridColumns}
-        contentContainerStyle={{
-          padding: spacing.xs,
-          // `tabBarClearance` — the tab bar is a floating overlay (see
-          // MainTabs.tsx's `AnimatedTabBar`), not a flex sibling that
-          // reserves its own space, so this grid's last row needs its own
-          // clearance to not sit underneath the bar's visible plate at
-          // rest. The `+ spacing.xxl` on top covers MiniCartBar, which also
-          // floats over this screen (see `useMiniCartScreen`'s "categories"
-          // case) — reserved UNCONDITIONALLY from the very first render, not
-          // toggled on `cartCount > 0`: the cart query resolves independently
-          // of this screen's own loading gate, and toggling this after first
-          // paint was the cause of an intermittent first-scroll jump/blink.
-          paddingBottom: tabBarClearance + spacing.xxl,
-        }}
-        showsVerticalScrollIndicator={false}
-        // Off-screen rows get unmounted from the native tree instead of
-        // staying rendered — a real memory/scroll-cost win on a long grid,
-        // safe here since every row is a fixed, uniform ProductCard height.
-        removeClippedSubviews
-        initialNumToRender={8}
-        maxToRenderPerBatch={8}
-        windowSize={7}
-        updateCellsBatchingPeriod={50}
-      />
+      // `entering` — a short fade-in as real data actually replaces the
+      // skeleton (see the skeleton branch's own comment above for the
+      // other half of this cross-fade). Never delays `products.data`
+      // itself; the FlatList is already rendering below with the real
+      // items the instant this mounts, only its OWN opacity ramps in.
+      <ReanimatedAnimated.View style={styles.productPaneFill} entering={FadeIn.duration(200)}>
+        <FlatList
+          key={`grid-${productGridColumns}`}
+          data={products.data?.items ?? []}
+          keyExtractor={(item) => item.id}
+          renderItem={renderProduct}
+          numColumns={productGridColumns}
+          contentContainerStyle={{
+            padding: spacing.xs,
+            // `tabBarClearance` — the tab bar is a floating overlay (see
+            // MainTabs.tsx's `AnimatedTabBar`), not a flex sibling that
+            // reserves its own space, so this grid's last row needs its own
+            // clearance to not sit underneath the bar's visible plate at
+            // rest. The `+ spacing.xxl` on top covers MiniCartBar, which also
+            // floats over this screen (see `useMiniCartScreen`'s "categories"
+            // case) — reserved UNCONDITIONALLY from the very first render, not
+            // toggled on `cartCount > 0`: the cart query resolves independently
+            // of this screen's own loading gate, and toggling this after first
+            // paint was the cause of an intermittent first-scroll jump/blink.
+            paddingBottom: tabBarClearance + spacing.xxl,
+          }}
+          showsVerticalScrollIndicator={false}
+          // Off-screen rows get unmounted from the native tree instead of
+          // staying rendered — a real memory/scroll-cost win on a long grid,
+          // safe here since every row is a fixed, uniform ProductCard height.
+          removeClippedSubviews
+          initialNumToRender={8}
+          maxToRenderPerBatch={8}
+          windowSize={7}
+          updateCellsBatchingPeriod={50}
+        />
+      </ReanimatedAnimated.View>
     );
 
   return (
@@ -419,6 +434,13 @@ function CategoryGridCard({
 }
 
 const styles = StyleSheet.create({
+  // Wraps the skeleton/FlatList swap (see `productPane`'s own comments) —
+  // `flex: 1` so it fills the same space its `<View style={{flex:1}}>`
+  // parent always gave the content directly before this wrapper existed;
+  // the fade transition is purely cosmetic on top, not a layout change.
+  productPaneFill: {
+    flex: 1,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -268,9 +268,9 @@ export function flyFromCart(imageUrl: string | null): void {
  * Keep this value exported because MiniCartBar uses the same duration
  * for the thumbnail handoff's own safety-net timeout.
  */
-export const ADD_DURATION = 160;
+export const ADD_DURATION = 250;
 
-export const REMOVE_DURATION = 160;
+export const REMOVE_DURATION = 250;
 
 /**
  * Must exactly match MiniCart thumbnail size.
@@ -285,13 +285,13 @@ const DOT_SIZE = 28;
  * The image does NOT fly from the product card or screen top.
  * It simply appears slightly above the Mini Cart and drops into it.
  */
-const ADD_DROP_DISTANCE = 20;
+const ADD_DROP_DISTANCE = 60;
 
 /**
  * Remove animation distance — same short travel distance as
  * `ADD_DROP_DISTANCE`, just the reverse direction.
  */
-export const REMOVE_DISTANCE = 34;
+export const REMOVE_DISTANCE = 60;
 
 function FlightDot({
   flight,
@@ -417,9 +417,13 @@ function FlightDot({
     if (barMeasurement && imageBoxMeasurement) {
       topY = barMeasurement.pageY;
       targetX =
-        imageBoxMeasurement.pageX + imageBoxMeasurement.width / 2 - DOT_SIZE / 2;
+        imageBoxMeasurement.pageX +
+        imageBoxMeasurement.width / 2 -
+        DOT_SIZE / 2;
       targetY =
-        imageBoxMeasurement.pageY + imageBoxMeasurement.height / 2 - DOT_SIZE / 2;
+        imageBoxMeasurement.pageY +
+        imageBoxMeasurement.height / 2 -
+        DOT_SIZE / 2;
 
       lastGood.value = { topY, targetX, targetY };
     } else if (lastGood.value) {
@@ -570,12 +574,23 @@ export function FlyToCartOverlay() {
           refs={refsForFlights}
           onDone={() => {
             if (flight.kind === "add") {
-              // Signal MiniCartBar: THIS flight (by id) has landed. It
-              // only reveals if this is still the latest requested add —
-              // see `landedFlightId`'s own doc comment above.
+              // First tell MiniCartBar that the image has landed. Keep the
+              // flying copy alive for one short frame window so MiniCartBar
+              // can promote its already-loaded back image before this copy
+              // disappears. This removes the native compositor gap that can
+              // otherwise look like a blink at the exact handoff point.
               useFlyToCartStore.setState({ landedFlightId: flight.id });
+
+              setTimeout(() => {
+                setFlights((previous) =>
+                  previous.filter((item) => item.id !== flight.id),
+                );
+              }, 40);
+              return;
             }
 
+            // REMOVE flights are purely visual. They never control the real
+            // MiniCart thumbnail/state, so they can disappear immediately.
             setFlights((previous) =>
               previous.filter((item) => item.id !== flight.id),
             );

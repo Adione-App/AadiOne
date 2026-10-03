@@ -66,8 +66,13 @@ export function sellerNotificationDestination(notification: NotificationDto): st
     case 'SELLER_PRODUCT_REJECTED':
       return '/seller/products?view=REJECTED';
     case 'SELLER_ONBOARDING_APPROVED':
-    case 'SELLER_ONBOARDING_REJECTED':
       return '/seller/profile';
+    // Lifecycle decisions before ACTIVE: the status/onboarding screen.
+    case 'SELLER_ONBOARDING_REJECTED':
+    case 'SELLER_ONBOARDING_CHANGES_REQUESTED':
+    case 'SELLER_APPLICATION_APPROVED':
+    case 'SELLER_APPLICATION_REJECTED':
+      return '/seller/onboarding';
     case 'SELLER_SETTLEMENT_CREATED':
     case 'SELLER_SETTLEMENT_PROCESSING':
     case 'SELLER_SETTLEMENT_PAID':

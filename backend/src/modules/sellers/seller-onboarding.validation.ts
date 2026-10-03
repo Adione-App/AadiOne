@@ -1,12 +1,8 @@
 /**
- * Request schemas for seller onboarding data — shared by the seller's own
- * routes (seller-onboarding.routes.ts) and admin data entry
- * (admin-seller.routes.ts), so both accept exactly the same fields and
- * lengths. Every max length matches its column in prisma-v2/schema.prisma.
- *
- * The seller routes use these as-is (unknown keys are stripped, as before);
- * the admin routes add `.strict()`, so an unexpected field — `isVerified`,
- * `sellerId`, … — is a 400 rather than silently ignored.
+ * Request schemas for seller onboarding data — the seller's own routes
+ * (seller-onboarding.routes.ts). Admin has no write route for this data: it
+ * is read-only for admin, who only reviews it. Every max length matches its
+ * column in prisma-v2/schema.prisma. Unknown keys are stripped.
  */
 
 import { z } from 'zod';

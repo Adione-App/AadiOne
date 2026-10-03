@@ -25,6 +25,7 @@ import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import { resolveCommissionBpBatch } from './commission.service';
 import { sellerVisibleOrderWhere } from '../orders/order-visibility';
+import { handoverOf } from '../orders/seller-order-views';
 
 export type CommissionScope = { kind: 'PRODUCT'; productId: string } | { kind: 'CATEGORY'; categoryId: string };
 
@@ -223,7 +224,7 @@ export async function listSellerOrderCommissions(sellerId: string, limit: number
     // Only placed orders: an unpaid or expired order was never charged.
     where: { sellerId, order: sellerVisibleOrderWhere },
     include: {
-      order: { select: { orderNumber: true } },
+      order: { select: { orderNumber: true, status: true } },
       items: { select: { productName: true, variantName: true, qty: true, lineTotalPaise: true, commissionBp: true, commissionPaise: true } },
     },
     orderBy: { createdAt: 'desc' },
@@ -233,6 +234,9 @@ export async function listSellerOrderCommissions(sellerId: string, limit: number
     sellerOrderId: so.id,
     orderNumber: so.order.orderNumber,
     status: so.status,
+    // A READY order's delivery progress (same rule as the Orders page), so a
+    // delivered order is not shown as still "Ready for pickup".
+    handover: handoverOf(so.status, so.order.status),
     createdAt: so.createdAt.toISOString(),
     subtotalPaise: so.subtotalPaise,
     commissionBp: so.commissionBp,

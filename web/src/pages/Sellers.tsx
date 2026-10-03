@@ -2,10 +2,15 @@
  * Sellers — the admin seller directory (V2).
  *
  * List: GET /admin/sellers, filtered and cursor-paginated ON THE SERVER; the
- * filters live in the URL (?search=&type=&onboarding=&active=&stage=), so a
- * refresh or a shared link shows the same list, and any change starts again
- * from the first page. Create: POST /admin/sellers. Trading switch:
+ * filters live in the URL (?search=&type=&lifecycle=&active=), so a refresh or
+ * a shared link shows the same list, and any change starts again from the
+ * first page. Create: POST /admin/sellers. Trading switch:
  * PATCH /admin/sellers/:id/status (reason required).
+ *
+ * TWO GATES: `?view=applications` is the Seller Applications view (Gate 1 —
+ * GET /admin/sellers/applications, approve/reject with
+ * PATCH .../application/review). Gate 2 (verification of the submitted
+ * onboarding) is decided on the seller's detail page.
  *
  * Two different switches, never confused here:
  *   isActive           — the ADMIN switch this page controls;
@@ -19,28 +24,36 @@
 import { useEffect, useMemo, useState, type FormEvent, type MouseEvent } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { SellerType, normalizeIndianMobile, type AdminSellerListRowDto, type CreateSellerRequest } from '@shared';
 import {
-  ONBOARDING_STATUSES,
+  SellerType,
+  normalizeIndianMobile,
+  type AdminSellerApplicationDto,
+  type AdminSellerListRowDto,
+  type CreateSellerRequest,
+  type SellerLifecycleStatus,
+} from '@shared';
+import {
+  LIFECYCLE_FILTERS,
   SELLER_TYPES,
-  STAGE_FILTERS,
   adminSellerKeys,
   sellerErrorMessage,
   useCreateSeller,
+  useReviewSellerApplication,
+  useSellerApplications,
   useSellerList,
   useSellerPermissions,
   type SellerListFilters,
 } from '@/lib/sellers';
 import {
   ActivePill,
-  ONBOARDING_LOOK,
-  OnboardingPill,
+  LIFECYCLE_LOOK,
+  LifecyclePill,
   SELLER_TYPE_LABEL as TYPE_LABEL,
   SellerAvailability,
-  StagePill,
   formatSellerDate,
 } from '@/components/SellerBadges';
 import { SellerStatusModal } from '@/components/SellerStatusModal';
+import { ReasonModal } from '@/components/SellerLifecyclePanel';
 import {
   Button,
   EmptyState,
@@ -57,15 +70,6 @@ import {
 } from '@/components/ui';
 
 /* -------------------------------------------------------------------------- */
-/* labels                                                                      */
-/* -------------------------------------------------------------------------- */
-
-const STAGE_FILTER_LABEL: Record<string, string> = {
-  PENDING: 'Pending (incomplete)',
-  SUBMITTED: 'Submitted (ready for review)',
-};
-
-/* -------------------------------------------------------------------------- */
 /* URL <-> filters                                                             */
 /* -------------------------------------------------------------------------- */
 
@@ -76,15 +80,13 @@ const pick = <T extends string>(value: string | null, allowed: readonly T[]): T 
 function filtersFromParams(params: URLSearchParams): SellerListFilters {
   const search = params.get('search')?.trim().slice(0, 60) ?? '';
   const sellerType = pick(params.get('type'), SELLER_TYPES);
-  const onboardingStatus = pick(params.get('onboarding'), ONBOARDING_STATUSES);
-  const stage = pick(params.get('stage'), STAGE_FILTERS);
+  const lifecycle = pick(params.get('lifecycle'), LIFECYCLE_FILTERS);
   const active = params.get('active');
   return {
     ...(search ? { search } : {}),
     ...(sellerType ? { sellerType } : {}),
-    ...(onboardingStatus ? { onboardingStatus } : {}),
+    ...(lifecycle ? { lifecycle } : {}),
     ...(active === 'true' || active === 'false' ? { isActive: active === 'true' } : {}),
-    ...(stage ? { stage } : {}),
   };
 }
 
@@ -98,6 +100,9 @@ export default function SellersPage() {
   const location = useLocation();
   const [params, setParams] = useSearchParams();
   const filters = useMemo(() => filtersFromParams(params), [params]);
+  const view = params.get('view') === 'applications' ? 'applications' : 'directory';
+  const pendingApplications = useSellerApplications('APPLICATION_PENDING', canRead);
+  const pendingCount = pendingApplications.data?.pages[0]?.items.length ?? 0;
 
   const [searchInput, setSearchInput] = useState(filters.search ?? '');
   const [creating, setCreating] = useState(false);
@@ -138,6 +143,8 @@ export default function SellersPage() {
   }, [list.data]);
 
   const hasFilters = Object.keys(filters).length > 0;
+  const switchView = (next: 'directory' | 'applications') =>
+    setParams(next === 'applications' ? new URLSearchParams({ view: 'applications' }) : new URLSearchParams(), { replace: true });
   const refresh = () => void queryClient.invalidateQueries({ queryKey: adminSellerKeys.lists() });
 
   if (!canRead) {
@@ -158,6 +165,23 @@ export default function SellersPage() {
         </div>
       )}
 
+      <div role="tablist" aria-label="Seller views" className="flex flex-wrap gap-2">
+        <ViewTab active={view === 'directory'} onClick={() => switchView('directory')}>
+          All sellers
+        </ViewTab>
+        <ViewTab active={view === 'applications'} onClick={() => switchView('applications')}>
+          Seller Applications
+          {pendingCount > 0 && (
+            <span className="ml-1.5 rounded-full bg-warn-50 px-2 py-0.5 text-xs font-semibold text-warn-500">
+              {pendingApplications.hasNextPage ? `${pendingCount}+` : pendingCount} pending
+            </span>
+          )}
+        </ViewTab>
+      </div>
+
+      {view === 'applications' ? (
+        <ApplicationsPanel onNotice={setNotice} />
+      ) : (
       <Panel
         title="Sellers"
         bodyClass=""
@@ -190,10 +214,10 @@ export default function SellersPage() {
             options={SELLER_TYPES.map((type) => ({ value: type, label: TYPE_LABEL[type] ?? type }))}
           />
           <FilterSelect
-            label="Onboarding"
-            value={filters.onboardingStatus ?? ''}
-            onChange={(value) => setParam('onboarding', value)}
-            options={ONBOARDING_STATUSES.map((status) => ({ value: status, label: ONBOARDING_LOOK[status]?.label ?? status }))}
+            label="Lifecycle"
+            value={filters.lifecycle ?? ''}
+            onChange={(value) => setParam('lifecycle', value)}
+            options={LIFECYCLE_FILTERS.map((status) => ({ value: status, label: LIFECYCLE_LOOK[status]?.label ?? status }))}
           />
           <FilterSelect
             label="Active"
@@ -203,12 +227,6 @@ export default function SellersPage() {
               { value: 'true', label: 'Active' },
               { value: 'false', label: 'Inactive' },
             ]}
-          />
-          <FilterSelect
-            label="Stage"
-            value={filters.stage ?? ''}
-            onChange={(value) => setParam('stage', value)}
-            options={STAGE_FILTERS.map((stage) => ({ value: stage, label: STAGE_FILTER_LABEL[stage] ?? stage }))}
           />
         </div>
         {hasFilters && (
@@ -250,8 +268,7 @@ export default function SellersPage() {
                     <Th>Seller</Th>
                     <Th>Type</Th>
                     <Th>City</Th>
-                    <Th>Onboarding</Th>
-                    <Th>Stage</Th>
+                    <Th>Lifecycle</Th>
                     <Th>Active</Th>
                     <Th>Orders availability</Th>
                     <Th>Created</Th>
@@ -294,6 +311,7 @@ export default function SellersPage() {
           </>
         )}
       </Panel>
+      )}
 
       {creating && (
         <CreateSellerModal
@@ -358,10 +376,7 @@ function SellerRow({
       <Td className="whitespace-nowrap text-gray-700">{TYPE_LABEL[row.sellerType] ?? row.sellerType}</Td>
       <Td className="whitespace-nowrap text-gray-700">{row.city}</Td>
       <Td>
-        <OnboardingPill status={row.onboardingStatus} />
-      </Td>
-      <Td>
-        <StagePill stage={row.stage} />
+        <LifecyclePill status={row.lifecycleStatus} isActive={row.isActive} />
       </Td>
       <Td>
         <ActivePill isActive={row.isActive} />
@@ -380,6 +395,174 @@ function SellerRow({
         </div>
       </Td>
     </tr>
+  );
+}
+
+function ViewTab({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={`inline-flex min-h-10 items-center rounded-xl px-4 text-sm font-semibold transition ${
+        active ? 'bg-brand-500 text-white shadow-sm' : 'border border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Seller Applications — Gate 1                                                */
+/* -------------------------------------------------------------------------- */
+
+const APPLICATION_FILTERS: { value: SellerLifecycleStatus | 'ALL'; label: string }[] = [
+  { value: 'APPLICATION_PENDING', label: 'Pending approval' },
+  { value: 'APPLICATION_REJECTED', label: 'Rejected' },
+  { value: 'ALL', label: 'All applications' },
+];
+
+function ApplicationsPanel({ onNotice }: { onNotice: (message: string) => void }) {
+  const { canReview } = useSellerPermissions();
+  const location = useLocation();
+  const [filter, setFilter] = useState<SellerLifecycleStatus | 'ALL'>('APPLICATION_PENDING');
+  const list = useSellerApplications(filter === 'ALL' ? null : filter);
+  const [rejecting, setRejecting] = useState<AdminSellerApplicationDto | null>(null);
+  const review = useReviewSellerApplication();
+  const rows = (list.data?.pages ?? []).flatMap((page) => page.items);
+
+  const approve = (row: AdminSellerApplicationDto) =>
+    review.mutate(
+      { sellerId: row.sellerId, body: { decision: 'APPROVE' } },
+      { onSuccess: () => onNotice(`${row.businessName}: application approved. The seller can now complete onboarding — they are NOT active yet.`) },
+    );
+
+  return (
+    <Panel
+      title="Seller Applications"
+      bodyClass=""
+      action={
+        <select aria-label="Application status" value={filter} onChange={(e) => setFilter(e.target.value as SellerLifecycleStatus | 'ALL')} className={`${inputClass} w-auto`}>
+          {APPLICATION_FILTERS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      }
+    >
+      <p className="px-5 pb-4 text-sm text-gray-500">
+        Gate 1. Approving an application lets the applicant complete onboarding; the Seller Panel stays locked until you verify that onboarding (Gate 2) on the seller&apos;s page.
+      </p>
+      {review.isError && (
+        <div className="px-5 pb-3">
+          <ErrorBanner message={sellerErrorMessage(review.error, 'Could not record the decision.')} />
+        </div>
+      )}
+      {list.isPending ? (
+        <Spinner label="Loading applications…" />
+      ) : list.isError ? (
+        <div className="p-5 pt-0">
+          <ErrorBanner message={sellerErrorMessage(list.error, 'Could not load applications.')} />
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="p-5 pt-0">
+          <EmptyState
+            title={filter === 'APPLICATION_PENDING' ? 'No applications waiting' : 'No applications'}
+            hint="New seller applications appear here when sellers apply from the Seller sign-in page."
+          />
+        </div>
+      ) : (
+        <div className="overflow-x-auto border-t border-gray-100">
+          <table className="w-full min-w-[860px] text-sm">
+            <thead className="border-b border-gray-200 bg-gray-50">
+              <tr>
+                <Th>Applicant</Th>
+                <Th>Business / store</Th>
+                <Th>Contact</Th>
+                <Th>Seller type</Th>
+                <Th>Applied</Th>
+                <Th>Status</Th>
+                <Th className="text-right">Actions</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {rows.map((row) => (
+                <tr key={row.sellerId}>
+                  <Td className="font-medium text-gray-900">{row.applicantName ?? '—'}</Td>
+                  <Td>
+                    <Link to={`/sellers/${row.sellerId}`} state={{ listSearch: location.search }} className="font-medium text-gray-900 hover:text-brand-600 hover:underline">
+                      {row.businessName}
+                    </Link>
+                  </Td>
+                  <Td className="text-gray-700">
+                    <span className="block whitespace-nowrap">{row.mobile ?? '—'}</span>
+                    <span className="block break-all text-xs text-gray-500">{row.email ?? '—'}</span>
+                  </Td>
+                  <Td className="whitespace-nowrap text-gray-700">{TYPE_LABEL[row.sellerType] ?? row.sellerType}</Td>
+                  <Td className="whitespace-nowrap text-gray-600">{formatSellerDate(row.applicationSubmittedAt ?? row.createdAt)}</Td>
+                  <Td>
+                    <LifecyclePill status={row.lifecycleStatus} />
+                    {row.lifecycleStatus === 'APPLICATION_REJECTED' && row.lifecycleReason && (
+                      <p className="mt-1 max-w-[16rem] text-xs text-gray-500">{row.lifecycleReason}</p>
+                    )}
+                  </Td>
+                  <Td>
+                    <div className="flex justify-end gap-2">
+                      {canReview && row.lifecycleStatus === 'APPLICATION_PENDING' ? (
+                        <>
+                          <Button variant="soft" disabled={review.isPending} onClick={() => approve(row)}>
+                            Approve
+                          </Button>
+                          <Button variant="ghost" disabled={review.isPending} onClick={() => setRejecting(row)}>
+                            Reject
+                          </Button>
+                        </>
+                      ) : (
+                        <Link to={`/sellers/${row.sellerId}`} className="text-sm font-semibold text-brand-600 hover:underline">
+                          Open
+                        </Link>
+                      )}
+                    </div>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {list.hasNextPage && (
+            <div className="border-t border-gray-100 p-4 text-right">
+              <Button variant="secondary" disabled={list.isFetchingNextPage} onClick={() => void list.fetchNextPage()}>
+                {list.isFetchingNextPage ? 'Loading…' : 'Load more'}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {rejecting && (
+        <ReasonModal
+          title={`Reject application — ${rejecting.businessName}`}
+          subtitle="The applicant sees this reason and cannot continue to onboarding."
+          confirmLabel="Reject application"
+          busy={review.isPending}
+          error={review.isError ? sellerErrorMessage(review.error, 'Could not reject the application.') : null}
+          onClose={() => setRejecting(null)}
+          onConfirm={(reason) =>
+            review.mutate(
+              { sellerId: rejecting.sellerId, body: { decision: 'REJECT', reason } },
+              {
+                onSuccess: () => {
+                  onNotice(`${rejecting.businessName}: application rejected.`);
+                  setRejecting(null);
+                },
+              },
+            )
+          }
+        />
+      )}
+    </Panel>
   );
 }
 
@@ -526,7 +709,7 @@ function CreateSellerModal({ onClose, onCreated }: { onClose: () => void; onCrea
     create.mutate(body, {
       onSuccess: (created) =>
         onCreated(
-          `${body.name} was created. Onboarding is pending — it cannot take orders until its onboarding is approved.` +
+          `${body.name} was created. Its owner can now complete onboarding — it cannot take orders until you verify that onboarding.` +
             (created.isNewOwnerAccount ? ' A new owner login was created.' : " An existing customer account was made the owner."),
         ),
     });
@@ -548,7 +731,7 @@ function CreateSellerModal({ onClose, onCreated }: { onClose: () => void; onCrea
   return (
     <Modal
       title="Create seller"
-      subtitle="Creates the seller with onboarding PENDING and its owner's login. Nothing is approved automatically."
+      subtitle="Creates the seller (application already approved — Onboarding Pending) and its owner's login. It still needs onboarding verification before going live."
       onClose={onClose}
       wide
       footer={

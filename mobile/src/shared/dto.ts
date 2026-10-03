@@ -29,6 +29,7 @@ import type {
   ProductStatus,
   ReferralStatus,
   SellerDocumentType,
+  SellerLifecycleStatus,
   SellerOrderStatus,
   SellerStaffRole,
   SellerType,
@@ -303,21 +304,103 @@ export interface UpsertRestaurantProfileRequest {
 export interface SellerOnboardingDetailDto {
   sellerId: string;
   sellerName: string;
+  sellerType: SellerType;
   onboardingStatus: ApprovalStatus;
+  lifecycleStatus: SellerLifecycleStatus;
+  /** Seller-facing reason for a rejection or a request for changes. */
+  lifecycleReason: string | null;
   stage: SellerOnboardingStage;
+  /** Every required onboarding item is present (see `checklist`). */
   isComplete: boolean;
+  checklist: SellerOnboardingChecklistItemDto[];
   profile: SellerProfileDto | null;
   bankDetail: SellerBankDetailDto | null;
   documents: SellerDocumentDto[];
   restaurantProfile: RestaurantProfileDto | null;
 }
 
-/** The three parts of the onboarding completeness rule — all must be true. */
+/** The three original parts of the onboarding completeness rule. The full
+ * rule (store address/location, PAN, licences…) is `checklist`. */
 export interface SellerOnboardingRequirementsDto {
   profile: boolean;
   bankDetail: boolean;
-  /** A PAN or Aadhaar document that is not rejected. */
+  /** A PAN document that is not rejected. */
   identityDocument: boolean;
+}
+
+/** One required onboarding item and whether it is satisfied — the same list
+ * the seller sees before "Submit for Verification" and admin sees at Gate 2. */
+export interface SellerOnboardingChecklistItemDto {
+  key: string;
+  label: string;
+  met: boolean;
+  /** What to do when not met. */
+  hint: string;
+}
+
+/**
+ * GET /seller/lifecycle — where the signed-in seller is in the two-gate
+ * lifecycle and what it may do next. Available in EVERY lifecycle state (the
+ * only seller endpoint that is), so the panel can always explain itself.
+ */
+export interface SellerLifecycleDto {
+  sellerId: string;
+  sellerName: string;
+  sellerType: SellerType;
+  lifecycleStatus: SellerLifecycleStatus;
+  /** Seller-facing reason for a rejection or a request for changes. */
+  reason: string | null;
+  /** Full operational Seller Panel (ACTIVE). */
+  panelUnlocked: boolean;
+  /** Onboarding data may be edited now (ONBOARDING_PENDING / CHANGES_REQUIRED). */
+  canEditOnboarding: boolean;
+  /** Editable AND every checklist item met. */
+  canSubmit: boolean;
+  checklist: SellerOnboardingChecklistItemDto[];
+  applicationSubmittedAt: string | null;
+  onboardingSubmittedAt: string | null;
+  activatedAt: string | null;
+  lifecycleUpdatedAt: string | null;
+}
+
+/** POST /auth/seller/signup — the public seller application (Gate 1 input). */
+export interface SellerSignupRequest {
+  fullName: string;
+  mobile: string;
+  email: string;
+  password: string;
+  businessName: string;
+  sellerType: SellerType;
+}
+
+/** One row of the admin Seller Applications view. Applicant contact details
+ * are shown here (admin needs them to decide Gate 1) — never in the general
+ * seller list. */
+export interface AdminSellerApplicationDto {
+  sellerId: string;
+  businessName: string;
+  sellerType: SellerType;
+  applicantName: string | null;
+  mobile: string | null;
+  email: string | null;
+  lifecycleStatus: SellerLifecycleStatus;
+  lifecycleReason: string | null;
+  applicationSubmittedAt: string | null;
+  createdAt: string;
+}
+
+/** PATCH /admin/sellers/:id/application/review — Gate 1. */
+export interface AdminReviewSellerApplicationRequest {
+  decision: 'APPROVE' | 'REJECT';
+  /** Required to reject; shown to the applicant. */
+  reason?: string | null;
+}
+
+/** PATCH /admin/sellers/:id/verification/review — Gate 2. */
+export interface AdminReviewSellerVerificationRequest {
+  decision: 'APPROVE' | 'REQUEST_CHANGES' | 'REJECT';
+  /** Required for REQUEST_CHANGES and REJECT; shown to the seller. */
+  reason?: string | null;
 }
 
 /** An onboarding document as the admin panel may show it: metadata, the
@@ -354,9 +437,13 @@ export interface AdminSellerOnboardingSummaryDto {
   sellerName: string;
   sellerType: SellerType;
   onboardingStatus: ApprovalStatus;
+  lifecycleStatus: SellerLifecycleStatus;
+  lifecycleReason: string | null;
+  onboardingSubmittedAt: string | null;
   stage: SellerOnboardingStage;
   isComplete: boolean;
   requirements: SellerOnboardingRequirementsDto;
+  checklist: SellerOnboardingChecklistItemDto[];
   lastRejectionReason: string | null;
   lastRejectedAt: string | null;
   profile: SellerProfileDto | null;
@@ -418,12 +505,15 @@ export interface InviteSellerStaffRequest {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Onboarding progress as the admin panel shows it. APPROVED/REJECTED mirror
- * `Seller.onboardingStatus`; a PENDING seller is `SUBMITTED` once its
- * application is complete and `PENDING` while it is still being filled in —
- * computed on every read, never stored.
+ * Coarse onboarding progress, derived from `Seller.lifecycleStatus` (kept for
+ * older screens): APPROVED = ACTIVE, REJECTED = either gate refused,
+ * SUBMITTED = waiting for Gate 2 verification, PENDING = everything else.
  */
 export type SellerOnboardingStage = 'PENDING' | 'SUBMITTED' | 'APPROVED' | 'REJECTED';
+
+/** Admin seller-list filter: a lifecycle status, or SUSPENDED = ACTIVE but
+ * switched off by admin (`isActive` false). */
+export type SellerLifecycleFilter = SellerLifecycleStatus | 'SUSPENDED';
 
 /** Why a seller cannot take an order right now, highest priority first. */
 export type SellerClosedReason =
@@ -444,6 +534,7 @@ export interface AdminSellerListRowDto {
   city: string;
   state: string;
   onboardingStatus: ApprovalStatus;
+  lifecycleStatus: SellerLifecycleStatus;
   stage: SellerOnboardingStage;
   /** Admin-controlled trading switch. */
   isActive: boolean;
@@ -490,8 +581,18 @@ export interface AdminSellerDetailDto {
   longitude: number;
   phone: string | null;
   onboardingStatus: ApprovalStatus;
+  lifecycleStatus: SellerLifecycleStatus;
+  /** Seller-facing reason for the latest rejection / request for changes. */
+  lifecycleReason: string | null;
+  lifecycleUpdatedAt: string | null;
+  /** Self-signup time; null for a seller created by admin. */
+  applicationSubmittedAt: string | null;
+  onboardingSubmittedAt: string | null;
+  activatedAt: string | null;
+  /** The applicant / owner account (Gate 1 review). */
+  owner: { fullName: string | null; mobile: string; email: string | null } | null;
   stage: SellerOnboardingStage;
-  /** Profile, bank details and an identity document are all present. */
+  /** Every required onboarding item is present. */
   isComplete: boolean;
   /** Reason given on the most recent onboarding rejection, if there was one —
    * kept after a resubmission or a later approval, as history. */

@@ -62,42 +62,53 @@ export const attachSellerContext: RequestHandler = (req: Request, _res: Response
         return;
       }
 
-      const memberships = await prisma.sellerStaff.findMany({
-        where: { userId: req.user.id, isActive: true },
-        select: { sellerId: true },
-        orderBy: { createdAt: 'asc' },
-      });
-
-      if (memberships.length === 0) {
-        throw new AppError(ErrorCode.FORBIDDEN, {
-          message: 'Your account is not linked to a seller.',
-          internalMessage: `user ${req.user.id} has no active SellerStaff row`,
-        });
-      }
-
-      if (memberships.length === 1) {
-        req.sellerId = memberships[0]!.sellerId;
-        next();
-        return;
-      }
-
-      const requestedSellerId = req.header('x-seller-id');
-      const match = memberships.find((m) => m.sellerId === requestedSellerId);
-
-      if (!match) {
-        throw new AppError(ErrorCode.VALIDATION_ERROR, {
-          message: 'This account manages multiple sellers — specify which one with the X-Seller-Id header.',
-          internalMessage: `user ${req.user.id} staffs ${memberships.length} sellers; X-Seller-Id was ${JSON.stringify(requestedSellerId)}`,
-        });
-      }
-
-      req.sellerId = match.sellerId;
+      // Already resolved for this request by the lifecycle gate
+      // (middleware/sellerLifecycle.ts) — same lookup, same answer.
+      if (!req.sellerId) req.sellerId = await resolveOwnSellerId(req);
       next();
     } catch (error) {
       next(error);
     }
   })();
 };
+
+/**
+ * The seller a seller-role caller acts as — from their OWN active SellerStaff
+ * rows only (see `attachSellerContext` for the multi-membership rule).
+ */
+export async function resolveOwnSellerId(req: Request): Promise<string> {
+  const user = req.user;
+  if (!user) {
+    throw new AppError(ErrorCode.UNAUTHENTICATED, { internalMessage: 'resolveOwnSellerId without authenticate' });
+  }
+
+  const memberships = await prisma.sellerStaff.findMany({
+    where: { userId: user.id, isActive: true },
+    select: { sellerId: true },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  if (memberships.length === 0) {
+    throw new AppError(ErrorCode.FORBIDDEN, {
+      message: 'Your account is not linked to a seller.',
+      internalMessage: `user ${user.id} has no active SellerStaff row`,
+    });
+  }
+
+  if (memberships.length === 1) return memberships[0]!.sellerId;
+
+  const requestedSellerId = req.header('x-seller-id');
+  const match = memberships.find((m) => m.sellerId === requestedSellerId);
+
+  if (!match) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message: 'This account manages multiple sellers — specify which one with the X-Seller-Id header.',
+      internalMessage: `user ${user.id} staffs ${memberships.length} sellers; X-Seller-Id was ${JSON.stringify(requestedSellerId)}`,
+    });
+  }
+
+  return match.sellerId;
+}
 
 /** Reads `req.sellerId`, throwing if `attachSellerContext` never ran (or an
  * admin request never supplied `:sellerId`). Saves every controller writing

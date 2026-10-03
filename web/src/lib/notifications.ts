@@ -71,6 +71,7 @@ const DANGER = 'bg-danger-50 text-danger-500';
 const PRESENTATION: Record<string, NotificationPresentation> = {
   // admin
   ADMIN_ONBOARDING_SUBMITTED: { label: 'Seller onboarding', icon: 'store', toneClass: NEUTRAL },
+  ADMIN_SELLER_APPLICATION_SUBMITTED: { label: 'Seller application', icon: 'store', toneClass: NEUTRAL },
   ADMIN_PRODUCTS_SUBMITTED: { label: 'Product approval', icon: 'products', toneClass: NEUTRAL },
   ADMIN_REFUND_FAILED: { label: 'Refund issue', icon: 'alert', toneClass: DANGER },
   ADMIN_SETTLEMENT_FAILED: { label: 'Settlement failed', icon: 'rupee', toneClass: DANGER },
@@ -81,6 +82,9 @@ const PRESENTATION: Record<string, NotificationPresentation> = {
   SELLER_REFUND_ISSUED: { label: 'Refund', icon: 'rupee', toneClass: WARN },
   SELLER_ONBOARDING_APPROVED: { label: 'Onboarding', icon: 'shield', toneClass: NEUTRAL },
   SELLER_ONBOARDING_REJECTED: { label: 'Onboarding', icon: 'shield', toneClass: DANGER },
+  SELLER_ONBOARDING_CHANGES_REQUESTED: { label: 'Onboarding', icon: 'shield', toneClass: WARN },
+  SELLER_APPLICATION_APPROVED: { label: 'Application', icon: 'shield', toneClass: NEUTRAL },
+  SELLER_APPLICATION_REJECTED: { label: 'Application', icon: 'shield', toneClass: DANGER },
   SELLER_PRODUCT_APPROVED: { label: 'Product approval', icon: 'products', toneClass: NEUTRAL },
   SELLER_PRODUCT_REJECTED: { label: 'Product approval', icon: 'products', toneClass: DANGER },
   SELLER_SETTLEMENT_CREATED: { label: 'Settlement', icon: 'rupee', toneClass: INFO },
@@ -107,7 +111,9 @@ export function adminNotificationDestination(notification: NotificationDto): str
     case 'ADMIN_PRODUCTS_SUBMITTED':
       return '/product-approvals';
     case 'ADMIN_ONBOARDING_SUBMITTED':
-      return '/sellers';
+      return '/sellers?lifecycle=ONBOARDING_PENDING_REVIEW';
+    case 'ADMIN_SELLER_APPLICATION_SUBMITTED':
+      return '/sellers?view=applications';
     case 'ADMIN_SETTLEMENT_FAILED':
       return '/settlements?status=FAILED';
     default:

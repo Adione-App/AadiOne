@@ -10,7 +10,7 @@
 
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { ApprovalStatus, DocumentStatus, PAGINATION_MAX_LIMIT, Permission, SellerType } from '../../shared';
+import { ApprovalStatus, DocumentStatus, PAGINATION_MAX_LIMIT, Permission, SellerLifecycleStatus, SellerType } from '../../shared';
 import { asyncHandler, created, ok, okCursorPage } from '../../common/response';
 import { validate, validatedQuery } from '../../middleware/validate';
 import { requirePermission, requireUser } from '../../middleware/auth';
@@ -18,11 +18,10 @@ import * as managementService from './admin-seller-management.service';
 import * as catalogService from './admin-seller-catalog.service';
 import * as sellerCategoryService from '../catalog/seller-category.service';
 import * as onboardingService from './seller-onboarding.service';
+import * as lifecycleService from './seller-lifecycle.service';
 import * as settlementService from './seller-settlement.service';
 import * as sellerLoginService from './seller-login.service';
-import { documentUpload } from '../../middleware/documentUpload';
 import { sendDocumentFile } from './document-response';
-import { bankDetailSchema, documentSchema, profileSchema } from './seller-onboarding.validation';
 
 const uuid = z.string().uuid();
 
@@ -63,27 +62,6 @@ const setSellerStatusSchema = z
   })
   .strict();
 
-/** Basic details only — strict, so `sellerType`, `isActive`,
- * `onboardingStatus`, commission, bank fields, … are a 400. Same limits as
- * `createSellerSchema`. */
-const updateSellerSchema = z
-  .object({
-    name: z.string().trim().min(2).max(SELLER_NAME_MAX).optional(),
-    phone: z.string().trim().min(10).max(15).nullable().optional(),
-    addressLine: z.string().trim().min(2).max(300).optional(),
-    city: z.string().trim().min(2).max(SELLER_CITY_MAX).optional(),
-    state: z.string().trim().min(2).max(SELLER_STATE_MAX).optional(),
-    pincode: z.string().trim().regex(/^\d{6}$/, 'Pincode must be 6 digits.').optional(),
-    latitude: z.number().min(-90).max(90).optional(),
-    longitude: z.number().min(-180).max(180).optional(),
-  })
-  .strict()
-  .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update.' })
-  .refine((v) => (v.latitude === undefined) === (v.longitude === undefined), {
-    message: 'Send latitude and longitude together.',
-    path: ['latitude'],
-  });
-
 /** Identifies the bank state the admin reviewed — its id and version, never
  * account digits. Verification state itself is never taken from the client
  * (strict: `isVerified` is a 400). */
@@ -94,10 +72,43 @@ const verifyBankDetailSchema = z
   })
   .strict();
 
+const LIFECYCLE_VALUES = Object.values(SellerLifecycleStatus) as [SellerLifecycleStatus, ...SellerLifecycleStatus[]];
+
+/** Gate 1 — strict; a reason is required (and shown to the applicant) to reject. */
+const reviewApplicationSchema = z
+  .object({
+    decision: z.enum(['APPROVE', 'REJECT']),
+    reason: z.string().trim().max(500).nullable().optional(),
+  })
+  .strict()
+  .refine((v) => v.decision !== 'REJECT' || !!v.reason?.trim(), {
+    message: 'A reason is required when rejecting.',
+    path: ['reason'],
+  });
+
+/** Gate 2 — strict; a reason is required for REQUEST_CHANGES and REJECT. */
+const reviewVerificationSchema = z
+  .object({
+    decision: z.enum(['APPROVE', 'REQUEST_CHANGES', 'REJECT']),
+    reason: z.string().trim().max(500).nullable().optional(),
+  })
+  .strict()
+  .refine((v) => v.decision === 'APPROVE' || !!v.reason?.trim(), {
+    message: 'Tell the seller why.',
+    path: ['reason'],
+  });
+
+const listApplicationsQuerySchema = z.object({
+  status: z.nativeEnum(SellerLifecycleStatus).optional(),
+  cursor: z.string().datetime().optional(),
+  limit: z.coerce.number().int().positive().max(PAGINATION_MAX_LIMIT).default(25),
+});
+
 const listSellersQuerySchema = z.object({
   search: z.string().trim().max(60).optional(),
   onboardingStatus: z.nativeEnum(ApprovalStatus).optional(),
   stage: z.enum(onboardingService.ONBOARDING_STAGES).optional(),
+  lifecycle: z.enum([...LIFECYCLE_VALUES, 'SUSPENDED']).optional(),
   isActive: booleanish,
   sellerType: z.nativeEnum(SellerType).optional(),
   cursor: z.string().datetime().optional(),
@@ -263,6 +274,25 @@ adminSellerRouter.patch(
 /* pattern used by every other admin override in this codebase.              */
 /* -------------------------------------------------------------------------- */
 
+/** Seller Applications (Gate 1 queue). Default: every self-signup
+ * application, any status; `?status=APPLICATION_PENDING` for the queue. */
+adminSellerRouter.get(
+  '/sellers/applications',
+  requirePermission(Permission.SELLER_ONBOARDING_REVIEW),
+  validate({ query: listApplicationsQuerySchema }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const query = validatedQuery<z.infer<typeof listApplicationsQuerySchema>>(req);
+    okCursorPage(
+      res,
+      await lifecycleService.listApplications({
+        ...(query.status ? { status: query.status } : {}),
+        cursor: query.cursor ?? null,
+        limit: query.limit,
+      }),
+    );
+  }),
+);
+
 adminSellerRouter.get(
   '/sellers/onboarding',
   requirePermission(Permission.SELLER_ONBOARDING_REVIEW),
@@ -305,20 +335,52 @@ adminSellerRouter.get(
   }),
 );
 
+/**
+ * LEGACY alias of Gate 2 (PATCH .../verification/review), kept for older
+ * clients: APPROVED = approve; REJECTED keeps its old "fix and resubmit"
+ * meaning = request changes. A final rejection is only on the new route.
+ */
 adminSellerRouter.patch(
   '/sellers/:sellerId/onboarding/review',
   requirePermission(Permission.SELLER_ONBOARDING_REVIEW),
   validate({ params: z.object({ sellerId: uuid }), body: reviewOnboardingSchema }),
   asyncHandler(async (req: Request, res: Response) => {
     const body = req.body as { status: typeof ApprovalStatus.APPROVED | typeof ApprovalStatus.REJECTED; reason?: string | null };
-    ok(
-      res,
-      await onboardingService.reviewOnboarding(
-        req.params['sellerId'] as string,
-        body,
-        requireUser(req).id,
-      ),
+    const sellerId = req.params['sellerId'] as string;
+    await lifecycleService.reviewVerification(
+      sellerId,
+      { decision: body.status === ApprovalStatus.APPROVED ? 'APPROVE' : 'REQUEST_CHANGES', reason: body.reason ?? null },
+      requireUser(req).id,
     );
+    ok(res, await onboardingService.getOnboardingDetail(sellerId, undefined, true));
+  }),
+);
+
+/* -------------------------------------------------------------------------- */
+/* The two gates                                                              */
+/* -------------------------------------------------------------------------- */
+
+/** Gate 1 — approve (the applicant may onboard) or reject an application. */
+adminSellerRouter.patch(
+  '/sellers/:sellerId/application/review',
+  requirePermission(Permission.SELLER_ONBOARDING_REVIEW),
+  validate({ params: sellerIdParams, body: reviewApplicationSchema }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const sellerId = req.params['sellerId'] as string;
+    await lifecycleService.reviewApplication(sellerId, req.body, requireUser(req).id);
+    ok(res, await managementService.getSellerDetail(sellerId));
+  }),
+);
+
+/** Gate 2 — approve (seller becomes ACTIVE), request changes, or reject. */
+adminSellerRouter.patch(
+  '/sellers/:sellerId/verification/review',
+  requirePermission(Permission.SELLER_ONBOARDING_REVIEW),
+  validate({ params: sellerIdParams, body: reviewVerificationSchema }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const sellerId = req.params['sellerId'] as string;
+    await lifecycleService.reviewVerification(sellerId, req.body, requireUser(req).id);
+    ok(res, await managementService.getSellerDetail(sellerId));
   }),
 );
 
@@ -370,6 +432,7 @@ adminSellerRouter.get(
         ...(query.search ? { search: query.search } : {}),
         ...(query.onboardingStatus ? { onboardingStatus: query.onboardingStatus } : {}),
         ...(query.stage ? { stage: query.stage } : {}),
+        ...(query.lifecycle ? { lifecycle: query.lifecycle } : {}),
         ...(query.isActive !== undefined ? { isActive: query.isActive } : {}),
         ...(query.sellerType ? { sellerType: query.sellerType } : {}),
         cursor: query.cursor ?? null,
@@ -402,43 +465,17 @@ adminSellerRouter.patch(
   }),
 );
 
-adminSellerRouter.patch(
-  '/sellers/:sellerId',
-  requirePermission(Permission.SELLER_MANAGE),
-  validate({ params: z.object({ sellerId: uuid }), body: updateSellerSchema }),
-  asyncHandler(async (req: Request, res: Response) => {
-    ok(res, await managementService.updateSeller(req.params['sellerId'] as string, req.body, requireUser(req).id));
-  }),
-);
-
-/** Admin onboarding data entry — for a seller that cannot fill it in itself. */
-adminSellerRouter.put(
-  '/sellers/:sellerId/onboarding/profile',
-  requirePermission(Permission.SELLER_MANAGE),
-  validate({ params: z.object({ sellerId: uuid }), body: profileSchema.strict() }),
-  asyncHandler(async (req: Request, res: Response) => {
-    ok(
-      res,
-      await managementService.upsertOnboardingProfile(req.params['sellerId'] as string, req.body, requireUser(req).id),
-    );
-  }),
-);
-
-adminSellerRouter.put(
-  '/sellers/:sellerId/onboarding/bank-detail',
-  requirePermission(Permission.SELLER_MANAGE),
-  validate({ params: z.object({ sellerId: uuid }), body: bankDetailSchema.strict() }),
-  asyncHandler(async (req: Request, res: Response) => {
-    ok(
-      res,
-      await managementService.upsertOnboardingBankDetail(
-        req.params['sellerId'] as string,
-        req.body,
-        requireUser(req).id,
-      ),
-    );
-  }),
-);
+/*
+ * READ-ONLY ONBOARDING. Seller onboarding data — business/contact/tax
+ * profile, bank account, store address and location, documents — is the
+ * seller's own (Seller Panel → onboarding). Admin reads it, opens the PDFs,
+ * reveals document numbers (audited) and decides: document verify/reject,
+ * bank verify, Gate 1 and Gate 2. There is deliberately NO admin route that
+ * creates, edits or uploads any of it (the former PUT .../onboarding/profile,
+ * PUT .../onboarding/bank-detail, POST .../onboarding/documents and
+ * PATCH /sellers/:sellerId were removed): a correction is requested from the
+ * seller with Gate 2 "Request changes".
+ */
 
 /** Verifying a payout account is both an onboarding review decision and a
  * payout-trust decision, so it needs both permissions. */
@@ -450,23 +487,6 @@ adminSellerRouter.patch(
     ok(
       res,
       await managementService.verifyBankDetail(req.params['sellerId'] as string, req.body, requireUser(req).id),
-    );
-  }),
-);
-
-/** A document the seller supplied out-of-band, uploaded by admin as a PDF
- * (multipart/form-data, same fields and checks as POST /seller/onboarding/
- * documents). Strict, so `status` etc. cannot be set — it starts PENDING. */
-adminSellerRouter.post(
-  '/sellers/:sellerId/onboarding/documents',
-  requirePermission(Permission.SELLER_MANAGE),
-  validate({ params: z.object({ sellerId: uuid }) }),
-  documentUpload,
-  validate({ body: documentSchema }),
-  asyncHandler(async (req: Request, res: Response) => {
-    created(
-      res,
-      await managementService.addOnboardingDocument(req.params['sellerId'] as string, req.body, req.file, requireUser(req).id),
     );
   }),
 );

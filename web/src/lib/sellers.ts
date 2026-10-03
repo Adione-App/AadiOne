@@ -19,10 +19,12 @@ import {
   Permission,
   SellerType,
   roleHasPermission,
+  type AdminReviewSellerApplicationRequest,
+  type AdminReviewSellerVerificationRequest,
+  type AdminSellerApplicationDto,
   type AdminSellerDetailDto,
   type AdminSellerListRowDto,
   type AdminSetSellerStatusRequest,
-  type AdminUpdateSellerRequest,
   type AdminVerifyBankDetailRequest,
   type CreateSellerRequest,
   type CursorPage,
@@ -31,6 +33,8 @@ import {
   type ProductApprovalBatchDto,
   type SellerClosedReason,
   type SellerHoursDto,
+  type SellerLifecycleFilter,
+  type SellerLifecycleStatus,
   type SellerListingDto,
   type SellerOnboardingStage,
   type SellerOrderListRowDto,
@@ -38,8 +42,6 @@ import {
   type SellerProductDto,
   type RevealedDocumentNumberDto,
   type UploadSellerDocumentRequest,
-  type UpsertSellerBankDetailRequest,
-  type UpsertSellerProfileRequest,
 } from '@shared';
 import { api, ApiRequestError } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -75,6 +77,18 @@ export const ONBOARDING_STATUSES: readonly ApprovalStatus[] = [
  * REJECTED are already the onboarding filter. */
 export const STAGE_FILTERS: readonly SellerOnboardingStage[] = ['PENDING', 'SUBMITTED'];
 
+/** The lifecycle stages the Sellers list filters by — the two gates in order. */
+export const LIFECYCLE_FILTERS: readonly SellerLifecycleFilter[] = [
+  'APPLICATION_PENDING',
+  'APPLICATION_REJECTED',
+  'ONBOARDING_PENDING',
+  'ONBOARDING_CHANGES_REQUIRED',
+  'ONBOARDING_PENDING_REVIEW',
+  'ACTIVE',
+  'SUSPENDED',
+  'ONBOARDING_REJECTED',
+];
+
 /** Everything the list can be filtered by. Sent to the server as-is. */
 export interface SellerListFilters {
   search?: string;
@@ -82,6 +96,7 @@ export interface SellerListFilters {
   onboardingStatus?: ApprovalStatus;
   isActive?: boolean;
   stage?: SellerOnboardingStage;
+  lifecycle?: SellerLifecycleFilter;
 }
 
 export const SELLER_PAGE_SIZE = 25;
@@ -94,6 +109,7 @@ export function sellerListPath(filters: SellerListFilters, cursor: string | null
   if (filters.onboardingStatus) query.set('onboardingStatus', filters.onboardingStatus);
   if (filters.isActive !== undefined) query.set('isActive', String(filters.isActive));
   if (filters.stage) query.set('stage', filters.stage);
+  if (filters.lifecycle) query.set('lifecycle', filters.lifecycle);
   if (cursor) query.set('cursor', cursor);
   return `/admin/sellers?${query.toString()}`;
 }
@@ -258,23 +274,12 @@ export const sellersApi = {
   /** Masked overview (PAN, Aadhaar, bank account never in full). */
   detail: (sellerId: string) => api.get<AdminSellerDetailDto>(`/admin/sellers/${sellerId}`),
   create: (body: CreateSellerRequest) => api.post<CreateSellerResponse>('/admin/sellers', body),
-  update: (sellerId: string, body: AdminUpdateSellerRequest) =>
-    api.patch<AdminSellerDetailDto>(`/admin/sellers/${sellerId}`, body),
   setStatus: (sellerId: string, body: AdminSetSellerStatusRequest) =>
     api.patch<AdminSellerDetailDto>(`/admin/sellers/${sellerId}/status`, body),
 
   /** The onboarding read — masked, no document links. (The older unmasked
    * GET …/onboarding review view is deliberately not called from this app.) */
   onboardingSummary: (sellerId: string) => getAdminSellerOnboardingSummary(sellerId),
-  /** Admin data entry + bank verification — all four respond with the masked
-   * onboarding summary (no document links). */
-  upsertProfile: (sellerId: string, body: UpsertSellerProfileRequest) =>
-    api.put<AdminSellerOnboardingSummaryDto>(`/admin/sellers/${sellerId}/onboarding/profile`, body),
-  upsertBankDetail: (sellerId: string, body: UpsertSellerBankDetailRequest) =>
-    api.put<AdminSellerOnboardingSummaryDto>(`/admin/sellers/${sellerId}/onboarding/bank-detail`, body),
-  /** Uploads a document PDF (multipart) with its type and number. */
-  addDocument: (sellerId: string, body: UploadSellerDocumentRequest & { file: File }) =>
-    api.postForm<AdminSellerOnboardingSummaryDto>(`/admin/sellers/${sellerId}/onboarding/documents`, documentFormData(body)),
   /** "Show" — the full number of one document (audited server-side; never cached). */
   revealDocumentNumber: (sellerId: string, documentId: string) =>
     api.get<RevealedDocumentNumberDto>(`/admin/sellers/${sellerId}/onboarding/documents/${documentId}/number`),
@@ -295,13 +300,20 @@ export const sellersApi = {
   ): Promise<void> => {
     await api.patch<unknown>(`/admin/sellers/${sellerId}/onboarding/documents/${documentId}/review`, body);
   },
-  /** Onboarding decision. Unmasked response, discarded (see above). */
-  reviewOnboarding: async (
-    sellerId: string,
-    body: { status: typeof ApprovalStatus.APPROVED | typeof ApprovalStatus.REJECTED; reason?: string },
-  ): Promise<void> => {
-    await api.patch<unknown>(`/admin/sellers/${sellerId}/onboarding/review`, body);
+
+  /** Seller Applications (Gate 1). No status = every self-signup application. */
+  applications: (status: SellerLifecycleStatus | null, cursor: string | null, limit = SELLER_PAGE_SIZE) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (status) query.set('status', status);
+    if (cursor) query.set('cursor', cursor);
+    return api.get<CursorPage<AdminSellerApplicationDto>>(`/admin/sellers/applications?${query.toString()}`);
   },
+  /** Gate 1 decision — answers with the (masked) seller overview. */
+  reviewApplication: (sellerId: string, body: AdminReviewSellerApplicationRequest) =>
+    api.patch<AdminSellerDetailDto>(`/admin/sellers/${sellerId}/application/review`, body),
+  /** Gate 2 decision — answers with the (masked) seller overview. */
+  reviewVerification: (sellerId: string, body: AdminReviewSellerVerificationRequest) =>
+    api.patch<AdminSellerDetailDto>(`/admin/sellers/${sellerId}/verification/review`, body),
 
   /** Read-only effective availability (admin route — never /seller/availability). */
   availability: (sellerId: string) => api.get<AdminSellerAvailability>(`/admin/sellers/${sellerId}/availability`),
@@ -356,6 +368,7 @@ export const adminSellerKeys = {
   lists: () => [ADMIN_SELLERS_ROOT, 'list'] as const,
   list: (filters: SellerListFilters) => [ADMIN_SELLERS_ROOT, 'list', filters] as const,
   details: () => [ADMIN_SELLERS_ROOT, 'detail'] as const,
+  applications: (status: SellerLifecycleStatus | null) => [ADMIN_SELLERS_ROOT, 'list', 'applications', { status }] as const,
   detail: (sellerId: string) => [ADMIN_SELLERS_ROOT, 'detail', sellerId] as const,
   /** Its own branch (not under `detail`): writes refresh it explicitly. */
   onboardingSummary: (sellerId: string) => [ADMIN_SELLERS_ROOT, 'onboarding', 'summary', sellerId] as const,
@@ -667,29 +680,12 @@ function useSellerOnboardingMutation<TInput>(
   });
 }
 
-export const useUpsertSellerProfile = (sellerId: string) =>
-  useSellerOnboardingMutation(sellerId, (body: UpsertSellerProfileRequest) => sellersApi.upsertProfile(sellerId, body), {
-    refreshList: true,
-  });
-
-export const useUpsertSellerBankDetail = (sellerId: string) =>
-  useSellerOnboardingMutation(
-    sellerId,
-    (body: UpsertSellerBankDetailRequest) => sellersApi.upsertBankDetail(sellerId, body),
-    { refreshList: true },
-  );
-
 export const useVerifySellerBankDetail = (sellerId: string) =>
   useSellerOnboardingMutation(
     sellerId,
     (body: AdminVerifyBankDetailRequest) => sellersApi.verifyBankDetail(sellerId, body),
     { refreshList: false },
   );
-
-export const useAddSellerDocument = (sellerId: string) =>
-  useSellerOnboardingMutation(sellerId, (body: UploadSellerDocumentRequest & { file: File }) => sellersApi.addDocument(sellerId, body), {
-    refreshList: true,
-  });
 
 export const useReviewSellerDocument = (sellerId: string) =>
   useSellerOnboardingMutation(
@@ -702,26 +698,37 @@ export const useReviewSellerDocument = (sellerId: string) =>
     { refreshList: true },
   );
 
-export const useReviewSellerOnboarding = (sellerId: string) =>
-  useSellerOnboardingMutation(
-    sellerId,
-    (input: { status: typeof ApprovalStatus.APPROVED | typeof ApprovalStatus.REJECTED; reason?: string }) =>
-      sellersApi.reviewOnboarding(sellerId, input),
-    { refreshList: true },
-  );
+/** Seller Applications (Gate 1 queue), cursor-paginated. */
+export function useSellerApplications(status: SellerLifecycleStatus | null, enabled = true) {
+  return useInfiniteQuery({
+    queryKey: adminSellerKeys.applications(status),
+    queryFn: ({ pageParam }) => sellersApi.applications(status, pageParam),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => (last.hasMore && last.nextCursor ? last.nextCursor : undefined),
+    retry: retryServerErrorsOnce,
+    enabled,
+  });
+}
 
-export function useUpdateSeller() {
+/** A gate decision moves the seller's lifecycle: refresh every view of it. */
+function useGateMutation<TInput>(run: (sellerId: string, input: TInput) => Promise<AdminSellerDetailDto>) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { sellerId: string; body: AdminUpdateSellerRequest }) =>
-      sellersApi.update(input.sellerId, input.body),
+    mutationFn: (input: { sellerId: string; body: TInput }) => run(input.sellerId, input.body),
     onSuccess: (detail) => queryClient.setQueryData(adminSellerKeys.detail(detail.id), detail),
     onSettled: (_data, _error, input) => {
       void queryClient.invalidateQueries({ queryKey: adminSellerKeys.lists() });
       void queryClient.invalidateQueries({ queryKey: adminSellerKeys.detail(input.sellerId) });
+      void queryClient.invalidateQueries({ queryKey: adminSellerKeys.onboardingSummary(input.sellerId) });
     },
   });
 }
+
+export const useReviewSellerApplication = () =>
+  useGateMutation((sellerId, body: AdminReviewSellerApplicationRequest) => sellersApi.reviewApplication(sellerId, body));
+
+export const useReviewSellerVerification = () =>
+  useGateMutation((sellerId, body: AdminReviewSellerVerificationRequest) => sellersApi.reviewVerification(sellerId, body));
 
 /* -------------------------------------------------------------------------- */
 /* errors                                                                      */

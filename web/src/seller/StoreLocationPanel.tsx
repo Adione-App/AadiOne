@@ -32,7 +32,18 @@ interface SellerLocation {
 
 const LOCATION_KEY = [...sellerKeys.all, 'location'] as const;
 
-export default function StoreLocationPanel({ onSaved }: { onSaved: (message: string) => void }) {
+/** A seller that has only applied has no map point yet (0, 0 = not set). */
+const isUnset = (location: SellerLocation): boolean =>
+  location.latitude === 0 && location.longitude === 0 && !location.addressLine.trim();
+
+export default function StoreLocationPanel({
+  onSaved,
+  readOnly = false,
+}: {
+  onSaved: (message: string) => void;
+  /** Onboarding under review: show the location, no Edit. */
+  readOnly?: boolean;
+}) {
   const queryClient = useQueryClient();
   const location = useQuery({
     queryKey: LOCATION_KEY,
@@ -49,15 +60,17 @@ export default function StoreLocationPanel({ onSaved }: { onSaved: (message: str
     );
   }
   const data = location.data;
+  const unset = isUnset(data);
   const mapUrl = `https://www.google.com/maps?q=${data.latitude},${data.longitude}`;
 
   return (
     <Panel
       title="Store location"
       action={
-        !editing && (
+        !editing &&
+        !readOnly && (
           <Button variant="secondary" onClick={() => setEditing(true)}>
-            Edit location
+            {unset ? 'Add location' : 'Edit location'}
           </Button>
         )
       }
@@ -69,10 +82,15 @@ export default function StoreLocationPanel({ onSaved }: { onSaved: (message: str
           onSaved={(saved) => {
             queryClient.setQueryData(LOCATION_KEY, saved);
             void queryClient.invalidateQueries({ queryKey: sellerKeys.onboarding });
+            void queryClient.invalidateQueries({ queryKey: sellerKeys.lifecycle });
             setEditing(false);
             onSaved('Store location saved. Customers are now matched to your shop from this point.');
           }}
         />
+      ) : unset ? (
+        <p className="text-sm text-gray-500">
+          Not added yet. Add your store address and set its location on the map — customers are matched to your shop from this point.
+        </p>
       ) : (
         <div className="space-y-2 text-sm">
           <address className="not-italic leading-relaxed text-gray-900">
@@ -104,8 +122,9 @@ function LocationForm({
   onCancel: () => void;
   onSaved: (saved: SellerLocation) => void;
 }) {
-  const [lat, setLat] = useState(String(initial.latitude));
-  const [lng, setLng] = useState(String(initial.longitude));
+  const blank = initial.latitude === 0 && initial.longitude === 0;
+  const [lat, setLat] = useState(blank ? '' : String(initial.latitude));
+  const [lng, setLng] = useState(blank ? '' : String(initial.longitude));
   const [addressLine, setAddressLine] = useState(initial.addressLine);
   const [city, setCity] = useState(initial.city);
   const [state, setState] = useState(initial.state);

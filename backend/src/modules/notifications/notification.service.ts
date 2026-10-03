@@ -238,7 +238,13 @@ function compose(type: NotificationType, c: NotifyContext): { title: string; bod
     case NotificationType.SELLER_ONBOARDING_APPROVED:
       return { title: 'You are approved', body: 'Your seller account has been approved. You can start selling.' };
     case NotificationType.SELLER_ONBOARDING_REJECTED:
-      return { title: 'Onboarding needs changes', body: `Your onboarding was not approved${c.reason ? `: ${c.reason}` : '.'} Please update and resubmit.` };
+      return { title: 'Seller account not approved', body: `Your seller onboarding was not approved${c.reason ? `: ${c.reason}` : '.'}` };
+    case NotificationType.SELLER_ONBOARDING_CHANGES_REQUESTED:
+      return { title: 'Onboarding needs changes', body: `Please update your onboarding and resubmit${c.reason ? `: ${c.reason}` : '.'}` };
+    case NotificationType.SELLER_APPLICATION_APPROVED:
+      return { title: 'Application approved', body: 'Your seller application is approved. Complete your seller onboarding to start selling.' };
+    case NotificationType.SELLER_APPLICATION_REJECTED:
+      return { title: 'Application not approved', body: `Your seller application was not approved${c.reason ? `: ${c.reason}` : '.'}` };
     case NotificationType.SELLER_PRODUCT_APPROVED:
       return { title: 'Product approved', body: `"${c.productName ?? 'Your product'}" is approved and can now be listed.` };
     case NotificationType.SELLER_PRODUCT_REJECTED:
@@ -255,6 +261,8 @@ function compose(type: NotificationType, c: NotifyContext): { title: string; bod
     /* --- admin ------------------------------------------------------------ */
     case NotificationType.ADMIN_ONBOARDING_SUBMITTED:
       return { title: 'Seller onboarding to review', body: `${seller} submitted onboarding for review.` };
+    case NotificationType.ADMIN_SELLER_APPLICATION_SUBMITTED:
+      return { title: 'New seller application', body: `${seller} applied to sell on Aadione.` };
     case NotificationType.ADMIN_PRODUCTS_SUBMITTED:
       return { title: 'Products to review', body: `${seller} submitted ${c.count ?? 1} product(s) for approval.` };
     case NotificationType.ADMIN_REFUND_FAILED:

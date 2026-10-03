@@ -62,7 +62,7 @@ import type { SellerDocumentType } from '@shared';
  * /auth/change-password). Signing in elsewhere ends on a change; this device
  * stays signed in.
  */
-function PasswordPanel() {
+export function PasswordPanel() {
   const password = useSellerAuth((state) => state.password);
   const changePassword = useSellerAuth((state) => state.changePassword);
   const [current, setCurrent] = useState('');
@@ -237,7 +237,7 @@ function Checklist({ data, onAddBank, onEditRestaurant }: { data: SellerOnboardi
 const formatDate = (iso: string): string =>
   new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 
-function Row({ label, value }: { label: string; value: string | null | undefined }) {
+export function Row({ label, value }: { label: string; value: string | null | undefined }) {
   return (
     <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5 py-2.5">
       <dt className="text-sm text-gray-500">{label}</dt>
@@ -246,7 +246,7 @@ function Row({ label, value }: { label: string; value: string | null | undefined
   );
 }
 
-function Note({ children }: { children: string }) {
+export function Note({ children }: { children: string }) {
   return <p className="text-sm text-gray-500">{children}</p>;
 }
 
@@ -504,7 +504,7 @@ export default function SellerProfilePage() {
  * ever arrives masked, and it lives in this dialog's state alone — never in
  * the query cache, a URL, browser storage or a log.
  */
-function BankDetailsModal({
+export function BankDetailsModal({
   hasExisting,
   initialHolder,
   initialBank,
@@ -607,7 +607,7 @@ function BankDetailsModal({
   );
 }
 
-function RestaurantModal({
+export function RestaurantModal({
   initial,
   saving,
   serverError,
@@ -673,7 +673,7 @@ function RestaurantModal({
 }
 
 /** POST /seller/onboarding/documents — multipart: type, number and the PDF. */
-function UploadDocumentModal({ onClose, onDone }: { onClose: () => void; onDone: (label: string) => void }) {
+export function UploadDocumentModal({ onClose, onDone }: { onClose: () => void; onDone: (label: string) => void }) {
   const [value, setValue] = useState<DocumentUploadValue>({ type: '', documentNumber: '', file: null });
   const [errors, setErrors] = useState<Partial<Record<'type' | 'documentNumber' | 'file', string>>>({});
   const upload = useMutation({

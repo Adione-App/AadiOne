@@ -12,6 +12,7 @@ import { validate } from '../../middleware/validate';
 import { requirePermission, requireUser } from '../../middleware/auth';
 import { attachSellerContext, requireSellerId } from '../../middleware/sellerAuth';
 import * as service from './seller-onboarding.service';
+import * as lifecycleService from './seller-lifecycle.service';
 import { documentUpload } from '../../middleware/documentUpload';
 import { sendDocumentFile } from './document-response';
 import { z } from 'zod';
@@ -105,10 +106,11 @@ sellerOnboardingRouter.get(
   }),
 );
 
+/** "Submit for Verification" (Gate 2 input) — answers with the new lifecycle state. */
 sellerOnboardingRouter.post(
   '/onboarding/submit',
   requirePermission(Permission.SELLER_PROFILE_MANAGE),
   asyncHandler(async (req: Request, res: Response) => {
-    ok(res, await service.submitOnboarding(requireSellerId(req), requireUser(req).id));
+    ok(res, await lifecycleService.submitForVerification(requireSellerId(req), requireUser(req).id));
   }),
 );

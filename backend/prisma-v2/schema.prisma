@@ -117,6 +117,27 @@ enum SellerType {
   OTHER
 }
 
+/// The two-gate seller lifecycle (see Seller.lifecycleStatus). Gate 1 is the
+/// admin decision on a seller's APPLICATION; Gate 2 the admin verification of
+/// the completed ONBOARDING. Only ACTIVE sellers get the operational Seller
+/// Panel — enforced server-side by middleware/sellerLifecycle.ts.
+enum SellerLifecycleStatus {
+  /// Self-signup received; waiting for admin Gate 1.
+  APPLICATION_PENDING
+  /// Gate 1 refused. Terminal: no onboarding access.
+  APPLICATION_REJECTED
+  /// Gate 1 approved (or created by admin): the seller fills in onboarding.
+  ONBOARDING_PENDING
+  /// Submitted for verification; locked for edits while admin reviews.
+  ONBOARDING_PENDING_REVIEW
+  /// Admin asked for corrections; the seller edits and resubmits.
+  ONBOARDING_CHANGES_REQUIRED
+  /// Gate 2 approved — full Seller Panel. Mirrors onboardingStatus APPROVED.
+  ACTIVE
+  /// Gate 2 refused. Terminal.
+  ONBOARDING_REJECTED
+}
+
 enum ProductStatus {
   DRAFT
   ACTIVE
@@ -320,8 +341,12 @@ enum NotificationType {
   SELLER_SETTLEMENT_PROCESSING
   SELLER_SETTLEMENT_PAID
   SELLER_SETTLEMENT_FAILED
+  SELLER_APPLICATION_APPROVED
+  SELLER_APPLICATION_REJECTED
+  SELLER_ONBOARDING_CHANGES_REQUESTED
   // --- admin-facing (audience ADMIN) ---
   ADMIN_ONBOARDING_SUBMITTED
+  ADMIN_SELLER_APPLICATION_SUBMITTED
   ADMIN_PRODUCTS_SUBMITTED
   ADMIN_REFUND_FAILED
   ADMIN_SETTLEMENT_FAILED
@@ -574,6 +599,25 @@ model Seller {
   /// the external onboarding flow.
   onboardingStatus ApprovalStatus @default(PENDING) @map("onboarding_status")
 
+  /// Where the seller is in the two-gate lifecycle (see SellerLifecycleStatus).
+  /// `onboardingStatus` is kept in step with it — APPROVED exactly when this
+  /// is ACTIVE, REJECTED when ONBOARDING_REJECTED, else PENDING (CHECK
+  /// `sellers_lifecycle_matches_onboarding`) — so every existing "is this
+  /// seller live" rule keeps reading `onboardingStatus` unchanged. Defaults
+  /// to APPLICATION_PENDING so a row created without a decision is never
+  /// operational.
+  lifecycleStatus        SellerLifecycleStatus @default(APPLICATION_PENDING) @map("lifecycle_status")
+  /// The seller-facing reason for the latest Gate 1 rejection, request for
+  /// changes or final rejection. Cleared when the seller moves on.
+  lifecycleReason        String?               @map("lifecycle_reason") @db.VarChar(500)
+  lifecycleUpdatedAt     DateTime?             @map("lifecycle_updated_at") @db.Timestamptz(3)
+  /// Self-signup time; null for sellers created by admin.
+  applicationSubmittedAt DateTime?             @map("application_submitted_at") @db.Timestamptz(3)
+  /// Latest submission for Gate 2 verification.
+  onboardingSubmittedAt  DateTime?             @map("onboarding_submitted_at") @db.Timestamptz(3)
+  /// Gate 2 approval — when the seller became ACTIVE.
+  activatedAt            DateTime?             @map("activated_at") @db.Timestamptz(3)
+
   /// Fallback commission rate (basis points) when no CommissionRule matches
   /// more specifically — see CommissionRule's own doc comment for the full
   /// precedence chain (product > category > this default).
@@ -612,6 +656,8 @@ model Seller {
   configurations  Configuration[]
   backInStockSubs BackInStockSubscription[]
 
+  /// Admin seller list / applications queue filtered by lifecycle stage.
+  @@index([lifecycleStatus, createdAt])
   @@map("sellers")
 }
 
@@ -648,9 +694,9 @@ model SellerClosure {
 }
 
 // =============================================================================
-// Seller onboarding — business/legal details admin collects to create and
-// approve a seller account. Sellers do not self-register (#6): these rows are
-// filled in by admin from information the seller provides out-of-band.
+// Seller onboarding — business/legal details a seller fills in after admin
+// approves its application (Gate 1), and admin verifies before the seller
+// goes ACTIVE (Gate 2). See Seller.lifecycleStatus.
 // =============================================================================
 
 /// Business/legal identity. PAN/Aadhaar/GST/FSSAI numbers are sensitive PII —

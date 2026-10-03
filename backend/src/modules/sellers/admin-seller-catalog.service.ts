@@ -9,7 +9,7 @@
  *     listings for any seller — Aadione included — they all manage their own.
  */
 
-import { ApprovalStatus, ErrorCode, ProductStatus } from '../../shared';
+import { ApprovalStatus, ErrorCode, ProductStatus, StockLedgerReason } from '../../shared';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import { assertSellerMayUseCategoryForProduct } from '../catalog/seller-category.service';
@@ -178,6 +178,22 @@ export async function createSellerListing(
         isAvailable: input.isAvailable ?? true,
       },
     });
+
+    // The opening stock is the listing's first stock movement, so its
+    // movement history (and the ledger's running balance) starts from it
+    // rather than from the first later adjustment.
+    if (created.stockQty > 0) {
+      await tx.stockLedger.create({
+        data: {
+          sellerListingId: created.id,
+          delta: created.stockQty,
+          reason: StockLedgerReason.PURCHASE,
+          balanceAfter: created.stockQty,
+          actorUserId,
+          note: 'Opening stock',
+        },
+      });
+    }
 
     await tx.auditLog.create({
       data: {

@@ -7,21 +7,29 @@
  * Navigation is one list (NAV) shown three ways: a sidebar from lg up (which
  * collapses to icons), a slide-over drawer below lg, and a bottom tab bar on
  * phones for the five daily screens.
+ *
+ * TWO GATES: a signed-in seller only gets this panel once its lifecycle is
+ * ACTIVE (GET /seller/lifecycle). Before that — application pending,
+ * onboarding, under review, changes required, rejected — every /seller path
+ * shows the onboarding/status experience (pages/SellerOnboarding.tsx). The
+ * server refuses the operational APIs on its own; this only mirrors it.
  */
 
 import { useEffect, useState } from 'react';
 import { Navigate, NavLink, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { Icon, Spinner, type IconName } from '@/components/ui';
+import { ErrorBanner, Icon, Spinner, type IconName } from '@/components/ui';
 import { NotificationBell } from '@/components/NotificationBell';
 import { AadioneWordmark } from '@/components/PartnerLogin';
 import { formatUnreadBadge, useNotificationUnreadCount } from '@/lib/notifications';
-import { SELLER_QUERY_ROOT, sellerClient } from './sellerApi';
+import { SELLER_QUERY_ROOT, sellerClient, sellerErrorMessage } from './sellerApi';
 import { useSellerAuth } from './sellerAuth';
-import { useSellerAvailability, useSellerOrderSummary } from './sellerQueries';
+import { useSellerAvailability, useSellerLifecycle, useSellerOrderSummary } from './sellerQueries';
 import { useSellerNotificationSource } from './sellerNotifications';
 import { ToastRegion } from './sellerUi';
 import SellerLoginPage from './pages/SellerLogin';
+import SellerRegisterPage from './pages/SellerRegister';
+import SellerOnboardingPage from './pages/SellerOnboarding';
 import SellerDashboardPage from './pages/SellerDashboard';
 import SellerOrdersPage from './pages/SellerOrders';
 import SellerProductsPage from './pages/SellerProducts';
@@ -110,15 +118,59 @@ export default function SellerApp() {
 
   if (status === 'loading') return <Spinner label="Restoring session…" />;
 
-  const authed = status === 'authenticated';
+  if (status !== 'authenticated') {
+    return (
+      <Routes>
+        <Route path="/seller/login" element={<SellerLoginPage />} />
+        <Route path="/seller/register" element={<SellerRegisterPage />} />
+        <Route path="*" element={<Navigate to="/seller/login" replace />} />
+      </Routes>
+    );
+  }
+
+  return <AuthenticatedSellerApp />;
+}
+
+/**
+ * Signed in: the lifecycle decides between the onboarding/status screens and
+ * the full Seller Panel.
+ */
+function AuthenticatedSellerApp() {
+  const lifecycle = useSellerLifecycle();
+  const logout = useSellerAuth((state) => state.logout);
+
+  if (lifecycle.isPending) return <Spinner label="Opening your seller account…" />;
+  if (lifecycle.isError) {
+    return (
+      <div className="mx-auto max-w-md space-y-3 p-6">
+        <ErrorBanner message={sellerErrorMessage(lifecycle.error)} />
+        <div className="flex gap-2">
+          <button type="button" onClick={() => void lifecycle.refetch()} className="rounded-xl bg-brand-500 px-4 py-2.5 text-sm font-semibold text-white">
+            Try again
+          </button>
+          <button type="button" onClick={() => void logout()} className="rounded-xl border border-gray-300 px-4 py-2.5 text-sm font-semibold text-gray-700">
+            Logout
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!lifecycle.data.panelUnlocked) {
+    return (
+      <Routes>
+        <Route path="/seller/onboarding" element={<SellerOnboardingPage />} />
+        <Route path="*" element={<Navigate to="/seller/onboarding" replace />} />
+      </Routes>
+    );
+  }
 
   return (
     <Routes>
-      <Route
-        path="/seller/login"
-        element={authed ? <Navigate to="/seller" replace /> : <SellerLoginPage />}
-      />
-      <Route element={authed ? <SellerLayout /> : <Navigate to="/seller/login" replace />}>
+      <Route path="/seller/login" element={<Navigate to="/seller" replace />} />
+      <Route path="/seller/register" element={<Navigate to="/seller" replace />} />
+      <Route path="/seller/onboarding" element={<Navigate to="/seller" replace />} />
+      <Route element={<SellerLayout />}>
         <Route path="/seller" element={<SellerDashboardPage />} />
         <Route path="/seller/orders" element={<SellerOrdersPage />} />
         <Route path="/seller/products" element={<SellerProductsPage />} />
@@ -133,7 +185,7 @@ export default function SellerApp() {
         <Route path="/seller/profile" element={<SellerProfilePage />} />
         <Route path="/seller/notifications" element={<SellerNotificationsPage />} />
       </Route>
-      <Route path="*" element={<Navigate to={authed ? '/seller' : '/seller/login'} replace />} />
+      <Route path="*" element={<Navigate to="/seller" replace />} />
     </Routes>
   );
 }

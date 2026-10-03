@@ -86,12 +86,16 @@ export function initRealtime(httpServer: HttpServer): Server {
         return;
       }
       // Ownership check: a seller role only gets events for a seller it is
-      // actually staff of (#15/#27) — never trusted from the client alone.
+      // actually staff of (#15/#27) — never trusted from the client alone —
+      // and only once that seller is ACTIVE (passed both onboarding gates).
       void prisma.sellerStaff
-        .findFirst({ where: { userId, sellerId, isActive: true }, select: { id: true } })
+        .findFirst({
+          where: { userId, sellerId, isActive: true, seller: { lifecycleStatus: 'ACTIVE', deletedAt: null } },
+          select: { id: true },
+        })
         .then((staff) => {
           if (!staff) {
-            log.warn({ userId, sellerId }, 'seller subscribe denied — not staff of this seller');
+            log.warn({ userId, sellerId }, 'seller subscribe denied — not staff of this active seller');
             return;
           }
           void socket.join(rooms.seller(sellerId));

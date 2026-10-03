@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import { SellerType } from '../../shared/enums';
 import { normalizeIndianMobile } from '../../shared/phone';
 import { env } from '../../config/env';
 
@@ -103,6 +104,28 @@ export const signupSchema = z.object({
   mobile: mobileSchema,
 });
 
+/**
+ * Public seller application (POST /auth/seller/signup). Strict: commission,
+ * status, address or anything else is a 400 — those are never the
+ * applicant's to set. GENERAL is not a seller type (OTHER is).
+ */
+export const sellerSignupSchema = z
+  .object({
+    fullName: signupSchema.shape.fullName,
+    mobile: mobileSchema,
+    email: emailSchema,
+    password: newPasswordSchema,
+    businessName: z
+      .string({ required_error: 'Enter your business or store name' })
+      .trim()
+      .min(2, 'Business name must be at least 2 characters')
+      .max(120, 'Business name is too long'),
+    sellerType: z.nativeEnum(SellerType, {
+      errorMap: () => ({ message: 'Choose your seller type' }),
+    }),
+  })
+  .strict();
+
 export const updateProfileSchema = z
   .object({
     fullName: z
@@ -125,4 +148,5 @@ export type AdminLoginInput = z.infer<typeof adminLoginSchema>;
 export type SellerLoginInput = z.infer<typeof sellerLoginSchema>;
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type SignupInput = z.infer<typeof signupSchema>;
+export type SellerSignupInput = z.infer<typeof sellerSignupSchema>;
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;

@@ -1,10 +1,12 @@
 /**
  * Seller panel session.
  *
- * Sellers sign in with the existing V2 mobile-OTP flow (/auth/send-otp +
- * /auth/verify-otp) — seller owners are created by Aadione with a mobile
- * number only. The session lives in the seller client's own storage key
- * (see sellerApi.ts), fully separate from the admin panel's.
+ * Sellers apply themselves (POST /auth/seller/signup — signed in straight
+ * away) or are created by Aadione, and sign in with email + password or the
+ * mobile-OTP flow. The session lives in the seller client's own storage key
+ * (see sellerApi.ts), fully separate from the admin panel's. What a signed-in
+ * seller may open depends on its lifecycle (GET /seller/lifecycle — the
+ * server enforces it; SellerApp only mirrors it).
  *
  * verify-otp authenticates ANY account, so this store only accepts a
  * seller-role user who is actually linked to a seller; anything else is
@@ -12,9 +14,9 @@
  */
 
 import { create } from 'zustand';
-import type { AuthResponse, UserDto } from '@shared';
+import type { AuthResponse, SellerLifecycleDto, SellerSignupRequest, UserDto } from '@shared';
 import { ApiRequestError } from '@/lib/api';
-import { SELLER_ROLES, sellerApi, sellerClient, type SellerAvailability } from './sellerApi';
+import { SELLER_ROLES, sellerApi, sellerClient } from './sellerApi';
 
 interface SendOtpResult {
   resendAfterSeconds: number;
@@ -38,6 +40,8 @@ interface SellerAuthState {
   verifyOtp: (mobile: string, otp: string) => Promise<void>;
   /** Email + password issued by Aadione (POST /auth/seller/login). */
   passwordLogin: (email: string, password: string) => Promise<void>;
+  /** Public seller application — creates an APPLICATION_PENDING seller and signs in. */
+  signup: (input: SellerSignupRequest) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   restore: () => Promise<void>;
   logout: () => Promise<void>;
@@ -83,7 +87,7 @@ export const useSellerAuth = create<SellerAuthState>((set) => ({
     // A seller-role account must also be linked to a seller (SellerStaff).
     // The server decides; its message is shown as-is.
     try {
-      await sellerApi.get<SellerAvailability>('/seller/availability');
+      await sellerApi.get<SellerLifecycleDto>('/seller/lifecycle');
     } catch (error) {
       await revoke(result.tokens.refreshToken);
       sellerClient.setTokens(null, null);
@@ -112,6 +116,12 @@ export const useSellerAuth = create<SellerAuthState>((set) => ({
       status: 'authenticated',
       password: { hasPassword: true, passwordChangeRequired: result.passwordChangeRequired },
     });
+  },
+
+  async signup(input) {
+    const result = await sellerApi.post<SellerLoginResponse>('/auth/seller/signup', input);
+    sellerClient.setTokens(result.tokens.accessToken, result.tokens.refreshToken);
+    set({ user: result.user, status: 'authenticated', password: { hasPassword: true, passwordChangeRequired: false } });
   },
 
   async changePassword(currentPassword, newPassword) {

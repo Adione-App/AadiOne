@@ -19,7 +19,7 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Icon, Surface } from '@/components/ui';
 import { sellerOrderStatusLabel, sellerOrderStatusStyle } from '@/lib/v2Orders';
-import { sellerApi, sellerErrorMessage, toOrderCommissions, type SellerOrderCommission } from '../sellerApi';
+import { HANDOVER_LABEL, sellerApi, sellerErrorMessage, toOrderCommissions, type SellerOrderCommission } from '../sellerApi';
 import { sellerKeys, useSellerEarnings, useSellerTodayEarnings } from '../sellerQueries';
 import { SettlementBadge, date, dateTime, inr, percent, settlementRows, useSettlementPages } from '../earningsUi';
 import { CardHeader, EmptyPanel, LoadError, Skeleton, SkeletonBlock, linkClass } from '../sellerUi';
@@ -200,7 +200,7 @@ function OrderEarnings() {
                         <span className="flex flex-wrap items-center gap-2">
                           <span className="font-mono text-sm font-semibold text-gray-900">#{order.orderNumber}</span>
                           <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${sellerOrderStatusStyle(order.status)}`}>
-                            {sellerOrderStatusLabel(order.status)}
+                            {order.handover ? HANDOVER_LABEL[order.handover] : sellerOrderStatusLabel(order.status)}
                           </span>
                         </span>
                         <span className="mt-0.5 block text-xs text-gray-500">{date(order.createdAt)}</span>

@@ -226,6 +226,21 @@ export const signupPerMobile = rateLimit({
   identify: byMobile,
 });
 
+/** Seller applications: their own counters, so a seller applying never
+ * spends a customer's signup allowance (or the other way round). */
+export const sellerSignupPerIp = rateLimit({
+  scope: 'seller-signup:ip',
+  limit: 5,
+  windowSeconds: HOUR,
+});
+
+export const sellerSignupPerMobile = rateLimit({
+  scope: 'seller-signup:mobile',
+  limit: 3,
+  windowSeconds: HOUR,
+  identify: byMobile,
+});
+
 /* --- Referrals -------------------------------------------------------------- */
 
 /** Guards a new account from grinding through referral codes to find a valid one. */

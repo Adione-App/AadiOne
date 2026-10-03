@@ -2,10 +2,12 @@
  * Admin seller management.
  *
  * CREATION — the minimum required to onboard a new seller account (#4).
- * Sellers do not self-register; admin creates the Seller row AND its first
- * SellerStaff (OWNER) in one step. Deliberately NOT the onboarding portal:
- * profile/bank/documents and the review decision live in
- * seller-onboarding.service.ts.
+ * Admin can still create a seller directly (besides public signup —
+ * seller-lifecycle.service.ts): the Seller row AND its first SellerStaff
+ * (OWNER) in one step, starting at ONBOARDING_PENDING (Gate 1 passed).
+ * Deliberately NOT the onboarding portal: profile/bank/documents live in
+ * seller-onboarding.service.ts, the gate decisions in
+ * seller-lifecycle.service.ts.
  *
  * DIRECTORY — the admin seller list and overview (GET /admin/sellers,
  * GET /admin/sellers/:id). Read-only, and built from the existing rules
@@ -14,8 +16,9 @@
  * `evaluateSellerAvailability`. Neither view ever carries a full PAN,
  * Aadhaar or bank account number.
  *
- * MANAGEMENT — the admin trading switch, basic-detail edits, onboarding data
- * entry, bank verification and the seller's products/listings. Every one
+ * MANAGEMENT — the admin trading switch, bank verification and the seller's
+ * products/listings. Onboarding data itself is READ-ONLY for admin (the
+ * seller enters and corrects it; admin reviews and decides). Every one
  * starts from `loadSellerForAdmin`: a missing or soft-deleted seller is
  * NOT_FOUND. Every seller — Aadione included — goes through the same
  * routes; there is no separately managed platform store.
@@ -23,19 +26,19 @@
 
 import type { Prisma } from '@prisma/client';
 import {
-  ActorType,
   UserRole,
   DocumentStatus,
   ErrorCode,
+  SellerLifecycleStatus,
   type AdminSellerDetailDto,
   type AdminSellerListRowDto,
   type AdminSellerOnboardingSummaryDto,
   type AdminSetSellerStatusRequest,
-  type AdminUpdateSellerRequest,
   type AdminVerifyBankDetailRequest,
   type ApprovalStatus,
   type CreateSellerRequest,
   type CursorPage,
+  type SellerLifecycleFilter,
   type SellerListingDto,
   type SellerOnboardingStage,
   type SellerProductDto,
@@ -51,6 +54,7 @@ import { listOwnProducts } from '../catalog/seller-product.service';
 import * as onboardingService from './seller-onboarding.service';
 import * as sellerService from './seller.service';
 import { SellerAuditAction } from './seller-audit';
+import { stageFor } from './seller-lifecycle-rules';
 
 export interface CreateSellerResult {
   sellerId: string;
@@ -77,7 +81,7 @@ const SELLER_INCOMPATIBLE_ROLES: readonly UserRole[] = [
  * bounded-retry shape used elsewhere in this codebase for unique code
  * generation (see referral.service.ts's `allocateRewardCouponCode`).
  */
-async function allocateSellerCode(name: string, tx: Tx): Promise<string> {
+export async function allocateSellerCode(name: string, tx: Tx): Promise<string> {
   const base = slugify(name).toUpperCase().replace(/-/g, '').slice(0, 20) || 'SELLER';
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -210,6 +214,10 @@ export async function createSeller(
         code,
         sellerType: input.sellerType,
         onboardingStatus: 'PENDING',
+        // Created by admin = Gate 1 already passed: the owner goes straight
+        // to onboarding, and still needs Gate 2 before going live.
+        lifecycleStatus: SellerLifecycleStatus.ONBOARDING_PENDING,
+        lifecycleUpdatedAt: new Date(),
         addressLine: input.addressLine,
         city: input.city,
         state: input.state,
@@ -281,10 +289,18 @@ export interface ListSellersOptions {
   search?: string;
   onboardingStatus?: ApprovalStatus;
   stage?: SellerOnboardingStage;
+  /** A lifecycle stage, or SUSPENDED (ACTIVE but switched off by admin). */
+  lifecycle?: SellerLifecycleFilter;
   isActive?: boolean;
   sellerType?: SellerType;
   cursor?: string | null;
   limit: number;
+}
+
+function lifecycleWhere(filter: SellerLifecycleFilter): Prisma.SellerWhereInput {
+  return filter === 'SUSPENDED'
+    ? { lifecycleStatus: SellerLifecycleStatus.ACTIVE, isActive: false }
+    : { lifecycleStatus: filter };
 }
 
 /**
@@ -297,6 +313,7 @@ export async function listSellers(options: ListSellersOptions): Promise<CursorPa
   const filters: Prisma.SellerWhereInput[] = [{ deletedAt: null }];
   if (options.onboardingStatus) filters.push({ onboardingStatus: options.onboardingStatus });
   if (options.stage) filters.push(onboardingService.onboardingStageWhere(options.stage));
+  if (options.lifecycle) filters.push(lifecycleWhere(options.lifecycle));
   if (options.isActive !== undefined) filters.push({ isActive: options.isActive });
   if (options.sellerType) filters.push({ sellerType: options.sellerType });
   if (options.search) {
@@ -307,14 +324,8 @@ export async function listSellers(options: ListSellersOptions): Promise<CursorPa
 
   const sellers = await prisma.seller.findMany({
     where: { AND: filters },
-    include: {
-      hours: { orderBy: { dayOfWeek: 'asc' } },
-      // Presence and document type/status only — exactly what `isComplete`
-      // reads. No profile or bank field is ever loaded for the list.
-      profile: { select: { id: true } },
-      bankDetail: { select: { id: true } },
-      documents: { select: { type: true, status: true } },
-    },
+    // No profile, bank or document field is ever loaded for the list.
+    include: { hours: { orderBy: { dayOfWeek: 'asc' } } },
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     take: options.limit + 1,
   });
@@ -326,7 +337,7 @@ export async function listSellers(options: ListSellersOptions): Promise<CursorPa
   const items = await Promise.all(
     page.map(async (seller): Promise<AdminSellerListRowDto> => {
       const availability = await sellerService.evaluateSellerAvailability(seller);
-      const complete = onboardingService.isComplete(seller.profile, seller.bankDetail, seller.documents);
+      const lifecycleStatus = seller.lifecycleStatus as SellerLifecycleStatus;
       return {
         id: seller.id,
         code: seller.code,
@@ -335,7 +346,8 @@ export async function listSellers(options: ListSellersOptions): Promise<CursorPa
         city: seller.city,
         state: seller.state,
         onboardingStatus: seller.onboardingStatus,
-        stage: onboardingService.computeStage(seller.onboardingStatus, complete),
+        lifecycleStatus,
+        stage: stageFor(lifecycleStatus),
         isActive: seller.isActive,
         isAcceptingOrders: seller.isAcceptingOrders,
         isOpenNow: availability.isOpen,
@@ -370,7 +382,7 @@ export async function getSellerDetail(sellerId: string): Promise<AdminSellerDeta
       hours: { orderBy: { dayOfWeek: 'asc' } },
       staff: {
         where: { deletedAt: null },
-        include: { user: { select: { fullName: true, mobile: true } } },
+        include: { user: { select: { fullName: true, mobile: true, email: true } } },
         orderBy: { createdAt: 'asc' },
       },
     },
@@ -385,6 +397,7 @@ export async function getSellerDetail(sellerId: string): Promise<AdminSellerDeta
 
   const countDocuments = (status?: DocumentStatus) =>
     onboarding.documents.filter((d) => status === undefined || d.status === status).length;
+  const owner = seller.staff.find((member) => member.role === 'OWNER' && member.isActive)?.user ?? null;
 
   return {
     id: seller.id,
@@ -399,6 +412,13 @@ export async function getSellerDetail(sellerId: string): Promise<AdminSellerDeta
     longitude: seller.longitude,
     phone: seller.phone,
     onboardingStatus: onboarding.onboardingStatus,
+    lifecycleStatus: onboarding.lifecycleStatus,
+    lifecycleReason: seller.lifecycleReason,
+    lifecycleUpdatedAt: seller.lifecycleUpdatedAt?.toISOString() ?? null,
+    applicationSubmittedAt: seller.applicationSubmittedAt?.toISOString() ?? null,
+    onboardingSubmittedAt: seller.onboardingSubmittedAt?.toISOString() ?? null,
+    activatedAt: seller.activatedAt?.toISOString() ?? null,
+    owner: owner ? { fullName: owner.fullName, mobile: owner.mobile, email: owner.email } : null,
     stage: onboarding.stage,
     isComplete: onboarding.isComplete,
     lastRejectionReason: lastRejection?.reason ?? null,
@@ -499,126 +519,16 @@ export async function setSellerStatus(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Management — basic details                                                 */
-/* -------------------------------------------------------------------------- */
-
-const EDITABLE_SELLER_FIELDS = [
-  'name',
-  'phone',
-  'addressLine',
-  'city',
-  'state',
-  'pincode',
-  'latitude',
-  'longitude',
-] as const;
-
-/**
- * Edits a seller's basic details — and nothing else: type,
- * status, onboarding, commission and bank details each have their own
- * dedicated route. Only fields that actually change are written and audited
- * (with before/after values — none of these are sensitive); a request that
- * changes nothing writes nothing.
- */
-export async function updateSeller(
-  sellerId: string,
-  input: AdminUpdateSellerRequest,
-  actorUserId: string,
-): Promise<AdminSellerDetailDto> {
-  const seller = await loadSellerForAdmin(sellerId);
-
-  if (input.latitude !== undefined || input.longitude !== undefined) {
-    const { latitude, longitude } = input;
-    if (latitude === undefined || longitude === undefined || !isValidCoordinates(latitude, longitude)) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Those coordinates are not valid.' });
-    }
-    // Same guard as the seller's own location update: 0,0 is what a
-    // broken geolocation call produces, never a real shop.
-    if (latitude === 0 && longitude === 0) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, {
-        message: 'Those coordinates look wrong (0, 0). Please set the location again.',
-      });
-    }
-  }
-
-  const changedFields = EDITABLE_SELLER_FIELDS.filter(
-    (field) => input[field] !== undefined && input[field] !== seller[field],
-  );
-  if (changedFields.length === 0) return getSellerDetail(sellerId);
-
-  const changed = new Set<string>(changedFields);
-  const data: Prisma.SellerUpdateManyMutationInput = {
-    ...(changed.has('name') ? { name: input.name } : {}),
-    ...(changed.has('phone') ? { phone: input.phone ?? null } : {}),
-    ...(changed.has('addressLine') ? { addressLine: input.addressLine } : {}),
-    ...(changed.has('city') ? { city: input.city } : {}),
-    ...(changed.has('state') ? { state: input.state } : {}),
-    ...(changed.has('pincode') ? { pincode: input.pincode } : {}),
-    ...(changed.has('latitude') ? { latitude: input.latitude } : {}),
-    ...(changed.has('longitude') ? { longitude: input.longitude } : {}),
-  };
-  const valuesOf = (source: Partial<Record<(typeof EDITABLE_SELLER_FIELDS)[number], string | number | null>>) =>
-    Object.fromEntries(changedFields.map((field) => [field, source[field] ?? null]));
-
-  await runInTransaction(async (tx) => {
-    const { count } = await tx.seller.updateMany({ where: { id: sellerId, deletedAt: null }, data });
-    if (count === 0) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Seller not found.' });
-    await tx.auditLog.create({
-      data: {
-        actorUserId,
-        action: SellerAuditAction.UPDATE,
-        entityType: 'Seller',
-        entityId: sellerId,
-        before: valuesOf(seller),
-        after: { changedFields, ...valuesOf(input) },
-      },
-    });
-  });
-
-  return getSellerDetail(sellerId);
-}
-
-/* -------------------------------------------------------------------------- */
-/* Management — onboarding data entry and bank verification                  */
+/* Management — bank verification (review only)                              */
 /* -------------------------------------------------------------------------- */
 /*
- * All four saves below respond with the admin onboarding SUMMARY
- * (`getOnboardingSummary`, the same read as GET .../onboarding/summary):
- * PAN, Aadhaar and the account number masked, documents as metadata only —
- * no document links. Only the reviewer's GET .../onboarding shows those.
+ * Onboarding data is READ-ONLY for admin: the seller enters and corrects it
+ * (Seller Panel). Admin only reviews — this verification, document review
+ * (seller-onboarding.service's reviewDocument) and the two gates.
  */
-
-/**
- * Admin-entered business profile — the path that un-sticks a seller who was
- * created by admin but cannot fill in its own profile. The same service (and
- * the same audit entry, marked `source: ADMIN`) as the seller's own save; the
- * seller's type, status and ownership are not touched.
- */
-export async function upsertOnboardingProfile(
-  sellerId: string,
-  input: onboardingService.UpsertSellerProfileInput,
-  actorUserId: string,
-): Promise<AdminSellerOnboardingSummaryDto> {
-  await loadSellerForAdmin(sellerId);
-  await onboardingService.upsertSellerProfile(sellerId, input, { userId: actorUserId, type: ActorType.ADMIN });
-  return onboardingService.getOnboardingSummary(sellerId);
-}
-
-/** Admin-entered payout account. Always saved UNVERIFIED (see
- * `upsertBankDetail`); verification is its own step. */
-export async function upsertOnboardingBankDetail(
-  sellerId: string,
-  input: onboardingService.UpsertBankDetailInput,
-  actorUserId: string,
-): Promise<AdminSellerOnboardingSummaryDto> {
-  await loadSellerForAdmin(sellerId);
-  await onboardingService.upsertBankDetail(sellerId, input, { userId: actorUserId, type: ActorType.ADMIN });
-  return onboardingService.getOnboardingSummary(sellerId);
-}
 
 /** Marks verified exactly the payout account the admin reviewed (409 if it
- * changed since — see `onboardingService.verifyBankDetail`). Does not (yet)
- * gate settlement creation. */
+ * changed since — see `onboardingService.verifyBankDetail`). */
 export async function verifyBankDetail(
   sellerId: string,
   reviewed: AdminVerifyBankDetailRequest,
@@ -626,20 +536,6 @@ export async function verifyBankDetail(
 ): Promise<AdminSellerOnboardingSummaryDto> {
   await loadSellerForAdmin(sellerId);
   await onboardingService.verifyBankDetail(sellerId, reviewed, actorUserId);
-  return onboardingService.getOnboardingSummary(sellerId);
-}
-
-/** Admin-entered onboarding document, supplied by the seller out-of-band.
- * The same service as the seller's own upload: PENDING, never auto-verified,
- * reviewed with the normal document review. The link is stored, never echoed. */
-export async function addOnboardingDocument(
-  sellerId: string,
-  input: onboardingService.AddDocumentInput,
-  file: onboardingService.UploadedDocumentFile | undefined,
-  actorUserId: string,
-): Promise<AdminSellerOnboardingSummaryDto> {
-  await loadSellerForAdmin(sellerId);
-  await onboardingService.addDocument(sellerId, input, file, { userId: actorUserId, type: ActorType.ADMIN });
   return onboardingService.getOnboardingSummary(sellerId);
 }
 

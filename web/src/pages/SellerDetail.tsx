@@ -11,17 +11,18 @@
  * Onboarding tab adds the document list — see SellerOnboardingTab.tsx for how
  * the unmasked review view is sanitised before anything is cached or shown.
  *
- * Edit: PATCH /admin/sellers/:id with changed fields only. Trading switch:
- * the shared SellerStatusModal (admin `isActive` only). Every seller —
- * Aadione included — is managed here the same way.
+ * Onboarding data (store name, contact, address, location, profile, bank,
+ * documents) is READ-ONLY here — the seller enters and corrects it; admin
+ * reviews and decides. Trading switch: the shared SellerStatusModal (admin
+ * `isActive` only). Every seller — Aadione included — is managed the same way.
  */
 
-import { useState, type FormEvent } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { formatPaise } from '@shared/money';
 import { api } from '@/lib/api';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
-import { SellerStaffRole, SellerType, type AdminSellerDetailDto, type AdminUpdateSellerRequest } from '@shared';
+import { SellerStaffRole, SellerType, type AdminSellerDetailDto } from '@shared';
 import { ApiRequestError } from '@/lib/api';
 import {
   adminSellerKeys,
@@ -29,20 +30,19 @@ import {
   sellerErrorMessage,
   useSellerDetail,
   useSellerPermissions,
-  useUpdateSeller,
 } from '@/lib/sellers';
 import {
   ActivePill,
   CLOSED_REASON_LABEL,
   DetailRow,
-  OnboardingPill,
+  LifecyclePill,
   SELLER_TYPE_LABEL,
   SellerAvailability,
-  StagePill,
   formatSellerDate,
 } from '@/components/SellerBadges';
+import { SellerLifecyclePanel } from '@/components/SellerLifecyclePanel';
 import { SellerStatusModal } from '@/components/SellerStatusModal';
-import { Button, EmptyState, ErrorBanner, Field, Icon, Modal, Panel, Pill, Spinner, Surface, inputClass } from '@/components/ui';
+import { Button, EmptyState, ErrorBanner, Field, Icon, Panel, Pill, Spinner, Surface, inputClass } from '@/components/ui';
 import SellerAvailabilityTab from './SellerAvailabilityTab';
 import { SellerCategoriesTab, SellerEarningsTab } from './SellerCatalogTabs';
 import SellerCommissionTab from './SellerCommissionTab';
@@ -152,7 +152,6 @@ function SellerDetailView() {
   const validId = UUID_PATTERN.test(id);
   const detail = useSellerDetail(id, perms.canRead && validId);
 
-  const [editing, setEditing] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -216,8 +215,14 @@ function SellerDetailView() {
       <SellerHeader
         seller={seller}
         canManage={perms.canManage}
-        onEdit={() => setEditing(true)}
         onToggleStatus={() => setStatusOpen(true)}
+      />
+
+      <SellerLifecyclePanel
+        seller={seller}
+        canReview={perms.canReview}
+        onNotice={setNotice}
+        onOpenOnboarding={() => setTab('onboarding')}
       />
 
       <div role="tablist" aria-label="Seller sections" className="-mx-4 flex gap-1 overflow-x-auto border-b border-gray-200 px-4 sm:mx-0 sm:px-0">
@@ -267,17 +272,6 @@ function SellerDetailView() {
       {tab === 'restaurant' && isRestaurant && <SellerRestaurantTab seller={seller} />}
       {tab === 'documents' && <SellerOnboardingTab seller={seller} onNotice={setNotice} section="documents" />}
 
-      {editing && (
-        <EditSellerModal
-          seller={seller}
-          onClose={() => setEditing(false)}
-          onSaved={(message) => {
-            setEditing(false);
-            setNotice(message);
-          }}
-        />
-      )}
-
       {statusOpen && (
         <SellerStatusModal
           seller={seller}
@@ -299,12 +293,10 @@ function SellerDetailView() {
 function SellerHeader({
   seller,
   canManage,
-  onEdit,
   onToggleStatus,
 }: {
   seller: AdminSellerDetailDto;
   canManage: boolean;
-  onEdit: () => void;
   onToggleStatus: () => void;
 }) {
   return (
@@ -317,10 +309,7 @@ function SellerHeader({
           </p>
           <div className="mt-3 flex flex-wrap items-start gap-x-5 gap-y-2 text-xs text-gray-500">
             <span className="flex items-center gap-2">
-              Onboarding <OnboardingPill status={seller.onboardingStatus} />
-            </span>
-            <span className="flex items-center gap-2">
-              Stage <StagePill stage={seller.stage} />
+              Lifecycle <LifecyclePill status={seller.lifecycleStatus} isActive={seller.isActive} />
             </span>
             <span className="flex items-center gap-2">
               Admin switch <ActivePill isActive={seller.isActive} />
@@ -343,15 +332,9 @@ function SellerHeader({
 
         <div className="flex flex-wrap items-center gap-2">
           {canManage && (
-              <>
-                <Button variant="secondary" onClick={onEdit}>
-                  <Icon name="edit" className="h-4 w-4" />
-                  Edit Seller
-                </Button>
-                <Button variant={seller.isActive ? 'ghost' : 'soft'} onClick={onToggleStatus}>
-                  {seller.isActive ? 'Deactivate' : 'Activate'}
-                </Button>
-              </>
+            <Button variant={seller.isActive ? 'ghost' : 'soft'} onClick={onToggleStatus}>
+              {seller.isActive ? 'Deactivate' : 'Activate'}
+            </Button>
           )}
         </div>
       </div>
@@ -402,6 +385,7 @@ function OverviewTab({
                 {!owner.isActive && <span className="ml-1 text-xs text-gray-500">(inactive)</span>}
               </DetailRow>
             ))}
+            {seller.owner?.email && <DetailRow label="Login email">{seller.owner.email}</DetailRow>}
             {seller.profile && (
               <>
                 <DetailRow label="Owner (business profile)">{seller.profile.ownerFullName}</DetailRow>
@@ -432,13 +416,10 @@ function OverviewTab({
 
       <Panel title="Onboarding">
         <dl className="divide-y divide-gray-100">
-          <DetailRow label="Status">
-            <OnboardingPill status={seller.onboardingStatus} />
+          <DetailRow label="Lifecycle">
+            <LifecyclePill status={seller.lifecycleStatus} isActive={seller.isActive} />
           </DetailRow>
-          <DetailRow label="Stage">
-            <StagePill stage={seller.stage} />
-          </DetailRow>
-          <DetailRow label="Application">{seller.isComplete ? 'Complete' : 'Incomplete'}</DetailRow>
+          <DetailRow label="Onboarding checklist">{seller.isComplete ? 'Complete' : 'Incomplete'}</DetailRow>
           <DetailRow label="Documents">
             {docs.total === 0
               ? 'None yet'
@@ -448,7 +429,7 @@ function OverviewTab({
         {seller.lastRejectionReason && (
           <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 px-3.5 py-2.5 text-sm">
             <p className="font-medium text-gray-800">
-              Last rejection{seller.lastRejectedAt ? ` · ${formatSellerDate(seller.lastRejectedAt)}` : ''}
+              Last final rejection{seller.lastRejectedAt ? ` · ${formatSellerDate(seller.lastRejectedAt)}` : ''}
             </p>
             <p className="mt-0.5 text-gray-600">{seller.lastRejectionReason}</p>
           </div>
@@ -486,170 +467,6 @@ function OverviewTab({
         )}
       </Panel>
     </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/* edit                                                                        */
-/* -------------------------------------------------------------------------- */
-
-interface EditForm {
-  name: string;
-  phone: string;
-  addressLine: string;
-  city: string;
-  state: string;
-  pincode: string;
-  latitude: string;
-  longitude: string;
-}
-
-function EditSellerModal({
-  seller,
-  onClose,
-  onSaved,
-}: {
-  seller: AdminSellerDetailDto;
-  onClose: () => void;
-  onSaved: (message: string) => void;
-}) {
-  const update = useUpdateSeller();
-  const [form, setForm] = useState<EditForm>({
-    name: seller.name,
-    phone: seller.phone ?? '',
-    addressLine: seller.addressLine,
-    city: seller.city,
-    state: seller.state,
-    pincode: seller.pincode,
-    latitude: String(seller.latitude),
-    longitude: String(seller.longitude),
-  });
-  const [errors, setErrors] = useState<Partial<Record<keyof EditForm, string>>>({});
-  const [info, setInfo] = useState<string | null>(null);
-
-  const set = (key: keyof EditForm) => (value: string) => {
-    setInfo(null);
-    setForm((prev) => ({ ...prev, [key]: value }));
-  };
-
-  /** Same limits as the backend's updateSellerSchema. */
-  const submit = (event?: FormEvent) => {
-    event?.preventDefault();
-    const next: Partial<Record<keyof EditForm, string>> = {};
-    const text = (key: 'name' | 'addressLine' | 'city' | 'state', label: string, max: number) => {
-      const value = form[key].trim();
-      if (value.length < 2) next[key] = `${label} is required.`;
-      else if (value.length > max) next[key] = `${label} must be at most ${max} characters.`;
-      return value;
-    };
-    const name = text('name', 'Seller name', 120);
-    const addressLine = text('addressLine', 'Address', 300);
-    const city = text('city', 'City', 80);
-    const state = text('state', 'State', 80);
-    const pincode = form.pincode.trim();
-    if (!/^\d{6}$/.test(pincode)) next.pincode = 'Pincode must be 6 digits.';
-    const phone = form.phone.trim();
-    if (phone && (phone.length < 10 || phone.length > 15)) next.phone = 'Phone must be 10–15 characters.';
-    const latitude = Number(form.latitude);
-    const longitude = Number(form.longitude);
-    if (form.latitude.trim() === '' || !Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
-      next.latitude = 'Latitude must be between -90 and 90.';
-    }
-    if (form.longitude.trim() === '' || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
-      next.longitude = 'Longitude must be between -180 and 180.';
-    }
-    if (!next.latitude && !next.longitude && latitude === 0 && longitude === 0) {
-      next.latitude = 'Those coordinates look wrong (0, 0).';
-    }
-    setErrors(next);
-    if (Object.keys(next).length > 0) return;
-
-    // Only what changed. Coordinates travel as a pair.
-    const body: AdminUpdateSellerRequest = {};
-    if (name !== seller.name) body.name = name;
-    if ((phone || null) !== seller.phone) body.phone = phone || null;
-    if (addressLine !== seller.addressLine) body.addressLine = addressLine;
-    if (city !== seller.city) body.city = city;
-    if (state !== seller.state) body.state = state;
-    if (pincode !== seller.pincode) body.pincode = pincode;
-    if (latitude !== seller.latitude || longitude !== seller.longitude) {
-      body.latitude = latitude;
-      body.longitude = longitude;
-    }
-
-    if (Object.keys(body).length === 0) {
-      setInfo('No changes to save.');
-      return;
-    }
-    update.mutate({ sellerId: seller.id, body }, { onSuccess: (saved) => onSaved(`${saved.name} was updated.`) });
-  };
-
-  const input = (key: keyof EditForm, props: { inputMode?: 'numeric' | 'decimal' | 'tel' } = {}) => (
-    <>
-      <input
-        value={form[key]}
-        onChange={(event) => set(key)(event.target.value)}
-        className={inputClass}
-        aria-invalid={errors[key] ? true : undefined}
-        {...props}
-      />
-      {errors[key] && <span className="mt-1 block text-xs text-danger-600">{errors[key]}</span>}
-    </>
-  );
-
-  return (
-    <Modal
-      title="Edit seller"
-      subtitle="Basic details only. Type, onboarding, status and commission are changed elsewhere."
-      onClose={onClose}
-      wide
-      footer={
-        <>
-          <Button variant="secondary" onClick={onClose} disabled={update.isPending}>
-            Cancel
-          </Button>
-          <Button onClick={() => submit()} disabled={update.isPending}>
-            {update.isPending ? 'Saving…' : 'Save changes'}
-          </Button>
-        </>
-      }
-    >
-      <form onSubmit={submit} className="space-y-5" noValidate>
-        {update.isError && <ErrorBanner message={sellerErrorMessage(update.error, 'Could not save the seller.')} />}
-        {info && <p className="rounded-xl bg-gray-50 px-3.5 py-2.5 text-sm text-gray-600">{info}</p>}
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Seller name" required>
-            {input('name')}
-          </Field>
-          <Field label="Business phone" hint="Optional. Leave blank to remove.">
-            {input('phone', { inputMode: 'tel' })}
-          </Field>
-        </div>
-        <Field label="Address" required>
-          {input('addressLine')}
-        </Field>
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Field label="City" required>
-            {input('city')}
-          </Field>
-          <Field label="State" required>
-            {input('state')}
-          </Field>
-          <Field label="Pincode" required>
-            {input('pincode', { inputMode: 'numeric' })}
-          </Field>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Latitude" required>
-            {input('latitude', { inputMode: 'decimal' })}
-          </Field>
-          <Field label="Longitude" required>
-            {input('longitude', { inputMode: 'decimal' })}
-          </Field>
-        </div>
-        <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1} />
-      </form>
-    </Modal>
   );
 }
 

@@ -1,15 +1,15 @@
 /**
- * Seller sign-in (Aadione Partner Portal, Seller tab). Sellers never register
- * themselves: Aadione creates the seller and issues the owner a login email +
- * temporary password (Admin → Seller → Overview → Seller login). That email +
- * password is the primary sign-in here (POST /auth/seller/login — the server
- * checks the account's seller role and membership). The mobile-OTP sign-in
- * (/auth/send-otp + /auth/verify-otp) stays available for accounts not issued
- * a password yet.
+ * Seller sign-in (Aadione Partner Portal, Seller tab). Email + password is
+ * the primary sign-in (POST /auth/seller/login — the server checks the
+ * account's seller role and membership): the password is the one chosen when
+ * applying (Apply to sell → /seller/register), or a temporary one Aadione
+ * issued. The mobile-OTP sign-in stays available too. After sign-in the
+ * seller's lifecycle decides what opens: the application/onboarding status,
+ * or — once approved and verified — the full Seller Panel.
  */
 
 import { useEffect, useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { ErrorBanner } from '@/components/ui';
 import { LoginInput, PartnerLoginLayout, PasswordInput, SubmitButton } from '@/components/PartnerLogin';
 import { sellerErrorMessage } from '../sellerApi';
@@ -101,7 +101,7 @@ export default function SellerLoginPage() {
 
   const subtitle =
     method === 'password'
-      ? 'Sign in with the email and password Aadione gave you.'
+      ? 'Sign in with your seller email and password.'
       : step === 'mobile'
         ? 'Enter the mobile number registered with Aadione.'
         : `Enter the 6-digit OTP sent to ${mobile}.`;
@@ -142,11 +142,16 @@ export default function SellerLoginPage() {
                 Sign In
               </SubmitButton>
             </div>
-            <p className="text-center text-sm text-gray-500">
-              New seller? Aadione sets up your account and sends your login.{' '}
+            <p className="text-center text-sm">
               <button type="button" onClick={() => switchMethod('otp')} className={linkClass}>
                 Sign in with mobile OTP instead
               </button>
+            </p>
+            <p className="text-center text-sm text-gray-500">
+              New to Aadione?{' '}
+              <Link to="/seller/register" className={linkClass}>
+                Apply to sell on Aadione
+              </Link>
             </p>
           </form>
         ) : step === 'mobile' ? (

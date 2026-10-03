@@ -6,6 +6,8 @@ import {
   adminLoginPerIp,
   changePasswordPerUser,
   sellerLoginPerIp,
+  sellerSignupPerIp,
+  sellerSignupPerMobile,
   loginPerEmail,
   loginPerIp,
   otpPerIpHourly,
@@ -23,6 +25,7 @@ import {
   logoutSchema,
   refreshSchema,
   sellerLoginSchema,
+  sellerSignupSchema,
   sendOtpSchema,
   signupSchema,
   updateProfileSchema,
@@ -87,8 +90,9 @@ authRouter.post(
 );
 
 /**
- * Seller panel — email + password issued by AdiOne (sellers never register
- * themselves). The server checks the account's role and seller membership.
+ * Seller panel — email + password (chosen at seller signup, or issued by
+ * AdiOne). The server checks the account's role and seller membership; what
+ * the seller may then do depends on its lifecycle (middleware/sellerLifecycle.ts).
  */
 authRouter.post(
   '/seller/login',
@@ -96,6 +100,19 @@ authRouter.post(
   loginPerEmail,
   sellerLoginPerIp,
   asyncHandler(controller.sellerLogin),
+);
+
+/**
+ * Public seller application. Validation first so the per-mobile limiter
+ * counts the normalised number. Creates an APPLICATION_PENDING seller — never
+ * an active one.
+ */
+authRouter.post(
+  '/seller/signup',
+  validate({ body: sellerSignupSchema }),
+  sellerSignupPerMobile,
+  sellerSignupPerIp,
+  asyncHandler(controller.sellerSignup),
 );
 
 authRouter.post(

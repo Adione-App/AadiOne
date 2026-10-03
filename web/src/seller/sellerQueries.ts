@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { SellerLifecycleDto } from '@shared';
 import {
   SELLER_QUERY_ROOT,
   sellerApi,
@@ -36,6 +37,7 @@ export const sellerKeys = {
   subcategories: [SELLER_QUERY_ROOT, 'subcategories'] as const,
   menuSections: [SELLER_QUERY_ROOT, 'menu-sections'] as const,
   onboarding: [SELLER_QUERY_ROOT, 'onboarding'] as const,
+  lifecycle: [SELLER_QUERY_ROOT, 'lifecycle'] as const,
   earnings: [SELLER_QUERY_ROOT, 'earnings'] as const,
   todayEarnings: [SELLER_QUERY_ROOT, 'earnings', 'today'] as const,
   orderCommissions: [SELLER_QUERY_ROOT, 'earnings', 'orders'] as const,
@@ -43,6 +45,20 @@ export const sellerKeys = {
   settlementDetail: (id: string) => [SELLER_QUERY_ROOT, 'settlements', 'detail', id] as const,
   activity: [SELLER_QUERY_ROOT, 'activity'] as const,
 };
+
+/**
+ * Where the signed-in seller is in the two-gate lifecycle (GET
+ * /seller/lifecycle — open in every state). Decides between the onboarding
+ * screens and the full panel; the server enforces the same rule.
+ */
+export function useSellerLifecycle() {
+  return useQuery({
+    queryKey: sellerKeys.lifecycle,
+    queryFn: () => sellerApi.get<SellerLifecycleDto>('/seller/lifecycle'),
+    // A decision by Aadione shows up without a reload.
+    refetchInterval: 60_000,
+  });
+}
 
 /** The seller's store state — name, ON/OFF switch, hours, closures. */
 export function useSellerAvailability() {

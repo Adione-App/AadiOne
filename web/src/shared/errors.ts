@@ -50,6 +50,9 @@ export const ErrorCode = {
   SELLER_CLOSED: 'SELLER_CLOSED',
   SELLER_INACTIVE: 'SELLER_INACTIVE',
   SELLER_NOT_APPROVED: 'SELLER_NOT_APPROVED',
+  /** The signed-in seller has not passed both onboarding gates yet (or its
+   * onboarding is locked for review) — the Seller Panel shows its status. */
+  SELLER_ACCOUNT_NOT_ACTIVE: 'SELLER_ACCOUNT_NOT_ACTIVE',
   INVALID_COORDINATES: 'INVALID_COORDINATES',
 
   /* catalog / inventory ------------------------------------------------- */
@@ -129,6 +132,7 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   SELLER_CLOSED: 409,
   SELLER_INACTIVE: 503,
   SELLER_NOT_APPROVED: 503,
+  SELLER_ACCOUNT_NOT_ACTIVE: 403,
   INVALID_COORDINATES: 400,
 
   PRODUCT_UNAVAILABLE: 409,
@@ -206,6 +210,8 @@ export const ERROR_DEFAULT_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   SELLER_CLOSED: 'The store is closed right now. Please order during working hours.',
   SELLER_INACTIVE: 'The store is not accepting orders at the moment.',
   SELLER_NOT_APPROVED: 'This seller is not yet approved to sell.',
+  SELLER_ACCOUNT_NOT_ACTIVE:
+    'Your seller account is not active yet. Complete your seller onboarding to use this.',
   INVALID_COORDINATES: 'We could not read that location. Please try again.',
 
   PRODUCT_UNAVAILABLE: 'This item is not available right now.',

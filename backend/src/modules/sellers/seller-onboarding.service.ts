@@ -1,25 +1,14 @@
 /**
  * Seller onboarding — business profile, bank details, documents, and the
- * admin review decision that moves `Seller.onboardingStatus` off its
- * PENDING default (see admin-seller-management.service.ts's `createSeller`,
- * which seeds every new seller at PENDING on purpose — see that file's own
- * doc comment for why the review workflow was deferred to this module).
+ * per-document admin review.
  *
- * STATE MACHINE — deliberately reuses the existing `ApprovalStatus` enum
- * (PENDING/APPROVED/REJECTED) rather than inventing SUBMITTED/UNDER_REVIEW
- * values the schema has no column for:
- *
- *   PENDING   -- being filled in, or submitted and awaiting a decision.
- *               Which of the two is a COMPUTED read (`stage` on the detail
- *               DTO, from profile+bank+document completeness), never a
- *               separate persisted state — see `computeStage` below.
- *   APPROVED  -- terminal. Only reachable from PENDING, and only when
- *               complete (an incomplete application cannot be approved).
- *   REJECTED  -- terminal, but NOT a dead end: `submitOnboarding` on a
- *               REJECTED seller explicitly resends it to PENDING (a real
- *               resubmission, not a silent flip back to APPROVED) — the
- *               ONLY path from REJECTED to APPROVED is resubmit-then-review,
- *               exactly like a rejected ProductApprovalBatchItem.
+ * LIFECYCLE — the two-gate seller lifecycle (`Seller.lifecycleStatus`) is
+ * owned by seller-lifecycle.service.ts: submitting for verification and both
+ * admin gates live there. This module stores and reads the onboarding DATA,
+ * and reports the checklist (seller-lifecycle-rules.ts) and the `stage`
+ * derived from the lifecycle. WHEN a seller may write here is enforced before
+ * any of this runs (middleware/sellerLifecycle.ts) — edits are locked while
+ * onboarding is under review.
  *
  * Every mutation here is a dedicated method, not a generic PATCH — the same
  * discipline `transitionSellerOrder`/`reviewBatchItem` already apply: a
@@ -44,8 +33,7 @@ import {
   ApprovalStatus,
   DocumentStatus,
   ErrorCode,
-  NotificationType,
-  Permission,
+  SellerLifecycleStatus,
   SellerType,
   type AdminSellerOnboardingSummaryDto,
   type SellerDocumentDto,
@@ -54,7 +42,6 @@ import {
   type SellerOnboardingRequirementsDto,
   type SellerOnboardingStage,
 } from '../../shared';
-import * as notificationService from '../notifications/notification.service';
 import { normalizeIndianMobile } from '../../shared/phone';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
@@ -69,6 +56,12 @@ import {
   normaliseDocumentNumber,
   safeDocumentFileName,
 } from './seller-document-rules';
+import {
+  buildOnboardingChecklist,
+  checklistComplete,
+  lifecycleStatesForStage,
+  stageFor,
+} from './seller-lifecycle-rules';
 
 /**
  * Who is writing onboarding data, for the audit log. The seller's own routes
@@ -133,14 +126,13 @@ const PROFILE_FIELDS = [
   'fssaiNumber',
 ] as const;
 
-/** Profile fields whose VALUES may go into the audit log. PAN, Aadhaar and the
- * owner's personal contact details are recorded by field name only. */
+/** Profile fields whose VALUES may go into the audit log. Every tax/ID number
+ * (PAN, Aadhaar, GST, FSSAI) and the owner's personal contact details are
+ * recorded by field name only — document numbers never reach audit rows. */
 const PROFILE_AUDIT_VALUE_FIELDS: readonly (typeof PROFILE_FIELDS)[number][] = [
   'businessName',
   'businessType',
   'ownerFullName',
-  'gstNumber',
-  'fssaiNumber',
 ];
 
 /**
@@ -154,7 +146,31 @@ const PROFILE_AUDIT_VALUE_FIELDS: readonly (typeof PROFILE_FIELDS)[number][] = [
  * stored, `null` clears it, and a string replaces it. Every other field keeps
  * its full-replace behaviour (omitted = cleared).
  */
-export async function upsertSellerProfile(sellerId: string, input: UpsertSellerProfileInput, actor: OnboardingActor) {
+/**
+ * A tax/ID number typed into the business profile, normalised and validated
+ * with the same per-type rules as document numbers. `undefined` stays
+ * undefined (keep), empty becomes null (clear).
+ */
+function profileIdNumber(
+  type: SellerDocumentType,
+  value: string | null | undefined,
+  label: string,
+): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || !value.trim()) return null;
+  const result = normaliseDocumentNumber(type, value);
+  if (!result.ok) throw new AppError(ErrorCode.VALIDATION_ERROR, { message: `${label}: ${result.message}` });
+  return result.value;
+}
+
+export async function upsertSellerProfile(sellerId: string, rawInput: UpsertSellerProfileInput, actor: OnboardingActor) {
+  const input: UpsertSellerProfileInput = {
+    ...rawInput,
+    panNumber: profileIdNumber('PAN_CARD', rawInput.panNumber, 'PAN'),
+    aadhaarNumber: profileIdNumber('AADHAAR_CARD', rawInput.aadhaarNumber, 'Aadhaar'),
+    gstNumber: profileIdNumber('GST_CERTIFICATE', rawInput.gstNumber, 'GST number'),
+    fssaiNumber: profileIdNumber('FSSAI_LICENSE', rawInput.fssaiNumber, 'FSSAI number'),
+  };
   const ownerMobile = normalizeIndianMobile(input.ownerMobile);
   if (!ownerMobile) {
     throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Enter a valid owner mobile number.' });
@@ -750,19 +766,16 @@ export async function reviewDocument(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Completeness / computed stage                                             */
+/* Completeness / stage                                                       */
 /* -------------------------------------------------------------------------- */
 
-/** The identity documents that satisfy the one hard document requirement. */
-const IDENTITY_DOCUMENT_TYPES: readonly SellerDocumentType[] = ['PAN_CARD', 'AADHAAR_CARD'];
+/** The PAN document that satisfies the identity-document requirement. */
+const IDENTITY_DOCUMENT_TYPES: readonly SellerDocumentType[] = ['PAN_CARD'];
 
-/** A minimal, deliberately conservative "ready for review" rule — see this
- * module's own doc comment. GST/FSSAI/business license stay genuinely
- * optional (the schema's own comments say so); at least one identity
- * document (PAN or Aadhaar) not already rejected is the one hard floor.
- * `completeOnboardingWhere` below is this same rule as a database filter —
- * change the two together. `onboardingRequirements` is the rule's three
- * parts, so a client can show what is missing without re-deriving it. */
+/** The three original parts of the completeness rule, kept for the admin
+ * summary's `requirements`. The full rule is `buildOnboardingChecklist`
+ * (seller-lifecycle-rules.ts) — store address/location, PAN number,
+ * licences — which the seller's submit and admin's approval both enforce. */
 export function onboardingRequirements(
   profile: unknown,
   bank: unknown,
@@ -777,27 +790,6 @@ export function onboardingRequirements(
   };
 }
 
-export function isComplete(
-  profile: unknown,
-  bank: unknown,
-  documents: { type: SellerDocumentType; status: DocumentStatus }[],
-): boolean {
-  const met = onboardingRequirements(profile, bank, documents);
-  return met.profile && met.bankDetail && met.identityDocument;
-}
-
-/** `isComplete`, expressed as a `Seller` filter, so a list can filter by
- * stage in the query itself and keep its cursor pagination exact. */
-function completeOnboardingWhere(): Prisma.SellerWhereInput {
-  return {
-    profile: { isNot: null },
-    bankDetail: { isNot: null },
-    documents: {
-      some: { type: { in: [...IDENTITY_DOCUMENT_TYPES] }, status: { not: DocumentStatus.REJECTED } },
-    },
-  };
-}
-
 export const ONBOARDING_STAGES = [
   'PENDING',
   'SUBMITTED',
@@ -805,25 +797,41 @@ export const ONBOARDING_STAGES = [
   'REJECTED',
 ] as const satisfies readonly SellerOnboardingStage[];
 
-export function computeStage(onboardingStatus: ApprovalStatus, complete: boolean): SellerOnboardingStage {
-  if (onboardingStatus === ApprovalStatus.APPROVED) return 'APPROVED';
-  if (onboardingStatus === ApprovalStatus.REJECTED) return 'REJECTED';
-  return complete ? 'SUBMITTED' : 'PENDING';
+/** Every seller this filter matches has exactly `stage` (`stageFor` its lifecycle). */
+export function onboardingStageWhere(stage: SellerOnboardingStage): Prisma.SellerWhereInput {
+  return { lifecycleStatus: { in: lifecycleStatesForStage(stage) } };
 }
 
-/** The inverse of `computeStage`: every seller this filter matches computes
- * to exactly `stage`. */
-export function onboardingStageWhere(stage: SellerOnboardingStage): Prisma.SellerWhereInput {
-  switch (stage) {
-    case 'APPROVED':
-      return { onboardingStatus: ApprovalStatus.APPROVED };
-    case 'REJECTED':
-      return { onboardingStatus: ApprovalStatus.REJECTED };
-    case 'SUBMITTED':
-      return { onboardingStatus: ApprovalStatus.PENDING, ...completeOnboardingWhere() };
-    case 'PENDING':
-      return { onboardingStatus: ApprovalStatus.PENDING, NOT: completeOnboardingWhere() };
-  }
+type ChecklistSeller = {
+  sellerType: SellerType;
+  addressLine: string;
+  city: string;
+  state: string;
+  pincode: string;
+  latitude: number;
+  longitude: number;
+};
+
+function checklistFor(
+  seller: ChecklistSeller,
+  profile: Parameters<typeof buildOnboardingChecklist>[0]['profile'],
+  bankDetail: Parameters<typeof buildOnboardingChecklist>[0]['bankDetail'],
+  documents: DocumentRow[],
+  restaurantProfile: { cuisine: string[] } | null,
+) {
+  return buildOnboardingChecklist({
+    sellerType: seller.sellerType,
+    store: seller,
+    profile,
+    bankDetail,
+    documents: documents.map((d) => ({
+      type: d.type,
+      status: d.status,
+      documentNumber: d.documentNumber,
+      hasFile: d.fileKey !== null,
+    })),
+    restaurantProfile,
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -856,14 +864,19 @@ export async function getOnboardingDetail(
     prisma.restaurantProfile.findUnique({ where: { sellerId } }),
   ]);
 
-  const complete = isComplete(profile, bankDetail, documents);
+  const checklist = checklistFor(seller, profile, bankDetail, documents, restaurantProfile);
+  const lifecycleStatus = seller.lifecycleStatus as SellerLifecycleStatus;
 
   return {
     sellerId: seller.id,
     sellerName: seller.name,
+    sellerType: seller.sellerType,
     onboardingStatus: seller.onboardingStatus,
-    stage: computeStage(seller.onboardingStatus, complete),
-    isComplete: complete,
+    lifecycleStatus,
+    lifecycleReason: seller.lifecycleReason,
+    stage: stageFor(lifecycleStatus),
+    isComplete: checklistComplete(checklist),
+    checklist,
     profile: toProfileDto(profile, unmask),
     bankDetail: toBankDetailDto(bankDetail, unmask),
     documents: documents.map(toDocumentDto),
@@ -871,19 +884,6 @@ export async function getOnboardingDetail(
   };
 }
 
-/**
- * The Admin Web's onboarding read (GET /admin/sellers/:id/onboarding/summary).
- * Safe by construction rather than by filtering:
- *   - PAN, Aadhaar and the account number go through the same masking as
- *     every other non-review read (`toProfileDto`/`toBankDetailDto`, unmask
- *     false). The masks are idempotent, so an already-masked value is not
- *     changed further.
- *   - Documents carry their number MASKED and the file by name only — no
- *     storage key and no URL (legacy links are only flagged).
- *   - Only the fields below are returned; nothing is spread from a model.
- * The bank detail keeps `id` + `updatedAt`, which the stale-view-safe
- * verification needs. A missing or deleted seller is NOT_FOUND.
- */
 /** The store address — shown read-only on the seller's own Profile page. */
 export interface SellerStoreAddressDto {
   addressLine: string;
@@ -907,11 +907,24 @@ export async function getSellerOnboardingView(
   return { ...detail, storeAddress: seller };
 }
 
+/**
+ * The Admin Web's onboarding read (GET /admin/sellers/:id/onboarding/summary).
+ * Safe by construction rather than by filtering:
+ *   - PAN, Aadhaar and the account number go through the same masking as
+ *     every other non-review read (`toProfileDto`/`toBankDetailDto`, unmask
+ *     false). The masks are idempotent, so an already-masked value is not
+ *     changed further.
+ *   - Documents carry their number MASKED and the file by name only — no
+ *     storage key and no URL (legacy links are only flagged).
+ *   - Only the fields below are returned; nothing is spread from a model.
+ * The bank detail keeps `id` + `updatedAt`, which the stale-view-safe
+ * verification needs. A missing or deleted seller is NOT_FOUND.
+ */
 export async function getOnboardingSummary(sellerId: string): Promise<AdminSellerOnboardingSummaryDto> {
   const seller = await prisma.seller.findFirst({ where: { id: sellerId, deletedAt: null } });
   if (!seller) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Seller not found.' });
 
-  const [profile, bankDetail, documents, lastRejection] = await Promise.all([
+  const [profile, bankDetail, documents, restaurantProfile, lastRejection] = await Promise.all([
     prisma.sellerProfile.findUnique({ where: { sellerId } }),
     prisma.sellerBankDetail.findUnique({ where: { sellerId } }),
     prisma.sellerDocument.findMany({
@@ -932,20 +945,25 @@ export async function getOnboardingSummary(sellerId: string): Promise<AdminSelle
         fileUrl: true,
       },
     }),
+    prisma.restaurantProfile.findUnique({ where: { sellerId }, select: { cuisine: true } }),
     getLastOnboardingRejection(sellerId),
   ]);
 
-  const requirements = onboardingRequirements(profile, bankDetail, documents);
-  const complete = requirements.profile && requirements.bankDetail && requirements.identityDocument;
+  const checklist = checklistFor(seller, profile, bankDetail, documents, restaurantProfile);
+  const lifecycleStatus = seller.lifecycleStatus as SellerLifecycleStatus;
 
   return {
     sellerId: seller.id,
     sellerName: seller.name,
     sellerType: seller.sellerType,
     onboardingStatus: seller.onboardingStatus,
-    stage: computeStage(seller.onboardingStatus, complete),
-    isComplete: complete,
-    requirements,
+    lifecycleStatus,
+    lifecycleReason: seller.lifecycleReason,
+    onboardingSubmittedAt: seller.onboardingSubmittedAt?.toISOString() ?? null,
+    stage: stageFor(lifecycleStatus),
+    isComplete: checklistComplete(checklist),
+    requirements: onboardingRequirements(profile, bankDetail, documents),
+    checklist,
     lastRejectionReason: lastRejection?.reason ?? null,
     lastRejectedAt: lastRejection?.rejectedAt.toISOString() ?? null,
     profile: toProfileDto(profile, false),
@@ -969,80 +987,17 @@ export async function getOnboardingSummary(sellerId: string): Promise<AdminSelle
 }
 
 /* -------------------------------------------------------------------------- */
-/* Submit / review — the two real onboardingStatus transitions               */
+/* Review history and queue                                                   */
 /* -------------------------------------------------------------------------- */
-
-/**
- * Seller confirms its onboarding is ready for admin review.
- *
- *   PENDING  -> PENDING  (idempotent — just re-validates completeness)
- *   REJECTED -> PENDING  (an explicit resubmission)
- *   APPROVED -> refused  (nothing to submit; already decided)
+/*
+ * Submitting and deciding onboarding — Gate 1 and Gate 2 — live in
+ * seller-lifecycle.service.ts.
  */
-export async function submitOnboarding(sellerId: string, actorUserId: string) {
-  const seller = await prisma.seller.findUniqueOrThrow({ where: { id: sellerId } });
-
-  if (seller.onboardingStatus === ApprovalStatus.APPROVED) {
-    throw new AppError(ErrorCode.INVALID_STATUS_TRANSITION, {
-      message: 'This seller is already approved — there is nothing to submit.',
-    });
-  }
-
-  const [profile, bankDetail, documents] = await Promise.all([
-    prisma.sellerProfile.findUnique({ where: { sellerId } }),
-    prisma.sellerBankDetail.findUnique({ where: { sellerId } }),
-    prisma.sellerDocument.findMany({ where: { sellerId }, select: { type: true, status: true } }),
-  ]);
-
-  if (!profile) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Complete the business profile before submitting.' });
-  }
-  if (!bankDetail) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Add bank details before submitting.' });
-  }
-  if (!isComplete(profile, bankDetail, documents)) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message: 'Upload a PAN or Aadhaar document before submitting.',
-    });
-  }
-
-  if (seller.onboardingStatus === ApprovalStatus.REJECTED) {
-    await prisma.seller.update({ where: { id: sellerId }, data: { onboardingStatus: ApprovalStatus.PENDING } });
-  }
-
-  await prisma.auditLog.create({
-    data: {
-      actorUserId,
-      action: 'seller_onboarding.submit',
-      entityType: 'Seller',
-      entityId: sellerId,
-      after: { resubmitted: seller.onboardingStatus === ApprovalStatus.REJECTED },
-    },
-  });
-
-  // One notice per review ROUND: re-submitting while still pending is the
-  // same round (suppressed); a resubmission after a rejection is a new one.
-  await notificationService.notifyAdmins(Permission.SELLER_ONBOARDING_REVIEW, {
-    type: NotificationType.ADMIN_ONBOARDING_SUBMITTED,
-    dedupeKey: `onboarding:${sellerId}:submitted:${await reviewRound(sellerId)}`,
-    context: { sellerName: seller.name },
-  });
-
-  // Seller-facing response — masked, same as every other seller-facing read.
-  return getOnboardingDetail(sellerId, sellerId, false);
-}
-
-/** Review round = how many times this seller has been rejected so far. */
-function reviewRound(sellerId: string): Promise<number> {
-  return prisma.auditLog.count({
-    where: { entityType: 'Seller', entityId: sellerId, action: SellerAuditAction.ONBOARDING_REJECT },
-  });
-}
 
 /**
- * The most recent onboarding rejection, read back from its AuditLog entry
- * (the reason has no column of its own). Null when the seller was never
- * rejected, or when that entry carries no usable reason — never a guess.
+ * The most recent FINAL onboarding rejection (Gate 2), read back from its
+ * AuditLog entry. Null when the seller was never rejected, or when that entry
+ * carries no usable reason — never a guess.
  */
 export async function getLastOnboardingRejection(
   sellerId: string,
@@ -1060,80 +1015,13 @@ export async function getLastOnboardingRejection(
   return reason ? { reason, rejectedAt: entry.createdAt } : null;
 }
 
-/**
- * Admin decision. Only a currently-PENDING seller may be decided — the ONLY
- * way to re-decide an already-APPROVED/REJECTED seller is a fresh
- * `submitOnboarding` resubmission first (REJECTED -> PENDING), never a
- * direct second call here.
- */
-export async function reviewOnboarding(
-  sellerId: string,
-  input: { status: typeof ApprovalStatus.APPROVED | typeof ApprovalStatus.REJECTED; reason?: string | null },
-  actorUserId: string,
-) {
-  if (input.status === ApprovalStatus.REJECTED && !input.reason?.trim()) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'A reason is required when rejecting.' });
-  }
-
-  const seller = await prisma.seller.findUnique({ where: { id: sellerId } });
-  // A deleted seller cannot be approved (or rejected) back into view.
-  if (!seller || seller.deletedAt) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Seller not found.' });
-
-  if (seller.onboardingStatus !== ApprovalStatus.PENDING) {
-    throw new AppError(ErrorCode.INVALID_STATUS_TRANSITION, {
-      message: `This seller's onboarding has already been ${seller.onboardingStatus.toLowerCase()}.`,
-      internalMessage: `illegal onboarding review transition ${seller.onboardingStatus} -> ${input.status} on seller ${sellerId}`,
-    });
-  }
-
-  if (input.status === ApprovalStatus.APPROVED) {
-    const [profile, bankDetail, documents] = await Promise.all([
-      prisma.sellerProfile.findUnique({ where: { sellerId } }),
-      prisma.sellerBankDetail.findUnique({ where: { sellerId } }),
-      prisma.sellerDocument.findMany({ where: { sellerId }, select: { type: true, status: true } }),
-    ]);
-    if (!isComplete(profile, bankDetail, documents)) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, {
-        message: 'This seller has not completed onboarding yet — profile, bank details and an identity document are required before approval.',
-      });
-    }
-  }
-
-  const round = await reviewRound(sellerId);
-  await prisma.seller.update({ where: { id: sellerId }, data: { onboardingStatus: input.status } });
-
-  await prisma.auditLog.create({
-    data: {
-      actorUserId,
-      action: input.status === ApprovalStatus.APPROVED ? 'seller_onboarding.approve' : SellerAuditAction.ONBOARDING_REJECT,
-      entityType: 'Seller',
-      entityId: sellerId,
-      after: { status: input.status, reason: input.reason ?? null },
-    },
-  });
-
-  await notificationService.notifySeller(sellerId, {
-    type:
-      input.status === ApprovalStatus.APPROVED
-        ? NotificationType.SELLER_ONBOARDING_APPROVED
-        : NotificationType.SELLER_ONBOARDING_REJECTED,
-    dedupeKey: `onboarding:${sellerId}:${input.status}:${round}`,
-    context: { reason: input.reason ?? null },
-  });
-
-  return getOnboardingDetail(sellerId, undefined, true);
-}
-
-/** Admin's review queue — every non-final (PENDING) seller, cross-platform.
- * Includes both "still filling in" and "ready" — the DTO's own `stage`
- * field lets the caller tell them apart without a second query mode.
- * MASKED: a list never carries full PAN/Aadhaar/account numbers; the
- * single-seller review view (`getOnboardingDetail(..., true)`) does.
- * Deleted sellers are never queued. */
+/** Admin's Gate 2 queue — every seller whose onboarding is submitted and
+ * waiting for verification, cross-platform. MASKED: a list never carries
+ * full PAN/Aadhaar/account numbers. Deleted sellers are never queued. */
 export async function listOnboardingQueue(options: { cursor?: string | null; limit: number }) {
   const sellers = await prisma.seller.findMany({
     where: {
-      onboardingStatus: ApprovalStatus.PENDING,
+      lifecycleStatus: SellerLifecycleStatus.ONBOARDING_PENDING_REVIEW,
       deletedAt: null,
       ...(options.cursor ? { createdAt: { lt: new Date(options.cursor) } } : {}),
     },

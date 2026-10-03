@@ -14,6 +14,7 @@ import {
   ApprovalStatus,
   SellerType,
   type SellerClosedReason,
+  type SellerLifecycleFilter,
   type SellerOnboardingStage,
 } from '@shared';
 import { Pill, type Tone } from '@/components/ui';
@@ -57,6 +58,32 @@ export const STAGE_LOOK: Record<SellerOnboardingStage, { label: string; tone: To
   APPROVED: { label: 'Approved', tone: 'brand', hint: 'Onboarding approved' },
   REJECTED: { label: 'Rejected', tone: 'red', hint: 'Onboarding rejected' },
 };
+
+/**
+ * The two-gate lifecycle as admin sees it. Gate 1 = the application, Gate 2 =
+ * verification of the submitted onboarding. SUSPENDED is an ACTIVE seller
+ * switched off by admin.
+ */
+export const LIFECYCLE_LOOK: Record<SellerLifecycleFilter, { label: string; tone: Tone; hint: string }> = {
+  APPLICATION_PENDING: { label: 'Application Pending', tone: 'amber', hint: 'Gate 1 — waiting for admin approval of the application' },
+  APPLICATION_REJECTED: { label: 'Application Rejected', tone: 'red', hint: 'Gate 1 — application rejected' },
+  ONBOARDING_PENDING: { label: 'Onboarding Pending', tone: 'blue', hint: 'Application approved — seller is filling in onboarding' },
+  ONBOARDING_CHANGES_REQUIRED: { label: 'Changes Required', tone: 'amber', hint: 'Gate 2 — admin asked the seller for changes' },
+  ONBOARDING_PENDING_REVIEW: { label: 'Under Review', tone: 'purple', hint: 'Gate 2 — onboarding submitted, waiting for verification' },
+  ACTIVE: { label: 'Active', tone: 'brand', hint: 'Verified — full Seller Panel' },
+  SUSPENDED: { label: 'Suspended', tone: 'gray', hint: 'Active seller switched off by admin' },
+  ONBOARDING_REJECTED: { label: 'Rejected', tone: 'red', hint: 'Gate 2 — seller rejected' },
+};
+
+export function LifecyclePill({ status, isActive = true }: { status: SellerLifecycleFilter; isActive?: boolean }) {
+  const key: SellerLifecycleFilter = status === 'ACTIVE' && !isActive ? 'SUSPENDED' : status;
+  const look = LIFECYCLE_LOOK[key] ?? { label: status, tone: 'gray' as Tone, hint: '' };
+  return (
+    <span title={look.hint}>
+      <Pill tone={look.tone}>{look.label}</Pill>
+    </span>
+  );
+}
 
 export const CLOSED_REASON_LABEL: Record<SellerClosedReason, string> = {
   SELLER_DELETED: 'Deleted',

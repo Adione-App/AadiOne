@@ -29,6 +29,8 @@ import { sellerCommissionRouter } from '../modules/commission/commission.routes'
 import { sellerNotificationRouter } from '../modules/notifications/notification.routes';
 import { sellerActivityRouter } from '../modules/sellers/seller-activity.routes';
 import { authenticate, requireSellerOrAdmin } from '../middleware/auth';
+import { requireSellerLifecycleAccess } from '../middleware/sellerLifecycle';
+import { sellerLifecycleRouter } from '../modules/sellers/seller-lifecycle.routes';
 import { authenticatedApiLimit } from '../middleware/rateLimit';
 import { paymentRouter } from '../modules/payments/payment.routes';
 import {
@@ -64,6 +66,10 @@ apiRouter.use(
   authenticate,
   requireSellerOrAdmin,
   authenticatedApiLimit,
+  // Two-gate lifecycle: only ACTIVE sellers reach the operational routers;
+  // applicants/onboarding sellers get /lifecycle + /onboarding only.
+  requireSellerLifecycleAccess,
+  sellerLifecycleRouter,
   sellerOrderRouter,
   sellerCatalogRouter,
   sellerOnboardingRouter,

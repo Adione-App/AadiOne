@@ -7,11 +7,13 @@ import type { SendOtpResponse } from '../../shared';
 import { created, ok, noContent } from '../../common/response';
 import { requireUser } from '../../middleware/auth';
 import * as authService from './auth.service';
+import * as sellerLifecycleService from '../sellers/seller-lifecycle.service';
 import type {
   AdminLoginInput,
   ChangePasswordInput,
   LoginInput,
   SellerLoginInput,
+  SellerSignupInput,
   SendOtpInput,
   SignupInput,
   UpdateProfileInput,
@@ -20,6 +22,15 @@ import type {
 
 function contextOf(req: Request): { userAgent: string | null; ip: string | null } {
   return { userAgent: req.header('user-agent') ?? null, ip: req.ip ?? null };
+}
+
+/**
+ * POST /auth/seller/signup — a seller APPLICATION. The account is signed in
+ * straight away, but the lifecycle gate limits it to its application status
+ * until admin approves (Gate 1) and verifies (Gate 2).
+ */
+export async function sellerSignup(req: Request, res: Response): Promise<void> {
+  created(res, await sellerLifecycleService.signupSeller(req.body as SellerSignupInput, contextOf(req)));
 }
 
 /** POST /auth/send-otp */

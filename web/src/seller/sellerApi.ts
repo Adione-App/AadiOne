@@ -520,7 +520,14 @@ export function describeAvailability(a: SellerAvailability): { tone: 'open' | 'c
  */
 export interface SellerOnboarding {
   sellerName: string;
+  sellerType: string;
   onboardingStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | string;
+  /** The two-gate lifecycle (SellerLifecycleStatus). */
+  lifecycleStatus: string;
+  /** Aadione's reason for a rejection or a request for changes. */
+  lifecycleReason: string | null;
+  /** Every required onboarding item and whether it is done. */
+  checklist: { key: string; label: string; met: boolean; hint: string }[];
   /** Computed by the server: PENDING (incomplete) / SUBMITTED / APPROVED / REJECTED. */
   stage: 'PENDING' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | string;
   isComplete: boolean;
@@ -570,7 +577,11 @@ export interface SellerOnboarding {
 export function toSellerOnboarding(raw: SellerOnboarding): SellerOnboarding {
   return {
     sellerName: raw.sellerName,
+    sellerType: raw.sellerType,
     onboardingStatus: raw.onboardingStatus,
+    lifecycleStatus: raw.lifecycleStatus,
+    lifecycleReason: raw.lifecycleReason ?? null,
+    checklist: (raw.checklist ?? []).map((item) => ({ key: item.key, label: item.label, met: item.met, hint: item.hint })),
     stage: raw.stage,
     isComplete: raw.isComplete,
     profile: raw.profile
@@ -679,6 +690,8 @@ export interface SellerEarningsSummary {
 export interface SellerOrderCommission {
   orderNumber: string;
   status: string;
+  /** Delivery progress of a READY order (null otherwise). */
+  handover: SellerOrderHandover | null;
   createdAt: string;
   subtotalPaise: number;
   commissionBp: number;
@@ -751,6 +764,7 @@ export function toOrderCommissions(raw: SellerOrderCommission[]): SellerOrderCom
   return raw.map((row) => ({
     orderNumber: row.orderNumber,
     status: row.status,
+    handover: row.handover ?? null,
     createdAt: row.createdAt,
     subtotalPaise: row.subtotalPaise,
     commissionBp: row.commissionBp,

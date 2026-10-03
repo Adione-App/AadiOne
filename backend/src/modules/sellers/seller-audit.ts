@@ -30,6 +30,20 @@ export const SellerAuditAction = {
   DOCUMENT_FILE_VIEW: 'seller_document.file_view',
   /** Onboarding rejected; `after.reason` holds the only stored copy of the reason. */
   ONBOARDING_REJECT: 'seller_onboarding.reject',
+  /** Public seller signup: a new application (Gate 1 input). */
+  APPLICATION_SUBMIT: 'seller_application.submit',
+  /** Gate 1 approved — the applicant may now onboard. */
+  APPLICATION_APPROVE: 'seller_application.approve',
+  /** Gate 1 rejected; `after.reason` is the reason shown to the applicant. */
+  APPLICATION_REJECT: 'seller_application.reject',
+  /** Seller submitted (or resubmitted) onboarding for Gate 2 verification. */
+  ONBOARDING_SUBMIT: 'seller_onboarding.submit',
+  /** Gate 2: admin asked for changes; `after.reason` is shown to the seller. */
+  ONBOARDING_REQUEST_CHANGES: 'seller_onboarding.request_changes',
+  /** Gate 2 approved. */
+  ONBOARDING_APPROVE: 'seller_onboarding.approve',
+  /** The seller became ACTIVE (full Seller Panel) — written with ONBOARDING_APPROVE. */
+  LIFECYCLE_ACTIVATE: 'seller.lifecycle_activate',
 } as const;
 
 export type SellerAuditAction = (typeof SellerAuditAction)[keyof typeof SellerAuditAction];

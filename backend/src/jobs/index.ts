@@ -17,8 +17,9 @@ import {
 import { prisma } from '../infra/db/prisma';
 import { payments as provider } from '../infra/payment';
 import { moduleLogger } from '../common/logger';
-import { transitionOrder } from '../modules/orders/order-state.service';
+import { confirmPaymentAndPlace, transitionOrder } from '../modules/orders/order-state.service';
 import * as notificationService from '../modules/notifications/notification.service';
+import { reconcileCheckoutPayments } from '../modules/payments/payment.service';
 
 const log = moduleLogger('jobs');
 
@@ -36,6 +37,17 @@ export async function releaseExpiredReservations(): Promise<number> {
     where: {
       status: OrderStatus.PENDING_PAYMENT,
       reservationExpiresAt: { lt: new Date() },
+      // Never expire an order whose payment has been captured but not yet
+      // placed (placement failed midway) — the customer's money is in; the
+      // reconciliation job places it instead.
+      NOT: {
+        payments: {
+          some: {
+            status: PaymentStatus.CAPTURED,
+            OR: [{ failureCode: null }, { failureCode: { not: 'ORPHAN_CAPTURE' } }],
+          },
+        },
+      },
     },
     select: { id: true, orderNumber: true },
     take: 50,
@@ -68,6 +80,10 @@ export async function releaseExpiredReservations(): Promise<number> {
  * otherwise sit unpaid.
  */
 export async function reconcilePayments(): Promise<number> {
+  // Hosted-checkout gateways (Cashfree) are looked up by provider ORDER, and
+  // their open payments carry no provider payment id — a separate sweep.
+  if (provider.fetchOrder) return reconcileCheckoutPayments();
+
   const stale = await prisma.payment.findMany({
     where: {
       status: { in: [PaymentStatus.CREATED, PaymentStatus.PENDING] },
@@ -98,17 +114,10 @@ export async function reconcilePayments(): Promise<number> {
           data: { status: PaymentStatus.CAPTURED, capturedAt: new Date() },
         });
 
-        await transitionOrder({
-          orderId: payment.orderId,
-          toStatus: OrderStatus.PAYMENT_CONFIRMED,
-          actorType: ActorType.SYSTEM,
-          reason: 'Reconciled with payment provider',
-        });
-        await transitionOrder({
-          orderId: payment.orderId,
-          toStatus: OrderStatus.ORDER_PLACED,
-          actorType: ActorType.SYSTEM,
-        });
+        // PAYMENT_CONFIRMED is transient — this advances straight through to
+        // PROCESSING, same as the fast/webhook paths (see
+        // order-state.service.ts's own doc comment).
+        await confirmPaymentAndPlace(payment.orderId, ActorType.SYSTEM);
 
         settled += 1;
         log.warn({ paymentId: payment.id }, 'payment settled by reconciliation');
@@ -121,23 +130,32 @@ export async function reconcilePayments(): Promise<number> {
   return settled;
 }
 
-/** Notifies customers waiting on an out-of-stock item that it is back. */
+/**
+ * Notifies customers waiting on an out-of-stock item that it is back.
+ *
+ * V2: a subscription names its exact `SellerListing` directly
+ * (`back_in_stock_subscriptions.seller_listing_id`, set at subscribe time —
+ * see catalog.service.ts's `subscribeBackInStock`), so this joins on that FK
+ * rather than re-deriving the listing from a (store, variant) pair the way
+ * V1 did — there is no `store_variants`/`store_id` left to derive it from.
+ */
 export async function notifyBackInStock(): Promise<number> {
   const subscriptions = await prisma.$queryRaw<
-    { id: string; user_id: string; variant_id: string }[]
+    { id: string; user_id: string; seller_listing_id: string }[]
   >`
-    SELECT s.id, s.user_id, s.variant_id
+    SELECT s.id, s.user_id, s.seller_listing_id
     FROM back_in_stock_subscriptions s
-    JOIN store_variants sv ON sv.variant_id = s.variant_id AND sv.store_id = s.store_id
+    JOIN seller_listings sl ON sl.id = s.seller_listing_id
     WHERE s.notified_at IS NULL
-      AND sv.is_available
-      AND (sv.stock_qty - sv.reserved_qty) > 0
+      AND sl.is_available
+      AND (sl.stock_qty - sl.reserved_qty) > 0
     LIMIT 100`;
 
   for (const subscription of subscriptions) {
     await notificationService.notify({
       userId: subscription.user_id,
       type: NotificationType.BACK_IN_STOCK,
+      dedupeKey: `back-in-stock:${subscription.id}`,
     });
     await prisma.backInStockSubscription.update({
       where: { id: subscription.id },

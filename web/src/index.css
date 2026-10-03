@@ -9,6 +9,34 @@
   }
 }
 
+/* Partner Portal sign-in (components/PartnerLogin.tsx). On desktop windows
+   the page is exactly one viewport tall and never scrolls: the store
+   illustration absorbs the difference and the vertical gaps tighten.
+   --login-squeeze is how much shorter than 900px the window is (0–180px);
+   at 900px and taller every gap keeps its full size. Below 600px tall (or
+   below lg) the page keeps its natural height and scrolls instead of
+   clipping. box-sizing: border-box already comes from Tailwind's preflight. */
+.partner-login {
+  --login-squeeze: 0px;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+@media (min-width: 1024px) and (min-height: 600px) {
+  .partner-login {
+    --login-squeeze: clamp(0px, 900px - 100vh, 180px);
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  /* Only while the sign-in page is on screen — other pages scroll normally. */
+  html:has(.partner-login),
+  html:has(.partner-login) body {
+    overflow: hidden;
+  }
+}
+
 /* Thermal-printer-friendly pick slip: the store prints the order to pack it,
    and everything but the order detail is noise on paper. */
 @media print {

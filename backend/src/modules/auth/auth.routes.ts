@@ -4,6 +4,8 @@ import { validate } from '../../middleware/validate';
 import { authenticate } from '../../middleware/auth';
 import {
   adminLoginPerIp,
+  changePasswordPerUser,
+  sellerLoginPerIp,
   loginPerEmail,
   loginPerIp,
   otpPerIpHourly,
@@ -16,9 +18,11 @@ import {
 import * as controller from './auth.controller';
 import {
   adminLoginSchema,
+  changePasswordSchema,
   loginSchema,
   logoutSchema,
   refreshSchema,
+  sellerLoginSchema,
   sendOtpSchema,
   signupSchema,
   updateProfileSchema,
@@ -81,6 +85,28 @@ authRouter.post(
   adminLoginPerIp,
   asyncHandler(controller.adminLogin),
 );
+
+/**
+ * Seller panel — email + password issued by AdiOne (sellers never register
+ * themselves). The server checks the account's role and seller membership.
+ */
+authRouter.post(
+  '/seller/login',
+  validate({ body: sellerLoginSchema }),
+  loginPerEmail,
+  sellerLoginPerIp,
+  asyncHandler(controller.sellerLogin),
+);
+
+authRouter.post(
+  '/change-password',
+  authenticate,
+  changePasswordPerUser,
+  validate({ body: changePasswordSchema }),
+  asyncHandler(controller.changePassword),
+);
+
+authRouter.get('/password-status', authenticate, asyncHandler(controller.passwordStatus));
 
 authRouter.post(
   '/refresh',

@@ -60,6 +60,8 @@ export interface StorageProvider {
     folder: string;
     fileName: string;
     contentType: string;
+    /** Local provider only: the API route that accepts the bytes (default: the admin one). */
+    directUploadPath?: string;
   }): Promise<PresignedUpload>;
 
   remove(key: string): Promise<void>;
@@ -148,6 +150,7 @@ class LocalStorageProvider implements StorageProvider {
     folder: string;
     fileName: string;
     contentType: string;
+    directUploadPath?: string;
   }): Promise<PresignedUpload> {
     assertUploadable(input.contentType);
 
@@ -158,7 +161,7 @@ class LocalStorageProvider implements StorageProvider {
     return {
       uploadUrl:
         `${env.API_BASE_URL}` +
-        `/api/v1/admin/uploads/direct?key=` +
+        `${input.directUploadPath ?? '/api/v1/admin/uploads/direct'}?key=` +
         `${encodeURIComponent(key)}`,
 
       key,
@@ -245,11 +248,12 @@ class S3StorageProvider implements StorageProvider {
    * This is important because DELETE requests do not send
    * the same Content-Type header as image uploads.
    */
-  private sign(
-    method: "PUT" | "DELETE",
+  sign(
+    method: "PUT" | "DELETE" | "GET",
     key: string,
     contentType: string | undefined,
     expiresInSeconds: number,
+    bucket: string | undefined = env.S3_BUCKET,
   ): string {
     if (!env.S3_ENDPOINT) {
       throw new Error("S3_ENDPOINT is required when STORAGE_PROVIDER=s3");
@@ -259,7 +263,7 @@ class S3StorageProvider implements StorageProvider {
       throw new Error("S3_REGION is required when STORAGE_PROVIDER=s3");
     }
 
-    if (!env.S3_BUCKET) {
+    if (!bucket) {
       throw new Error("S3_BUCKET is required when STORAGE_PROVIDER=s3");
     }
 
@@ -303,7 +307,7 @@ class S3StorageProvider implements StorageProvider {
     const encodedKey = this.encodeObjectKey(key);
 
     const canonicalUri =
-      `${basePath}/` + `${this.awsEncode(env.S3_BUCKET)}/` + `${encodedKey}`;
+      `${basePath}/` + `${this.awsEncode(bucket)}/` + `${encodedKey}`;
 
     /* ---------------------------------------------------------------------- */
     /* Signed headers                                                         */
@@ -548,6 +552,21 @@ class S3StorageProvider implements StorageProvider {
       );
     }
   }
+}
+
+/**
+ * SigV4-presigned URL for any bucket — used by the PRIVATE seller-document
+ * store (private-documents.ts) for its own bucket. Short-lived; never handed
+ * to a browser.
+ */
+export function presignS3(
+  method: "PUT" | "DELETE" | "GET",
+  bucket: string,
+  key: string,
+  contentType: string | undefined,
+  expiresInSeconds: number,
+): string {
+  return new S3StorageProvider().sign(method, key, contentType, expiresInSeconds, bucket);
 }
 
 /* -------------------------------------------------------------------------- */

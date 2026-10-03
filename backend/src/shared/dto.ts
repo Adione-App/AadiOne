@@ -9,16 +9,23 @@
  */
 
 import type {
+  ApprovalStatus,
   CodPolicy,
   CouponOrigin,
   CouponType,
-  DeliveryAssignmentStatus,
+  DeliveryTaskStatus,
+  DocumentStatus,
   NotificationType,
   OrderPaymentStatus,
   OrderStatus,
   PaymentMethod,
   ProductStatus,
   ReferralStatus,
+  SellerDocumentType,
+  SellerOrderStatus,
+  SellerStaffRole,
+  SellerType,
+  SettlementStatus,
   UnitType,
   UserRole,
 } from './enums';
@@ -100,19 +107,24 @@ export interface UpdateProfileRequest {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Store & serviceability                                                     */
+/* Seller & serviceability                                                    */
 /* -------------------------------------------------------------------------- */
 
-export interface StoreHoursDto {
+export interface SellerHoursDto {
   dayOfWeek: number; // 0 = Sunday
   opensAt: string; // "08:00"
   closesAt: string; // "22:00"
   isClosed: boolean;
 }
 
-export interface StoreDto {
+/**
+ * The customer-facing view of a seller — a product/menu page header. Every
+ * seller is one of these; there is no special platform store.
+ */
+export interface SellerDto {
   id: string;
   name: string;
+  sellerType: SellerType;
   addressLine: string;
   city: string;
   state: string;
@@ -121,35 +133,34 @@ export interface StoreDto {
   longitude: number;
   phone: string | null;
   timezone: string;
-  /** The owner's trading switch. False = paused from the admin panel. */
+  /** The owner's trading switch. False = paused from the seller/admin panel. */
   isActive: boolean;
   /** False when paused, closed for the day, or outside today's window. */
   isOpenNow: boolean;
-  /** Local time the store next opens, ISO-8601, when currently closed. */
+  /** Local time the seller next opens, ISO-8601, when currently closed. */
   opensAt: string | null;
   closesAt: string | null;
-  todayHours: StoreHoursDto | null;
+  todayHours: SellerHoursDto | null;
 }
 
 /**
- * The admin panel's view of trading: the switch plus the full weekly schedule.
- *
- * Distinct from `StoreDto` because the admin needs all seven days to edit
- * them, and needs them even while the store is paused — the customer-facing
- * DTO deliberately reports only today, and reports nothing when paused.
+ * The seller/admin panel's view of trading: the switch plus the full weekly
+ * schedule. Distinct from `SellerDto` because editing needs all seven days,
+ * even while paused — the customer-facing DTO deliberately reports only
+ * today, and reports nothing when paused.
  */
-export interface StoreAvailabilityDto {
+export interface SellerAvailabilityDto {
   isActive: boolean;
   isOpenNow: boolean;
   timezone: string;
   /** Exactly seven entries, Sunday (0) through Saturday (6). */
-  hours: StoreHoursDto[];
+  hours: SellerHoursDto[];
   /** "Opens tomorrow at 8:00 AM" — null while paused or already open. */
   nextOpenText: string | null;
 }
 
-export interface UpdateStoreHoursRequest {
-  hours: StoreHoursDto[];
+export interface UpdateSellerHoursRequest {
+  hours: SellerHoursDto[];
 }
 
 export interface ServiceabilityQuery {
@@ -167,7 +178,397 @@ export interface ServiceabilityResult {
   etaMinMinutes: number | null;
   etaMaxMinutes: number | null;
   deliveryFeePaise: number | null;
-  storeOpen: boolean;
+  /** Location check: at least one seller that delivers here is open now.
+   * Checkout quote: every seller in the cart is open now. */
+  sellerOpen: boolean;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Seller onboarding & self-service (admin creates; seller manages its own)  */
+/* -------------------------------------------------------------------------- */
+
+export interface SellerProfileDto {
+  businessName: string;
+  businessType: string | null;
+  ownerFullName: string;
+  ownerMobile: string;
+  ownerEmail: string | null;
+  /** Masked except for admin's own detail view — see the service layer. */
+  panNumber: string | null;
+  aadhaarNumber: string | null;
+  gstNumber: string | null;
+  fssaiNumber: string | null;
+}
+
+export interface UpsertSellerProfileRequest {
+  businessName: string;
+  businessType?: string | null;
+  ownerFullName: string;
+  ownerMobile: string;
+  ownerEmail?: string | null;
+  panNumber?: string | null;
+  aadhaarNumber?: string | null;
+  gstNumber?: string | null;
+  fssaiNumber?: string | null;
+}
+
+export interface SellerBankDetailDto {
+  id: string;
+  /** Changes on every save of the account. The admin echoes it (with `id`)
+   * back to PATCH …/bank-detail/verify, so only the exact account they
+   * reviewed can be verified. Not sensitive. */
+  updatedAt: string;
+  accountHolderName: string;
+  /** Masked to the last 4 digits except in admin's own verification view. */
+  accountNumber: string;
+  ifscCode: string;
+  bankName: string | null;
+  isVerified: boolean;
+}
+
+export interface UpsertSellerBankDetailRequest {
+  accountHolderName: string;
+  accountNumber: string;
+  ifscCode: string;
+  bankName?: string | null;
+}
+
+export interface SellerDocumentDto {
+  id: string;
+  type: SellerDocumentType;
+  /** The number printed on the document, MASKED (e.g. `•••••••••F`). The full
+   * number is only returned by the audited admin reveal endpoint. */
+  documentNumberMasked: string | null;
+  hasDocumentNumber: boolean;
+  /** The uploaded PDF's (sanitised) file name — never a URL or storage key. */
+  fileName: string | null;
+  fileSizeBytes: number | null;
+  /** An uploaded PDF exists (read it through the authorised file endpoint). */
+  hasFile: boolean;
+  /** A legacy record added as an external link before uploads existed. */
+  legacyLink: boolean;
+  status: DocumentStatus;
+  rejectionReason: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+/**
+ * POST /seller/onboarding/documents and POST /admin/sellers/:id/onboarding/documents
+ * are multipart/form-data: these text fields plus the PDF in the `file` field
+ * (PDF only, at most 10 MB). There is no URL field.
+ */
+export interface UploadSellerDocumentRequest {
+  type: SellerDocumentType;
+  documentNumber?: string | null;
+  expiresAt?: string | null;
+}
+
+/** GET /admin/sellers/:id/onboarding/documents/:documentId/number — the audited "Show". */
+export interface RevealedDocumentNumberDto {
+  documentId: string;
+  type: SellerDocumentType;
+  documentNumber: string | null;
+}
+
+export interface ReviewSellerDocumentRequest {
+  status: DocumentStatus;
+  rejectionReason?: string | null;
+}
+
+export interface RestaurantProfileDto {
+  cuisine: string[];
+  isVegOnly: boolean;
+  avgPrepMins: number | null;
+}
+
+export interface UpsertRestaurantProfileRequest {
+  cuisine: string[];
+  isVegOnly?: boolean;
+  avgPrepMins?: number | null;
+}
+
+/**
+ * A seller's onboarding record: GET/PUT /seller/onboarding*, the admin review
+ * view (GET /admin/sellers/:id/onboarding — unmasked) and the admin data-entry
+ * responses (masked). `stage` is computed, never stored.
+ */
+export interface SellerOnboardingDetailDto {
+  sellerId: string;
+  sellerName: string;
+  onboardingStatus: ApprovalStatus;
+  stage: SellerOnboardingStage;
+  isComplete: boolean;
+  profile: SellerProfileDto | null;
+  bankDetail: SellerBankDetailDto | null;
+  documents: SellerDocumentDto[];
+  restaurantProfile: RestaurantProfileDto | null;
+}
+
+/** The three parts of the onboarding completeness rule — all must be true. */
+export interface SellerOnboardingRequirementsDto {
+  profile: boolean;
+  bankDetail: boolean;
+  /** A PAN or Aadhaar document that is not rejected. */
+  identityDocument: boolean;
+}
+
+/** An onboarding document as the admin panel may show it: metadata, the
+ * number MASKED, the file by name only — there is deliberately no link field. */
+export interface AdminSellerOnboardingDocumentDto {
+  id: string;
+  type: SellerDocumentType;
+  /** The number printed on the document, MASKED (e.g. `•••••••••F`). The full
+   * number is only returned by the audited admin reveal endpoint. */
+  documentNumberMasked: string | null;
+  hasDocumentNumber: boolean;
+  /** The uploaded PDF's (sanitised) file name — never a URL or storage key. */
+  fileName: string | null;
+  fileSizeBytes: number | null;
+  /** An uploaded PDF exists (read it through the authorised file endpoint). */
+  hasFile: boolean;
+  /** A legacy record added as an external link before uploads existed. */
+  legacyLink: boolean;
+  status: DocumentStatus;
+  rejectionReason: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  /** When it was verified or rejected; null while pending. */
+  reviewedAt: string | null;
+}
+
+/**
+ * GET /admin/sellers/:id/onboarding/summary — the Admin Web's onboarding read.
+ * PAN, Aadhaar and the account number are MASKED; no document link is ever
+ * included. `bankDetail.id` + `updatedAt` are what bank verification echoes.
+ */
+export interface AdminSellerOnboardingSummaryDto {
+  sellerId: string;
+  sellerName: string;
+  sellerType: SellerType;
+  onboardingStatus: ApprovalStatus;
+  stage: SellerOnboardingStage;
+  isComplete: boolean;
+  requirements: SellerOnboardingRequirementsDto;
+  lastRejectionReason: string | null;
+  lastRejectedAt: string | null;
+  profile: SellerProfileDto | null;
+  bankDetail: SellerBankDetailDto | null;
+  documents: AdminSellerOnboardingDocumentDto[];
+}
+
+/** Admin's full seller record — onboarding review, seller directory. */
+export interface AdminSellerDto extends SellerDto {
+  onboardingStatus: ApprovalStatus;
+  defaultCommissionBp: number;
+  settlementCycleHours: number;
+  profile: SellerProfileDto | null;
+  bankDetail: SellerBankDetailDto | null;
+  documents: SellerDocumentDto[];
+  restaurantProfile: RestaurantProfileDto | null;
+  createdAt: string;
+}
+
+export interface CreateSellerRequest {
+  name: string;
+  sellerType: SellerType;
+  addressLine: string;
+  city: string;
+  state: string;
+  pincode: string;
+  latitude: number;
+  longitude: number;
+  phone?: string | null;
+  /** Login for the seller's first OWNER staff member — created alongside. */
+  ownerMobile: string;
+  ownerFullName: string;
+  defaultCommissionBp?: number;
+}
+
+export interface ReviewSellerOnboardingRequest {
+  status: ApprovalStatus;
+  reason?: string | null;
+}
+
+export interface SellerStaffDto {
+  id: string;
+  userId: string;
+  fullName: string | null;
+  mobile: string;
+  role: SellerStaffRole;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface InviteSellerStaffRequest {
+  mobile: string;
+  fullName: string;
+  role: SellerStaffRole;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Admin seller directory (V2) — GET /admin/sellers, GET /admin/sellers/:id   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Onboarding progress as the admin panel shows it. APPROVED/REJECTED mirror
+ * `Seller.onboardingStatus`; a PENDING seller is `SUBMITTED` once its
+ * application is complete and `PENDING` while it is still being filled in —
+ * computed on every read, never stored.
+ */
+export type SellerOnboardingStage = 'PENDING' | 'SUBMITTED' | 'APPROVED' | 'REJECTED';
+
+/** Why a seller cannot take an order right now, highest priority first. */
+export type SellerClosedReason =
+  | 'SELLER_DELETED'
+  | 'SELLER_INACTIVE'
+  | 'MANUALLY_CLOSED'
+  | 'CLOSURE'
+  | 'CLOSED_TODAY'
+  | 'OUTSIDE_HOURS';
+
+/** One row of the admin seller list. Carries no PII — no PAN, Aadhaar,
+ * bank details, owner contact or document links. */
+export interface AdminSellerListRowDto {
+  id: string;
+  code: string;
+  name: string;
+  sellerType: SellerType;
+  city: string;
+  state: string;
+  onboardingStatus: ApprovalStatus;
+  stage: SellerOnboardingStage;
+  /** Admin-controlled trading switch. */
+  isActive: boolean;
+  /** The seller's own Store Open / Store Closed switch. */
+  isAcceptingOrders: boolean;
+  isOpenNow: boolean;
+  /** Whether an order could be placed now (open, or closed with orders allowed). */
+  acceptingOrdersNow: boolean;
+  closedReason: SellerClosedReason | null;
+  createdAt: string;
+}
+
+export interface AdminSellerAvailabilitySummaryDto {
+  timezone: string;
+  isOpenNow: boolean;
+  acceptingOrdersNow: boolean;
+  closedReason: SellerClosedReason | null;
+  nextOpenText: string | null;
+  /** False when the seller has never saved a weekly schedule. */
+  hoursConfigured: boolean;
+}
+
+/** Counts over every document row, superseded re-uploads included. */
+export interface AdminSellerDocumentSummaryDto {
+  total: number;
+  pending: number;
+  verified: number;
+  rejected: number;
+}
+
+/** The admin seller overview. PAN, Aadhaar and the bank account number are
+ * always MASKED here; document links are not included (the onboarding review
+ * view, GET /admin/sellers/:id/onboarding, is where those are read). */
+export interface AdminSellerDetailDto {
+  id: string;
+  code: string;
+  name: string;
+  sellerType: SellerType;
+  addressLine: string;
+  city: string;
+  state: string;
+  pincode: string;
+  latitude: number;
+  longitude: number;
+  phone: string | null;
+  onboardingStatus: ApprovalStatus;
+  stage: SellerOnboardingStage;
+  /** Profile, bank details and an identity document are all present. */
+  isComplete: boolean;
+  /** Reason given on the most recent onboarding rejection, if there was one —
+   * kept after a resubmission or a later approval, as history. */
+  lastRejectionReason: string | null;
+  lastRejectedAt: string | null;
+  isActive: boolean;
+  isAcceptingOrders: boolean;
+  availability: AdminSellerAvailabilitySummaryDto;
+  defaultCommissionBp: number;
+  settlementCycleHours: number;
+  profile: SellerProfileDto | null;
+  bankDetail: SellerBankDetailDto | null;
+  restaurantProfile: RestaurantProfileDto | null;
+  documentSummary: AdminSellerDocumentSummaryDto;
+  staff: SellerStaffDto[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** PATCH /admin/sellers/:id/status — the admin trading switch for any
+ * seller. Never touches `isAcceptingOrders` or onboarding. */
+export interface AdminSetSellerStatusRequest {
+  isActive: boolean;
+  /** Required; recorded in the audit log. */
+  reason: string;
+}
+
+/** PATCH /admin/sellers/:id/onboarding/bank-detail/verify — identifies the
+ * exact bank state the admin reviewed: `SellerBankDetailDto.id` and
+ * `.updatedAt` as read. Anything changed since then is a 409. */
+export interface AdminVerifyBankDetailRequest {
+  bankDetailId: string;
+  expectedUpdatedAt: string;
+}
+
+/** PATCH /admin/sellers/:id — basic details only. Latitude and longitude are
+ * sent together or not at all. */
+export interface AdminUpdateSellerRequest {
+  name?: string;
+  phone?: string | null;
+  addressLine?: string;
+  city?: string;
+  state?: string;
+  pincode?: string;
+  latitude?: number;
+  longitude?: number;
+}
+
+/** One of a seller's own listings — GET /seller/listings and the admin view
+ * GET /admin/sellers/:id/listings. */
+export interface SellerListingDto {
+  id: string;
+  sellerId: string;
+  variantId: string;
+  productId: string;
+  productName: string;
+  variantName: string;
+  categoryId: string;
+  categoryName: string;
+  approvalStatus: ApprovalStatus;
+  mrpPaise: number;
+  pricePaise: number;
+  stockQty: number;
+  availableQty: number;
+  isAvailable: boolean;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Commission                                                                 */
+/* -------------------------------------------------------------------------- */
+
+export interface CommissionRuleDto {
+  id: string;
+  sellerId: string;
+  categoryId: string | null;
+  productId: string | null;
+  rateBp: number;
+  isActive: boolean;
+}
+
+export interface UpsertCommissionRuleRequest {
+  categoryId?: string | null;
+  productId?: string | null;
+  rateBp: number;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -206,7 +607,10 @@ export interface VariantDto {
   imageUrl: string | null;
   isDefault: boolean;
 
-  /* live, store-scoped commercial data — always server-resolved */
+  /* live, seller-scoped commercial data — always server-resolved */
+  sellerListingId: string;
+  sellerId: string;
+  sellerName: string;
   mrpPaise: number;
   pricePaise: number;
   discountPercent: number;
@@ -225,9 +629,16 @@ export interface ProductSummaryDto {
   categoryId: string;
   imageUrl: string | null;
   thumbUrl: string | null;
-  /** The default variant's commercial data, for cards and grids. */
+  /**
+   * The best/default LISTING's commercial data, for cards and grids — "best"
+   * meaning the lowest current price across every seller listing this
+   * product has, so a card never has to name a seller just to show a price.
+   * Null when no seller currently lists this product at all.
+   */
   defaultVariant: VariantDto | null;
   variantCount: number;
+  /** Distinct sellers currently listing at least one variant of this product. */
+  sellerCount: number;
   /**
    * DRAFT/INACTIVE/ARCHIVED never reach a customer — every customer-facing
    * query filters to ACTIVE upstream, so this is always ACTIVE there. Admin's
@@ -235,6 +646,7 @@ export interface ProductSummaryDto {
    * toggle.
    */
   status: ProductStatus;
+  approvalStatus: ApprovalStatus;
 }
 
 export interface ProductDetailDto extends ProductSummaryDto {
@@ -251,6 +663,7 @@ export interface ProductListQuery {
   categoryId?: string;
   subcategoryId?: string;
   brandId?: string;
+  sellerId?: string;
   inStock?: boolean;
   sort?: 'RELEVANCE' | 'PRICE_ASC' | 'PRICE_DESC' | 'NEWEST' | 'POPULAR' | 'DISCOUNT';
   cursor?: string | null;
@@ -286,13 +699,134 @@ export interface HomeFeedDto {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Catalog approval — seller submissions reviewed by admin in batches         */
+/* -------------------------------------------------------------------------- */
+
+export interface ProductApprovalBatchItemDto {
+  id: string;
+  productId: string;
+  productName: string;
+  status: ApprovalStatus;
+  reviewNote: string | null;
+}
+
+export interface ProductApprovalBatchDto {
+  id: string;
+  sellerId: string;
+  sellerName: string;
+  status: ApprovalStatus;
+  submittedAt: string;
+  reviewedAt: string | null;
+  reviewNote: string | null;
+  items: ProductApprovalBatchItemDto[];
+}
+
+/** A category reference: its id and display name. */
+export interface CategoryRefDto {
+  id: string;
+  name: string;
+}
+
+export interface SubmittedProductVariantDto {
+  id: string;
+  variantName: string;
+  sku: string;
+  unit: UnitType;
+  unitValue: number;
+}
+
+/**
+ * A seller-submitted product as the seller and admin panels review it.
+ * `categoryId` is the product's own category; when that category has a
+ * parent, `category` is the parent and `subcategory` the product's own.
+ */
+export interface SubmittedProductDto {
+  id: string;
+  name: string;
+  nameHi: string | null;
+  description: string | null;
+  status: ProductStatus;
+  approvalStatus: ApprovalStatus;
+  submittedBySellerId: string | null;
+  categoryId: string;
+  category: CategoryRefDto;
+  subcategory: CategoryRefDto | null;
+  /** The default variant (or the first live one); null only if none is left. */
+  defaultVariant: SubmittedProductVariantDto | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** The seller's own SellerListing for a product's default variant. */
+export interface SellerProductListingDto {
+  id: string;
+  mrpPaise: number;
+  pricePaise: number;
+  stockQty: number;
+  reservedQty: number;
+  availableQty: number;
+  isAvailable: boolean;
+}
+
+/** The most recent approval-batch item for a product. */
+export interface SellerProductApprovalDto {
+  batchId: string;
+  batchStatus: ApprovalStatus;
+  itemId: string;
+  status: ApprovalStatus;
+  reviewNote: string | null;
+  submittedAt: string;
+}
+
+/** GET /seller/products — one of the seller's own products. */
+export interface SellerProductDto extends SubmittedProductDto {
+  /** Null until the seller lists the (approved) default variant. */
+  listing: SellerProductListingDto | null;
+  /** Null when the product has never been submitted for approval. */
+  latestApproval: SellerProductApprovalDto | null;
+  /** The reason on the most recent REJECTED item, even after resubmission. */
+  lastRejectionReason: string | null;
+  /** In display order; the first is the product's primary image. */
+  images: ProductReviewImageDto[];
+}
+
+export interface ProductReviewImageDto {
+  id: string;
+  url: string;
+  thumbUrl: string | null;
+  altText: string | null;
+  displayOrder: number;
+}
+
+/** GET /admin/approval-batches/:id — an item with what the admin reviews. */
+export interface ProductApprovalReviewItemDto extends ProductApprovalBatchItemDto {
+  product: (SubmittedProductDto & { images: ProductReviewImageDto[] }) | null;
+}
+
+export interface ProductApprovalBatchReviewDto extends Omit<ProductApprovalBatchDto, 'items'> {
+  items: ProductApprovalReviewItemDto[];
+}
+
+export interface SubmitProductApprovalBatchRequest {
+  productIds: string[];
+}
+
+export interface ReviewProductApprovalBatchItemRequest {
+  status: ApprovalStatus;
+  reviewNote?: string | null;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Cart                                                                       */
 /* -------------------------------------------------------------------------- */
 
 export interface CartItemDto {
   id: string;
+  sellerListingId: string;
   variantId: string;
   productId: string;
+  sellerId: string;
+  sellerName: string;
   productName: string;
   variantName: string;
   brandName: string | null;
@@ -306,6 +840,23 @@ export interface CartItemDto {
   availableQty: number;
   maxQtyPerOrder: number;
   allowCod: boolean;
+}
+
+/**
+ * One seller's slice of a mixed cart — a convenience grouping so the app can
+ * render "Seller A (3 items) — ₹240" sections without re-deriving the
+ * grouping itself from the flat `items` list.
+ */
+export interface CartSellerGroupDto {
+  sellerId: string;
+  sellerName: string;
+  items: CartItemDto[];
+  subtotalPaise: number;
+  /** False while the seller is closed (switch OFF, closure, outside hours):
+   * its lines stay in the cart, but checkout is blocked until it reopens. */
+  isOpen: boolean;
+  /** Customer-facing reason when `isOpen` is false. */
+  closedMessage: string | null;
 }
 
 /**
@@ -347,6 +898,8 @@ export interface BillDto {
 export interface CartDto {
   id: string;
   items: CartItemDto[];
+  /** `items` grouped by seller — see `CartSellerGroupDto`. */
+  sellerGroups: CartSellerGroupDto[];
   bill: BillDto;
   changes: CartChangeDto[];
   /** False with a reason when the cart cannot proceed to checkout. */
@@ -357,7 +910,9 @@ export interface CartDto {
 }
 
 export interface AddCartItemRequest {
-  variantId: string;
+  /** The specific seller's listing — NOT the bare variant id, since the same
+   * variant can be listed by more than one seller at different prices. */
+  sellerListingId: string;
   qty: number;
 }
 
@@ -428,17 +983,18 @@ export interface PlaceOrderRequest {
    */
   expectedTotalPaise?: number;
   /**
-   * Per-item prices the customer's cart was showing, keyed by variant.
-   * Optional, and purely a safety check like `expectedTotalPaise` above — the
-   * charged amount always comes from the server's own live lookup, never
-   * from this. What this DOES enable: when a price genuinely changed, the
-   * server can say WHICH product and by how much (see PRICE_CHANGED's
-   * `details` in order.service.ts) instead of only "the total didn't
-   * match" — there is nowhere to read an "old price" from otherwise, since
-   * cart_items deliberately stores no price of its own (see the CartItem
-   * model's own comment).
+   * Per-item prices the customer's cart was showing, keyed by seller
+   * listing (not bare variant — the same variant can have a different price
+   * per seller). Optional, and purely a safety check like
+   * `expectedTotalPaise` above — the charged amount always comes from the
+   * server's own live lookup, never from this. What this DOES enable: when a
+   * price genuinely changed, the server can say WHICH product and by how
+   * much (see PRICE_CHANGED's `details` in order.service.ts) instead of only
+   * "the total didn't match" — there is nowhere to read an "old price" from
+   * otherwise, since cart_items deliberately stores no price of its own (see
+   * the CartItem model's own comment).
    */
-  expectedItems?: { variantId: string; unitPricePaise: number }[];
+  expectedItems?: { sellerListingId: string; unitPricePaise: number }[];
 }
 
 export interface OrderItemDto {
@@ -463,6 +1019,35 @@ export interface OrderTimelineEntryDto {
   at: string | null;
 }
 
+/** One row in the seller/admin seller-order list — the parent order's own
+ * identity plus this one seller's slice of it. */
+export interface SellerOrderListRowDto {
+  id: string;
+  orderId: string;
+  orderNumber: string;
+  status: SellerOrderStatus;
+  statusLabel: string;
+  subtotalPaise: number;
+  itemCount: number;
+  customerName: string | null;
+  customerMobile: string;
+  createdAt: string;
+}
+
+/** One seller's portion of a parent order — see SellerOrder in schema.prisma. */
+export interface SellerOrderSummaryDto {
+  id: string;
+  sellerId: string;
+  sellerName: string;
+  status: SellerOrderStatus;
+  statusLabel: string;
+  subtotalPaise: number;
+  itemCount: number;
+  items: OrderItemDto[];
+  rejectionReason: string | null;
+  cancellationReason: string | null;
+}
+
 export interface OrderSummaryDto {
   id: string;
   orderNumber: string;
@@ -472,18 +1057,24 @@ export interface OrderSummaryDto {
   paymentMethod: PaymentMethod;
   paymentStatus: OrderPaymentStatus;
   totalPaise: number;
+  /** What the customer must actually still pay/has paid — drops below
+   * `totalPaise` if a seller portion was cancelled. See Order.currentPayablePaise. */
+  currentPayablePaise: number;
   /** Total units across all lines (e.g. 4 units of one product is 4, not 1). */
   itemCount: number;
   /** Number of distinct order lines — what "N thumbnails" should count. */
   lineItemCount: number;
   /** First few item thumbnails, for the My Orders list. */
   itemThumbnails: string[];
+  /** How many distinct sellers this order actually involves. */
+  sellerCount: number;
   placedAt: string;
   deliveredAt: string | null;
 }
 
 export interface OrderDetailDto extends OrderSummaryDto {
   items: OrderItemDto[];
+  sellerOrders: SellerOrderSummaryDto[];
   bill: BillDto;
   deliveryAddress: AddressDto;
   distanceKm: number;
@@ -501,6 +1092,12 @@ export interface OrderDetailDto extends OrderSummaryDto {
 
 export interface CancelOrderRequest {
   reason: string;
+}
+
+/** Seller/admin action on one SellerOrder — accept, reject, prepare, ready, cancel. */
+export interface UpdateSellerOrderStatusRequest {
+  toStatus: SellerOrderStatus;
+  reason?: string;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -667,7 +1264,7 @@ export interface RegisterDeviceRequest {
 /* -------------------------------------------------------------------------- */
 
 export interface AdminDashboardDto {
-  /** The store-local calendar day ("YYYY-MM-DD") this snapshot reports on. */
+  /** The seller-local calendar day ("YYYY-MM-DD") this snapshot reports on. */
   date: string;
   /** False when `date` is a historical day rather than today. */
   isToday: boolean;
@@ -681,7 +1278,8 @@ export interface AdminDashboardDto {
   cancelledTodayCount: number;
   lowStockCount: number;
   lowStockItems: {
-    storeVariantId: string;
+    sellerListingId: string;
+    sellerName: string;
     productName: string;
     variantName: string;
     availableQty: number;
@@ -697,8 +1295,8 @@ export interface AdminOrderSummaryDto extends OrderSummaryDto {
   deliveryAgentName: string | null;
   minutesSincePlaced: number;
   /**
-   * Set when a customer has claimed a direct-UPI payment that the store has
-   * not yet confirmed. The UTR is what the shopkeeper matches against their
+   * Set when a customer has claimed a direct-UPI payment that no seller/admin
+   * has yet confirmed. The UTR is what the shopkeeper matches against their
    * own UPI app — without it they are searching by amount and time alone.
    */
   paymentClaim: { utr: string | null; claimedAt: string | null } | null;
@@ -722,18 +1320,19 @@ export interface DeliveryAgentDto {
   activeOrderCount: number;
 }
 
-export interface DeliveryAssignmentDto {
+/** V1: DeliveryAssignmentDto. Belongs to the PARENT order, never a single seller. */
+export interface DeliveryTaskDto {
   id: string;
   orderId: string;
   agentId: string;
   agentName: string;
-  status: DeliveryAssignmentStatus;
+  status: DeliveryTaskStatus;
   assignedAt: string;
   deliveredAt: string | null;
   cashCollectedPaise: number | null;
 }
 
-export interface UpsertStoreVariantRequest {
+export interface UpsertSellerListingRequest {
   pricePaise?: number;
   mrpPaise?: number;
   stockQty?: number;
@@ -741,4 +1340,21 @@ export interface UpsertStoreVariantRequest {
   allowCod?: CodPolicy;
   maxQtyPerOrder?: number;
   lowStockThreshold?: number;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Settlement                                                                 */
+/* -------------------------------------------------------------------------- */
+
+export interface SellerSettlementDto {
+  id: string;
+  sellerId: string;
+  sellerName: string;
+  periodStart: string;
+  periodEnd: string;
+  grossSalesPaise: number;
+  commissionPaise: number;
+  netPayablePaise: number;
+  status: SettlementStatus;
+  paidAt: string | null;
 }

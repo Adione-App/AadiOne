@@ -11,13 +11,17 @@ import { describe, expect, it } from 'vitest';
 import {
   CodPolicy,
   OrderStatus,
+  SellerOrderStatus,
   ActorType,
   canTransition,
   canActorTransition,
+  canTransitionSellerOrder,
+  canActorTransitionSellerOrder,
   toCustomerTimelineStep,
   toOrderBucket,
   CustomerTimelineStep,
   ALLOWED_TRANSITIONS,
+  ALLOWED_SELLER_ORDER_TRANSITIONS,
 } from '../../src/shared';
 import {
   calculateDistance,
@@ -190,11 +194,11 @@ describe('COD resolution', () => {
     expect(
       resolveItemCodPolicy(
         {
-          storeVariant: CodPolicy.INHERIT,
+          sellerListing: CodPolicy.INHERIT,
           productVariant: CodPolicy.INHERIT,
           product: CodPolicy.DENY,
           categoryChain: [CodPolicy.ALLOW],
-          store: CodPolicy.ALLOW,
+          seller: CodPolicy.ALLOW,
         },
         CodPolicy.ALLOW,
       ),
@@ -205,9 +209,9 @@ describe('COD resolution', () => {
     expect(
       resolveItemCodPolicy(
         {
-          storeVariant: CodPolicy.ALLOW,
+          sellerListing: CodPolicy.ALLOW,
           categoryChain: [CodPolicy.DENY],
-          store: CodPolicy.ALLOW,
+          seller: CodPolicy.ALLOW,
         },
         CodPolicy.ALLOW,
       ),
@@ -223,14 +227,14 @@ describe('COD resolution', () => {
     // Leaf inherits, its parent denies — e.g. Vegetables set to DENY.
     expect(
       resolveItemCodPolicy(
-        { categoryChain: [CodPolicy.INHERIT, CodPolicy.DENY], store: CodPolicy.ALLOW },
+        { categoryChain: [CodPolicy.INHERIT, CodPolicy.DENY], seller: CodPolicy.ALLOW },
         CodPolicy.ALLOW,
       ),
     ).toBe(CodPolicy.DENY);
   });
 
   const order = {
-    storePolicy: CodPolicy.ALLOW,
+    sellerPolicy: CodPolicy.ALLOW,
     defaultPolicy: CodPolicy.ALLOW,
     orderTotalPaise: 50000,
     codMaxOrderValuePaise: 300000,
@@ -301,15 +305,74 @@ describe('COD resolution', () => {
   });
 });
 
-describe('order state machine', () => {
+describe('seller order state machine (per-seller)', () => {
   it('permits the happy path end to end', () => {
+    const path = [
+      SellerOrderStatus.NEW,
+      SellerOrderStatus.ACCEPTED,
+      SellerOrderStatus.PREPARING,
+      SellerOrderStatus.READY_FOR_PICKUP,
+    ];
+    for (let i = 0; i < path.length - 1; i += 1) {
+      expect(
+        canTransitionSellerOrder(path[i]!, path[i + 1]!),
+        `${path[i]} -> ${path[i + 1]}`,
+      ).toBe(true);
+    }
+  });
+
+  it('rejects skipping ahead', () => {
+    expect(canTransitionSellerOrder(SellerOrderStatus.NEW, SellerOrderStatus.READY_FOR_PICKUP)).toBe(
+      false,
+    );
+  });
+
+  it('rejects moving backwards', () => {
+    expect(
+      canTransitionSellerOrder(SellerOrderStatus.PREPARING, SellerOrderStatus.ACCEPTED),
+    ).toBe(false);
+  });
+
+  it('treats REJECTED and CANCELLED as final', () => {
+    expect(ALLOWED_SELLER_ORDER_TRANSITIONS[SellerOrderStatus.REJECTED]).toHaveLength(0);
+    expect(ALLOWED_SELLER_ORDER_TRANSITIONS[SellerOrderStatus.CANCELLED]).toHaveLength(0);
+  });
+
+  it('restricts who may perform each transition', () => {
+    // A customer cannot accept a seller's own order...
+    expect(
+      canActorTransitionSellerOrder(SellerOrderStatus.NEW, SellerOrderStatus.ACCEPTED, ActorType.CUSTOMER),
+    ).toBe(false);
+    // ...but may cancel it before the seller has started preparing.
+    expect(
+      canActorTransitionSellerOrder(SellerOrderStatus.NEW, SellerOrderStatus.CANCELLED, ActorType.CUSTOMER),
+    ).toBe(true);
+    // Once preparing, only the seller/admin can cancel — not the customer.
+    expect(
+      canActorTransitionSellerOrder(
+        SellerOrderStatus.PREPARING,
+        SellerOrderStatus.CANCELLED,
+        ActorType.CUSTOMER,
+      ),
+    ).toBe(false);
+    expect(
+      canActorTransitionSellerOrder(
+        SellerOrderStatus.PREPARING,
+        SellerOrderStatus.CANCELLED,
+        ActorType.SELLER,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('parent order state machine (aggregate)', () => {
+  it('permits the payment and delivery legs', () => {
     const path = [
       OrderStatus.PENDING_PAYMENT,
       OrderStatus.PAYMENT_CONFIRMED,
-      OrderStatus.ORDER_PLACED,
-      OrderStatus.STORE_ACCEPTED,
-      OrderStatus.PREPARING,
+      OrderStatus.PROCESSING,
       OrderStatus.READY_FOR_PICKUP,
+      OrderStatus.PICKED_UP,
       OrderStatus.OUT_FOR_DELIVERY,
       OrderStatus.DELIVERED,
     ];
@@ -319,13 +382,13 @@ describe('order state machine', () => {
   });
 
   it('rejects skipping ahead', () => {
-    expect(canTransition(OrderStatus.ORDER_PLACED, OrderStatus.DELIVERED)).toBe(false);
-    expect(canTransition(OrderStatus.ORDER_PLACED, OrderStatus.OUT_FOR_DELIVERY)).toBe(false);
+    expect(canTransition(OrderStatus.PROCESSING, OrderStatus.DELIVERED)).toBe(false);
+    expect(canTransition(OrderStatus.PROCESSING, OrderStatus.OUT_FOR_DELIVERY)).toBe(false);
   });
 
   it('rejects moving backwards', () => {
-    expect(canTransition(OrderStatus.PREPARING, OrderStatus.STORE_ACCEPTED)).toBe(false);
-    expect(canTransition(OrderStatus.DELIVERED, OrderStatus.PREPARING)).toBe(false);
+    expect(canTransition(OrderStatus.READY_FOR_PICKUP, OrderStatus.PROCESSING)).toBe(false);
+    expect(canTransition(OrderStatus.DELIVERED, OrderStatus.OUT_FOR_DELIVERY)).toBe(false);
   });
 
   it('treats DELIVERED as final', () => {
@@ -333,41 +396,35 @@ describe('order state machine', () => {
   });
 
   it('restricts who may perform each transition', () => {
-    // A customer cannot accept their own order...
+    // A customer cannot dispatch their own order...
     expect(
-      canActorTransition(
-        OrderStatus.ORDER_PLACED,
-        OrderStatus.STORE_ACCEPTED,
-        ActorType.CUSTOMER,
-      ),
+      canActorTransition(OrderStatus.READY_FOR_PICKUP, OrderStatus.PICKED_UP, ActorType.CUSTOMER),
     ).toBe(false);
-    // ...but may cancel it.
+    // ...but may cancel it before any seller has engaged.
     expect(
-      canActorTransition(OrderStatus.ORDER_PLACED, OrderStatus.CANCELLED, ActorType.CUSTOMER),
+      canActorTransition(OrderStatus.PENDING_PAYMENT, OrderStatus.CANCELLED, ActorType.CUSTOMER),
     ).toBe(true);
-    // Cancelling an order already out for delivery is admin-only.
-    expect(
-      canActorTransition(
-        OrderStatus.OUT_FOR_DELIVERY,
-        OrderStatus.CANCELLED,
-        ActorType.CUSTOMER,
-      ),
-    ).toBe(false);
-    expect(
-      canActorTransition(OrderStatus.OUT_FOR_DELIVERY, OrderStatus.CANCELLED, ActorType.ADMIN),
-    ).toBe(true);
+    // The PROCESSING -> CANCELLED edge is derived (system-only) — see
+    // order-state.service.ts's recomputeParentOrderStatus — never a direct
+    // actor choice, admin included.
+    expect(canActorTransition(OrderStatus.PROCESSING, OrderStatus.CANCELLED, ActorType.ADMIN)).toBe(
+      false,
+    );
+    expect(canActorTransition(OrderStatus.PROCESSING, OrderStatus.CANCELLED, ActorType.SYSTEM)).toBe(
+      true,
+    );
   });
 
-  it('maps internal statuses onto the five-step customer timeline', () => {
-    expect(toCustomerTimelineStep(OrderStatus.ORDER_PLACED)).toBe(CustomerTimelineStep.PLACED);
-    expect(toCustomerTimelineStep(OrderStatus.STORE_ACCEPTED)).toBe(
-      CustomerTimelineStep.CONFIRMED,
+  it('maps unambiguous internal statuses onto the five-step customer timeline', () => {
+    expect(toCustomerTimelineStep(OrderStatus.PAYMENT_CONFIRMED)).toBe(CustomerTimelineStep.PLACED);
+    expect(toCustomerTimelineStep(OrderStatus.READY_FOR_PICKUP)).toBe(CustomerTimelineStep.PACKED);
+    expect(toCustomerTimelineStep(OrderStatus.OUT_FOR_DELIVERY)).toBe(
+      CustomerTimelineStep.OUT_FOR_DELIVERY,
     );
-    // Both internal states present as one "Packed" step in the mockup.
-    expect(toCustomerTimelineStep(OrderStatus.PREPARING)).toBe(CustomerTimelineStep.PACKED);
-    expect(toCustomerTimelineStep(OrderStatus.READY_FOR_PICKUP)).toBe(
-      CustomerTimelineStep.PACKED,
-    );
+    // PROCESSING is ambiguous at this function's level alone — see its own
+    // doc comment; disambiguating by the SellerOrders' own progress is
+    // order.service.ts's `resolveProcessingSubStep`, not tested here.
+    expect(toCustomerTimelineStep(OrderStatus.PROCESSING)).toBe('PROCESSING');
     // Exception states have no place on a progress timeline.
     expect(toCustomerTimelineStep(OrderStatus.CANCELLED)).toBeNull();
     expect(toCustomerTimelineStep(OrderStatus.PENDING_PAYMENT)).toBeNull();
@@ -375,8 +432,9 @@ describe('order state machine', () => {
 
   it('buckets statuses for the My Orders badges', () => {
     expect(toOrderBucket(OrderStatus.DELIVERED)).toBe('DELIVERED');
-    expect(toOrderBucket(OrderStatus.REJECTED)).toBe('CANCELLED');
-    expect(toOrderBucket(OrderStatus.PREPARING)).toBe('ONGOING');
+    expect(toOrderBucket(OrderStatus.CANCELLED)).toBe('CANCELLED');
+    expect(toOrderBucket(OrderStatus.PROCESSING)).toBe('ONGOING');
+    expect(toOrderBucket(OrderStatus.PARTIALLY_CANCELLED)).toBe('ONGOING');
   });
 });
 
@@ -406,7 +464,7 @@ describe('phone', () => {
   });
 });
 
-describe('store hours', () => {
+describe('seller hours', () => {
   it('handles a normal daytime window', () => {
     const open = parseTimeToMinutes('08:00');
     const close = parseTimeToMinutes('22:00');

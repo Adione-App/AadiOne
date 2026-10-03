@@ -5,6 +5,9 @@
  * shop that thinks it is taking orders but is not, or — worse — one that
  * cannot be switched back on because turning it off broke the endpoint that
  * turns it on. Both are covered here.
+ *
+ * V2: these endpoints act on the platform-owned Seller row (route paths kept
+ * as `/admin/store*` — see admin-seller.routes.ts's own doc comment).
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -33,7 +36,7 @@ async function loginAdmin(): Promise<string> {
       email: ADMIN.email,
       fullName: 'Store Owner',
       passwordHash: await hashPassword(ADMIN.password),
-      role: UserRole.STORE_OWNER,
+      role: UserRole.ADMIN,
     },
   });
 
@@ -49,7 +52,7 @@ function getAvailability(token: string): Promise<Availability> {
     .then((res) => expectSuccess<Availability>(res.body).data);
 }
 
-let storeId: string;
+let sellerId: string;
 let token: string;
 
 beforeEach(async () => {
@@ -59,13 +62,13 @@ beforeEach(async () => {
   // logs in on every case; without this the admin login limiter trips midway
   // through the suite and every later test fails on a 429 it never provoked.
   await cache.clear();
-  storeId = await seedStore({ open: true });
+  sellerId = await seedStore({ open: true });
   token = await loginAdmin();
 });
 
 describe('GET /admin/store/availability', () => {
   it('always returns seven days, even when the store has no hours rows', async () => {
-    await prisma.storeHours.deleteMany({ where: { storeId } });
+    await prisma.sellerHours.deleteMany({ where: { sellerId } });
 
     const data = await getAvailability(token);
 
@@ -101,12 +104,12 @@ describe('PATCH /admin/store/status', () => {
   });
 
   /**
-   * The regression this whole feature turns on: `findStore` must not filter by
-   * `isActive`, or switching off makes the store unreachable and the switch
-   * becomes one-way.
+   * The regression this whole feature turns on: the seller lookup must not
+   * filter by `isActive`, or switching off makes the store unreachable and
+   * the switch becomes one-way.
    */
   it('can still be read and re-enabled after being switched off', async () => {
-    await prisma.store.update({ where: { id: storeId }, data: { isActive: false } });
+    await prisma.seller.update({ where: { id: sellerId }, data: { isActive: false } });
 
     const data = await getAvailability(token);
     expect(data.isActive).toBe(false);
@@ -128,9 +131,9 @@ describe('PATCH /admin/store/status', () => {
       .send({ isActive: false })
       .expect(200);
 
-    const log = await prisma.auditLog.findFirst({ where: { action: 'store.pause_trading' } });
+    const log = await prisma.auditLog.findFirst({ where: { action: 'seller.pause_trading' } });
     expect(log).not.toBeNull();
-    expect(log?.entityId).toBe(storeId);
+    expect(log?.entityId).toBe(sellerId);
   });
 
   it('rejects a non-boolean', async () => {
@@ -189,7 +192,7 @@ describe('PATCH /admin/store/hours', () => {
       .send({ hours: [{ dayOfWeek: 1, opensAt: '25:00', closesAt: '22:00', isClosed: false }] })
       .expect(400);
 
-    const monday = await prisma.storeHours.findFirst({ where: { storeId, dayOfWeek: 1 } });
+    const monday = await prisma.sellerHours.findFirst({ where: { sellerId, dayOfWeek: 1 } });
     expect(monday?.opensAt).toBe('00:00');
   });
 
@@ -243,8 +246,8 @@ describe('customer-facing effect of the switch', () => {
       .get('/api/v1/store/serviceability?lat=27.6364&lng=75.1399')
       .expect(200);
 
-    const data = expectSuccess<{ serviceable: boolean; storeOpen: boolean }>(res.body).data;
+    const data = expectSuccess<{ serviceable: boolean; sellerOpen: boolean }>(res.body).data;
     expect(data.serviceable).toBe(true);
-    expect(data.storeOpen).toBe(false);
+    expect(data.sellerOpen).toBe(false);
   });
 });

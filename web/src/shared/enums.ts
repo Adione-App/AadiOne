@@ -26,10 +26,10 @@
 export const UserRole = {
   CUSTOMER: 'CUSTOMER',
   ADMIN: 'ADMIN',
-  STORE_OWNER: 'STORE_OWNER',
+  SELLER_OWNER: 'SELLER_OWNER',
   /** Reserved for future versions — declared now so RBAC is extensible. */
   SUPER_ADMIN: 'SUPER_ADMIN',
-  STORE_MANAGER: 'STORE_MANAGER',
+  SELLER_MANAGER: 'SELLER_MANAGER',
   DELIVERY_AGENT: 'DELIVERY_AGENT',
   STAFF: 'STAFF',
   PHARMACIST: 'PHARMACIST',
@@ -41,7 +41,7 @@ export type UserRole = (typeof UserRole)[keyof typeof UserRole];
 export const V1_ROLES: readonly UserRole[] = [
   UserRole.CUSTOMER,
   UserRole.ADMIN,
-  UserRole.STORE_OWNER,
+  UserRole.SELLER_OWNER,
 ];
 
 export const UserStatus = {
@@ -74,6 +74,30 @@ export const CatalogVertical = {
 } as const;
 export type CatalogVertical = (typeof CatalogVertical)[keyof typeof CatalogVertical];
 
+/**
+ * A broad business classification of a Seller — not its catalogue: every
+ * seller creates its own categories in the Seller Panel. RESTAURANT is the
+ * one type with its own behaviour (menu sections). Order = the order the
+ * admin panel offers them in.
+ */
+export const SellerType = {
+  GROCERY: 'GROCERY',
+  FASHION: 'FASHION',
+  ELECTRONICS: 'ELECTRONICS',
+  BEAUTY: 'BEAUTY',
+  HOME: 'HOME',
+  PHARMACY: 'PHARMACY',
+  RESTAURANT: 'RESTAURANT',
+  SPORTS: 'SPORTS',
+  BOOKS: 'BOOKS',
+  KIDS: 'KIDS',
+  AUTOMOTIVE: 'AUTOMOTIVE',
+  PETS: 'PETS',
+  SERVICES: 'SERVICES',
+  OTHER: 'OTHER',
+} as const;
+export type SellerType = (typeof SellerType)[keyof typeof SellerType];
+
 export const ProductStatus = {
   DRAFT: 'DRAFT',
   ACTIVE: 'ACTIVE',
@@ -81,6 +105,44 @@ export const ProductStatus = {
   ARCHIVED: 'ARCHIVED',
 } as const;
 export type ProductStatus = (typeof ProductStatus)[keyof typeof ProductStatus];
+
+/**
+ * Shared by Seller onboarding, Product catalog submissions and
+ * ProductApprovalBatch(Item) — the same three-state admin review outcome.
+ */
+export const ApprovalStatus = {
+  PENDING: 'PENDING',
+  APPROVED: 'APPROVED',
+  REJECTED: 'REJECTED',
+} as const;
+export type ApprovalStatus = (typeof ApprovalStatus)[keyof typeof ApprovalStatus];
+
+/** SellerDocument's own verification outcome — kept separate from
+ * ApprovalStatus so admin-UI copy can diverge (see schema.prisma). */
+export const DocumentStatus = {
+  PENDING: 'PENDING',
+  VERIFIED: 'VERIFIED',
+  REJECTED: 'REJECTED',
+} as const;
+export type DocumentStatus = (typeof DocumentStatus)[keyof typeof DocumentStatus];
+
+export const SellerDocumentType = {
+  GST_CERTIFICATE: 'GST_CERTIFICATE',
+  FSSAI_LICENSE: 'FSSAI_LICENSE',
+  PAN_CARD: 'PAN_CARD',
+  AADHAAR_CARD: 'AADHAAR_CARD',
+  BUSINESS_LICENSE: 'BUSINESS_LICENSE',
+  BANK_PROOF: 'BANK_PROOF',
+  OTHER: 'OTHER',
+} as const;
+export type SellerDocumentType = (typeof SellerDocumentType)[keyof typeof SellerDocumentType];
+
+export const SellerStaffRole = {
+  OWNER: 'OWNER',
+  MANAGER: 'MANAGER',
+  STAFF: 'STAFF',
+} as const;
+export type SellerStaffRole = (typeof SellerStaffRole)[keyof typeof SellerStaffRole];
 
 /** Unit a variant is sold in. Weight-based selling (V2) builds on this. */
 export const UnitType = {
@@ -101,14 +163,14 @@ export type UnitType = (typeof UnitType)[keyof typeof UnitType];
 
 /**
  * Three-state COD policy, present at every level of the catalog hierarchy and
- * on the store. `INHERIT` defers to the next level outward.
+ * on the seller. `INHERIT` defers to the next level outward.
  *
  * Resolution order (first non-INHERIT wins):
- *   storeVariant -> productVariant -> product -> category(leaf..root) -> store
+ *   sellerListing -> productVariant -> product -> category(leaf..root) -> seller
  *   -> DEFAULT_COD_POLICY config
  *
  * Order-level eligibility is the AND of every resolved line item plus the
- * store policy plus the value caps — i.e. most restrictive wins.
+ * seller policy plus the value caps — i.e. most restrictive wins.
  */
 export const CodPolicy = {
   ALLOW: 'ALLOW',
@@ -121,22 +183,32 @@ export type CodPolicy = (typeof CodPolicy)[keyof typeof CodPolicy];
 /* Orders                                                                     */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Parent-order (customer-facing) lifecycle. Deliberately coarser than
+ * SellerOrderStatus below — the customer sees PROCESSING while any
+ * SellerOrder is still NEW/ACCEPTED/PREPARING, and the delivery-leg states
+ * (PICKED_UP onward) only start once every REQUIRED SellerOrder has reached
+ * READY_FOR_PICKUP.
+ */
 export const OrderStatus = {
   /** Online payment initiated, stock reserved, awaiting confirmation. */
   PENDING_PAYMENT: 'PENDING_PAYMENT',
-  /** Payment verified server-side. Transient — auto-advances to ORDER_PLACED. */
+  /** Payment verified server-side. Transient — auto-advances to PROCESSING. */
   PAYMENT_CONFIRMED: 'PAYMENT_CONFIRMED',
-  /** Visible to the store, awaiting acceptance. */
-  ORDER_PLACED: 'ORDER_PLACED',
-  STORE_ACCEPTED: 'STORE_ACCEPTED',
-  PREPARING: 'PREPARING',
+  /** Visible to seller(s), at least one SellerOrder not yet ready. */
+  PROCESSING: 'PROCESSING',
+  /** Every required SellerOrder has reached READY_FOR_PICKUP. */
   READY_FOR_PICKUP: 'READY_FOR_PICKUP',
+  PICKED_UP: 'PICKED_UP',
   OUT_FOR_DELIVERY: 'OUT_FOR_DELIVERY',
   DELIVERED: 'DELIVERED',
+  /** Some, but not all, SellerOrders were cancelled/rejected. */
+  PARTIALLY_CANCELLED: 'PARTIALLY_CANCELLED',
+  /** Every SellerOrder was cancelled/rejected, or cancelled before acceptance. */
   CANCELLED: 'CANCELLED',
   PAYMENT_FAILED: 'PAYMENT_FAILED',
-  REJECTED: 'REJECTED',
   REFUNDED: 'REFUNDED',
+  PARTIALLY_REFUNDED: 'PARTIALLY_REFUNDED',
 } as const;
 export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
 
@@ -144,17 +216,43 @@ export const TERMINAL_ORDER_STATUSES: readonly OrderStatus[] = [
   OrderStatus.DELIVERED,
   OrderStatus.CANCELLED,
   OrderStatus.PAYMENT_FAILED,
-  OrderStatus.REJECTED,
   OrderStatus.REFUNDED,
 ];
 
-/** Statuses the store still has to act on — drives the admin "active" tabs. */
+/** Statuses at least one seller still has to act on — drives admin's "active" tabs. */
 export const ACTIVE_ORDER_STATUSES: readonly OrderStatus[] = [
-  OrderStatus.ORDER_PLACED,
-  OrderStatus.STORE_ACCEPTED,
-  OrderStatus.PREPARING,
+  OrderStatus.PROCESSING,
   OrderStatus.READY_FOR_PICKUP,
+  OrderStatus.PICKED_UP,
   OrderStatus.OUT_FOR_DELIVERY,
+  OrderStatus.PARTIALLY_CANCELLED,
+];
+
+/**
+ * Seller-order (per-seller) lifecycle — exactly the states one seller's
+ * portion of an order moves through, independent of every other seller's
+ * portion of the same parent Order.
+ */
+export const SellerOrderStatus = {
+  NEW: 'NEW',
+  ACCEPTED: 'ACCEPTED',
+  PREPARING: 'PREPARING',
+  READY_FOR_PICKUP: 'READY_FOR_PICKUP',
+  REJECTED: 'REJECTED',
+  CANCELLED: 'CANCELLED',
+} as const;
+export type SellerOrderStatus = (typeof SellerOrderStatus)[keyof typeof SellerOrderStatus];
+
+export const TERMINAL_SELLER_ORDER_STATUSES: readonly SellerOrderStatus[] = [
+  SellerOrderStatus.REJECTED,
+  SellerOrderStatus.CANCELLED,
+];
+
+/** Statuses the seller still has to act on — drives the seller panel's tabs. */
+export const ACTIVE_SELLER_ORDER_STATUSES: readonly SellerOrderStatus[] = [
+  SellerOrderStatus.NEW,
+  SellerOrderStatus.ACCEPTED,
+  SellerOrderStatus.PREPARING,
 ];
 
 export const PaymentMethod = {
@@ -194,10 +292,11 @@ export const RefundStatus = {
 } as const;
 export type RefundStatus = (typeof RefundStatus)[keyof typeof RefundStatus];
 
-/** Who caused a state change. Recorded on every order_status_history row. */
+/** Who caused a state change. Recorded on every status-history row. */
 export const ActorType = {
   CUSTOMER: 'CUSTOMER',
   ADMIN: 'ADMIN',
+  SELLER: 'SELLER',
   DELIVERY_AGENT: 'DELIVERY_AGENT',
   SYSTEM: 'SYSTEM',
   PAYMENT_WEBHOOK: 'PAYMENT_WEBHOOK',
@@ -207,6 +306,7 @@ export type ActorType = (typeof ActorType)[keyof typeof ActorType];
 export const CancelledBy = {
   CUSTOMER: 'CUSTOMER',
   ADMIN: 'ADMIN',
+  SELLER: 'SELLER',
   SYSTEM: 'SYSTEM',
 } as const;
 export type CancelledBy = (typeof CancelledBy)[keyof typeof CancelledBy];
@@ -234,15 +334,28 @@ export type StockLedgerReason =
 /* Delivery                                                                   */
 /* -------------------------------------------------------------------------- */
 
-export const DeliveryAssignmentStatus = {
+/** V1: DeliveryAssignmentStatus. */
+export const DeliveryTaskStatus = {
   ASSIGNED: 'ASSIGNED',
   ACCEPTED: 'ACCEPTED',
   PICKED_UP: 'PICKED_UP',
   DELIVERED: 'DELIVERED',
   CANCELLED: 'CANCELLED',
 } as const;
-export type DeliveryAssignmentStatus =
-  (typeof DeliveryAssignmentStatus)[keyof typeof DeliveryAssignmentStatus];
+export type DeliveryTaskStatus =
+  (typeof DeliveryTaskStatus)[keyof typeof DeliveryTaskStatus];
+
+/* -------------------------------------------------------------------------- */
+/* Settlement                                                                 */
+/* -------------------------------------------------------------------------- */
+
+export const SettlementStatus = {
+  PENDING: 'PENDING',
+  PROCESSING: 'PROCESSING',
+  PAID: 'PAID',
+  FAILED: 'FAILED',
+} as const;
+export type SettlementStatus = (typeof SettlementStatus)[keyof typeof SettlementStatus];
 
 /* -------------------------------------------------------------------------- */
 /* Notifications                                                              */
@@ -262,9 +375,35 @@ export const NotificationType = {
   REFUND_INITIATED: 'REFUND_INITIATED',
   REFUND_COMPLETED: 'REFUND_COMPLETED',
   BACK_IN_STOCK: 'BACK_IN_STOCK',
+  // seller-facing
+  SELLER_NEW_ORDER: 'SELLER_NEW_ORDER',
+  SELLER_ORDER_CANCELLED: 'SELLER_ORDER_CANCELLED',
+  SELLER_ORDER_UPDATE: 'SELLER_ORDER_UPDATE',
+  SELLER_REFUND_ISSUED: 'SELLER_REFUND_ISSUED',
+  SELLER_ONBOARDING_APPROVED: 'SELLER_ONBOARDING_APPROVED',
+  SELLER_ONBOARDING_REJECTED: 'SELLER_ONBOARDING_REJECTED',
+  SELLER_PRODUCT_APPROVED: 'SELLER_PRODUCT_APPROVED',
+  SELLER_PRODUCT_REJECTED: 'SELLER_PRODUCT_REJECTED',
+  SELLER_SETTLEMENT_CREATED: 'SELLER_SETTLEMENT_CREATED',
+  SELLER_SETTLEMENT_PROCESSING: 'SELLER_SETTLEMENT_PROCESSING',
+  SELLER_SETTLEMENT_PAID: 'SELLER_SETTLEMENT_PAID',
+  SELLER_SETTLEMENT_FAILED: 'SELLER_SETTLEMENT_FAILED',
+  // admin-facing
+  ADMIN_ONBOARDING_SUBMITTED: 'ADMIN_ONBOARDING_SUBMITTED',
+  ADMIN_PRODUCTS_SUBMITTED: 'ADMIN_PRODUCTS_SUBMITTED',
+  ADMIN_REFUND_FAILED: 'ADMIN_REFUND_FAILED',
+  ADMIN_SETTLEMENT_FAILED: 'ADMIN_SETTLEMENT_FAILED',
 } as const;
 export type NotificationType =
   (typeof NotificationType)[keyof typeof NotificationType];
+
+export const NotificationAudience = {
+  CUSTOMER: 'CUSTOMER',
+  SELLER: 'SELLER',
+  ADMIN: 'ADMIN',
+} as const;
+export type NotificationAudience =
+  (typeof NotificationAudience)[keyof typeof NotificationAudience];
 
 export const NotificationChannel = {
   PUSH: 'PUSH',

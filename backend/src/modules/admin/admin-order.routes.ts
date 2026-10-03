@@ -19,11 +19,14 @@ import {
 import { validate, validatedQuery } from "../../middleware/validate";
 import { requirePermission, requireUser } from "../../middleware/auth";
 import { normalizeIndianMobile } from "../../shared/phone";
-import * as storeService from "../stores/store.service";
 import * as configService from "../configuration/configuration.service";
 import * as deliveryService from "../delivery/delivery.service";
 import * as paymentService from "../payments/payment.service";
+import { allowsManualPaymentConfirmation, payments } from "../../infra/payment";
 import * as service from "./admin-order.service";
+import * as sellerOrderService from "../orders/seller-order.service";
+import * as settlementService from "../sellers/seller-settlement.service";
+import { ActorType, SellerOrderStatus, SettlementStatus } from "../../shared";
 
 const uuid = z.string().uuid();
 const idParams = z.object({ id: uuid });
@@ -88,6 +91,24 @@ adminOrderRouter.get(
   }),
 );
 
+/**
+ * GET /admin/payment-mode
+ *
+ * Whether the legacy "store confirms the UPI payment" controls apply. With a
+ * gateway (Cashfree) they never do — payments settle only by server-side
+ * verification — so the panel hides them.
+ */
+adminOrderRouter.get(
+  "/payment-mode",
+  requirePermission(Permission.ORDER_READ_ALL),
+  asyncHandler(async (_req: Request, res: Response) => {
+    ok(res, {
+      provider: payments.name,
+      manualConfirmation: allowsManualPaymentConfirmation(),
+    });
+  }),
+);
+
 adminOrderRouter.get(
   "/orders/:id",
   requirePermission(Permission.ORDER_READ_ALL),
@@ -126,6 +147,7 @@ adminOrderRouter.patch(
       actorUserId: requireUser(req).id,
       reason: body.reason ?? null,
       cashCollectedPaise: body.cashCollectedPaise ?? null,
+      deliveryOtp: body.deliveryOtp ?? null,
     });
     noContent(res);
   }),
@@ -199,6 +221,138 @@ adminOrderRouter.post(
   }),
 );
 
+/* seller orders — admin's cross-seller override (#26) ----------------------- */
+
+adminOrderRouter.get(
+  "/seller-orders",
+  requirePermission(Permission.SELLER_ORDER_READ_OWN),
+  validate({
+    query: z.object({
+      sellerId: uuid.optional(),
+      status: z.nativeEnum(SellerOrderStatus).optional(),
+      cursor: z.string().datetime().optional(),
+      limit: z.coerce.number().int().positive().max(PAGINATION_MAX_LIMIT).default(25),
+    }),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const query = validatedQuery<{
+      sellerId?: string;
+      status?: SellerOrderStatus;
+      cursor?: string;
+      limit: number;
+    }>(req);
+    okCursorPage(
+      res,
+      // No scope — admin sees every seller's orders (#26); `sellerId` here
+      // is an optional FILTER, never an ownership check.
+      await sellerOrderService.listSellerOrders(undefined, {
+        ...(query.sellerId ? { sellerId: query.sellerId } : {}),
+        ...(query.status ? { status: query.status } : {}),
+        cursor: query.cursor ?? null,
+        limit: query.limit,
+      }),
+    );
+  }),
+);
+
+adminOrderRouter.get(
+  "/seller-orders/:id",
+  requirePermission(Permission.SELLER_ORDER_READ_OWN),
+  validate({ params: idParams }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await sellerOrderService.getSellerOrderDetail(req.params["id"] as string));
+  }),
+);
+
+adminOrderRouter.patch(
+  "/seller-orders/:id/status",
+  requirePermission(Permission.SELLER_ORDER_UPDATE_STATUS),
+  validate({
+    params: idParams,
+    body: z.object({
+      toStatus: z.nativeEnum(SellerOrderStatus),
+      reason: z.string().trim().max(300).optional(),
+    }),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = req.body as { toStatus: SellerOrderStatus; reason?: string };
+    await sellerOrderService.updateSellerOrderStatus({
+      sellerOrderId: req.params["id"] as string,
+      toStatus: body.toStatus,
+      actorUserId: requireUser(req).id,
+      actorType: ActorType.ADMIN,
+      reason: body.reason ?? null,
+    });
+    noContent(res);
+  }),
+);
+
+/* settlements — admin's cross-seller browsing (#26). Per-seller creation/  */
+/* eligibility-preview lives in admin-seller.routes.ts, next to the rest of  */
+/* /admin/sellers/:sellerId/*.                                               */
+
+adminOrderRouter.get(
+  "/earnings",
+  requirePermission(Permission.SETTLEMENT_READ),
+  validate({ query: z.object({ sellerId: uuid.optional() }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const query = validatedQuery<{ sellerId?: string }>(req);
+    ok(res, await settlementService.listEarningsSummaries(query.sellerId ? { sellerId: query.sellerId } : {}));
+  }),
+);
+
+adminOrderRouter.get(
+  "/settlements",
+  requirePermission(Permission.SETTLEMENT_READ),
+  validate({
+    query: z.object({
+      sellerId: uuid.optional(),
+      status: z.nativeEnum(SettlementStatus).optional(),
+      cursor: z.string().datetime().optional(),
+      limit: z.coerce.number().int().positive().max(PAGINATION_MAX_LIMIT).default(25),
+    }),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const query = validatedQuery<{
+      sellerId?: string;
+      status?: SettlementStatus;
+      cursor?: string;
+      limit: number;
+    }>(req);
+    okCursorPage(
+      res,
+      await settlementService.listSettlements(undefined, {
+        ...(query.sellerId ? { sellerId: query.sellerId } : {}),
+        ...(query.status ? { status: query.status } : {}),
+        cursor: query.cursor ?? null,
+        limit: query.limit,
+      }),
+    );
+  }),
+);
+
+adminOrderRouter.get(
+  "/settlements/:id",
+  requirePermission(Permission.SETTLEMENT_READ),
+  validate({ params: idParams }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await settlementService.getSettlementDetail(req.params["id"] as string));
+  }),
+);
+
+adminOrderRouter.patch(
+  "/settlements/:id/status",
+  requirePermission(Permission.SETTLEMENT_MANAGE),
+  validate({
+    params: idParams,
+    body: z.object({ status: z.nativeEnum(SettlementStatus) }),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { status } = req.body as { status: SettlementStatus };
+    ok(res, await settlementService.updateSettlementStatus(req.params["id"] as string, status));
+  }),
+);
+
 /* delivery agents ---------------------------------------------------------- */
 
 const agentBody = z.object({
@@ -224,8 +378,7 @@ adminOrderRouter.get(
   "/delivery-agents",
   requirePermission(Permission.DELIVERY_AGENT_READ),
   asyncHandler(async (_req: Request, res: Response) => {
-    const store = await storeService.getActiveStore();
-    ok(res, await deliveryService.listAgents(store.id));
+    ok(res, await deliveryService.listAgents());
   }),
 );
 
@@ -234,8 +387,7 @@ adminOrderRouter.post(
   requirePermission(Permission.DELIVERY_AGENT_WRITE),
   validate({ body: agentBody }),
   asyncHandler(async (req: Request, res: Response) => {
-    const store = await storeService.getActiveStore();
-    created(res, await deliveryService.createAgent(store.id, req.body));
+    created(res, await deliveryService.createAgent(req.body));
   }),
 );
 
@@ -302,12 +454,11 @@ adminOrderRouter.get(
   "/delivery/cash-summary",
   requirePermission(Permission.DELIVERY_AGENT_READ),
   asyncHandler(async (req: Request, res: Response) => {
-    const store = await storeService.getActiveStore();
     const from = req.query["from"]
       ? new Date(String(req.query["from"]))
       : new Date(Date.now() - 86_400_000);
     const to = req.query["to"] ? new Date(String(req.query["to"])) : new Date();
-    ok(res, await deliveryService.cashSummary(store.id, from, to));
+    ok(res, await deliveryService.cashSummary(from, to));
   }),
 );
 

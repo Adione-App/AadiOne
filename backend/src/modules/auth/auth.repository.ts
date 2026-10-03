@@ -97,6 +97,17 @@ export async function touchLastLogin(
   });
 }
 
+/** True when the user is an active staff member of at least one live seller. */
+export async function hasActiveSellerMembership(
+  userId: string,
+  client: DbClient = prisma,
+): Promise<boolean> {
+  const count = await client.sellerStaff.count({
+    where: { userId, isActive: true, deletedAt: null, seller: { deletedAt: null } },
+  });
+  return count > 0;
+}
+
 export async function updateProfile(
   userId: string,
   data: { fullName?: string; email?: string | null },

@@ -134,6 +134,32 @@ paymentRouter.post(
 );
 
 /**
+ * POST /payments/:orderId/refresh
+ *
+ * Hosted checkout (Cashfree): the app calls this when the gateway sheet
+ * closes, whatever the SDK callback said. The server asks the gateway itself
+ * and settles only on its answer — the callback is never trusted. Scoped to
+ * the caller's own order (404 otherwise).
+ */
+paymentRouter.post(
+  "/:orderId/refresh",
+  validate({
+    params: z.object({
+      orderId: uuid,
+    }),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(
+      res,
+      await service.refreshPayment(
+        requireUser(req).id,
+        req.params["orderId"] as string,
+      ),
+    );
+  }),
+);
+
+/**
  * GET /payments/:orderId/status
  *
  * Returns the customer's current payment/order status.

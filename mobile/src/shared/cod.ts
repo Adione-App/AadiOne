@@ -14,7 +14,7 @@
  *
  * Two levels of decision:
  *   1. per line item — walk the hierarchy outward, first non-INHERIT wins
- *   2. per order     — most restrictive wins across all items + store + caps
+ *   2. per order     — most restrictive wins across all items + seller + caps
  */
 
 import { CodPolicy } from './enums';
@@ -23,15 +23,15 @@ import { CodPolicy } from './enums';
  * COD policies for one line item, ordered from most specific to least.
  * `null` entries (e.g. a product with no parent category) are skipped.
  *
- * Order: storeVariant -> productVariant -> product -> category leaf..root -> store
+ * Order: sellerListing -> productVariant -> product -> category leaf..root -> seller
  */
 export interface CodPolicyChain {
-  storeVariant?: CodPolicy | null;
+  sellerListing?: CodPolicy | null;
   productVariant?: CodPolicy | null;
   product?: CodPolicy | null;
   /** Leaf category first, then each ancestor up to the root. */
   categoryChain?: readonly (CodPolicy | null)[];
-  store?: CodPolicy | null;
+  seller?: CodPolicy | null;
 }
 
 /**
@@ -44,11 +44,11 @@ export function resolveItemCodPolicy(
   defaultPolicy: CodPolicy,
 ): CodPolicy {
   const levels: (CodPolicy | null | undefined)[] = [
-    chain.storeVariant,
+    chain.sellerListing,
     chain.productVariant,
     chain.product,
     ...(chain.categoryChain ?? []),
-    chain.store,
+    chain.seller,
   ];
 
   for (const level of levels) {
@@ -66,7 +66,7 @@ export interface OrderCodInput {
     productName: string;
     resolvedPolicy: CodPolicy;
   }[];
-  storePolicy: CodPolicy;
+  sellerPolicy: CodPolicy;
   defaultPolicy: CodPolicy;
   orderTotalPaise: number;
   codMaxOrderValuePaise: number;
@@ -84,7 +84,7 @@ export interface OrderCodResult {
   /** Machine-readable cause, for analytics and tests. */
   reasonCode:
     | 'ITEM_DENIED'
-    | 'STORE_DENIED'
+    | 'SELLER_DENIED'
     | 'OVER_MAX_VALUE'
     | 'OVER_FIRST_ORDER_LIMIT'
     | 'CUSTOMER_BLOCKED'
@@ -108,13 +108,13 @@ export function resolveOrderCodEligibility(input: OrderCodInput): OrderCodResult
     };
   }
 
-  const storeEffective =
-    input.storePolicy === CodPolicy.INHERIT ? input.defaultPolicy : input.storePolicy;
-  if (storeEffective === CodPolicy.DENY) {
+  const sellerEffective =
+    input.sellerPolicy === CodPolicy.INHERIT ? input.defaultPolicy : input.sellerPolicy;
+  if (sellerEffective === CodPolicy.DENY) {
     return {
       allowed: false,
       reason: 'Cash on Delivery is currently unavailable.',
-      reasonCode: 'STORE_DENIED',
+      reasonCode: 'SELLER_DENIED',
     };
   }
 

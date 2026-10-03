@@ -165,6 +165,27 @@ export const adminLoginPerIp = rateLimit({
   errorCode: ErrorCode.RATE_LIMITED,
 });
 
+/** Seller-panel password login — same budget as the admin panel, own counter. */
+export const sellerLoginPerIp = rateLimit({
+  scope: 'seller:login:ip',
+  limit: 10,
+  windowSeconds: 15 * MINUTE,
+  errorCode: ErrorCode.RATE_LIMITED,
+});
+
+/**
+ * Changing a password proves the CURRENT one — a stolen access token must not
+ * be able to grind it. Keyed by the signed-in user (the route authenticates
+ * first).
+ */
+export const changePasswordPerUser = rateLimit({
+  scope: 'auth:change-password:user',
+  limit: 5,
+  windowSeconds: 15 * MINUTE,
+  identify: byUser,
+  message: 'Too many password change attempts. Please try again in a few minutes.',
+});
+
 /* --- Task 2.5 / 2.6: password login and signup ---------------------------- */
 
 /**

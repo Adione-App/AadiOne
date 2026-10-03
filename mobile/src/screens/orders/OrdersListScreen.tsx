@@ -3,7 +3,7 @@
  *
  * Badges use the coarse bucket (Ongoing / Delivered / Cancelled) rather than
  * the internal status — a customer does not need to know the difference
- * between READY_FOR_PICKUP and PREPARING, and `toOrderBucket` keeps that
+ * between PROCESSING and READY_FOR_PICKUP, and `toOrderBucket` keeps that
  * decision in one place.
  */
 

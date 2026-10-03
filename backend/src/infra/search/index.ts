@@ -1,7 +1,11 @@
 /**
  * SearchProvider port.
  *
- * V1 uses PostgreSQL full-text search plus trigram fuzzy matching. The
+ * PostgreSQL full-text search plus trigram fuzzy matching. Requires the
+ * `products.search_vector` column + trigger and the `pg_trgm` extension —
+ * in V2 these come from the `v2_product_search` migration (the V2 baseline
+ * was generated from schema.prisma alone, so V1's hand-written search objects
+ * never carried over). The
  * interface exists so Meilisearch or Elasticsearch can be swapped in later
  * (PRD §18.2) without touching the catalog module — but running another
  * container to search a few thousand SKUs would be pure overhead today.
@@ -15,9 +19,14 @@ import { expandSearchTerms } from './aliases';
 
 const log = moduleLogger('search');
 
+/**
+ * Searches the customer marketplace: products listed by any live,
+ * non-restaurant seller (not deleted, switched on, onboarding APPROVED — the
+ * same rule as catalog.repository's MARKETPLACE_SELLER_SQL), under switched-on
+ * categories. Restaurant menus are searched on /restaurants instead.
+ */
 export interface SearchQuery {
   term: string;
-  storeId: string;
   limit: number;
   /** Product id to resume after, for cursor pagination. */
   afterRank?: number | null;
@@ -120,9 +129,11 @@ class PostgresSearchProvider implements SearchProvider {
           ) AS rank
         FROM products p
         LEFT JOIN brands b ON b.id = p.brand_id
-        LEFT JOIN categories c ON c.id = p.category_id
+        JOIN categories c ON c.id = p.category_id AND c.is_active AND c.deleted_at IS NULL
+        JOIN categories top ON top.id = COALESCE(c.parent_id, c.id) AND top.is_active AND top.deleted_at IS NULL
         WHERE p.status = 'ACTIVE'
           AND p.deleted_at IS NULL
+          AND p.approval_status = 'APPROVED'
           AND (
             p.search_vector @@ (${combinedTsQuery})
             OR ${nameTrgmGate}
@@ -135,13 +146,15 @@ class PostgresSearchProvider implements SearchProvider {
       WHERE EXISTS (
         SELECT 1
         FROM product_variants v
-        JOIN store_variants sv ON sv.variant_id = v.id AND sv.store_id = ${query.storeId}::uuid
+        JOIN seller_listings sl ON sl.variant_id = v.id
+        JOIN sellers s ON s.id = sl.seller_id
+          AND s.deleted_at IS NULL AND s.is_active AND s.onboarding_status = 'APPROVED' AND s.seller_type <> 'RESTAURANT'
         WHERE v.product_id = m.product_id
           AND v.status = 'ACTIVE'
           AND v.deleted_at IS NULL
           ${
             query.inStockOnly
-              ? Prisma.sql`AND sv.is_available AND (sv.stock_qty - sv.reserved_qty) > 0`
+              ? Prisma.sql`AND sl.is_available AND (sl.stock_qty - sl.reserved_qty) > 0`
               : Prisma.empty
           }
       )

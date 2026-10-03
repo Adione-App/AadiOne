@@ -57,7 +57,11 @@ import { addressPrimaryLine } from "@shared/text";
 
 import { api, ApiRequestError, resolveImageUrl } from "@/lib/api";
 import { clearCartAfterOrder, keys, useCartMutations, useMyCoupons } from "@/lib/queries";
-import { useCartActions, resetPendingCartAfterOrder } from "@/lib/useCartActions";
+import {
+  useCartActions,
+  resetPendingCartAfterOrder,
+  sellerListingIdOf,
+} from "@/lib/useCartActions";
 import { useLocation } from "@/lib/store";
 
 import {
@@ -261,10 +265,27 @@ export default function CartScreen({
     if (preferred) setAddressId(preferred.id);
   }, [addresses.data, addressId]);
 
+  /**
+   * `/checkout/quote` prices the SERVER's cart, so the quote is keyed on what
+   * the server has confirmed (listing:qty per line), not on the address
+   * alone. Keyed on the address alone, a quote fetched against an earlier
+   * cart — e.g. the empty one, which the server answers with CART_EMPTY —
+   * stayed cached for as long as this tab stayed mounted, and the pay
+   * buttons (which need `quote.data`) stayed disabled after items arrived.
+   * Not requested while the server's cart is empty: there is nothing to quote.
+   */
+  const confirmedCartKey = useMemo(
+    () =>
+      (actions.confirmedCart?.items ?? [])
+        .map((item) => `${sellerListingIdOf(item) ?? item.variantId}:${item.qty}`)
+        .join(","),
+    [actions.confirmedCart],
+  );
+
   const quote = useQuery({
-    queryKey: ["checkout-quote", addressId],
+    queryKey: ["checkout-quote", addressId, confirmedCartKey],
     queryFn: () => api.post<CheckoutQuoteResponse>("/checkout/quote", { addressId }),
-    enabled: addressId !== null,
+    enabled: addressId !== null && confirmedCartKey !== "",
   });
 
   /**
@@ -317,11 +338,13 @@ export default function CartScreen({
           // much (see order.service.ts) instead of only "the total didn't
           // match". Built from the same optimistic `cart` the screen is
           // currently displaying, so it always matches what the customer
-          // actually sees.
-          expectedItems: cart.items.map((item) => ({
-            variantId: item.variantId,
-            unitPricePaise: item.unitPricePaise,
-          })),
+          // actually sees. V2 keys these by seller listing, not variant.
+          expectedItems: cart.items.flatMap((item) => {
+            const sellerListingId = sellerListingIdOf(item);
+            return sellerListingId
+              ? [{ sellerListingId, unitPricePaise: item.unitPricePaise }]
+              : [];
+          }),
         },
         idempotencyKey,
       );

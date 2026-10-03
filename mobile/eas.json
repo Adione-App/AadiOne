@@ -24,6 +24,16 @@
         "EXPO_ROUTER_DISABLE_RN_NAVIGATION_CHECK": "1"
       }
     },
+    "v2-sandbox": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://flavored-record-thaw.ngrok-free.dev/api/v1",
+        "EXPO_ROUTER_DISABLE_RN_NAVIGATION_CHECK": "1"
+      }
+    },
     "production": {
       "android": {
         "buildType": "app-bundle"

@@ -8,7 +8,7 @@ import { prisma, type DbClient } from '../../infra/db/prisma';
 
 export interface ConfigRow {
   key: string;
-  storeId: string | null;
+  sellerId: string | null;
   value: Prisma.JsonValue;
   isPublic: boolean;
   description: string | null;
@@ -16,34 +16,34 @@ export interface ConfigRow {
 }
 
 /**
- * Loads every global row plus every override for one store, in a single query.
+ * Loads every global row plus every override for one seller, in a single query.
  *
  * The whole table is a few dozen rows, so reading all of it once and caching
  * the result is cheaper and far simpler than per-key lookups scattered through
  * request handling.
  */
-export async function findAllForStore(
-  storeId: string | null,
+export async function findAllForSeller(
+  sellerId: string | null,
   client: DbClient = prisma,
 ): Promise<ConfigRow[]> {
   return client.configuration.findMany({
-    where: storeId ? { OR: [{ storeId: null }, { storeId }] } : { storeId: null },
+    where: sellerId ? { OR: [{ sellerId: null }, { sellerId }] } : { sellerId: null },
     select: {
       key: true,
-      storeId: true,
+      sellerId: true,
       value: true,
       isPublic: true,
       description: true,
       updatedAt: true,
     },
-    // Global rows first so the store override, read later, wins.
-    orderBy: { storeId: 'asc' },
+    // Global rows first so the seller override, read later, wins.
+    orderBy: { sellerId: 'asc' },
   });
 }
 
 const ROW_SELECT = {
   key: true,
-  storeId: true,
+  sellerId: true,
   value: true,
   isPublic: true,
   description: true,
@@ -52,32 +52,32 @@ const ROW_SELECT = {
 
 export async function findOne(
   key: string,
-  storeId: string | null,
+  sellerId: string | null,
   client: DbClient = prisma,
 ): Promise<ConfigRow | null> {
   // findFirst rather than findUnique: Prisma cannot express a compound unique
   // lookup with a NULL member (see the null_scope_unique migration).
   return client.configuration.findFirst({
-    where: { key, storeId },
+    where: { key, sellerId },
     select: ROW_SELECT,
   });
 }
 
 /**
- * Upsert by (key, storeId), handling the global scope where storeId is NULL.
+ * Upsert by (key, sellerId), handling the global scope where sellerId is NULL.
  *
  * Implemented as find-then-write because Prisma's `upsert` requires a unique
  * `where` and refuses a NULL inside a compound unique. Uniqueness itself is
  * still guaranteed by the database:
- *   - composite UNIQUE (key, store_id)                    for store overrides
- *   - partial UNIQUE (key) WHERE store_id IS NULL         for globals
+ *   - composite UNIQUE (key, seller_id)                    for seller overrides
+ *   - partial UNIQUE (key) WHERE seller_id IS NULL         for globals
  * so a concurrent double-create fails on the constraint rather than producing
  * two rows.
  */
 export async function upsert(
   input: {
     key: string;
-    storeId: string | null;
+    sellerId: string | null;
     value: Prisma.InputJsonValue;
     description?: string | null;
     isPublic?: boolean;
@@ -88,16 +88,16 @@ export async function upsert(
   client: DbClient = prisma,
 ): Promise<ConfigRow> {
   const existing = await client.configuration.findFirst({
-    where: { key: input.key, storeId: input.storeId },
+    where: { key: input.key, sellerId: input.sellerId },
     select: { key: true },
   });
 
   if (existing) {
     // updateMany, not update: `update` also needs a unique `where`, which a
-    // NULL storeId cannot satisfy. The partial unique index guarantees this
+    // NULL sellerId cannot satisfy. The partial unique index guarantees this
     // matches at most one row.
     await client.configuration.updateMany({
-      where: { key: input.key, storeId: input.storeId },
+      where: { key: input.key, sellerId: input.sellerId },
       data: {
         ...(input.overwriteValue === false ? {} : { value: input.value }),
         ...(input.description !== undefined ? { description: input.description } : {}),
@@ -107,7 +107,7 @@ export async function upsert(
     });
 
     const updated = await client.configuration.findFirst({
-      where: { key: input.key, storeId: input.storeId },
+      where: { key: input.key, sellerId: input.sellerId },
       select: ROW_SELECT,
     });
     // Non-null: we just confirmed the row exists and nothing deletes config
@@ -118,7 +118,7 @@ export async function upsert(
   return client.configuration.create({
     data: {
       key: input.key,
-      storeId: input.storeId,
+      sellerId: input.sellerId,
       value: input.value,
       description: input.description ?? null,
       isPublic: input.isPublic ?? false,
@@ -130,8 +130,8 @@ export async function upsert(
 
 export async function remove(
   key: string,
-  storeId: string | null,
+  sellerId: string | null,
   client: DbClient = prisma,
 ): Promise<void> {
-  await client.configuration.deleteMany({ where: { key, storeId } });
+  await client.configuration.deleteMany({ where: { key, sellerId } });
 }

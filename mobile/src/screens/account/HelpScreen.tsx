@@ -29,7 +29,7 @@ const FAQ: { q: string; a: string }[] = [
   },
   {
     q: 'How do I pay?',
-    a: 'Pay by UPI from any app on your phone, or choose Cash on Delivery where it is available. For UPI, tap "I have paid" once the payment is done and the store confirms it against their account.',
+    a: 'Pay online with any UPI app, card or net banking, or choose Cash on Delivery where it is available. Your order is confirmed as soon as the payment is verified.',
   },
   {
     q: 'Something was missing or damaged',
@@ -37,7 +37,7 @@ const FAQ: { q: string; a: string }[] = [
   },
   {
     q: 'When do I get my refund?',
-    a: 'Refunds for UPI payments are sent back to the same account, usually within 3 to 5 working days. Cash orders are settled directly by the store.',
+    a: 'Refunds for online payments are sent back to the same account, usually within 3 to 5 working days. Cash orders are settled directly by the store.',
   },
 ];
 

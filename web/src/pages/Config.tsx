@@ -15,12 +15,11 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import type { ConfigKey } from "@shared";
 
 import { api } from "@/lib/api";
 import { Card, ErrorBanner, Spinner } from "@/components/ui";
-import StoreAvailabilityCard from "@/components/StoreAvailabilityCard";
-import StoreLocationCard from "@/components/StoreLocationCard";
 
 interface ConfigEntry {
   key: ConfigKey;
@@ -48,7 +47,7 @@ const DISPLAY_LABELS: Partial<Record<ConfigKey, string>> = {
   MAX_SERVICE_RADIUS_KM: "Maximum Service Radius",
   ROAD_DISTANCE_FACTOR: "Road Distance Factor",
 
-  STORE_TIMEZONE: "Store Timezone",
+  STORE_TIMEZONE: "Marketplace Timezone",
   ALLOW_ORDERS_WHEN_CLOSED: "Allow Orders When Closed",
   STORE_GSTIN: "Store GSTIN",
 
@@ -75,7 +74,7 @@ const DISPLAY_LABELS: Partial<Record<ConfigKey, string>> = {
 
   LOW_STOCK_THRESHOLD: "Low Stock Threshold",
 
-  DELIVERY_OTP_REQUIRED_FOR_COD: "Delivery OTP Required For COD",
+  DELIVERY_OTP_REQUIRED_FOR_COD: "Issue Delivery OTP For COD",
 
   REFERRAL_REWARD_PAISE: "Referral Reward Amount",
   REFERRAL_MIN_ORDER_PAISE: "Referral Minimum Order Value",
@@ -124,7 +123,7 @@ const DISPLAY_DESCRIPTIONS: Partial<Record<ConfigKey, string>> = {
   ROAD_DISTANCE_FACTOR:
     "Multiplier converting straight-line distance to road distance, used for ETA and delivery fee.",
 
-  STORE_TIMEZONE: "Timezone used to evaluate store opening hours.",
+  STORE_TIMEZONE: "Marketplace timezone — what \"today\" means on the dashboard and order reports. Each seller keeps its own timezone for opening hours.",
 
   ALLOW_ORDERS_WHEN_CLOSED:
     "Allow customers to place orders outside opening hours.",
@@ -164,7 +163,7 @@ const DISPLAY_DESCRIPTIONS: Partial<Record<ConfigKey, string>> = {
     "Stock level at or below which an item appears in the low-stock report.",
 
   DELIVERY_OTP_REQUIRED_FOR_COD:
-    "Require a delivery OTP before marking COD orders delivered.",
+    "Give COD customers a delivery OTP at checkout. Orders can be marked delivered without it.",
 
   REFERRAL_REWARD_PAISE:
     "Coupon value credited to the referrer once their friend completes a qualifying first order, in rupees.",
@@ -332,53 +331,56 @@ function parseMoneyValue(raw: string): number {
  */
 const GROUPS: {
   title: string;
-  match: (key: string) => boolean;
+  /** The keys in this section, in display order. */
+  keys?: readonly string[];
+  match?: (key: string) => boolean;
+  /** Shown when the section has no settings of its own. */
+  note?: { text: string; to: string; link: string };
 }[] = [
   {
-    title: "Delivery area",
-    match: (k) => k.includes("RADIUS") || k.includes("ROAD_DISTANCE"),
+    title: "Orders",
+    keys: ["MIN_ORDER_VALUE_PAISE", "PLATFORM_FEE_PAISE", "CANCELLATION_ALLOWED_UNTIL", "ALLOW_ORDERS_WHEN_CLOSED", "MAX_ADDRESSES_PER_USER"],
   },
-
   {
-    title: "Pricing & fees",
-    match: (k) =>
-      (k.includes("PAISE") || k === "DELIVERY_FEE_SLABS") &&
-      !k.startsWith("COD_") &&
-      !k.startsWith("REFERRAL_"),
+    title: "Payments",
+    keys: ["PAYMENT_HOLD_MINUTES", "DEFAULT_COD_POLICY", "COD_MAX_ORDER_VALUE_PAISE", "COD_FIRST_ORDER_MAX_PAISE", "ADIONE_UPI_ID"],
   },
-
   {
-    title: "Cash on Delivery",
-    match: (k) => k.startsWith("COD_") || k === "DEFAULT_COD_POLICY",
+    title: "Delivery",
+    keys: [
+      "MAX_SERVICE_RADIUS_KM",
+      "ROAD_DISTANCE_FACTOR",
+      "DELIVERY_FEE_SLABS",
+      "FREE_DELIVERY_THRESHOLD_PAISE",
+      "AVG_DELIVERY_SPEED_KMPH",
+      "BASE_PREPARATION_MINUTES",
+      "PER_ITEM_PICK_SECONDS",
+      "ETA_BUFFER_MINUTES",
+      "BATCH_DELAY_MINUTES",
+      "ORDERS_PER_RIDER_BATCH",
+      "DELIVERY_PROMISE_TEXT",
+      "DELIVERY_OTP_REQUIRED_FOR_COD",
+    ],
   },
-
   {
-    title: "Refer & Earn",
-    match: (k) => k.startsWith("REFERRAL_"),
+    title: "Commission",
+    note: { text: "Commission is set per seller — a default rate plus category and product rules.", to: "/commission", link: "Open Commission" },
   },
-
   {
-    title: "Delivery time",
-    match: (k) =>
-      k.includes("MINUTES") ||
-      k.includes("SPEED") ||
-      k.includes("SECONDS") ||
-      k.includes("BATCH"),
+    title: "Seller rules",
+    keys: ["LOW_STOCK_THRESHOLD", "DEFAULT_MAX_QTY_PER_ORDER"],
   },
-
   {
-    title: "Store",
-    match: (k) => k.startsWith("STORE") || k.includes("ORDERS_WHEN_CLOSED"),
+    title: "Referrals",
+    match: (k) => k.startsWith("REFERRAL_") || k === "FEATURE_REFERRAL_ENABLED",
   },
-
   {
-    title: "Features",
-    match: (k) => k.startsWith("FEATURE_"),
+    title: "Notifications",
+    note: { text: "Notifications are sent automatically for orders, approvals, refunds and settlements; there is nothing to configure.", to: "/notifications", link: "Open Notifications" },
   },
-
   {
-    title: "Support",
-    match: (k) => k.startsWith("SUPPORT") || k.includes("PROMISE"),
+    title: "Platform",
+    match: (k) => k.startsWith("STORE_") || k.startsWith("SUPPORT_") || k.startsWith("FEATURE_"),
   },
 ];
 
@@ -452,10 +454,16 @@ export default function ConfigPage() {
   /**
    * Group configuration entries.
    */
-  const grouped = GROUPS.map((group) => ({
-    title: group.title,
-    items: entries.filter((entry) => group.match(entry.key)),
-  })).filter((group) => group.items.length > 0);
+  // Each key lands in the first section that claims it.
+  const claimed = new Set<string>();
+  const grouped: { title: string; items: ConfigEntry[]; note?: (typeof GROUPS)[number]["note"] }[] = GROUPS.map((group) => {
+    const items = group.keys
+      ? group.keys.map((key) => entries.find((entry) => entry.key === key)).filter((entry): entry is ConfigEntry => entry !== undefined)
+      : entries.filter((entry) => !group.keys && group.match !== undefined && group.match(entry.key));
+    const fresh = items.filter((entry) => !claimed.has(entry.key));
+    fresh.forEach((entry) => claimed.add(entry.key));
+    return { title: group.title, items: fresh, ...(group.note ? { note: group.note } : {}) };
+  }).filter((group) => group.items.length > 0 || group.note !== undefined);
 
   /**
    * Put any ungrouped configuration into Other.
@@ -584,15 +592,31 @@ export default function ConfigPage() {
     <div className="space-y-4">
       <ErrorBanner message={error} />
 
-      {/* Store availability */}
-      <StoreAvailabilityCard />
-
-      {/* Store location */}
-      <StoreLocationCard />
+      <nav aria-label="Configuration sections" className="flex flex-wrap gap-2">
+        {grouped.map((group) => (
+          <a key={group.title} href={`#cfg-${group.title.toLowerCase().replace(/\s+/g, "-")}`} className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-brand-200">
+            {group.title}
+          </a>
+        ))}
+      </nav>
 
       {grouped.map((group) => (
         <Card key={group.title}>
-          <h2 className="mb-3 font-semibold">{group.title}</h2>
+          <h2 id={`cfg-${group.title.toLowerCase().replace(/\s+/g, "-")}`} className="mb-3 scroll-mt-24 font-semibold">{group.title}</h2>
+          {group.title === "Delivery" && (
+            <p className="mb-3 rounded-xl bg-info-50 px-3.5 py-2.5 text-sm text-gray-700">
+              The delivery radius is measured from each seller&apos;s own location, which the seller sets in the Seller Panel
+              (Profile → Store location). Checkout needs every seller in the cart to deliver to the address.
+            </p>
+          )}
+          {group.note && (
+            <p className="text-sm text-gray-600">
+              {group.note.text}{" "}
+              <Link to={group.note.to} className="font-semibold text-brand-600 hover:underline">
+                {group.note.link}
+              </Link>
+            </p>
+          )}
 
           <div className="divide-y divide-gray-100">
             {group.items.map((entry) => {

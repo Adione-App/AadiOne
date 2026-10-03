@@ -26,7 +26,7 @@ interface Handlers {
 const SOCKET_URL = (
   process.env['EXPO_PUBLIC_API_URL'] ??
   (Constants.expoConfig?.extra as { apiBaseUrl?: string } | undefined)?.apiBaseUrl ??
-  'http://10.0.2.2:4000/api/v1'
+  'http://10.0.2.2:4100/api/v1' // V2 dev backend (see api.ts)
 ).replace(/\/api\/v1\/?$/, '');
 
 let socket: Socket | null = null;

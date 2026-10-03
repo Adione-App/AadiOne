@@ -1,13 +1,19 @@
 /**
- * Orders and checkout (Tasks 8.2–8.5).
+ * Orders and checkout — V2 multi-seller redesign.
  *
  * `placeOrder` is the most important function in this system. It re-derives
- * EVERY decision from the database inside one transaction with the inventory
- * rows locked — nothing the client sent is trusted, and nothing read outside
- * the lock is relied upon.
+ * EVERY decision from the database inside one transaction with every
+ * involved seller's inventory rows locked — nothing the client sent is
+ * trusted, and nothing read outside the lock is relied upon.
+ *
+ * V2's central move: a checkout groups the cart's items BY SELLER and
+ * creates one Order (the customer-facing parent — payment, address,
+ * aggregate totals) plus one SellerOrder per seller involved (owning that
+ * seller's own items, status lifecycle, cancellation and commission
+ * snapshot). See order-state.service.ts for how the two levels transition.
  */
 
-import type { Category, Order, Prisma } from '@prisma/client';
+import type { Category, Prisma } from '@prisma/client';
 import {
   ActorType,
   CodPolicy,
@@ -17,38 +23,49 @@ import {
   OrderPaymentStatus,
   OrderStatus,
   PaymentMethod,
+  SellerOrderStatus,
   STATUS_PROGRESSION,
   CUSTOMER_TIMELINE_LABELS,
   CUSTOMER_TIMELINE_STEPS,
+  CustomerTimelineStep,
   ORDER_STATUS_LABELS,
+  SELLER_ORDER_STATUS_LABELS,
   toCustomerTimelineStep,
   toOrderBucket,
   type CheckoutQuoteResponse,
   type CursorPage,
   type OrderDetailDto,
+  type OrderItemDto,
   type OrderSummaryDto,
   type OrderTimelineEntryDto,
+  type SellerOrderSummaryDto,
 } from '../../shared';
 import { resolveItemCodPolicy, resolveOrderCodEligibility } from '../../shared/cod';
 import { generateOrderNumber, formatAddressLine } from '../../shared/text';
 import { extractInclusiveTaxPaise } from '../../shared/money';
 import { AppError } from '../../common/errors';
 import { randomNumericCode, sha256, safeEqual } from '../../common/crypto';
-import { prisma, runInTransaction, type Tx } from '../../infra/db/prisma';
+import { prisma, runInTransaction } from '../../infra/db/prisma';
 import { moduleLogger } from '../../common/logger';
 import * as configService from '../configuration/configuration.service';
-import * as storeService from '../stores/store.service';
+import * as sellerService from '../sellers/seller.service';
+import { unorderableMessage, unorderableReason } from '../cart/orderability';
 import * as addressService from '../addresses/address.service';
 import * as pricingService from '../pricing/pricing.service';
 import * as inventoryService from '../inventory/inventory.service';
 import * as cartService from '../cart/cart.service';
-import { transitionOrder } from './order-state.service';
-import { emitNewOrder } from '../../realtime/socket';
+import * as commissionService from '../commission/commission.service';
+import * as notificationService from '../notifications/notification.service';
+import {
+  announceNewOrder,
+  transitionOrder,
+  transitionSellerOrder,
+} from './order-state.service';
 
 const log = moduleLogger('orders');
 
 /* -------------------------------------------------------------------------- */
-/* COD resolution (Task 8.3)                                                  */
+/* COD resolution                                                             */
 /* -------------------------------------------------------------------------- */
 
 /** Full leaf-to-root chain, so a policy set on "Grocery" reaches its children. */
@@ -71,24 +88,30 @@ function buildCategoryChain(
 /* Checkout quote (POST /checkout/quote)                                      */
 /* -------------------------------------------------------------------------- */
 
+interface CheckoutContextItem {
+  sellerListingId: string;
+  sellerId: string;
+  sellerAllowCod: CodPolicy;
+  variantId: string;
+  qty: number;
+  productId: string;
+  productName: string;
+  variantName: string;
+  brandName: string | null;
+  imageUrl: string | null;
+  sku: string;
+  unitDisplay: string;
+  taxRateBp: number;
+  categoryId: string;
+  productAllowCod: CodPolicy;
+  variantAllowCod: CodPolicy;
+}
+
 interface CheckoutContext {
-  storeId: string;
   addressId: string;
   distanceKm: number;
-  items: {
-    variantId: string;
-    qty: number;
-    productName: string;
-    variantName: string;
-    brandName: string | null;
-    imageUrl: string | null;
-    sku: string;
-    unitDisplay: string;
-    taxRateBp: number;
-    categoryId: string;
-    productAllowCod: CodPolicy;
-    variantAllowCod: CodPolicy;
-  }[];
+  delivery: sellerService.CartDelivery;
+  items: CheckoutContextItem[];
 }
 
 /**
@@ -97,30 +120,31 @@ interface CheckoutContext {
  * Runs the same validations and the same pricing engine as order creation, so
  * the Review screen shows the server's bill rather than one the client
  * computed. This is why the app never needs to do arithmetic.
+ *
+ * Serviceability is per seller: every seller in the cart must deliver to the
+ * address, and the delivery fee/ETA are priced on the farthest of them
+ * (seller.service.ts `assertSellersServe`).
  */
 async function buildCheckoutContext(
   userId: string,
   addressId: string,
 ): Promise<CheckoutContext> {
-  const store = await storeService.getActiveStore();
   const address = await addressService.getOwnedAddress(userId, addressId);
 
-  // Recomputed here rather than read from the cached flag on the address row.
-  const serviceability = await storeService.assertServiceable(
-    address.latitude,
-    address.longitude,
-    store,
-  );
-
   const cart = await prisma.cart.findFirst({
-    where: { userId, storeId: store.id, status: 'ACTIVE' },
+    where: { userId, status: 'ACTIVE' },
     include: {
       items: {
         include: {
-          variant: {
+          sellerListing: {
             include: {
-              product: { include: { brand: true } },
-              images: { orderBy: { displayOrder: 'asc' }, take: 1 },
+              seller: { select: { id: true, allowCod: true } },
+              variant: {
+                include: {
+                  product: { include: { brand: true } },
+                  images: { orderBy: { displayOrder: 'asc' }, take: 1 },
+                },
+              },
             },
           },
         },
@@ -132,24 +156,39 @@ async function buildCheckoutContext(
     throw new AppError(ErrorCode.CART_EMPTY);
   }
 
+  // Recomputed here rather than read from the cached flag on the address row.
+  const delivery = await sellerService.assertSellersServe(
+    address.latitude,
+    address.longitude,
+    cart.items.map((item) => item.sellerListing.sellerId),
+  );
+
   return {
-    storeId: store.id,
     addressId,
-    distanceKm: serviceability.distanceKm,
-    items: cart.items.map((item) => ({
-      variantId: item.variantId,
-      qty: item.qty,
-      productName: item.variant.product.name,
-      variantName: item.variant.variantName,
-      brandName: item.variant.product.brand?.name ?? null,
-      imageUrl: item.variant.imageUrl ?? item.variant.images[0]?.url ?? null,
-      sku: item.variant.sku,
-      unitDisplay: item.variant.variantName,
-      taxRateBp: item.variant.product.taxRateBp,
-      categoryId: item.variant.product.categoryId,
-      productAllowCod: item.variant.product.allowCod,
-      variantAllowCod: item.variant.allowCod,
-    })),
+    distanceKm: delivery.check.distanceKm,
+    delivery,
+    items: cart.items.map((item) => {
+      const offer = item.sellerListing;
+      const variant = offer.variant;
+      return {
+        sellerListingId: offer.id,
+        sellerId: offer.sellerId,
+        sellerAllowCod: offer.seller.allowCod,
+        variantId: item.sellerListing.variantId,
+        qty: item.qty,
+        productId: variant.product.id,
+        productName: variant.product.name,
+        variantName: variant.variantName,
+        brandName: variant.product.brand?.name ?? null,
+        imageUrl: variant.imageUrl ?? variant.images[0]?.url ?? null,
+        sku: variant.sku,
+        unitDisplay: variant.variantName,
+        taxRateBp: variant.product.taxRateBp,
+        categoryId: variant.product.categoryId,
+        productAllowCod: variant.product.allowCod,
+        variantAllowCod: variant.allowCod,
+      };
+    }),
   };
 }
 
@@ -159,7 +198,6 @@ export async function getCheckoutQuote(
   couponCode?: string | null,
 ): Promise<CheckoutQuoteResponse> {
   const context = await buildCheckoutContext(userId, addressId);
-  const store = await storeService.getActiveStore();
 
   const { dto: cartDto } = await cartService.getCart(userId, {
     distanceKm: context.distanceKm,
@@ -167,14 +205,14 @@ export async function getCheckoutQuote(
 
   const coupon = couponCode ? await pricingService.resolveCoupon(couponCode, userId) : null;
 
-  const offers = await prisma.storeVariant.findMany({
-    where: { storeId: context.storeId, variantId: { in: context.items.map((i) => i.variantId) } },
+  const offers = await prisma.sellerListing.findMany({
+    where: { id: { in: context.items.map((i) => i.sellerListingId) } },
   });
-  const offerByVariant = new Map(offers.map((offer) => [offer.variantId, offer]));
+  const offerByListing = new Map(offers.map((offer) => [offer.id, offer]));
 
   const { bill } = await pricingService.computeBill({
     items: context.items.map((item) => {
-      const offer = offerByVariant.get(item.variantId);
+      const offer = offerByListing.get(item.sellerListingId);
       return {
         variantId: item.variantId,
         qty: item.qty,
@@ -206,16 +244,19 @@ export async function getCheckoutQuote(
       productName: `${item.productName} ${item.variantName}`.trim(),
       resolvedPolicy: resolveItemCodPolicy(
         {
-          storeVariant: offerByVariant.get(item.variantId)?.allowCod ?? CodPolicy.INHERIT,
+          sellerListing: offerByListing.get(item.sellerListingId)?.allowCod ?? CodPolicy.INHERIT,
           productVariant: item.variantAllowCod,
           product: item.productAllowCod,
           categoryChain: buildCategoryChain(item.categoryId, byId),
-          store: store.allowCod,
+          seller: item.sellerAllowCod,
         },
         config.DEFAULT_COD_POLICY,
       ),
     })),
-    storePolicy: store.allowCod,
+    // Each item already folds its OWN seller's policy into `resolvedPolicy`
+    // above (multi-seller carts have no single "the seller" left to check
+    // separately) — this stays a neutral pass-through.
+    sellerPolicy: CodPolicy.ALLOW,
     defaultPolicy: config.DEFAULT_COD_POLICY,
     orderTotalPaise: bill.totalPaise,
     codMaxOrderValuePaise: config.COD_MAX_ORDER_VALUE_PAISE,
@@ -224,16 +265,13 @@ export async function getCheckoutQuote(
     customerCodBlocked: user.codBlocked,
   });
 
-  const eta = await storeService.estimateEta({
+  const eta = await sellerService.estimateEta({
     distanceKm: context.distanceKm,
     itemCount: bill.itemCount,
-    storeId: context.storeId,
+    sellerId: context.delivery.farthest.id,
   });
 
-  const serviceability = await storeService.getServiceability(
-    (await addressService.getOwnedAddress(userId, addressId)).latitude,
-    (await addressService.getOwnedAddress(userId, addressId)).longitude,
-  );
+  const serviceability = await sellerService.cartServiceability(context.delivery, bill.itemCount);
 
   return {
     bill,
@@ -263,8 +301,9 @@ export interface PlaceOrderInput {
   couponCode?: string | null;
   notes?: string | null;
   expectedTotalPaise?: number | undefined;
-  /** See PlaceOrderRequest's own comment in shared/dto.ts. */
-  expectedItems?: { variantId: string; unitPricePaise: number }[] | undefined;
+  /** Keyed by SELLER LISTING now, not bare variant — see PlaceOrderRequest's
+   * own comment in shared/dto.ts. */
+  expectedItems?: { sellerListingId: string; unitPricePaise: number }[] | undefined;
   idempotencyKey: string;
 }
 
@@ -275,17 +314,24 @@ export interface PlaceOrderResult {
 }
 
 export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResult> {
-  const store = await storeService.getActiveStore();
-
-  // Cheap checks first, outside the transaction, so a closed store or an
-  // out-of-area address never takes inventory locks.
-  await storeService.assertStoreAcceptingOrders(store);
+  // Cheap checks first, outside the transaction, so an out-of-area address
+  // never takes inventory locks: EVERY seller in the cart must deliver here
+  // (priced on the farthest). Seller availability is checked PER SELLER in
+  // the cart, inside the transaction but still before any lock (below) — a
+  // closed restaurant must not block a grocery order, and vice versa.
   const address = await addressService.getOwnedAddress(input.userId, input.addressId);
-  const serviceability = await storeService.assertServiceable(
+  const cartSellers = await prisma.cartItem.findMany({
+    where: { cart: { userId: input.userId, status: 'ACTIVE' } },
+    select: { sellerListing: { select: { sellerId: true } } },
+  });
+  if (cartSellers.length === 0) throw new AppError(ErrorCode.CART_EMPTY);
+  const delivery = await sellerService.assertSellersServe(
     address.latitude,
     address.longitude,
-    store,
+    cartSellers.map((row) => row.sellerListing.sellerId),
   );
+  const serviceability = delivery.check;
+  const servingSellerIds = new Set(delivery.sellers.map((seller) => seller.id));
 
   const config = await configService.getMany([
     ConfigKey.DEFAULT_COD_POLICY,
@@ -304,10 +350,10 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
     where: { userId: input.userId, status: OrderStatus.DELIVERED },
   });
 
-  const eta = await storeService.estimateEta({
+  const eta = await sellerService.estimateEta({
     distanceKm: serviceability.distanceKm,
     itemCount: 1,
-    storeId: store.id,
+    sellerId: delivery.farthest.id,
   });
 
   let deliveryOtp: string | null = null;
@@ -316,14 +362,19 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
     async (tx) => {
       /* --- cart ------------------------------------------------------- */
       const cart = await tx.cart.findFirst({
-        where: { userId: input.userId, storeId: store.id, status: 'ACTIVE' },
+        where: { userId: input.userId, status: 'ACTIVE' },
         include: {
           items: {
             include: {
-              variant: {
+              sellerListing: {
                 include: {
-                  product: { include: { brand: true } },
-                  images: { orderBy: { displayOrder: 'asc' }, take: 1 },
+                  seller: { include: { hours: { orderBy: { dayOfWeek: 'asc' } } } },
+                  variant: {
+                    include: {
+                      product: { include: { brand: true } },
+                      images: { orderBy: { displayOrder: 'asc' }, take: 1 },
+                    },
+                  },
                 },
               },
             },
@@ -333,31 +384,59 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
 
       if (!cart || cart.items.length === 0) throw new AppError(ErrorCode.CART_EMPTY);
 
-      /* --- LOCK inventory --------------------------------------------- */
+      /* --- every seller must be open (switch ON, no closure, in hours) -- */
+      // Sellers that stopped trading altogether (deleted, admin-inactive,
+      // onboarding not approved) are refused per item below as
+      // PRODUCT_UNAVAILABLE, exactly as before; this gate is only about
+      // whether a trading seller is open right now.
+      const checkedSellers = new Set<string>();
+      for (const line of cart.items) {
+        const seller = line.sellerListing.seller;
+        if (checkedSellers.has(seller.id)) continue;
+        checkedSellers.add(seller.id);
+        if (seller.deletedAt || !seller.isActive || seller.onboardingStatus !== 'APPROVED') continue;
+        // A seller added to the cart after the pre-check above must still
+        // deliver to this address.
+        if (!servingSellerIds.has(seller.id)) {
+          await sellerService.assertServiceable(address.latitude, address.longitude, seller);
+        }
+        await sellerService.assertSellerAcceptingOrders(seller);
+      }
+
+      /* --- group by seller (#3) ----------------------------------------- */
+      const itemsBySeller = new Map<string, typeof cart.items>();
+      for (const item of cart.items) {
+        const sellerId = item.sellerListing.sellerId;
+        const bucket = itemsBySeller.get(sellerId);
+        if (bucket) bucket.push(item);
+        else itemsBySeller.set(sellerId, [item]);
+      }
+
+      /* --- LOCK inventory, per seller, deterministic order -------------- */
       // Everything below reads from these locked rows. Prices, stock and COD
-      // flags are taken from here, never from the client and never from a read
-      // that happened before the lock.
-      const variantIds = cart.items.map((item) => item.variantId).sort();
-      const offers = await inventoryService.lockOffersForUpdate(tx, store.id, variantIds);
+      // flags are taken from here, never from the client and never from a
+      // read that happened before the lock. Locking one seller at a time
+      // (sellers visited in sorted-id order, variants sorted within each)
+      // keeps the deadlock-free guarantee `lockOffersForUpdate` relies on.
+      const offersByListingId = new Map<string, inventoryService.LockedOffer>();
+      for (const sellerId of [...itemsBySeller.keys()].sort()) {
+        const items = itemsBySeller.get(sellerId)!;
+        const variantIds = items.map((item) => item.sellerListing.variantId).sort();
+        const offers = await inventoryService.lockOffersForUpdate(tx, sellerId, variantIds);
+        for (const offer of offers.values()) offersByListingId.set(offer.id, offer);
+      }
 
       /* --- per-item validation ---------------------------------------- */
       const priceable: pricingService.PriceableItem[] = [];
       const codItems: { productName: string; resolvedPolicy: CodPolicy }[] = [];
-      const reservations: { storeVariantId: string; variantId: string; qty: number }[] = [];
-      const orderItemData: Prisma.OrderItemCreateManyOrderInput[] = [];
 
-      // Keyed by variantId — the per-item prices the customer's cart was
-      // showing (see PlaceOrderRequest's own comment). Only ever a SAFETY
-      // CHECK, same as `expectedTotalPaise` below: `cart_items` itself
-      // stores no price of its own (see the CartItem model's own comment,
-      // "resolved live from store_variants"), so this is the only way to
-      // know what the customer actually saw for THIS specific product.
-      const expectedPriceByVariant = new Map(
-        (input.expectedItems ?? []).map((entry) => [entry.variantId, entry.unitPricePaise]),
+      // Keyed by sellerListingId — the per-item prices the customer's cart
+      // was showing (see PlaceOrderRequest's own comment). Only ever a
+      // SAFETY CHECK, same as `expectedTotalPaise` below.
+      const expectedPriceByListing = new Map(
+        (input.expectedItems ?? []).map((entry) => [entry.sellerListingId, entry.unitPricePaise]),
       );
       const priceMismatches: {
-        /** Required by `ApiErrorDetail` — same style as ITEM_OUT_OF_STOCK's
-         * own per-item `message` above. */
         message: string;
         variantId: string;
         productId: string;
@@ -369,21 +448,23 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
       }[] = [];
 
       for (const item of cart.items) {
-        const variant = item.variant;
+        const variant = item.sellerListing.variant;
         const product = variant.product;
+        const seller = item.sellerListing.seller;
         const displayName = `${product.name} ${variant.variantName}`.trim();
-        const offer = offers.get(item.variantId);
+        const offer = offersByListingId.get(item.sellerListingId);
 
-        if (
-          !offer ||
-          !offer.isAvailable ||
-          product.status !== 'ACTIVE' ||
-          variant.status !== 'ACTIVE' ||
-          product.deletedAt ||
-          variant.deletedAt
-        ) {
+        // Authoritative orderability check (see cart/orderability.ts): seller
+        // live (not deleted, active, onboarding APPROVED) and product
+        // APPROVED + active — re-checked here, inside the transaction, since
+        // a cart line can outlive any of those.
+        const unorderable = unorderableReason({ seller, product, variant });
+        if (!offer || !offer.isAvailable || unorderable) {
           throw new AppError(ErrorCode.PRODUCT_UNAVAILABLE, {
-            message: `${displayName} is no longer available. Please review your cart.`,
+            message: unorderable
+              ? `${unorderableMessage(unorderable, displayName, seller.name)} Please review your cart.`
+              : `${displayName} is no longer available. Please review your cart.`,
+            internalMessage: `listing ${item.sellerListingId} not orderable: ${unorderable ?? 'listing unavailable'}`,
           });
         }
 
@@ -396,25 +477,21 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
             details: [
               {
                 message: `${displayName}: ${offer.availableQty} available`,
-                variantId: item.variantId,
+                variantId: item.sellerListing.variantId,
                 available: offer.availableQty,
               },
             ],
           });
         }
 
-        // Per-item price check — only runs for a variant the client actually
-        // sent an expected price for (older clients that only send
-        // `expectedTotalPaise` fall through to the total-level check further
-        // below instead, unchanged).
-        const expectedUnitPricePaise = expectedPriceByVariant.get(item.variantId);
+        const expectedUnitPricePaise = expectedPriceByListing.get(item.sellerListingId);
         if (
           expectedUnitPricePaise !== undefined &&
           expectedUnitPricePaise !== offer.pricePaise
         ) {
           priceMismatches.push({
             message: `${displayName}: price changed from ₹${(expectedUnitPricePaise / 100).toFixed(2)} to ₹${(offer.pricePaise / 100).toFixed(2)}`,
-            variantId: item.variantId,
+            variantId: item.sellerListing.variantId,
             productId: product.id,
             name: displayName,
             qty: item.qty,
@@ -432,57 +509,27 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
 
         const resolvedPolicy = resolveItemCodPolicy(
           {
-            storeVariant: offer.allowCod as CodPolicy,
+            sellerListing: offer.allowCod as CodPolicy,
             productVariant: variant.allowCod,
             product: product.allowCod,
             categoryChain: buildCategoryChain(product.categoryId, categoryById),
-            store: store.allowCod,
+            seller: seller.allowCod,
           },
           config.DEFAULT_COD_POLICY,
         );
         codItems.push({ productName: displayName, resolvedPolicy });
 
-        const lineTotal = offer.pricePaise * item.qty;
-
         priceable.push({
-          variantId: item.variantId,
+          variantId: item.sellerListing.variantId,
           qty: item.qty,
           mrpPaise: offer.mrpPaise,
           unitPricePaise: offer.pricePaise,
           taxRateBp: product.taxRateBp,
-        });
-
-        reservations.push({
-          storeVariantId: offer.id,
-          variantId: item.variantId,
-          qty: item.qty,
-        });
-
-        // Full snapshot: renaming or deleting the product later must not
-        // change what this receipt says.
-        orderItemData.push({
-          variantId: item.variantId,
-          productName: product.name,
-          variantName: variant.variantName,
-          brandName: product.brand?.name ?? null,
-          imageUrl: variant.imageUrl ?? variant.images[0]?.url ?? null,
-          sku: variant.sku,
-          unitDisplay: variant.variantName,
-          qty: item.qty,
-          mrpPaise: offer.mrpPaise,
-          unitPricePaise: offer.pricePaise,
-          lineDiscountPaise: Math.max(0, (offer.mrpPaise - offer.pricePaise) * item.qty),
-          taxRateBp: product.taxRateBp,
-          taxPaise: extractInclusiveTaxPaise(lineTotal, product.taxRateBp),
-          lineTotalPaise: lineTotal,
-          allowCodResolved: resolvedPolicy === CodPolicy.ALLOW,
         });
       }
 
       // Reported ALL AT ONCE (not on the first mismatch found) so the
-      // client can refresh and show every affected product in one go,
-      // rather than the customer retrying repeatedly to discover each
-      // changed price one at a time.
+      // client can refresh and show every affected product in one go.
       if (priceMismatches.length > 0) {
         throw new AppError(ErrorCode.PRICE_CHANGED, {
           message: 'Prices have changed since you reviewed your order. Please check and try again.',
@@ -490,9 +537,7 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
         });
       }
 
-      /* --- coupon ------------------------------------------------------ */
-      // Re-validated INSIDE the transaction: usage limits can only be enforced
-      // race-free if the check and the redemption commit together.
+      /* --- coupon (parent-level, applies across every seller) ----------- */
       const couponCode = input.couponCode ?? cart.couponCode;
       const coupon = couponCode
         ? await pricingService.resolveCoupon(couponCode, input.userId)
@@ -511,13 +556,6 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
         });
       }
 
-      // Fallback for whatever the per-item check above can't catch: an older
-      // client that only sends `expectedTotalPaise` (no `expectedItems` at
-      // all), or every item's own price matching while the TOTAL still
-      // moved (a delivery fee/coupon/tax change, not a product price). The
-      // client's figure is a SAFETY CHECK either way, never the charged
-      // amount — a mismatch means something moved since the review screen,
-      // so they're asked to confirm again rather than silently charged more.
       if (
         input.expectedTotalPaise !== undefined &&
         input.expectedTotalPaise !== bill.totalPaise
@@ -534,7 +572,7 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
       if (input.paymentMethod === PaymentMethod.COD) {
         const codResult = resolveOrderCodEligibility({
           items: codItems,
-          storePolicy: store.allowCod,
+          sellerPolicy: CodPolicy.ALLOW,
           defaultPolicy: config.DEFAULT_COD_POLICY,
           orderTotalPaise: bill.totalPaise,
           codMaxOrderValuePaise: config.COD_MAX_ORDER_VALUE_PAISE,
@@ -550,22 +588,151 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
         }
       }
 
-      /* --- create ------------------------------------------------------ */
-      // COD skips PENDING_PAYMENT entirely: there is no payment to wait for.
+      /* --- build per-seller breakdown (#4/#5/#6/#11) -------------------- */
       const isCod = input.paymentMethod === PaymentMethod.COD;
-      const status = isCod ? OrderStatus.ORDER_PLACED : OrderStatus.PENDING_PAYMENT;
+      const parentStatus = isCod ? OrderStatus.PROCESSING : OrderStatus.PENDING_PAYMENT;
 
       if (isCod && config.DELIVERY_OTP_REQUIRED_FOR_COD) {
         deliveryOtp = randomNumericCode(4);
       }
 
+      interface SellerOrderInput {
+        sellerId: string;
+        itemsSubtotalPaise: number;
+        itemDiscountPaise: number;
+        taxPaise: number;
+        subtotalPaise: number;
+        commissionBp: number;
+        commissionPaise: number;
+        items: Prisma.OrderItemCreateManySellerOrderInput[];
+      }
+
+      const sellerOrderInputs: SellerOrderInput[] = [];
+
+      // Resolved ONCE, in the same iteration order the loop below consumes
+      // (`itemsBySeller` is not touched in between, so the pairing by index
+      // is exact). Two queries total, batched across every seller and item
+      // in this checkout, instead of up to three SEQUENTIAL queries PER
+      // ITEM — the dominant cost in a multi-seller checkout's transaction
+      // time (see commission.service.ts's own doc comment on why this is
+      // safe to batch: nothing here is locked or written by this
+      // transaction). `seller` is already loaded on every cart item (see the
+      // cart `include` above), so the seller-default fallback costs nothing
+      // extra either.
+      const sellerDefaultBpBySellerId = new Map(
+        [...itemsBySeller.values()].flatMap((items) =>
+          items.map(
+            (item) =>
+              [item.sellerListing.sellerId, item.sellerListing.seller.defaultCommissionBp] as const,
+          ),
+        ),
+      );
+      const commissionRates = await commissionService.resolveCommissionBpBatch(
+        [...itemsBySeller.entries()].flatMap(([sellerId, items]) =>
+          items.map((item) => ({
+            sellerId,
+            categoryId: item.sellerListing.variant.product.categoryId,
+            productId: item.sellerListing.variant.product.id,
+          })),
+        ),
+        sellerDefaultBpBySellerId,
+        tx,
+      );
+      let commissionRateIndex = 0;
+
+      for (const [sellerId, items] of itemsBySeller) {
+        let itemsSubtotalPaise = 0;
+        let itemDiscountPaise = 0;
+        let taxPaise = 0;
+        const orderItemData: Prisma.OrderItemCreateManySellerOrderInput[] = [];
+
+        for (const item of items) {
+          const variant = item.sellerListing.variant;
+          const product = variant.product;
+          const offer = offersByListingId.get(item.sellerListingId)!;
+          const lineTotal = offer.pricePaise * item.qty;
+          const lineTax = extractInclusiveTaxPaise(lineTotal, product.taxRateBp);
+          const resolvedPolicy = resolveItemCodPolicy(
+            {
+              sellerListing: offer.allowCod as CodPolicy,
+              productVariant: variant.allowCod,
+              product: product.allowCod,
+              categoryChain: buildCategoryChain(product.categoryId, categoryById),
+              seller: item.sellerListing.seller.allowCod,
+            },
+            config.DEFAULT_COD_POLICY,
+          );
+
+          itemsSubtotalPaise += lineTotal;
+          itemDiscountPaise += Math.max(0, (offer.mrpPaise - offer.pricePaise) * item.qty);
+          taxPaise += lineTax;
+
+          // Commission resolved PER ITEM (product > category > seller
+          // default — batched above, see `commissionRates`) and stored ON
+          // THE ITEM — this is the source of truth (#1). `SellerOrder.
+          // commissionPaise` below is derived as the EXACT sum of these,
+          // never accumulated in parallel, so the two can never drift apart
+          // even under a future refactor of this loop.
+          const rateBp = commissionRates[commissionRateIndex]!;
+          commissionRateIndex += 1;
+          const lineCommissionPaise = commissionService.commissionPaiseFor(lineTotal, rateBp);
+
+          // Full snapshot: renaming or deleting the product later must not
+          // change what this receipt says.
+          orderItemData.push({
+            variantId: item.sellerListing.variantId,
+            sellerListingId: item.sellerListingId,
+            productName: product.name,
+            variantName: variant.variantName,
+            brandName: product.brand?.name ?? null,
+            imageUrl: variant.imageUrl ?? variant.images[0]?.url ?? null,
+            sku: variant.sku,
+            unitDisplay: variant.variantName,
+            qty: item.qty,
+            mrpPaise: offer.mrpPaise,
+            unitPricePaise: offer.pricePaise,
+            lineDiscountPaise: Math.max(0, (offer.mrpPaise - offer.pricePaise) * item.qty),
+            taxRateBp: product.taxRateBp,
+            taxPaise: lineTax,
+            lineTotalPaise: lineTotal,
+            commissionBp: rateBp,
+            commissionPaise: lineCommissionPaise,
+            allowCodResolved: resolvedPolicy === CodPolicy.ALLOW,
+          });
+        }
+
+        // Exact sum of what was just stored on each item — never a
+        // separately-maintained running total — so `SellerOrder.
+        // commissionPaise` is mechanically guaranteed to equal
+        // `sum(items.commissionPaise)` (#1).
+        const commissionPaise = orderItemData.reduce((sum, item) => sum + (item.commissionPaise ?? 0), 0);
+
+        sellerOrderInputs.push({
+          sellerId,
+          itemsSubtotalPaise,
+          itemDiscountPaise,
+          taxPaise,
+          // Tax-inclusive line totals already sum to this seller's true
+          // monetary worth — adding taxPaise again would double-count it
+          // (tax is EXTRACTED from lineTotalPaise, never added on top).
+          subtotalPaise: itemsSubtotalPaise,
+          // DERIVED weighted-average for display only (#1) — rounded here,
+          // but rounding this display value can never feed back into
+          // `commissionPaise` above, which stays exact regardless.
+          commissionBp:
+            itemsSubtotalPaise > 0 ? Math.round((commissionPaise / itemsSubtotalPaise) * 10_000) : 0,
+          commissionPaise,
+          items: orderItemData,
+        });
+      }
+
+      /* --- create -------------------------------------------------------- */
       const order = await tx.order.create({
         data: {
           orderNumber: generateOrderNumber(),
           userId: input.userId,
-          storeId: store.id,
           addressId: address.id,
-          status,
+          status: parentStatus,
           paymentMethod: input.paymentMethod,
           paymentStatus: OrderPaymentStatus.PENDING,
 
@@ -578,6 +745,9 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
           platformFeePaise: bill.platformFeePaise,
           taxPaise: bill.taxPaise,
           totalPaise: bill.totalPaise,
+          // Starts equal to the checkout snapshot — drops only if a seller
+          // portion is later cancelled/rejected (#9/#20).
+          currentPayablePaise: bill.totalPaise,
 
           // Immutable address snapshot.
           deliveryFullName: address.fullName,
@@ -611,32 +781,54 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
                 ),
               }),
 
-          items: { createMany: { data: orderItemData } },
+          sellerOrders: {
+            create: sellerOrderInputs.map((so) => ({
+              sellerId: so.sellerId,
+              status: SellerOrderStatus.NEW,
+              itemsSubtotalPaise: so.itemsSubtotalPaise,
+              itemDiscountPaise: so.itemDiscountPaise,
+              taxPaise: so.taxPaise,
+              subtotalPaise: so.subtotalPaise,
+              commissionBp: so.commissionBp,
+              commissionPaise: so.commissionPaise,
+              items: { createMany: { data: so.items } },
+            })),
+          },
           statusHistory: {
             create: {
               fromStatus: null,
-              toStatus: status,
+              toStatus: parentStatus,
               actorType: ActorType.CUSTOMER,
               actorUserId: input.userId,
               reason: 'Order created',
             },
           },
         },
+        include: { sellerOrders: true },
       });
 
-      /* --- stock ------------------------------------------------------- */
-      await inventoryService.reserveStock(tx, reservations, order.id);
+      /* --- stock, per seller order --------------------------------------- */
+      for (const sellerOrder of order.sellerOrders) {
+        const items = itemsBySeller.get(sellerOrder.sellerId)!;
+        const reservations = items.map((item) => ({
+          sellerListingId: item.sellerListingId,
+          variantId: item.sellerListing.variantId,
+          qty: item.qty,
+        }));
 
-      if (isCod) {
-        // No payment gate, so the goods leave the shelf immediately.
-        await inventoryService.commitReservation(
-          tx,
-          reservations.map((r) => ({ storeVariantId: r.storeVariantId, qty: r.qty })),
-          order.id,
-        );
+        await inventoryService.reserveStock(tx, reservations, sellerOrder.id);
+
+        if (isCod) {
+          // No payment gate, so the goods leave the shelf immediately.
+          await inventoryService.commitReservation(
+            tx,
+            reservations.map((r) => ({ sellerListingId: r.sellerListingId, qty: r.qty })),
+            sellerOrder.id,
+          );
+        }
       }
 
-      /* --- coupon redemption ------------------------------------------- */
+      /* --- coupon redemption (parent-level) ------------------------------ */
       if (coupon) {
         await tx.couponRedemption.create({
           data: {
@@ -656,8 +848,8 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
 
       return order;
     },
-    // Generous: this transaction locks several inventory rows and we would
-    // rather wait than fail a paying customer.
+    // Generous: this transaction locks several sellers' inventory rows and we
+    // would rather wait than fail a paying customer.
     { timeoutMs: 15_000 },
   );
 
@@ -667,33 +859,34 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
       orderNumber: created.orderNumber,
       totalPaise: created.totalPaise,
       paymentMethod: created.paymentMethod,
+      sellerCount: created.sellerOrders.length,
     },
     'order placed',
   );
 
   // Notifications and socket emits happen AFTER commit — never inside a
   // transaction holding inventory locks.
-  await queueOrderNotification(created, NotificationType.ORDER_PLACED);
-
-  // Tells the admin panel's live board a new order arrived — its chime and
-  // tab badges (see `web/src/pages/Orders.tsx`) are the store's only
-  // real-time cue that anything needs attention. This was previously only
-  // ever fired from `transitionOrder` for a transition LANDING ON
-  // ORDER_PLACED — never from order CREATION itself, which goes through a
-  // direct `tx.order.create` here, not `transitionOrder`. That meant every
-  // new order relied entirely on the admin panel's 20s poll to appear, and
-  // a UPI order — created straight into PENDING_PAYMENT, a status with no
-  // badge on its own tab and not the panel's default tab — was effectively
-  // invisible until the admin happened to click over there themselves.
-  // Emitting here covers BOTH paths (COD's ORDER_PLACED and UPI's
-  // PENDING_PAYMENT) the moment the order exists, not just the one that
-  // happened to go through a later transition.
-  emitNewOrder(created.storeId, {
+  await notificationService.notify({
+    userId: created.userId,
+    type: NotificationType.ORDER_PLACED,
+    dedupeKey: `order:${created.id}:placed`,
     orderId: created.id,
-    orderNumber: created.orderNumber,
-    status: created.status,
-    statusLabel: ORDER_STATUS_LABELS[created.status],
+    context: { orderNumber: created.orderNumber, totalPaise: created.totalPaise },
   });
+  // COD is payable at the door, so sellers can start at once. An ONLINE
+  // order reaches its sellers only when payment is confirmed (see
+  // order-state.service.ts's dispatchOrderSideEffects).
+  if (created.paymentMethod === PaymentMethod.COD) {
+    for (const so of created.sellerOrders) {
+      await notificationService.notifySeller(so.sellerId, {
+        type: NotificationType.SELLER_NEW_ORDER,
+        dedupeKey: `so:${so.id}:new`,
+        orderId: created.id,
+        context: { orderNumber: created.orderNumber, amountPaise: so.subtotalPaise },
+      });
+    }
+  }
+  announceNewOrder(created, created.sellerOrders);
 
   return {
     order: await getOrderDetail(input.userId, created.id, deliveryOtp),
@@ -702,48 +895,24 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
 }
 
 /* -------------------------------------------------------------------------- */
-/* Notifications (wired fully in Phase 11)                                    */
-/* -------------------------------------------------------------------------- */
-
-async function queueOrderNotification(
-  order: Order,
-  type: NotificationType,
-): Promise<void> {
-  await prisma.notification
-    .create({
-      data: {
-        userId: order.userId,
-        orderId: order.id,
-        type,
-        title: 'Order update',
-        body: `Your order ${order.orderNumber} is ${ORDER_STATUS_LABELS[order.status].toLowerCase()}.`,
-      },
-    })
-    .catch((error) => log.error({ err: error, orderId: order.id }, 'failed to queue notification'));
-}
-
-/* -------------------------------------------------------------------------- */
 /* Task 8.4 — reads                                                           */
 /* -------------------------------------------------------------------------- */
 
 const ORDER_DETAIL_INCLUDE = {
-  items: {
+  sellerOrders: {
     orderBy: { createdAt: 'asc' as const },
-    // The row's own `imageUrl` is a snapshot taken at order time, so it stays
-    // blank for older orders placed before the product had a photo. Falling
-    // back to the variant's current image lets those orders pick one up
-    // retroactively instead of showing a placeholder forever.
-    //
-    // Catalog images are uploaded at the PRODUCT level (catalog.service's
-    // `toSummaryDto` reads `product.images[0]`, not the variant) — a variant
-    // rarely has its own override image. So the fallback must check the
-    // product's gallery too, or an image added in admin never shows up here.
     include: {
-      variant: {
+      seller: { select: { id: true, name: true } },
+      items: {
+        orderBy: { createdAt: 'asc' as const },
         include: {
-          images: { orderBy: { displayOrder: 'asc' as const }, take: 1 },
-          product: {
-            include: { images: { orderBy: { displayOrder: 'asc' as const }, take: 1 } },
+          variant: {
+            include: {
+              images: { orderBy: { displayOrder: 'asc' as const }, take: 1 },
+              product: {
+                include: { images: { orderBy: { displayOrder: 'asc' as const }, take: 1 } },
+              },
+            },
           },
         },
       },
@@ -751,12 +920,14 @@ const ORDER_DETAIL_INCLUDE = {
   },
   statusHistory: { orderBy: { createdAt: 'asc' as const } },
   address: true,
-  assignments: { include: { agent: true }, orderBy: { assignedAt: 'desc' as const }, take: 1 },
+  deliveryTasks: { include: { agent: true }, orderBy: { assignedAt: 'desc' as const }, take: 1 },
 } as const;
 
 type OrderWithRelations = Prisma.OrderGetPayload<{ include: typeof ORDER_DETAIL_INCLUDE }>;
+type SellerOrderWithRelations = OrderWithRelations['sellerOrders'][number];
+type OrderItemWithRelations = SellerOrderWithRelations['items'][number];
 
-function resolveItemImage(item: OrderWithRelations['items'][number]): string | null {
+function resolveItemImage(item: OrderItemWithRelations): string | null {
   return (
     item.imageUrl ??
     item.variant?.imageUrl ??
@@ -766,8 +937,60 @@ function resolveItemImage(item: OrderWithRelations['items'][number]): string | n
   );
 }
 
+function toOrderItemDto(item: OrderItemWithRelations): OrderItemDto {
+  return {
+    id: item.id,
+    variantId: item.variantId ?? '',
+    productName: item.productName,
+    variantName: item.variantName,
+    brandName: item.brandName,
+    imageUrl: resolveItemImage(item),
+    sku: item.sku,
+    qty: item.qty,
+    mrpPaise: item.mrpPaise,
+    unitPricePaise: item.unitPricePaise,
+    lineDiscountPaise: item.lineDiscountPaise,
+    lineTotalPaise: item.lineTotalPaise,
+  };
+}
+
+function toSellerOrderSummaryDto(sellerOrder: SellerOrderWithRelations): SellerOrderSummaryDto {
+  return {
+    id: sellerOrder.id,
+    sellerId: sellerOrder.sellerId,
+    sellerName: sellerOrder.seller.name,
+    status: sellerOrder.status,
+    statusLabel: SELLER_ORDER_STATUS_LABELS[sellerOrder.status],
+    subtotalPaise: sellerOrder.subtotalPaise,
+    itemCount: sellerOrder.items.reduce((sum, item) => sum + item.qty, 0),
+    items: sellerOrder.items.map(toOrderItemDto),
+    rejectionReason: sellerOrder.rejectionReason,
+    cancellationReason: sellerOrder.cancellationReason,
+  };
+}
+
+/**
+ * Disambiguates the customer timeline's "PROCESSING" sentinel (see
+ * order-state-machine.ts's own doc comment) using the furthest-along
+ * ACTIVE (non-cancelled/rejected) SellerOrder — the customer sees whatever
+ * progress is real, even if one seller's portion lags or was dropped.
+ */
+function resolveProcessingSubStep(sellerOrders: SellerOrderWithRelations[]): CustomerTimelineStep {
+  const active = sellerOrders.filter(
+    (so) => so.status !== SellerOrderStatus.REJECTED && so.status !== SellerOrderStatus.CANCELLED,
+  );
+  if (active.some((so) => so.status === SellerOrderStatus.PREPARING || so.status === SellerOrderStatus.READY_FOR_PICKUP)) {
+    return CustomerTimelineStep.PACKED;
+  }
+  if (active.some((so) => so.status === SellerOrderStatus.ACCEPTED)) {
+    return CustomerTimelineStep.CONFIRMED;
+  }
+  return CustomerTimelineStep.PLACED;
+}
+
 function buildTimeline(order: OrderWithRelations): OrderTimelineEntryDto[] {
-  const currentStep = toCustomerTimelineStep(order.status);
+  const rawStep = toCustomerTimelineStep(order.status);
+  const currentStep = rawStep === 'PROCESSING' ? resolveProcessingSubStep(order.sellerOrders) : rawStep;
   const reachedIndex = currentStep ? CUSTOMER_TIMELINE_STEPS.indexOf(currentStep) : -1;
 
   // Timestamps come from history, so the timeline shows when each step
@@ -778,10 +1001,10 @@ function buildTimeline(order: OrderWithRelations): OrderTimelineEntryDto[] {
   };
 
   const stepStatuses: Record<string, OrderStatus[]> = {
-    PLACED: [OrderStatus.ORDER_PLACED, OrderStatus.PAYMENT_CONFIRMED],
-    CONFIRMED: [OrderStatus.STORE_ACCEPTED],
-    PACKED: [OrderStatus.PREPARING, OrderStatus.READY_FOR_PICKUP],
-    OUT_FOR_DELIVERY: [OrderStatus.OUT_FOR_DELIVERY],
+    PLACED: [OrderStatus.PAYMENT_CONFIRMED, OrderStatus.PROCESSING],
+    CONFIRMED: [OrderStatus.PROCESSING],
+    PACKED: [OrderStatus.READY_FOR_PICKUP],
+    OUT_FOR_DELIVERY: [OrderStatus.PICKED_UP, OrderStatus.OUT_FOR_DELIVERY],
     DELIVERED: [OrderStatus.DELIVERED],
   };
 
@@ -803,6 +1026,7 @@ function buildTimeline(order: OrderWithRelations): OrderTimelineEntryDto[] {
 }
 
 function toSummary(order: OrderWithRelations): OrderSummaryDto {
+  const allItems = order.sellerOrders.flatMap((so) => so.items);
   return {
     id: order.id,
     orderNumber: order.orderNumber,
@@ -812,12 +1036,14 @@ function toSummary(order: OrderWithRelations): OrderSummaryDto {
     paymentMethod: order.paymentMethod,
     paymentStatus: order.paymentStatus,
     totalPaise: order.totalPaise,
-    itemCount: order.items.reduce((sum, item) => sum + item.qty, 0),
-    lineItemCount: order.items.length,
-    itemThumbnails: order.items
+    currentPayablePaise: order.currentPayablePaise,
+    itemCount: allItems.reduce((sum, item) => sum + item.qty, 0),
+    lineItemCount: allItems.length,
+    itemThumbnails: allItems
       .map(resolveItemImage)
       .filter((url): url is string => url !== null)
       .slice(0, 3),
+    sellerCount: order.sellerOrders.length,
     placedAt: (order.placedAt ?? order.createdAt).toISOString(),
     deliveredAt: order.deliveredAt?.toISOString() ?? null,
   };
@@ -830,7 +1056,19 @@ async function canCustomerCancel(order: OrderWithRelations): Promise<boolean> {
 
   if (order.status === OrderStatus.PENDING_PAYMENT) return true;
   if (currentIndex < 0 || limitIndex < 0) return false;
-  return currentIndex < limitIndex;
+  // At least one SellerOrder still cancellable by the customer (NEW/ACCEPTED)
+  // — a customer whose only remaining seller is already PREPARING has
+  // nothing left to self-cancel (#8: the button should not promise
+  // something `cancelOrder` below can no longer deliver for anyone).
+  const anyCancellable = order.sellerOrders.some(
+    (so) => so.status === SellerOrderStatus.NEW || so.status === SellerOrderStatus.ACCEPTED,
+  );
+  // Inclusive: CANCELLATION_ALLOWED_UNTIL is documented as the LAST status
+  // at which a customer may still cancel. V2 folded V1's early statuses
+  // (ORDER_PLACED/STORE_ACCEPTED/PREPARING) into PROCESSING — the first entry
+  // of STATUS_PROGRESSION — so the V1-era strict `<` against the default
+  // PROCESSING made every placed order uncancellable by the customer.
+  return currentIndex <= limitIndex && anyCancellable;
 }
 
 export async function getOrderDetail(
@@ -845,26 +1083,15 @@ export async function getOrderDetail(
 
   if (!order) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Order not found.' });
 
-  const assignment = order.assignments[0];
+  const deliveryTask = order.deliveryTasks[0];
+  const allItems = order.sellerOrders.flatMap((so) => so.items);
 
   return {
     ...toSummary(order),
-    items: order.items.map((item) => ({
-      id: item.id,
-      variantId: item.variantId ?? '',
-      productName: item.productName,
-      variantName: item.variantName,
-      brandName: item.brandName,
-      imageUrl: resolveItemImage(item),
-      sku: item.sku,
-      qty: item.qty,
-      mrpPaise: item.mrpPaise,
-      unitPricePaise: item.unitPricePaise,
-      lineDiscountPaise: item.lineDiscountPaise,
-      lineTotalPaise: item.lineTotalPaise,
-    })),
+    items: allItems.map(toOrderItemDto),
+    sellerOrders: order.sellerOrders.map(toSellerOrderSummaryDto),
     bill: {
-      itemCount: order.items.reduce((sum, item) => sum + item.qty, 0),
+      itemCount: allItems.reduce((sum, item) => sum + item.qty, 0),
       itemsSubtotalPaise: order.itemsSubtotalPaise,
       itemDiscountPaise: order.itemDiscountPaise,
       couponCode: order.couponCode,
@@ -904,8 +1131,8 @@ export async function getOrderDetail(
     cancellationReason: order.cancellationReason,
     canCancel: await canCustomerCancel(order),
     deliveryAgent:
-      assignment && order.status === OrderStatus.OUT_FOR_DELIVERY
-        ? { name: assignment.agent.name, mobile: assignment.agent.mobile }
+      deliveryTask && order.status === OrderStatus.OUT_FOR_DELIVERY
+        ? { name: deliveryTask.agent.name, mobile: deliveryTask.agent.mobile }
         : null,
     // Only ever returned at creation time; afterwards only the hash is stored.
     deliveryOtp: plainDeliveryOtp ?? null,
@@ -943,6 +1170,17 @@ export async function listOrders(
 /* Cancellation                                                               */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Cancels an order at the customer's request.
+ *
+ * V2: this is no longer a single state flip. Before any seller has been
+ * engaged (still PENDING_PAYMENT) the whole order cancels via
+ * `transitionOrder`, which cascades to every SellerOrder. Once seller
+ * portions exist, only the ones STILL in NEW/ACCEPTED are individually
+ * cancelled — one seller already PREPARING keeps preparing; the parent's
+ * aggregate status (PARTIALLY_CANCELLED vs CANCELLED) is derived from the
+ * result, never chosen here directly (#8/#18).
+ */
 export async function cancelOrder(
   userId: string,
   orderId: string,
@@ -960,13 +1198,28 @@ export async function cancelOrder(
     });
   }
 
-  await transitionOrder({
-    orderId,
-    toStatus: OrderStatus.CANCELLED,
-    actorType: ActorType.CUSTOMER,
-    actorUserId: userId,
-    reason,
-  });
+  if (order.status === OrderStatus.PENDING_PAYMENT) {
+    await transitionOrder({
+      orderId,
+      toStatus: OrderStatus.CANCELLED,
+      actorType: ActorType.CUSTOMER,
+      actorUserId: userId,
+      reason,
+    });
+  } else {
+    const cancellable = order.sellerOrders.filter(
+      (so) => so.status === SellerOrderStatus.NEW || so.status === SellerOrderStatus.ACCEPTED,
+    );
+    for (const sellerOrder of cancellable) {
+      await transitionSellerOrder({
+        sellerOrderId: sellerOrder.id,
+        toStatus: SellerOrderStatus.CANCELLED,
+        actorType: ActorType.CUSTOMER,
+        actorUserId: userId,
+        reason,
+      });
+    }
+  }
 
   return getOrderDetail(userId, orderId);
 }

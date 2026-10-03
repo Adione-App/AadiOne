@@ -41,6 +41,7 @@ export type CatalogStackParamList = {
     title: string;
   };
   OrderTracking: { orderId: string };
+  Notifications: undefined;
 };
 
 export type CartStackParamList = {

@@ -317,7 +317,7 @@ describe('POST /auth/admin/login', () => {
   const EMAIL = 'owner@adione.test';
   const PASSWORD = 'TestAdmin@123';
 
-  async function createAdmin(role: UserRole = UserRole.STORE_OWNER): Promise<void> {
+  async function createAdmin(role: UserRole = UserRole.ADMIN): Promise<void> {
     await prisma.user.create({
       data: {
         mobile: '0000000001',
@@ -339,7 +339,7 @@ describe('POST /auth/admin/login', () => {
     const data = expectSuccess<{ user: { role: string }; tokens: { accessToken: string } }>(
       res.body,
     ).data;
-    expect(data.user.role).toBe(UserRole.STORE_OWNER);
+    expect(data.user.role).toBe(UserRole.ADMIN);
     expect(data.tokens.accessToken).toBeTruthy();
   });
 

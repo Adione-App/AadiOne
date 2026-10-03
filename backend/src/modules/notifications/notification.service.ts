@@ -9,10 +9,26 @@
  * written inside the caller's flow, then dispatched separately. A push that
  * fails is retried from the row rather than lost, and — crucially — a failing
  * push provider can never roll back an order.
+ *
+ * V2: three FEEDS on the one table, by `audience` — CUSTOMER (the shopping
+ * app), SELLER (a seller panel; rows also carry `sellerId`) and ADMIN.
+ * Every business event carries a deterministic `dedupeKey`, UNIQUE per user,
+ * so a repeated/retried operation never notifies the same person twice.
  */
 
 import jwt from 'jsonwebtoken';
-import { NotificationChannel, NotificationStatus, NotificationType } from '../../shared';
+import {
+  ADMIN_PANEL_ROLES,
+  ErrorCode,
+  NotificationAudience,
+  NotificationChannel,
+  NotificationStatus,
+  NotificationType,
+  ROLE_PERMISSIONS,
+  type CursorPage,
+  type Permission,
+} from '../../shared';
+import { AppError } from '../../common/errors';
 import { formatPaise } from '../../shared/money';
 import { env } from '../../config/env';
 import { prisma } from '../../infra/db/prisma';
@@ -145,31 +161,43 @@ log.info({ provider: provider.name }, 'notification provider initialised');
 /* Copy                                                                       */
 /* -------------------------------------------------------------------------- */
 
+export interface NotifyContext {
+  orderNumber?: string;
+  totalPaise?: number;
+  amountPaise?: number;
+  etaMinutes?: number | null;
+  reason?: string | null;
+  sellerName?: string;
+  productName?: string;
+  status?: string;
+  count?: number;
+}
+
 /**
  * User-facing copy per event.
  *
  * Short, concrete, no jargon — these arrive as a phone banner and are read by
- * first-time smartphone users.
+ * first-time smartphone users (customers) or busy shop staff (sellers).
  */
-function compose(
-  type: NotificationType,
-  context: { orderNumber: string; totalPaise?: number; etaMinutes?: number | null; reason?: string | null },
-): { title: string; body: string } {
-  const order = context.orderNumber;
+function compose(type: NotificationType, c: NotifyContext): { title: string; body: string } {
+  const order = c.orderNumber ?? '';
+  const seller = c.sellerName ?? 'The store';
+  const money = (paise?: number) => (paise !== undefined ? formatPaise(paise) : '');
   switch (type) {
+    /* --- customer --------------------------------------------------------- */
     case NotificationType.ORDER_PLACED:
       return { title: 'Order placed', body: `We have received your order ${order}.` };
     case NotificationType.ORDER_ACCEPTED:
       return {
         title: 'Order confirmed',
-        body: context.etaMinutes
-          ? `The store is preparing your order. Arriving in about ${context.etaMinutes} mins.`
-          : 'The store has confirmed your order.',
+        body: c.etaMinutes
+          ? `${seller} is preparing your order. Arriving in about ${c.etaMinutes} mins.`
+          : `${seller} has confirmed your order ${order}.`,
       };
     case NotificationType.ORDER_PREPARING:
-      return { title: 'Preparing your order', body: `Your order ${order} is being packed.` };
+      return { title: 'Preparing your order', body: `${seller} is preparing your order ${order}.` };
     case NotificationType.ORDER_READY:
-      return { title: 'Order packed', body: 'Your order is packed and waiting for a delivery partner.' };
+      return { title: 'Order packed', body: `Your items from ${seller} are ready and waiting for a delivery partner.` };
     case NotificationType.ORDER_OUT_FOR_DELIVERY:
       return { title: 'Out for delivery', body: 'Your order is on the way. Please keep your phone nearby.' };
     case NotificationType.ORDER_DELIVERED:
@@ -177,12 +205,12 @@ function compose(
     case NotificationType.ORDER_CANCELLED:
       return {
         title: 'Order cancelled',
-        body: context.reason ? `Your order was cancelled: ${context.reason}` : 'Your order was cancelled.',
+        body: c.reason ? `Your order ${order} was cancelled: ${c.reason}` : `Your order ${order} was cancelled.`,
       };
     case NotificationType.ORDER_REJECTED:
       return {
         title: 'Order could not be accepted',
-        body: context.reason ?? 'The store could not accept your order. Any payment will be refunded.',
+        body: `${seller} could not accept your order.${c.reason ? ` ${c.reason}.` : ''} Any payment for it will be refunded.`,
       };
     case NotificationType.PAYMENT_FAILED:
       return {
@@ -190,72 +218,159 @@ function compose(
         body: 'Your payment did not go through. No money has been deducted, or it will be refunded.',
       };
     case NotificationType.PAYMENT_SUCCESS:
-      return {
-        title: 'Payment received',
-        body: context.totalPaise ? `We received ${formatPaise(context.totalPaise)}.` : 'Payment received.',
-      };
+      return { title: 'Payment received', body: c.totalPaise ? `We received ${money(c.totalPaise)} for order ${order}.` : 'Payment received.' };
     case NotificationType.REFUND_INITIATED:
-      return { title: 'Refund started', body: 'Your refund has been started and will reach you shortly.' };
+      return { title: 'Refund started', body: `Your refund of ${money(c.amountPaise)} for order ${order} has been started.` };
     case NotificationType.REFUND_COMPLETED:
-      return { title: 'Refund complete', body: 'Your refund has been processed.' };
+      return { title: 'Refund complete', body: `${money(c.amountPaise)} for order ${order} has been refunded.` };
     case NotificationType.BACK_IN_STOCK:
       return { title: 'Back in stock', body: 'An item you wanted is available again.' };
+
+    /* --- seller ----------------------------------------------------------- */
+    case NotificationType.SELLER_NEW_ORDER:
+      return { title: 'New order', body: `New order ${order} — ${money(c.amountPaise)}. Please accept it.` };
+    case NotificationType.SELLER_ORDER_CANCELLED:
+      return { title: 'Order cancelled', body: `Order ${order} was cancelled${c.reason ? `: ${c.reason}` : '.'}` };
+    case NotificationType.SELLER_ORDER_UPDATE:
+      return { title: 'Order update', body: `Order ${order} is now ${String(c.status ?? '').toLowerCase().replace(/_/g, ' ')}.` };
+    case NotificationType.SELLER_REFUND_ISSUED:
+      return { title: 'Refund issued', body: `${money(c.amountPaise)} was refunded to the customer for your cancelled order ${order}.` };
+    case NotificationType.SELLER_ONBOARDING_APPROVED:
+      return { title: 'You are approved', body: 'Your seller account has been approved. You can start selling.' };
+    case NotificationType.SELLER_ONBOARDING_REJECTED:
+      return { title: 'Onboarding needs changes', body: `Your onboarding was not approved${c.reason ? `: ${c.reason}` : '.'} Please update and resubmit.` };
+    case NotificationType.SELLER_PRODUCT_APPROVED:
+      return { title: 'Product approved', body: `"${c.productName ?? 'Your product'}" is approved and can now be listed.` };
+    case NotificationType.SELLER_PRODUCT_REJECTED:
+      return { title: 'Product not approved', body: `"${c.productName ?? 'Your product'}" was not approved${c.reason ? `: ${c.reason}` : '.'}` };
+    case NotificationType.SELLER_SETTLEMENT_CREATED:
+      return { title: 'Settlement created', body: `A settlement of ${money(c.amountPaise)} has been created for you.` };
+    case NotificationType.SELLER_SETTLEMENT_PROCESSING:
+      return { title: 'Payout in progress', body: `Your payout of ${money(c.amountPaise)} is being processed.` };
+    case NotificationType.SELLER_SETTLEMENT_PAID:
+      return { title: 'Payout sent', body: `${money(c.amountPaise)} has been paid to your bank account.` };
+    case NotificationType.SELLER_SETTLEMENT_FAILED:
+      return { title: 'Payout failed', body: `Your payout of ${money(c.amountPaise)} failed. AdiOne will retry it.` };
+
+    /* --- admin ------------------------------------------------------------ */
+    case NotificationType.ADMIN_ONBOARDING_SUBMITTED:
+      return { title: 'Seller onboarding to review', body: `${seller} submitted onboarding for review.` };
+    case NotificationType.ADMIN_PRODUCTS_SUBMITTED:
+      return { title: 'Products to review', body: `${seller} submitted ${c.count ?? 1} product(s) for approval.` };
+    case NotificationType.ADMIN_REFUND_FAILED:
+      return { title: 'Refund needs attention', body: `A ${money(c.amountPaise)} refund on order ${order} ${c.reason ?? 'failed'}.` };
+    case NotificationType.ADMIN_SETTLEMENT_FAILED:
+      return { title: 'Payout failed', body: `The ${money(c.amountPaise)} payout to ${seller} failed and needs a retry.` };
     default:
-      return { title: 'Order update', body: `There is an update on your order ${order}.` };
+      return { title: 'Update', body: order ? `There is an update on your order ${order}.` : 'There is an update for you.' };
   }
 }
 
 /* -------------------------------------------------------------------------- */
-/* Task 11.1 / 11.2                                                           */
+/* Queueing — with duplicate protection                                       */
 /* -------------------------------------------------------------------------- */
 
 export interface NotifyInput {
   userId: string;
   type: NotificationType;
+  /**
+   * Deterministic identity of the business event, e.g. `so:<id>:ACCEPTED`.
+   * UNIQUE per user (`notifications_user_id_dedupe_key_key`): a retried or
+   * repeated operation that produces the same key notifies nobody twice.
+   */
+  dedupeKey: string;
+  audience?: NotificationAudience;
+  /** Required for SELLER audience (DB CHECK `notifications_seller_scope`). */
+  sellerId?: string | null;
   orderId?: string | null;
-  orderNumber?: string;
-  totalPaise?: number;
-  etaMinutes?: number | null;
-  reason?: string | null;
+  context?: NotifyContext;
 }
 
 /**
- * Queues a notification and attempts delivery.
+ * Queues a notification and attempts delivery. Returns false when the event
+ * was already notified to this user (duplicate suppressed) or queueing failed.
  *
  * NEVER throws into the caller. An order must not fail because a push gateway
  * is down — the row is persisted first, and dispatch is best-effort with the
  * failure recorded for retry.
  */
-export async function notify(input: NotifyInput): Promise<void> {
-  const { title, body } = compose(input.type, {
-    orderNumber: input.orderNumber ?? '',
-    ...(input.totalPaise !== undefined ? { totalPaise: input.totalPaise } : {}),
-    etaMinutes: input.etaMinutes ?? null,
-    reason: input.reason ?? null,
-  });
+export async function notify(input: NotifyInput): Promise<boolean> {
+  const { title, body } = compose(input.type, input.context ?? {});
+  const audience = input.audience ?? NotificationAudience.CUSTOMER;
 
-  const record = await prisma.notification
-    .create({
+  // The ordinary repeat (a retried operation) is caught here quietly; the
+  // unique index is the backstop for two truly concurrent first attempts.
+  const existing = await prisma.notification
+    .findUnique({ where: { userId_dedupeKey: { userId: input.userId, dedupeKey: input.dedupeKey } }, select: { id: true } })
+    .catch(() => null);
+  if (existing) {
+    log.debug({ type: input.type, dedupeKey: input.dedupeKey }, 'duplicate notification suppressed');
+    return false;
+  }
+
+  let recordId: string | null = null;
+  try {
+    const record = await prisma.notification.create({
       data: {
         userId: input.userId,
         orderId: input.orderId ?? null,
         type: input.type,
+        audience,
+        sellerId: audience === NotificationAudience.SELLER ? (input.sellerId ?? null) : null,
+        dedupeKey: input.dedupeKey,
         channel: NotificationChannel.PUSH,
         title,
         body,
-        data: { orderId: input.orderId ?? '', type: input.type } as never,
+        data: { orderId: input.orderId ?? '', type: input.type, audience } as never,
       },
-    })
-    .catch((error) => {
-      log.error({ err: error, type: input.type }, 'failed to queue notification');
-      return null;
+      select: { id: true },
     });
+    recordId = record.id;
+  } catch (error) {
+    if ((error as { code?: string }).code === 'P2002') {
+      log.debug({ type: input.type, dedupeKey: input.dedupeKey }, 'duplicate notification suppressed');
+    } else {
+      log.error({ err: error, type: input.type }, 'failed to queue notification');
+    }
+    return false;
+  }
 
-  if (!record) return;
+  void dispatch(recordId).catch((error) => log.error({ err: error, notificationId: recordId }, 'dispatch failed'));
+  return true;
+}
 
-  void dispatch(record.id).catch((error) =>
-    log.error({ err: error, notificationId: record.id }, 'dispatch failed'),
-  );
+type FanOutInput = Omit<NotifyInput, 'userId' | 'audience' | 'sellerId'>;
+
+/** Every active staff user of one seller, on that seller's SELLER feed. */
+export async function notifySeller(sellerId: string, input: FanOutInput): Promise<void> {
+  try {
+    const staff = await prisma.sellerStaff.findMany({
+      where: { sellerId, isActive: true, deletedAt: null, user: { deletedAt: null, status: 'ACTIVE' } },
+      select: { userId: true },
+    });
+    for (const { userId } of staff) {
+      await notify({ ...input, userId, audience: NotificationAudience.SELLER, sellerId });
+    }
+  } catch (error) {
+    log.error({ err: error, sellerId, type: input.type }, 'seller notification fan-out failed');
+  }
+}
+
+/** Admin-panel users whose role holds `permission` — the same rule that
+ * decides whether they may act on the event. */
+export async function notifyAdmins(permission: Permission, input: FanOutInput): Promise<void> {
+  try {
+    const roles = ADMIN_PANEL_ROLES.filter((role) => ROLE_PERMISSIONS[role].includes(permission));
+    const admins = await prisma.user.findMany({
+      where: { role: { in: [...roles] }, deletedAt: null, status: 'ACTIVE' },
+      select: { id: true },
+    });
+    for (const { id } of admins) {
+      await notify({ ...input, userId: id, audience: NotificationAudience.ADMIN });
+    }
+  } catch (error) {
+    log.error({ err: error, permission, type: input.type }, 'admin notification fan-out failed');
+  }
 }
 
 async function dispatch(notificationId: string): Promise<void> {
@@ -268,7 +383,7 @@ async function dispatch(notificationId: string): Promise<void> {
   const tokens = notification.user.deviceTokens;
   if (tokens.length === 0) {
     // No device registered yet. The row remains as the in-app feed entry —
-    // the customer still sees the update when they open the app.
+    // the user still sees the update when they open the app/panel.
     return;
   }
 
@@ -281,7 +396,7 @@ async function dispatch(notificationId: string): Promise<void> {
         token: device.token,
         title: notification.title,
         body: notification.body,
-        data: { orderId: notification.orderId ?? '', type: notification.type },
+        data: { orderId: notification.orderId ?? '', type: notification.type, audience: notification.audience },
       });
       messageId ??= result.messageId;
     } catch (error) {
@@ -315,19 +430,94 @@ export async function retryPending(limit = 50): Promise<number> {
   return pending.length;
 }
 
-export async function listForUser(userId: string, limit = 50) {
-  return prisma.notification.findMany({
-    where: { userId },
-    orderBy: { createdAt: 'desc' },
-    take: limit,
-  });
+/* -------------------------------------------------------------------------- */
+/* Feeds — always scoped to (user, audience[, seller])                        */
+/* -------------------------------------------------------------------------- */
+
+export interface FeedScope {
+  userId: string;
+  audience: NotificationAudience;
+  /** SELLER feeds only: the seller the request acts as. */
+  sellerId?: string;
 }
 
-export async function markRead(userId: string, notificationId: string): Promise<void> {
-  await prisma.notification.updateMany({
-    where: { id: notificationId, userId },
-    data: { status: NotificationStatus.READ, readAt: new Date() },
+const scopeWhere = (scope: FeedScope) => ({
+  userId: scope.userId,
+  audience: scope.audience,
+  ...(scope.audience === NotificationAudience.SELLER ? { sellerId: scope.sellerId ?? '00000000-0000-0000-0000-000000000000' } : {}),
+});
+
+function toDto(n: {
+  id: string;
+  type: NotificationType;
+  audience: NotificationAudience;
+  title: string;
+  body: string;
+  orderId: string | null;
+  sellerId: string | null;
+  readAt: Date | null;
+  createdAt: Date;
+}) {
+  return {
+    id: n.id,
+    type: n.type,
+    audience: n.audience,
+    title: n.title,
+    body: n.body,
+    orderId: n.orderId,
+    sellerId: n.sellerId,
+    isRead: n.readAt !== null,
+    readAt: n.readAt?.toISOString() ?? null,
+    createdAt: n.createdAt.toISOString(),
+  };
+}
+
+export async function listFeed(
+  scope: FeedScope,
+  options: { cursor?: string | null; limit: number; unreadOnly?: boolean },
+): Promise<CursorPage<ReturnType<typeof toDto>>> {
+  const rows = await prisma.notification.findMany({
+    where: {
+      ...scopeWhere(scope),
+      ...(options.unreadOnly ? { readAt: null } : {}),
+      ...(options.cursor ? { createdAt: { lt: new Date(options.cursor) } } : {}),
+    },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take: options.limit + 1,
   });
+  const hasMore = rows.length > options.limit;
+  const page = hasMore ? rows.slice(0, options.limit) : rows;
+  const last = page[page.length - 1];
+  return {
+    items: page.map(toDto),
+    hasMore,
+    nextCursor: hasMore && last ? last.createdAt.toISOString() : null,
+  };
+}
+
+export async function unreadCount(scope: FeedScope): Promise<{ unread: number }> {
+  return { unread: await prisma.notification.count({ where: { ...scopeWhere(scope), readAt: null } }) };
+}
+
+/** Idempotent; another user's (or feed's) notification is reported exactly
+ * like a missing one. */
+export async function markRead(scope: FeedScope, notificationId: string): Promise<void> {
+  const { count } = await prisma.notification.updateMany({
+    where: { id: notificationId, ...scopeWhere(scope), readAt: null },
+    data: { readAt: new Date() },
+  });
+  if (count === 0) {
+    const exists = await prisma.notification.count({ where: { id: notificationId, ...scopeWhere(scope) } });
+    if (exists === 0) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Notification not found.' });
+  }
+}
+
+export async function markAllRead(scope: FeedScope): Promise<{ updated: number }> {
+  const { count } = await prisma.notification.updateMany({
+    where: { ...scopeWhere(scope), readAt: null },
+    data: { readAt: new Date() },
+  });
+  return { updated: count };
 }
 
 export async function registerDevice(input: {

@@ -14,11 +14,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 
-import { OrderStatus, type CreatePaymentResponse } from "@shared";
+import { OrderStatus } from "@shared";
 import { formatPaise } from "@shared/money";
 import { colors, radius, spacing } from "@shared/theme";
 import { api, ApiRequestError } from "@/lib/api";
+import type { CreatePaymentResult } from "@/lib/payments";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
+import CashfreeCheckout from "./CashfreeCheckout";
 
 import {
   AppText,
@@ -83,7 +85,7 @@ export default function UpiPaymentScreen({
   const intent = useQuery({
     queryKey: ["payment-intent", orderId],
     queryFn: () =>
-      api.post<CreatePaymentResponse>(
+      api.post<CreatePaymentResult>(
         "/payments/create",
         { orderId },
         paymentIdempotencyKey,
@@ -254,7 +256,22 @@ export default function UpiPaymentScreen({
   }
 
   if (intent.isLoading) {
-    return <Loading label="Preparing UPI payment…" />;
+    return <Loading label="Preparing payment…" />;
+  }
+
+  // Gateway mode (Cashfree): the server issued a checkout session. None of
+  // the UPI-intent / "I have paid" flow below applies.
+  if (intent.data?.cashfree) {
+    return (
+      <CashfreeCheckout
+        orderId={orderId}
+        amountPaise={intent.data.amountPaise}
+        initialCheckout={intent.data.cashfree}
+        onPaid={onPaid}
+        onCancel={onCancel}
+        onCancelled={onCancelled}
+      />
+    );
   }
 
   if (intent.isError || !intent.data || !intent.data.upiIntentUrl) {

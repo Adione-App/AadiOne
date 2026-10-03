@@ -290,11 +290,17 @@ export default function App() {
           // queries hit the network fresh every time they're first observed
           // in a session (see `refetchOnMount: 'always'` on them in
           // queries.ts) — persistence would only reintroduce that staleness
-          // window, not help it.
+          // window, not help it. Notifications are excluded for the same
+          // reason, and because they are one customer's private messages.
           dehydrateOptions: {
             shouldDehydrateQuery: (query) => {
               const rootKey = query.queryKey[0];
-              return rootKey !== "cart" && rootKey !== "orders" && rootKey !== "order";
+              return (
+                rootKey !== "cart" &&
+                rootKey !== "orders" &&
+                rootKey !== "order" &&
+                rootKey !== "notifications"
+              );
             },
           },
         }}

@@ -78,7 +78,7 @@ orderRouter.post(
       expectedItems: z
         .array(
           z.object({
-            variantId: uuid,
+            sellerListingId: uuid,
             unitPricePaise: z.number().int().min(0),
           }),
         )
@@ -94,7 +94,7 @@ orderRouter.post(
       couponCode?: string | null;
       notes?: string | null;
       expectedTotalPaise?: number;
-      expectedItems?: { variantId: string; unitPricePaise: number }[];
+      expectedItems?: { sellerListingId: string; unitPricePaise: number }[];
     };
 
     const result = await service.placeOrder({

@@ -77,6 +77,6 @@ export const CacheKey = {
   otpAttempts: (mobile: string) => `otp:attempts:${mobile}`,
   otpResendCooldown: (mobile: string) => `otp:cooldown:${mobile}`,
   rateLimit: (scope: string, identifier: string) => `rl:${scope}:${identifier}`,
-  config: (storeId: string) => `config:${storeId}`,
-  storeOpen: (storeId: string) => `store:open:${storeId}`,
+  config: (sellerId: string) => `config:${sellerId}`,
+  sellerOpen: (sellerId: string) => `seller:open:${sellerId}`,
 } as const;

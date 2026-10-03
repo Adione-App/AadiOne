@@ -9,7 +9,9 @@ import { requireUser } from '../../middleware/auth';
 import * as authService from './auth.service';
 import type {
   AdminLoginInput,
+  ChangePasswordInput,
   LoginInput,
+  SellerLoginInput,
   SendOtpInput,
   SignupInput,
   UpdateProfileInput,
@@ -77,6 +79,30 @@ export async function adminLogin(req: Request, res: Response): Promise<void> {
       requireStaffRole: true,
     }),
   );
+}
+
+/**
+ * POST /auth/seller/login
+ *
+ * Same credentials path, but the ACCOUNT must be a seller-panel role with an
+ * active seller membership. The login screen's Admin/Seller choice is only
+ * which endpoint it calls — never an input to authorization.
+ */
+export async function sellerLogin(req: Request, res: Response): Promise<void> {
+  const { email, password } = req.body as SellerLoginInput;
+  ok(res, await authService.sellerLogin(email, password, contextOf(req)));
+}
+
+/** POST /auth/change-password — the signed-in user's own password. */
+export async function changePassword(req: Request, res: Response): Promise<void> {
+  const user = requireUser(req);
+  const { currentPassword, newPassword } = req.body as ChangePasswordInput;
+  ok(res, await authService.changePassword(user.id, currentPassword, newPassword, contextOf(req)));
+}
+
+/** GET /auth/password-status — has a password, and is it a temporary one? */
+export async function passwordStatus(req: Request, res: Response): Promise<void> {
+  ok(res, await authService.getPasswordStatus(requireUser(req).id));
 }
 
 /** POST /auth/refresh */

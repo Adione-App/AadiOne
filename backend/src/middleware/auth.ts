@@ -15,7 +15,14 @@
  */
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import { ErrorCode, Permission, UserRole, roleHasPermission, isAdminRole } from '../shared';
+import {
+  ErrorCode,
+  Permission,
+  UserRole,
+  roleHasPermission,
+  isAdminRole,
+  isSellerRole,
+} from '../shared';
 import { AppError } from '../common/errors';
 import { setRequestContextValues } from '../common/request-context';
 import { verifyAccessToken } from '../modules/auth/token.service';
@@ -134,6 +141,28 @@ export const requireAdmin: RequestHandler = (req, _res, next) => {
     return next(
       new AppError(ErrorCode.FORBIDDEN, {
         internalMessage: `role ${req.user.role} is not an admin role`,
+      }),
+    );
+  }
+  next();
+};
+
+/** Any seller-panel role — the coarse gate on the whole /seller namespace.
+ * Admin roles ALSO pass this (they have full cross-seller access, #26) — see
+ * middleware/sellerAuth.ts's `attachSellerContext` for how the two then
+ * differ in which seller they may actually act as. */
+export const requireSellerOrAdmin: RequestHandler = (req, _res, next) => {
+  if (!req.user) {
+    return next(
+      new AppError(ErrorCode.UNAUTHENTICATED, {
+        internalMessage: 'requireSellerOrAdmin used without authenticate',
+      }),
+    );
+  }
+  if (!isSellerRole(req.user.role) && !isAdminRole(req.user.role)) {
+    return next(
+      new AppError(ErrorCode.FORBIDDEN, {
+        internalMessage: `role ${req.user.role} is not a seller or admin role`,
       }),
     );
   }

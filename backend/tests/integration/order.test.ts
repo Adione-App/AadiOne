@@ -30,11 +30,11 @@ async function setup(): Promise<{ session: Session; storeId: string }> {
   return { session, storeId };
 }
 
-async function addToCart(token: string, variantId: string, qty = 1): Promise<void> {
+async function addToCart(token: string, sellerListingId: string, qty = 1): Promise<void> {
   await api()
     .post('/api/v1/cart/items')
     .set('Authorization', bearer(token))
-    .send({ variantId, qty })
+    .send({ sellerListingId, qty })
     .expect(200);
 }
 
@@ -64,7 +64,7 @@ describe('COD order — happy path', () => {
     const product = await seedProduct(storeId, { pricePaise: 24900, mrpPaise: 28500, stockQty: 10 });
     const addressId = await seedAddress(session.userId);
 
-    await addToCart(session.accessToken, product.variantId, 2);
+    await addToCart(session.accessToken, product.storeVariantId, 2);
 
     const res = await placeOrder(session.accessToken, {
       addressId,
@@ -85,7 +85,7 @@ describe('COD order — happy path', () => {
     }>(res.body).data;
 
     // COD skips PENDING_PAYMENT entirely — there is nothing to wait for.
-    expect(order.status).toBe(OrderStatus.ORDER_PLACED);
+    expect(order.status).toBe(OrderStatus.PROCESSING);
     expect(requiresPayment).toBe(false);
     expect(order.orderNumber).toMatch(/^AD\d{6}[A-Z0-9]{6}$/);
     expect(order.bill.itemsSubtotalPaise).toBe(49800);
@@ -98,7 +98,7 @@ describe('COD order — happy path', () => {
     expect(stored.deliveryOtpHash).not.toBe(order.deliveryOtp);
 
     // Stock left the shelf; nothing is left reserved.
-    const offer = await prisma.storeVariant.findUniqueOrThrow({
+    const offer = await prisma.sellerListing.findUniqueOrThrow({
       where: { id: product.storeVariantId },
     });
     expect(offer.stockQty).toBe(8);
@@ -119,7 +119,7 @@ describe('COD order — happy path', () => {
     const { session, storeId } = await setup();
     const product = await seedProduct(storeId, { stockQty: 10 });
     const addressId = await seedAddress(session.userId);
-    await addToCart(session.accessToken, product.variantId, 3);
+    await addToCart(session.accessToken, product.storeVariantId, 3);
 
     const res = await placeOrder(session.accessToken, {
       addressId,
@@ -133,7 +133,7 @@ describe('COD order — happy path', () => {
     expect(data.requiresPayment).toBe(true);
 
     // Goods are still on the shelf, but spoken for.
-    const offer = await prisma.storeVariant.findUniqueOrThrow({
+    const offer = await prisma.sellerListing.findUniqueOrThrow({
       where: { id: product.storeVariantId },
     });
     expect(offer.stockQty).toBe(10);
@@ -159,7 +159,7 @@ describe('overselling', () => {
         await otpService.clearOtpState(mobile);
         const session = await loginAs(mobile);
         const addressId = await seedAddress(session.userId);
-        await addToCart(session.accessToken, product.variantId, 1);
+        await addToCart(session.accessToken, product.storeVariantId, 1);
         return { session, addressId };
       }),
     );
@@ -186,7 +186,7 @@ describe('overselling', () => {
       );
     }
 
-    const offer = await prisma.storeVariant.findUniqueOrThrow({
+    const offer = await prisma.sellerListing.findUniqueOrThrow({
       where: { id: product.storeVariantId },
     });
     expect(offer.stockQty).toBe(0);
@@ -200,8 +200,8 @@ describe('overselling', () => {
     const addressId = await seedAddress(session.userId);
 
     // Add 2 (all of it), then drop stock underneath the cart.
-    await addToCart(session.accessToken, product.variantId, 2);
-    await prisma.storeVariant.update({
+    await addToCart(session.accessToken, product.storeVariantId, 2);
+    await prisma.sellerListing.update({
       where: { id: product.storeVariantId },
       data: { stockQty: 1 },
     });
@@ -222,7 +222,7 @@ describe('idempotency', () => {
     const { session, storeId } = await setup();
     const product = await seedProduct(storeId, { stockQty: 10 });
     const addressId = await seedAddress(session.userId);
-    await addToCart(session.accessToken, product.variantId, 1);
+    await addToCart(session.accessToken, product.storeVariantId, 1);
 
     const key = randomUUID();
     const body = { addressId, paymentMethod: PaymentMethod.COD };
@@ -240,7 +240,7 @@ describe('idempotency', () => {
 
     expect(await prisma.order.count()).toBe(1);
     // And stock moved exactly once.
-    const offer = await prisma.storeVariant.findUniqueOrThrow({
+    const offer = await prisma.sellerListing.findUniqueOrThrow({
       where: { id: product.storeVariantId },
     });
     expect(offer.stockQty).toBe(9);
@@ -250,7 +250,7 @@ describe('idempotency', () => {
     const { session, storeId } = await setup();
     const product = await seedProduct(storeId, { stockQty: 10 });
     const addressA = await seedAddress(session.userId);
-    await addToCart(session.accessToken, product.variantId, 1);
+    await addToCart(session.accessToken, product.storeVariantId, 1);
 
     const key = randomUUID();
     await placeOrder(session.accessToken, { addressId: addressA, paymentMethod: 'COD' }, key);
@@ -269,7 +269,7 @@ describe('idempotency', () => {
     const { session, storeId } = await setup();
     const product = await seedProduct(storeId, {});
     const addressId = await seedAddress(session.userId);
-    await addToCart(session.accessToken, product.variantId, 1);
+    await addToCart(session.accessToken, product.storeVariantId, 1);
 
     const res = await api()
       .post('/api/v1/orders')
@@ -293,8 +293,8 @@ describe('order-time re-validation', () => {
     });
     const addressId = await seedAddress(session.userId);
 
-    await addToCart(session.accessToken, ok.variantId, 1);
-    await addToCart(session.accessToken, denied.variantId, 1);
+    await addToCart(session.accessToken, ok.storeVariantId, 1);
+    await addToCart(session.accessToken, denied.storeVariantId, 1);
 
     const res = await placeOrder(session.accessToken, {
       addressId,
@@ -318,7 +318,7 @@ describe('order-time re-validation', () => {
     const { session, storeId } = await setup();
     const product = await seedProduct(storeId, {});
     const addressId = await seedAddress(session.userId, FAR);
-    await addToCart(session.accessToken, product.variantId, 1);
+    await addToCart(session.accessToken, product.storeVariantId, 1);
 
     const res = await placeOrder(session.accessToken, {
       addressId,
@@ -333,7 +333,7 @@ describe('order-time re-validation', () => {
     // IDOR: knowing an address id must not be enough to deliver to it.
     const { session, storeId } = await setup();
     const product = await seedProduct(storeId, {});
-    await addToCart(session.accessToken, product.variantId, 1);
+    await addToCart(session.accessToken, product.storeVariantId, 1);
 
     await otpService.clearOtpState('9812345678');
     const other = await loginAs('9812345678');
@@ -355,7 +355,7 @@ describe('order-time re-validation', () => {
     });
     const product = await seedProduct(storeId, { pricePaise: 1000, mrpPaise: 1000 });
     const addressId = await seedAddress(session.userId);
-    await addToCart(session.accessToken, product.variantId, 1);
+    await addToCart(session.accessToken, product.storeVariantId, 1);
 
     const res = await placeOrder(session.accessToken, {
       addressId,
@@ -370,7 +370,7 @@ describe('order-time re-validation', () => {
     const { session, storeId } = await setup();
     const product = await seedProduct(storeId, { pricePaise: 10000, mrpPaise: 12000 });
     const addressId = await seedAddress(session.userId);
-    await addToCart(session.accessToken, product.variantId, 1);
+    await addToCart(session.accessToken, product.storeVariantId, 1);
 
     // The customer saw a total based on the old price; the shop then raised it.
     const res = await placeOrder(session.accessToken, {
@@ -403,9 +403,9 @@ describe('cart revalidation', () => {
   it('removes an out-of-stock item and says so, instead of silently dropping it', async () => {
     const { session, storeId } = await setup();
     const product = await seedProduct(storeId, { name: 'Tata Salt', stockQty: 5 });
-    await addToCart(session.accessToken, product.variantId, 2);
+    await addToCart(session.accessToken, product.storeVariantId, 2);
 
-    await prisma.storeVariant.update({
+    await prisma.sellerListing.update({
       where: { id: product.storeVariantId },
       data: { stockQty: 0 },
     });
@@ -430,9 +430,9 @@ describe('cart revalidation', () => {
   it('reduces quantity to what is left, with a notice', async () => {
     const { session, storeId } = await setup();
     const product = await seedProduct(storeId, { name: 'Amul Milk', stockQty: 5 });
-    await addToCart(session.accessToken, product.variantId, 4);
+    await addToCart(session.accessToken, product.storeVariantId, 4);
 
-    await prisma.storeVariant.update({
+    await prisma.sellerListing.update({
       where: { id: product.storeVariantId },
       data: { stockQty: 2 },
     });
@@ -459,7 +459,7 @@ describe('cart revalidation', () => {
     // Structural guarantee: there is nowhere for a stale price to live.
     const { session, storeId } = await setup();
     const product = await seedProduct(storeId, {});
-    await addToCart(session.accessToken, product.variantId, 1);
+    await addToCart(session.accessToken, product.storeVariantId, 1);
 
     const row = await prisma.cartItem.findFirstOrThrow();
     expect(Object.keys(row)).not.toContain('pricePaise');
@@ -472,7 +472,7 @@ describe('cancellation', () => {
     const { session, storeId } = await setup();
     const product = await seedProduct(storeId, { stockQty: 10 });
     const addressId = await seedAddress(session.userId);
-    await addToCart(session.accessToken, product.variantId, 2);
+    await addToCart(session.accessToken, product.storeVariantId, 2);
 
     const placed = await placeOrder(session.accessToken, {
       addressId,
@@ -488,7 +488,7 @@ describe('cancellation', () => {
 
     expect(expectSuccess<{ status: string }>(res.body).data.status).toBe(OrderStatus.CANCELLED);
 
-    const offer = await prisma.storeVariant.findUniqueOrThrow({
+    const offer = await prisma.sellerListing.findUniqueOrThrow({
       where: { id: product.storeVariantId },
     });
     expect(offer.stockQty).toBe(10); // restocked

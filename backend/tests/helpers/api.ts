@@ -14,7 +14,7 @@ import type { ApiError, ApiSuccess } from '../../src/shared';
 
 let app: Express | undefined;
 
-export function api(): request.SuperTest<request.Test> {
+export function api(): request.Agent {
   app ??= createApp();
   return request(app);
 }

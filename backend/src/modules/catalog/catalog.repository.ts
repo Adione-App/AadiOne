@@ -1,15 +1,50 @@
 /**
- * Catalog data access.
+ * Catalog data access — the customer marketplace, across every seller.
  *
  * Listing and search resolve product IDS in SQL (where the partial in-stock
  * index lives and where `stock_qty - reserved_qty` can actually be compared),
  * then hydrate them with Prisma. Filtering in SQL and hydrating with the ORM
  * keeps pagination correct without hand-writing every join.
+ *
+ * WHO IS IN THE MARKETPLACE: a listing counts when its seller is live (not
+ * deleted, switched on by admin, onboarding APPROVED — the orderability gate)
+ * and is not a restaurant (restaurants have their own menu surface,
+ * /restaurants). There is no special store: Aadione is one of these sellers.
+ *
+ * CATEGORIES are owned by sellers. Two sellers' "Grocery › Rice" are separate
+ * rows with the same materialised path ("grocery/rice"), so filtering by path
+ * naturally merges them for the customer. A product is visible only while its
+ * own category and that category's top category are both switched on.
  */
 
 import { Prisma, type Category } from "@prisma/client";
 import { ProductStatus } from "../../shared";
 import { prisma, type DbClient } from "../../infra/db/prisma";
+
+/** SQL predicate on `sellers s`: a live, non-restaurant marketplace seller. */
+export const MARKETPLACE_SELLER_SQL = Prisma.sql`s.deleted_at IS NULL AND s.is_active AND s.onboarding_status = 'APPROVED' AND s.seller_type <> 'RESTAURANT'`;
+
+/** The same rule for Prisma `where` clauses on a listing's seller. */
+export const MARKETPLACE_SELLER_WHERE = {
+  deletedAt: null,
+  isActive: true,
+  onboardingStatus: "APPROVED",
+  sellerType: { not: "RESTAURANT" },
+} as const satisfies Prisma.SellerWhereInput;
+
+/**
+ * Joins for a product row `p` (+ category `c`) that keep only live variants
+ * listed by marketplace sellers under switched-on categories. `sl`/`s` are
+ * the listing and its seller.
+ */
+const LISTED_JOINS = Prisma.sql`
+    JOIN categories c ON c.id = p.category_id AND c.is_active AND c.deleted_at IS NULL
+    JOIN categories top ON top.id = COALESCE(c.parent_id, c.id) AND top.is_active AND top.deleted_at IS NULL
+    JOIN product_variants v ON v.product_id = p.id AND v.status = 'ACTIVE' AND v.deleted_at IS NULL
+    JOIN seller_listings sl ON sl.variant_id = v.id
+    JOIN sellers s ON s.id = sl.seller_id AND ${MARKETPLACE_SELLER_SQL}`;
+
+const PUBLIC_PRODUCT_SQL = Prisma.sql`p.status = 'ACTIVE' AND p.deleted_at IS NULL AND p.approval_status = 'APPROVED'`;
 
 /* -------------------------------------------------------------------------- */
 /* Categories                                                                 */
@@ -38,54 +73,68 @@ export async function findCategoryBySlug(
   return client.category.findFirst({ where: { slug, deletedAt: null } });
 }
 
-/** Live product counts per leaf category, for the sidebar. */
-export async function countProductsByCategory(
-  storeId: string,
+/** Live categories owned by marketplace sellers — the raw material of the customer tree. */
+export async function findMarketplaceCategories(client: DbClient = prisma): Promise<Category[]> {
+  return client.category.findMany({
+    where: { isActive: true, deletedAt: null, seller: MARKETPLACE_SELLER_WHERE },
+    orderBy: [{ depth: "asc" }, { displayOrder: "asc" }, { createdAt: "asc" }],
+  });
+}
+
+/**
+ * Customer-visible products per exact category path (one count per distinct
+ * product). The tree merges paths across sellers and sums descendants.
+ */
+export async function countProductsByPath(
   client: DbClient = prisma,
 ): Promise<Map<string, number>> {
-  const rows = await client.$queryRaw<{ category_id: string; count: bigint }[]>`
-    SELECT p.category_id, COUNT(DISTINCT p.id) AS count
+  const rows = await client.$queryRaw<{ path: string; count: bigint }[]>`
+    SELECT c.path, COUNT(DISTINCT p.id) AS count
     FROM products p
-    JOIN product_variants v ON v.product_id = p.id
-      AND v.status = 'ACTIVE' AND v.deleted_at IS NULL
-    JOIN store_variants sv ON sv.variant_id = v.id AND sv.store_id = ${storeId}::uuid
-    WHERE p.status = 'ACTIVE' AND p.deleted_at IS NULL
-    GROUP BY p.category_id`;
+    ${LISTED_JOINS}
+    WHERE ${PUBLIC_PRODUCT_SQL}
+    GROUP BY c.path`;
 
-  return new Map(rows.map((row) => [row.category_id, Number(row.count)]));
+  return new Map(rows.map((row) => [row.path, Number(row.count)]));
 }
 
 /* -------------------------------------------------------------------------- */
 /* Products                                                                   */
 /* -------------------------------------------------------------------------- */
 
-/** Everything needed to render a product card or page in one round trip. */
-export const PRODUCT_INCLUDE = (storeId: string) =>
-  ({
-    brand: true,
-    category: true,
-    images: { orderBy: { displayOrder: "asc" } },
-    variants: {
-      where: { status: ProductStatus.ACTIVE, deletedAt: null },
-      orderBy: [{ isDefault: "desc" }, { displayOrder: "asc" }],
-      include: { storeVariants: { where: { storeId } } },
+/**
+ * Everything needed to render a product card or page in one round trip —
+ * with the offers of every marketplace seller that lists each variant.
+ */
+export const PRODUCT_INCLUDE = {
+  brand: true,
+  category: true,
+  images: { orderBy: { displayOrder: "asc" } },
+  variants: {
+    where: { status: ProductStatus.ACTIVE, deletedAt: null },
+    orderBy: [{ isDefault: "desc" }, { displayOrder: "asc" }],
+    include: {
+      sellerListings: {
+        where: { seller: MARKETPLACE_SELLER_WHERE },
+        include: { seller: { select: { id: true, name: true, allowCod: true } } },
+      },
     },
-  }) satisfies Prisma.ProductInclude;
+  },
+} satisfies Prisma.ProductInclude;
 
 export type HydratedProduct = Prisma.ProductGetPayload<{
-  include: ReturnType<typeof PRODUCT_INCLUDE>;
+  include: typeof PRODUCT_INCLUDE;
 }>;
 
 export async function hydrateProducts(
   productIds: string[],
-  storeId: string,
   client: DbClient = prisma,
 ): Promise<HydratedProduct[]> {
   if (productIds.length === 0) return [];
 
   const products = await client.product.findMany({
     where: { id: { in: productIds } },
-    include: PRODUCT_INCLUDE(storeId),
+    include: PRODUCT_INCLUDE,
   });
 
   // Preserve the ordering the SQL query decided (relevance, popularity, price).
@@ -97,12 +146,13 @@ export async function hydrateProducts(
 
 export async function findProductById(
   id: string,
-  storeId: string,
   client: DbClient = prisma,
 ): Promise<HydratedProduct | null> {
+  // Only an APPROVED product is public — the same gate orderability uses
+  // (cart/orderability.ts), so nothing is shown that can't be bought.
   return client.product.findFirst({
-    where: { id, deletedAt: null },
-    include: PRODUCT_INCLUDE(storeId),
+    where: { id, deletedAt: null, approvalStatus: 'APPROVED' },
+    include: PRODUCT_INCLUDE,
   });
 }
 
@@ -115,8 +165,7 @@ export type ProductSort =
   | "DISCOUNT";
 
 export interface ListProductIdsInput {
-  storeId: string;
-  /** Matches the category and everything beneath it, via the materialised path. */
+  /** Matches the category and everything beneath it, via the materialised path — across sellers. */
   categoryPath?: string | null;
   brandId?: string | null;
   inStockOnly?: boolean;
@@ -131,11 +180,11 @@ export interface ProductIdRow {
 }
 
 /**
- * Resolves an ordered page of product ids.
+ * Resolves an ordered page of product ids across every marketplace seller.
  *
  * Written as SQL because the in-stock predicate compares two columns
  * (`stock_qty - reserved_qty`), which Prisma cannot express, and because the
- * partial index `store_variants_in_stock` only helps if the query is shaped
+ * partial index `seller_listings_in_stock` only helps if the query is shaped
  * this way.
  *
  * Keyset pagination on (sortValue, id): stable while the catalogue is being
@@ -146,7 +195,7 @@ export async function listProductIds(
   client: DbClient = prisma,
 ): Promise<ProductIdRow[]> {
   const stockFilter = input.inStockOnly
-    ? Prisma.sql`AND sv.is_available AND (sv.stock_qty - sv.reserved_qty) > 0`
+    ? Prisma.sql`AND sl.is_available AND (sl.stock_qty - sl.reserved_qty) > 0`
     : Prisma.empty;
 
   const categoryFilter = input.categoryPath
@@ -159,12 +208,12 @@ export async function listProductIds(
 
   // The value each sort orders by, exposed so the cursor can resume from it.
   const sortValue = {
-    PRICE_ASC: Prisma.sql`MIN(sv.price_paise)`,
-    PRICE_DESC: Prisma.sql`MIN(sv.price_paise)`,
+    PRICE_ASC: Prisma.sql`MIN(sl.price_paise)`,
+    PRICE_DESC: Prisma.sql`MIN(sl.price_paise)`,
     NEWEST: Prisma.sql`EXTRACT(EPOCH FROM p.created_at)`,
     POPULAR: Prisma.sql`p.popularity_score`,
     RELEVANCE: Prisma.sql`p.popularity_score`,
-    DISCOUNT: Prisma.sql`MAX(sv.mrp_paise - sv.price_paise)`,
+    DISCOUNT: Prisma.sql`MAX(sl.mrp_paise - sl.price_paise)`,
   }[input.sort];
 
   const ascending = input.sort === "PRICE_ASC";
@@ -179,13 +228,8 @@ export async function listProductIds(
   const rows = await client.$queryRaw<{ id: string; sort_value: number }[]>`
     SELECT p.id, ${sortValue} AS sort_value
     FROM products p
-    JOIN categories c ON c.id = p.category_id
-    JOIN product_variants v ON v.product_id = p.id
-      AND v.status = 'ACTIVE' AND v.deleted_at IS NULL
-    JOIN store_variants sv ON sv.variant_id = v.id AND sv.store_id = ${input.storeId}::uuid
-    WHERE p.status = 'ACTIVE'
-      AND p.deleted_at IS NULL
-      AND c.is_active AND c.deleted_at IS NULL
+    ${LISTED_JOINS}
+    WHERE ${PUBLIC_PRODUCT_SQL}
       ${categoryFilter}
       ${brandFilter}
       ${stockFilter}
@@ -197,12 +241,8 @@ export async function listProductIds(
   return rows.map((row) => ({ id: row.id, sortValue: Number(row.sort_value) }));
 }
 
-/** Curated Home rails (PRD §9.4 `GET /home`). */
-/** Curated Home rails (PRD §9.4 `GET /home`). */
-
-/** Curated Home rails (PRD §9.4 `GET /home`). */
+/** Curated Home rails (PRD §9.4 `GET /home`), across every marketplace seller. */
 export async function listRailProductIds(
-  storeId: string,
   rail:
     | "POPULAR"
     | "DAILY_ESSENTIALS"
@@ -232,25 +272,29 @@ export async function listRailProductIds(
     RECENTLY_ADDED: Prisma.empty,
 
     OFFERS: Prisma.sql`
-      AND sv.mrp_paise > sv.price_paise
+      AND sl.mrp_paise > sl.price_paise
     `,
   }[rail];
 
   /*
-   * Best Sellers are based on actual delivered order quantities.
+   * Best Sellers are based on actual delivered order quantities of the
+   * listing's own seller orders under any DELIVERED parent order.
    *
    * A product with zero delivered sales will NOT appear in Best Sellers.
    */
   const bestSellerJoin =
     rail === "BEST_SELLERS"
       ? Prisma.sql`
-          JOIN orders o
-            ON o.store_id = ${storeId}::uuid
-           AND o.status = 'DELIVERED'
-
           JOIN order_items oi
-            ON oi.order_id = o.id
-           AND oi.variant_id = v.id
+            ON oi.variant_id = v.id
+
+          JOIN seller_orders so
+            ON so.id = oi.seller_order_id
+           AND so.seller_id = sl.seller_id
+
+          JOIN orders o
+            ON o.id = so.order_id
+           AND o.status = 'DELIVERED'
         `
       : Prisma.empty;
 
@@ -278,8 +322,8 @@ export async function listRailProductIds(
 
     OFFERS: Prisma.sql`
       MAX(
-        (sv.mrp_paise - sv.price_paise)::float
-        / NULLIF(sv.mrp_paise, 0)
+        (sl.mrp_paise - sl.price_paise)::float
+        / NULLIF(sl.mrp_paise, 0)
       ) DESC
     `,
   }[rail];
@@ -287,23 +331,14 @@ export async function listRailProductIds(
   const rows = await client.$queryRaw<{ id: string }[]>`
     SELECT p.id
     FROM products p
-
-    JOIN product_variants v
-      ON v.product_id = p.id
-      AND v.status = 'ACTIVE'
-      AND v.deleted_at IS NULL
-
-    JOIN store_variants sv
-      ON sv.variant_id = v.id
-      AND sv.store_id = ${storeId}::uuid
+    ${LISTED_JOINS}
 
     ${bestSellerJoin}
 
-    WHERE p.status = 'ACTIVE'
-      AND p.deleted_at IS NULL
+    WHERE ${PUBLIC_PRODUCT_SQL}
 
-      AND sv.is_available
-      AND (sv.stock_qty - sv.reserved_qty) > 0
+      AND sl.is_available
+      AND (sl.stock_qty - sl.reserved_qty) > 0
 
       ${filter}
 
@@ -322,10 +357,9 @@ export async function listRailProductIds(
   return rows.map((row) => row.id);
 }
 
-/** "You may also like" — same category, in stock, excluding the current item. */
+/** "You may also like" — same category path (any seller), in stock, excluding the current item. */
 export async function listRelatedProductIds(
-  storeId: string,
-  categoryId: string,
+  categoryPath: string,
   excludeProductId: string,
   limit: number,
   client: DbClient = prisma,
@@ -333,19 +367,12 @@ export async function listRelatedProductIds(
   const rows = await client.$queryRaw<{ id: string }[]>`
     SELECT p.id
     FROM products p
-    JOIN product_variants v
-      ON v.product_id = p.id
-      AND v.status = 'ACTIVE'
-      AND v.deleted_at IS NULL
-    JOIN store_variants sv
-      ON sv.variant_id = v.id
-      AND sv.store_id = ${storeId}::uuid
-    WHERE p.category_id = ${categoryId}::uuid
+    ${LISTED_JOINS}
+    WHERE c.path = ${categoryPath}
       AND p.id <> ${excludeProductId}::uuid
-      AND p.status = 'ACTIVE'
-      AND p.deleted_at IS NULL
-      AND sv.is_available
-      AND (sv.stock_qty - sv.reserved_qty) > 0
+      AND ${PUBLIC_PRODUCT_SQL}
+      AND sl.is_available
+      AND (sl.stock_qty - sl.reserved_qty) > 0
     GROUP BY p.id, p.popularity_score
     ORDER BY p.popularity_score DESC, p.id ASC
     LIMIT ${limit}`;

@@ -36,7 +36,7 @@ async function placeOnlineOrder(): Promise<OnlineOrder> {
   await api()
     .post('/api/v1/cart/items')
     .set('Authorization', bearer(session.accessToken))
-    .send({ variantId: product.variantId, qty: 2 })
+    .send({ sellerListingId: product.storeVariantId, qty: 2 })
     .expect(200);
 
   const res = await api()
@@ -81,7 +81,7 @@ describe('online payment — fast path', () => {
     const providerOrderId = await createIntent(order);
 
     // Stock is held, not sold, while payment is outstanding.
-    let offer = await prisma.storeVariant.findUniqueOrThrow({
+    let offer = await prisma.sellerListing.findUniqueOrThrow({
       where: { id: order.storeVariantId },
     });
     expect(offer.stockQty).toBe(10);
@@ -104,11 +104,11 @@ describe('online payment — fast path', () => {
     ).data;
     expect(result.verified).toBe(true);
     // PAYMENT_CONFIRMED is transient — the customer never rests there.
-    expect(result.orderStatus).toBe(OrderStatus.ORDER_PLACED);
+    expect(result.orderStatus).toBe(OrderStatus.PROCESSING);
     expect(result.paymentStatus).toBe('PAID');
 
     // Reservation converted into a sale.
-    offer = await prisma.storeVariant.findUniqueOrThrow({
+    offer = await prisma.sellerListing.findUniqueOrThrow({
       where: { id: order.storeVariantId },
     });
     expect(offer.stockQty).toBe(8);
@@ -142,7 +142,7 @@ describe('online payment — fast path', () => {
     expect(updated.paymentStatus).toBe('FAILED');
 
     // Stock released back to sale — nothing sold for a payment that never happened.
-    const offer = await prisma.storeVariant.findUniqueOrThrow({
+    const offer = await prisma.sellerListing.findUniqueOrThrow({
       where: { id: order.storeVariantId },
     });
     expect(offer.stockQty).toBe(10);
@@ -198,7 +198,7 @@ describe('webhook — truth path', () => {
       .expect(200);
 
     const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
-    expect(updated.status).toBe(OrderStatus.ORDER_PLACED);
+    expect(updated.status).toBe(OrderStatus.PROCESSING);
     expect(updated.paymentStatus).toBe('PAID');
   });
 
@@ -231,7 +231,7 @@ describe('webhook — truth path', () => {
     ).toBe(1);
 
     // And stock moved exactly once.
-    const offer = await prisma.storeVariant.findUniqueOrThrow({
+    const offer = await prisma.sellerListing.findUniqueOrThrow({
       where: { id: order.storeVariantId },
     });
     expect(offer.stockQty).toBe(8);
@@ -292,7 +292,7 @@ describe('webhook — truth path', () => {
       })
       .expect(200);
 
-    const offer = await prisma.storeVariant.findUniqueOrThrow({
+    const offer = await prisma.sellerListing.findUniqueOrThrow({
       where: { id: order.storeVariantId },
     });
     // Stock committed once, not twice.
@@ -320,7 +320,7 @@ describe('abandoned payment', () => {
     const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.orderId } });
     expect(updated.status).toBe(OrderStatus.PAYMENT_FAILED);
 
-    const offer = await prisma.storeVariant.findUniqueOrThrow({
+    const offer = await prisma.sellerListing.findUniqueOrThrow({
       where: { id: order.storeVariantId },
     });
     expect(offer.stockQty).toBe(10);
@@ -338,7 +338,7 @@ describe('COD orders', () => {
     await api()
       .post('/api/v1/cart/items')
       .set('Authorization', bearer(session.accessToken))
-      .send({ variantId: product.variantId, qty: 1 })
+      .send({ sellerListingId: product.storeVariantId, qty: 1 })
       .expect(200);
 
     const placed = await api()

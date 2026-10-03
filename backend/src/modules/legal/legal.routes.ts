@@ -16,7 +16,6 @@ import { ConfigKey, ErrorCode } from '../../shared';
 import { AppError } from '../../common/errors';
 import { asyncHandler, ok } from '../../common/response';
 import * as configService from '../configuration/configuration.service';
-import * as storeService from '../stores/store.service';
 import { LEGAL_DOCUMENTS, type LegalDocument } from './legal.content';
 
 export const legalRouter: Router = Router();
@@ -28,26 +27,16 @@ async function resolve(document: LegalDocument): Promise<LegalDocument> {
     ConfigKey.SUPPORT_PHONE,
   ]);
 
-  let storeName = 'AdiOne';
-  let storeAddress = '';
-  let hours = '8:00 AM to 10:00 PM';
-
-  try {
-    const store = await storeService.getActiveStore();
-    const dto = await storeService.getStoreDto();
-    storeName = store.name;
-    storeAddress = `${store.addressLine}, ${store.city}, ${store.state} ${store.pincode}`;
-    if (dto.todayHours) {
-      hours = `${dto.todayHours.opensAt} to ${dto.todayHours.closesAt}`;
-    }
-  } catch {
-    // The policy must still render before a store row exists — a legal page
-    // that 500s is worse than one with a generic address.
-  }
+  // The marketplace operator, not any one seller: there is no special store
+  // row whose name/address/hours stand for the business. Each seller's own
+  // hours are shown with that seller in the app.
+  const sellerName = 'AdiOne';
+  const sellerAddress = '';
+  const hours = 'the opening hours each seller shows in the app';
 
   const replacements: Record<string, string> = {
-    '{{BUSINESS_NAME}}': storeName,
-    '{{BUSINESS_ADDRESS}}': storeAddress || 'address available on request',
+    '{{BUSINESS_NAME}}': sellerName,
+    '{{BUSINESS_ADDRESS}}': sellerAddress || 'address available on request',
     '{{SUPPORT_EMAIL}}': config.SUPPORT_EMAIL || 'support@adione.in',
     '{{SUPPORT_PHONE}}': config.SUPPORT_PHONE || 'our support number',
     '{{STORE_HOURS}}': hours,

@@ -11,6 +11,7 @@
 
 import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
 import { UpiIntentProvider } from './upi-intent.provider';
+import { CashfreeProvider } from './cashfree.provider';
 import { env, isProduction } from '../../config/env';
 import { moduleLogger } from '../../common/logger';
 import { AppError } from '../../common/errors';
@@ -23,12 +24,49 @@ export interface CreateIntentInput {
   orderNumber: string;
   amountPaise: number;
   currency: string;
-  customer: { name: string | null; email: string | null; contact: string };
+  customer: { id?: string; name: string | null; email: string | null; contact: string };
+  /** When the provider's order must stop accepting payment (Cashfree). */
+  expiresAt?: Date | null;
+}
+
+/**
+ * A hosted-checkout session (Cashfree). The session id authorises paying ONE
+ * provider order and nothing else — it is not a credential.
+ */
+export interface CheckoutSession {
+  paymentSessionId: string;
+  environment: 'SANDBOX' | 'PRODUCTION';
+  /** ISO time the provider order stops accepting payment. */
+  expiresAt: string | null;
 }
 
 export interface CreateIntentResult {
   providerOrderId: string;
   publicKey: string;
+  checkout?: CheckoutSession;
+}
+
+/** The provider's own view of one of its orders — the server-side truth. */
+export interface ProviderOrderStatus {
+  providerOrderId: string;
+  orderStatus: 'ACTIVE' | 'PAID' | 'EXPIRED' | 'TERMINATED' | 'OTHER';
+  amountPaise: number;
+  /** The AdiOne order id the provider order was tagged with, when known. */
+  adioneOrderId: string | null;
+  /** Set only when the provider says the order is PAID by this payment. */
+  captured: { providerPaymentId: string; amountPaise: number; method: string | null } | null;
+  /** Most recent unsuccessful attempt, if any. */
+  lastFailure: { providerPaymentId: string; status: string; reason: string | null } | null;
+}
+
+export interface RefundInput {
+  providerPaymentId: string;
+  amountPaise: number;
+  reason: string;
+  /** Cashfree refunds are per provider ORDER. */
+  providerOrderId?: string | null;
+  /** Our Refund row id — the provider-side idempotency key where supported. */
+  refundId?: string;
 }
 
 export interface VerifyInput {
@@ -53,7 +91,20 @@ export interface WebhookEvent {
   providerOrderId: string | null;
   providerPaymentId: string | null;
   amountPaise: number | null;
-  status: 'CAPTURED' | 'FAILED' | 'REFUNDED' | 'OTHER';
+  /**
+   * FAILED         the ORDER's payment failed for good (mock / Razorpay).
+   * ATTEMPT_FAILED one attempt failed or was abandoned; the customer may
+   *                retry until the AdiOne hold expires (Cashfree).
+   * REFUND_UPDATE  a refund changed status — see `refund`.
+   */
+  status: 'CAPTURED' | 'FAILED' | 'ATTEMPT_FAILED' | 'REFUNDED' | 'REFUND_UPDATE' | 'OTHER';
+  failureReason?: string | null;
+  refund?: {
+    /** Our Refund row id, when the provider echoes it back. */
+    refundId: string | null;
+    providerRefundId: string | null;
+    status: RefundResult['status'];
+  };
   payload: unknown;
 }
 
@@ -70,12 +121,18 @@ export interface PaymentProvider {
   /** MUST re-query the provider, not merely check the client's signature. */
   verify(input: VerifyInput): Promise<VerifyResult>;
   parseWebhook(rawBody: Buffer, headers: Record<string, string | undefined>): WebhookEvent;
-  refund(input: {
-    providerPaymentId: string;
-    amountPaise: number;
-    reason: string;
-  }): Promise<RefundResult>;
+  refund(input: RefundInput): Promise<RefundResult>;
   getStatus(providerPaymentId: string): Promise<VerifyResult>;
+  /**
+   * Order-level lookup, for providers whose payments hang off a provider order
+   * and whose client callback carries no signature (Cashfree). Settlement
+   * trusts ONLY this answer, never the app's callback.
+   */
+  fetchOrder?(providerOrderId: string): Promise<ProviderOrderStatus>;
+  /** Shortest time-to-expiry the provider accepts on a new order, if it has one. */
+  readonly minCheckoutWindowMs?: number;
+  /** Re-reads one refund, to confirm a refund webhook before recording it. */
+  getRefund?(providerOrderId: string, refundId: string): Promise<RefundResult>;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -143,7 +200,10 @@ class MockPaymentProvider implements PaymentProvider {
 
   async refund(input: { providerPaymentId: string }): Promise<RefundResult> {
     return {
-      providerRefundId: `mock_rfnd_${input.providerPaymentId.slice(-8)}`,
+      // Unique per refund, like a real provider's refund id: one payment can
+      // carry several (one per cancelled seller portion), and
+      // Refund.providerRefundId is unique.
+      providerRefundId: `mock_rfnd_${input.providerPaymentId.slice(-8)}_${randomUUID().slice(0, 8)}`,
       status: 'COMPLETED',
     };
   }
@@ -318,18 +378,36 @@ class RazorpayProvider implements PaymentProvider {
   }
 }
 
+function createCashfreeProvider(): CashfreeProvider {
+  return new CashfreeProvider({
+    // Presence is enforced by the env validator when PAYMENT_PROVIDER=cashfree.
+    appId: env.CASHFREE_APP_ID ?? '',
+    secretKey: env.CASHFREE_SECRET_KEY ?? '',
+    environment: env.CASHFREE_ENV === 'production' ? 'PRODUCTION' : 'SANDBOX',
+    apiVersion: env.CASHFREE_API_VERSION,
+  });
+}
+
 function createProvider(): PaymentProvider {
   const provider =
     env.PAYMENT_PROVIDER === 'razorpay'
       ? new RazorpayProvider()
       : env.PAYMENT_PROVIDER === 'upi_intent'
         ? new UpiIntentProvider()
-        : new MockPaymentProvider();
+        : env.PAYMENT_PROVIDER === 'cashfree'
+          ? createCashfreeProvider()
+          : new MockPaymentProvider();
 
   if (provider.name === 'upi_intent') {
     log.warn(
       { provider: provider.name, vpa: env.UPI_VPA },
       'UPI intent payments have no automatic confirmation — every online order must be verified by the store in the admin panel',
+    );
+  } else if (provider instanceof CashfreeProvider) {
+    // Never the credentials — only which Cashfree environment is live.
+    log.info(
+      { provider: provider.name, environment: provider.environment, apiVersion: env.CASHFREE_API_VERSION },
+      'payment provider initialised',
     );
   } else {
     log.info({ provider: provider.name }, 'payment provider initialised');
@@ -343,6 +421,19 @@ export function requiresManualPaymentConfirmation(): boolean {
   return env.PAYMENT_PROVIDER === 'upi_intent';
 }
 
+/**
+ * Whether the legacy "store confirms it saw the money" path (claim, admin
+ * confirm / reject) may run at all: direct UPI, or the mock gateway in
+ * development. NEVER with a real gateway — Cashfree payments are settled only
+ * by server-side verification with Cashfree.
+ */
+export function allowsManualPaymentConfirmation(): boolean {
+  return (
+    env.PAYMENT_PROVIDER === 'upi_intent' ||
+    (env.PAYMENT_PROVIDER === 'mock' && !isProduction)
+  );
+}
+
 export const payments: PaymentProvider = createProvider();
-export { MockPaymentProvider };
+export { MockPaymentProvider, CashfreeProvider };
 export { buildUpiIntentUrl } from './upi-intent.provider';

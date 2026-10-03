@@ -13,6 +13,7 @@ import {
   ErrorCode,
   UserStatus,
   isAdminRole,
+  isSellerRole,
   type AuthResponse,
   type UserDto,
 } from '../../shared';
@@ -233,6 +234,13 @@ export interface PasswordLoginOptions {
    * themselves are correct.
    */
   requireStaffRole?: boolean;
+  /**
+   * Set by the seller-panel endpoint: a seller-panel role (SELLER_PANEL_ROLES)
+   * that is an ACTIVE member of a live seller. Anything else — an admin, a
+   * customer, a seller account whose membership was revoked — gets the same
+   * generic error as a wrong password.
+   */
+  requireSellerRole?: boolean;
 }
 
 export async function loginWithPassword(
@@ -263,11 +271,18 @@ export async function loginWithPassword(
   if (options.requireStaffRole && !isAdminRole(user.role)) {
     throw invalid(`login: user ${user.id} is not staff`);
   }
+  if (options.requireSellerRole && !isSellerRole(user.role)) {
+    throw invalid(`seller login: user ${user.id} has role ${user.role}`);
+  }
 
   assertUsable(user);
 
   if (!(await verifyPassword(password, user.passwordHash))) {
     throw invalid(`login: bad password for ${user.id}`);
+  }
+
+  if (options.requireSellerRole && !(await repository.hasActiveSellerMembership(user.id))) {
+    throw invalid(`seller login: user ${user.id} has no active seller membership`);
   }
 
   await repository.touchLastLogin(user.id);
@@ -281,6 +296,127 @@ export async function loginWithPassword(
   });
 
   log.info({ userId: user.id, role: user.role }, 'password login');
+  return { user: toUserDto(user), tokens };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Seller panel — email + password, temporary passwords, change password      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Audit actions that decide whether a password is TEMPORARY: the latest of
+ * the two for a user wins. An admin issuing seller credentials writes the
+ * first; the user changing their own password writes the second. Kept in the
+ * audit log (entityType 'User') rather than a new column, so every issue and
+ * change is also on record.
+ */
+export const PASSWORD_AUDIT = {
+  ISSUED_BY_ADMIN: 'seller_login.credentials_issued',
+  CHANGED_BY_USER: 'auth.password_changed',
+} as const;
+
+export async function isPasswordChangeRequired(userId: string): Promise<boolean> {
+  const latest = await prisma.auditLog.findFirst({
+    where: {
+      entityType: 'User',
+      entityId: userId,
+      action: { in: [PASSWORD_AUDIT.ISSUED_BY_ADMIN, PASSWORD_AUDIT.CHANGED_BY_USER] },
+    },
+    orderBy: { createdAt: 'desc' },
+    select: { action: true },
+  });
+  return latest?.action === PASSWORD_AUDIT.ISSUED_BY_ADMIN;
+}
+
+export interface SellerAuthResponse extends AuthResponse {
+  /** The password was issued by AdiOne and has not been changed yet. */
+  passwordChangeRequired: boolean;
+}
+
+/**
+ * POST /auth/seller/login. The role the login screen had selected is never
+ * sent or trusted — the account's own role and seller membership decide.
+ */
+export async function sellerLogin(
+  email: string,
+  password: string,
+  context: RequestContextInput = {},
+): Promise<SellerAuthResponse> {
+  const auth = await loginWithPassword(email, password, context, { requireSellerRole: true });
+  return { ...auth, passwordChangeRequired: await isPasswordChangeRequired(auth.user.id) };
+}
+
+export async function getPasswordStatus(
+  userId: string,
+): Promise<{ hasPassword: boolean; passwordChangeRequired: boolean }> {
+  const user = await repository.findUserById(userId);
+  if (!user || user.deletedAt) {
+    throw new AppError(ErrorCode.NOT_FOUND, { message: 'Account not found.' });
+  }
+  return {
+    hasPassword: user.passwordHash !== null,
+    passwordChangeRequired: user.passwordHash !== null && (await isPasswordChangeRequired(userId)),
+  };
+}
+
+/**
+ * Changes the signed-in user's own password. Every existing session ends
+ * (anything signed in with the old password — or a temporary one someone else
+ * saw — is out), and a fresh pair is returned so THIS device stays signed in.
+ * A wrong current password is a 400, not a 401: the session itself is fine.
+ */
+export async function changePassword(
+  userId: string,
+  currentPassword: string,
+  newPassword: string,
+  context: RequestContextInput = {},
+): Promise<AuthResponse> {
+  const user = await repository.findUserById(userId);
+  if (!user || user.deletedAt) {
+    throw new AppError(ErrorCode.NOT_FOUND, { message: 'Account not found.' });
+  }
+  assertUsable(user);
+  if (!user.passwordHash) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message: 'This account signs in with an OTP and has no password to change.',
+    });
+  }
+  if (!(await verifyPassword(currentPassword, user.passwordHash))) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message: 'Your current password is incorrect.',
+      internalMessage: `change password: wrong current password for ${userId}`,
+    });
+  }
+  if (currentPassword === newPassword) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message: 'Choose a new password that is different from the current one.',
+    });
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  await runInTransaction(async (tx) => {
+    await tx.user.update({ where: { id: userId }, data: { passwordHash } });
+    await tx.auditLog.create({
+      data: {
+        actorUserId: userId,
+        action: PASSWORD_AUDIT.CHANGED_BY_USER,
+        entityType: 'User',
+        entityId: userId,
+        ip: context.ip ?? null,
+      },
+    });
+  });
+
+  await tokenService.revokeAllSessions(userId);
+  const tokens = await tokenService.issueTokens({
+    userId,
+    role: user.role,
+    mobile: user.mobile,
+    userAgent: context.userAgent ?? null,
+    ip: context.ip ?? null,
+  });
+
+  log.info({ userId, role: user.role }, 'password changed');
   return { user: toUserDto(user), tokens };
 }
 

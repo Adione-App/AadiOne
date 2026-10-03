@@ -32,10 +32,9 @@ import {
   spacing,
   typography,
   layout,
-  statusColors,
 } from "@shared/theme";
 
-import { ORDER_STATUS_LABELS, type OrderStatus } from "@shared";
+import { orderStatusPresentation } from "@/lib/orderStatus";
 
 import { useEffect, useRef } from "react";
 
@@ -215,13 +214,17 @@ export function Screen({
 
 /* -------------------------------------------------------------------------- */
 
-export function StatusBadge({ status }: { status: OrderStatus }) {
-  const tone = statusColors[status];
+/**
+ * Takes the raw status string: the V2 API sends statuses the generated,
+ * V1-era `OrderStatus` type does not list (see lib/orderStatus.ts).
+ */
+export function StatusBadge({ status }: { status: string }) {
+  const { label, bg, fg } = orderStatusPresentation(status);
 
   return (
-    <View style={[styles.badge, { backgroundColor: tone.bg }]}>
-      <AppText variant="caption" color={tone.fg}>
-        {ORDER_STATUS_LABELS[status]}
+    <View style={[styles.badge, { backgroundColor: bg }]}>
+      <AppText variant="caption" color={fg}>
+        {label}
       </AppText>
     </View>
   );

@@ -80,6 +80,17 @@ export const loginSchema = z.object({
 /** Kept as a distinct name so the admin route reads clearly. */
 export const adminLoginSchema = loginSchema;
 
+/** Seller-panel email + password login — same shape as every login. */
+export const sellerLoginSchema = loginSchema;
+
+/** Change your own password: the current one proves it is you. */
+export const changePasswordSchema = z.object({
+  currentPassword: z
+    .string({ required_error: 'Enter your current password' })
+    .min(1, 'Enter your current password'),
+  newPassword: newPasswordSchema,
+});
+
 /** Task 2.6 — signup. */
 export const signupSchema = z.object({
   fullName: z
@@ -111,5 +122,7 @@ export type SendOtpInput = z.infer<typeof sendOtpSchema>;
 export type VerifyOtpInput = z.infer<typeof verifyOtpSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 export type AdminLoginInput = z.infer<typeof adminLoginSchema>;
+export type SellerLoginInput = z.infer<typeof sellerLoginSchema>;
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type SignupInput = z.infer<typeof signupSchema>;
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;

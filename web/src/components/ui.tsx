@@ -8,8 +8,8 @@
 
 import type { ReactNode } from 'react';
 import { useEffect } from 'react';
-import { OrderStatus, ORDER_STATUS_LABELS } from '@shared';
 import { imageSrc } from '@/lib/image';
+import { orderStatusLabel, orderStatusStyle } from '@/lib/v2Orders';
 
 /* -------------------------------------------------------------------------- */
 /* icons                                                                       */
@@ -38,6 +38,7 @@ export type IconName =
   | 'edit'
   | 'trash'
   | 'chevronRight'
+  | 'chevronLeft'
   | 'chevronDown'
   | 'upload'
   | 'image'
@@ -53,7 +54,14 @@ export type IconName =
   | 'pin'
   | 'user'
   | 'check'
-  | 'gift';
+  | 'gift'
+  | 'mail'
+  | 'eye'
+  | 'eyeOff'
+  | 'zap'
+  | 'arrowRight'
+  | 'barChart'
+  | 'clipboard';
 
 const PATHS: Record<IconName, string> = {
   dashboard: 'M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z',
@@ -74,6 +82,7 @@ const PATHS: Record<IconName, string> = {
   edit: 'M4 20h4L20 8l-4-4L4 16zM14 6l4 4',
   trash: 'M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6',
   chevronRight: 'M9 6l6 6-6 6',
+  chevronLeft: 'M15 6l-6 6 6 6',
   chevronDown: 'M6 9l6 6 6-6',
   upload: 'M12 16V4M8 8l4-4 4 4M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3',
   image: 'M3 5h18v14H3zM3 15l5-4 4 3 3-2 6 4',
@@ -90,6 +99,13 @@ const PATHS: Record<IconName, string> = {
   user: 'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
   check: 'M20 6L9 17l-5-5',
   gift: 'M3 8h18v4H3zM5 12h14v9H5zM12 8v13M12 8c-2-4-7-4-7 0h7zM12 8c2-4 7-4 7 0h-7z',
+  mail: 'M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM3 7l9 6 9-6',
+  eye: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+  eyeOff: 'M3 3l18 18M10.6 5.1A9.8 9.8 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 7 10 7c1.9 0 3.6-.6 5.1-1.5M9.9 9.9a3 3 0 0 0 4.2 4.2',
+  zap: 'M13 2L4 14h7l-1 8 9-12h-7z',
+  arrowRight: 'M5 12h14M13 6l6 6-6 6',
+  barChart: 'M5 20V14M12 20V9M19 20V4',
+  clipboard: 'M9 3h6v3H9zM7 5H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-1M9 11h6M9 15h6',
 };
 
 export function Icon({
@@ -151,7 +167,9 @@ export function Panel({
   className?: string;
 }) {
   return (
-    <Surface className={className}>
+    // min-w-0: as a grid/flex item a panel must be allowed to shrink, so a
+    // wide table inside scrolls in its own wrapper instead of widening the page.
+    <Surface className={`min-w-0 ${className}`}>
       <div className="flex items-center justify-between gap-3 p-5">
         <h2 className="text-base font-semibold text-gray-900">{title}</h2>
         {action}
@@ -358,27 +376,16 @@ export function Pill({ children, tone = 'gray' }: { children: ReactNode; tone?: 
   );
 }
 
-const STATUS_STYLES: Record<OrderStatus, string> = {
-  [OrderStatus.PENDING_PAYMENT]: 'bg-warn-50 text-warn-500',
-  [OrderStatus.PAYMENT_CONFIRMED]: 'bg-brand-50 text-brand-600',
-  [OrderStatus.ORDER_PLACED]: 'bg-info-50 text-info-500',
-  [OrderStatus.STORE_ACCEPTED]: 'bg-info-50 text-info-500',
-  [OrderStatus.PREPARING]: 'bg-warn-50 text-warn-500',
-  [OrderStatus.READY_FOR_PICKUP]: 'bg-brand-100 text-brand-700',
-  [OrderStatus.OUT_FOR_DELIVERY]: 'bg-purple-50 text-purple-600',
-  [OrderStatus.DELIVERED]: 'bg-brand-50 text-brand-600',
-  [OrderStatus.CANCELLED]: 'bg-danger-50 text-danger-500',
-  [OrderStatus.PAYMENT_FAILED]: 'bg-danger-50 text-danger-500',
-  [OrderStatus.REJECTED]: 'bg-danger-50 text-danger-500',
-  [OrderStatus.REFUNDED]: 'bg-gray-100 text-gray-600',
-};
-
-export function StatusPill({ status }: { status: OrderStatus }) {
+/**
+ * Takes the raw status string: V2 sends parent statuses (PROCESSING,
+ * PICKED_UP, …) that the generated, V1-era `OrderStatus` does not list.
+ */
+export function StatusPill({ status }: { status: string }) {
   return (
     <span
-      className={`inline-block whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${STATUS_STYLES[status]}`}
+      className={`inline-block whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${orderStatusStyle(status)}`}
     >
-      {ORDER_STATUS_LABELS[status]}
+      {orderStatusLabel(status)}
     </span>
   );
 }

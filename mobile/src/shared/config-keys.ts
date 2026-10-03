@@ -176,7 +176,7 @@ export const CONFIG_DEFAULTS: ConfigValues = {
   ETA_BUFFER_MINUTES: 3,
 
   PAYMENT_HOLD_MINUTES: 10,
-  CANCELLATION_ALLOWED_UNTIL: OrderStatus.PREPARING,
+  CANCELLATION_ALLOWED_UNTIL: OrderStatus.PROCESSING,
   DEFAULT_MAX_QTY_PER_ORDER: 10,
   MAX_ADDRESSES_PER_USER: 5,
 
@@ -296,7 +296,7 @@ export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
     "Stock level at or below which an item appears in the low-stock report.",
 
   DELIVERY_OTP_REQUIRED_FOR_COD:
-    "Require a delivery OTP before marking COD orders delivered.",
+    "Issue a delivery OTP to COD customers at checkout. Optional at delivery: an order can be marked delivered without it, but an OTP that is entered must match.",
 
   REFERRAL_REWARD_PAISE:
     "Coupon value credited to the referrer once their referred friend completes a qualifying first order, in paise.",

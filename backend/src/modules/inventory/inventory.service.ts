@@ -6,9 +6,9 @@
  * always explainable — the single most common operational failure in real
  * grocery retail (PRD §20 R8).
  *
- * The reservation primitives here are what Phase 8's order transaction calls;
- * they are deliberately written to take a transaction client so they run
- * INSIDE the caller's transaction and inherit its row locks.
+ * The reservation primitives here are what the order transaction calls; they
+ * are deliberately written to take a transaction client so they run INSIDE
+ * the caller's transaction and inherit its row locks.
  */
 
 import { Prisma } from '@prisma/client';
@@ -22,7 +22,7 @@ const log = moduleLogger('inventory');
 export interface LockedOffer {
   id: string;
   variantId: string;
-  storeId: string;
+  sellerId: string;
   pricePaise: number;
   mrpPaise: number;
   stockQty: number;
@@ -34,7 +34,7 @@ export interface LockedOffer {
 }
 
 /**
- * Locks the store's offer rows for a set of variants.
+ * Locks one seller's listing rows for a set of variants.
  *
  * THIS IS THE FUNCTION THAT PREVENTS OVERSELLING.
  *
@@ -46,11 +46,14 @@ export interface LockedOffer {
  *     deadlock — the classic version of this bug.
  *
  * Must be called inside `runInTransaction`; locks taken outside one are
- * released immediately and protect nothing.
+ * released immediately and protect nothing. Called once per seller involved
+ * in a checkout (see order.service.ts's per-seller split) — never across
+ * sellers in one call, since the lock ordering guarantee only holds within a
+ * single seller's own rows.
  */
 export async function lockOffersForUpdate(
   tx: Tx,
-  storeId: string,
+  sellerId: string,
   variantIds: string[],
 ): Promise<Map<string, LockedOffer>> {
   if (variantIds.length === 0) return new Map();
@@ -59,7 +62,7 @@ export async function lockOffersForUpdate(
     {
       id: string;
       variant_id: string;
-      store_id: string;
+      seller_id: string;
       price_paise: number;
       mrp_paise: number;
       stock_qty: number;
@@ -69,10 +72,10 @@ export async function lockOffersForUpdate(
       allow_cod: string;
     }[]
   >`
-    SELECT id, variant_id, store_id, price_paise, mrp_paise, stock_qty,
+    SELECT id, variant_id, seller_id, price_paise, mrp_paise, stock_qty,
            reserved_qty, is_available, max_qty_per_order, allow_cod
-    FROM store_variants
-    WHERE store_id = ${storeId}::uuid
+    FROM seller_listings
+    WHERE seller_id = ${sellerId}::uuid
       AND variant_id IN (${Prisma.join(variantIds.map((id) => Prisma.sql`${id}::uuid`))})
     ORDER BY variant_id
     FOR UPDATE`;
@@ -83,7 +86,7 @@ export async function lockOffersForUpdate(
       {
         id: row.id,
         variantId: row.variant_id,
-        storeId: row.store_id,
+        sellerId: row.seller_id,
         pricePaise: row.price_paise,
         mrpPaise: row.mrp_paise,
         stockQty: row.stock_qty,
@@ -100,22 +103,22 @@ export async function lockOffersForUpdate(
 async function writeLedger(
   tx: Tx,
   input: {
-    storeVariantId: string;
+    sellerListingId: string;
     delta: number;
     reason: StockLedgerReason;
     balanceAfter: number;
-    orderId?: string | null;
+    sellerOrderId?: string | null;
     actorUserId?: string | null;
     note?: string | null;
   },
 ): Promise<void> {
   await tx.stockLedger.create({
     data: {
-      storeVariantId: input.storeVariantId,
+      sellerListingId: input.sellerListingId,
       delta: input.delta,
       reason: input.reason,
       balanceAfter: input.balanceAfter,
-      orderId: input.orderId ?? null,
+      sellerOrderId: input.sellerOrderId ?? null,
       actorUserId: input.actorUserId ?? null,
       note: input.note ?? null,
     },
@@ -132,22 +135,22 @@ async function writeLedger(
  */
 export async function reserveStock(
   tx: Tx,
-  items: { storeVariantId: string; variantId: string; qty: number }[],
-  orderId: string,
+  items: { sellerListingId: string; variantId: string; qty: number }[],
+  sellerOrderId: string,
 ): Promise<void> {
   for (const item of items) {
-    const updated = await tx.storeVariant.update({
-      where: { id: item.storeVariantId },
+    const updated = await tx.sellerListing.update({
+      where: { id: item.sellerListingId },
       data: { reservedQty: { increment: item.qty } },
       select: { stockQty: true, reservedQty: true },
     });
 
     await writeLedger(tx, {
-      storeVariantId: item.storeVariantId,
+      sellerListingId: item.sellerListingId,
       delta: -item.qty,
       reason: StockLedgerReason.ORDER_RESERVE,
       balanceAfter: updated.stockQty - updated.reservedQty,
-      orderId,
+      sellerOrderId,
     });
   }
 }
@@ -158,12 +161,12 @@ export async function reserveStock(
  */
 export async function commitReservation(
   tx: Tx,
-  items: { storeVariantId: string; qty: number }[],
-  orderId: string,
+  items: { sellerListingId: string; qty: number }[],
+  sellerOrderId: string,
 ): Promise<void> {
   for (const item of items) {
-    const updated = await tx.storeVariant.update({
-      where: { id: item.storeVariantId },
+    const updated = await tx.sellerListing.update({
+      where: { id: item.sellerListingId },
       data: {
         stockQty: { decrement: item.qty },
         reservedQty: { decrement: item.qty },
@@ -172,11 +175,11 @@ export async function commitReservation(
     });
 
     await writeLedger(tx, {
-      storeVariantId: item.storeVariantId,
+      sellerListingId: item.sellerListingId,
       delta: -item.qty,
       reason: StockLedgerReason.ORDER_COMMIT,
       balanceAfter: updated.stockQty - updated.reservedQty,
-      orderId,
+      sellerOrderId,
     });
   }
 }
@@ -184,64 +187,66 @@ export async function commitReservation(
 /** Returns held stock to sale — payment failed, expired, or order cancelled. */
 export async function releaseReservation(
   tx: Tx,
-  items: { storeVariantId: string; qty: number }[],
-  orderId: string,
+  items: { sellerListingId: string; qty: number }[],
+  sellerOrderId: string,
   reason: StockLedgerReason = StockLedgerReason.ORDER_RELEASE,
 ): Promise<void> {
   for (const item of items) {
-    const updated = await tx.storeVariant.update({
-      where: { id: item.storeVariantId },
+    const updated = await tx.sellerListing.update({
+      where: { id: item.sellerListingId },
       data: { reservedQty: { decrement: item.qty } },
       select: { stockQty: true, reservedQty: true },
     });
 
     await writeLedger(tx, {
-      storeVariantId: item.storeVariantId,
+      sellerListingId: item.sellerListingId,
       delta: item.qty,
       reason,
       balanceAfter: updated.stockQty - updated.reservedQty,
-      orderId,
+      sellerOrderId,
     });
   }
 }
 
-/** Puts already-sold goods back — an order cancelled after commit. */
+/** Puts already-sold goods back — a SellerOrder cancelled after commit. Only
+ * ever restocks the ONE seller's items being cancelled, never a sibling
+ * SellerOrder under the same parent Order (#8). */
 export async function restockCommitted(
   tx: Tx,
-  items: { storeVariantId: string; qty: number }[],
-  orderId: string,
+  items: { sellerListingId: string; qty: number }[],
+  sellerOrderId: string,
 ): Promise<void> {
   for (const item of items) {
-    const updated = await tx.storeVariant.update({
-      where: { id: item.storeVariantId },
+    const updated = await tx.sellerListing.update({
+      where: { id: item.sellerListingId },
       data: { stockQty: { increment: item.qty } },
       select: { stockQty: true, reservedQty: true },
     });
 
     await writeLedger(tx, {
-      storeVariantId: item.storeVariantId,
+      sellerListingId: item.sellerListingId,
       delta: item.qty,
       reason: StockLedgerReason.ORDER_CANCEL_RESTOCK,
       balanceAfter: updated.stockQty - updated.reservedQty,
-      orderId,
+      sellerOrderId,
     });
   }
 }
 
 /* -------------------------------------------------------------------------- */
-/* Task 5.1 — admin operations                                                */
+/* Task 5.1 — admin/seller operations                                         */
 /* -------------------------------------------------------------------------- */
 
 export async function setStock(
-  storeVariantId: string,
+  sellerListingId: string,
   newStockQty: number,
   actorUserId: string,
   note?: string,
 ): Promise<void> {
   await runInTransaction(async (tx) => {
     const [current] = await tx.$queryRaw<{ stock_qty: number; reserved_qty: number }[]>`
-      SELECT stock_qty, reserved_qty FROM store_variants
-      WHERE id = ${storeVariantId}::uuid FOR UPDATE`;
+      SELECT stock_qty, reserved_qty FROM seller_listings
+      WHERE id = ${sellerListingId}::uuid FOR UPDATE`;
 
     if (!current) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Inventory record not found.' });
@@ -255,13 +260,13 @@ export async function setStock(
       });
     }
 
-    await tx.storeVariant.update({
-      where: { id: storeVariantId },
+    await tx.sellerListing.update({
+      where: { id: sellerListingId },
       data: { stockQty: newStockQty },
     });
 
     await writeLedger(tx, {
-      storeVariantId,
+      sellerListingId,
       delta: newStockQty - current.stock_qty,
       reason: StockLedgerReason.MANUAL_ADJUST,
       balanceAfter: newStockQty - current.reserved_qty,
@@ -270,55 +275,112 @@ export async function setStock(
     });
   });
 
-  log.info({ storeVariantId, newStockQty, actorUserId }, 'stock adjusted');
+  log.info({ sellerListingId, newStockQty, actorUserId }, 'stock adjusted');
+}
+
+/**
+ * The next stock after adding `delta`, or the reason it's refused. Pure — the
+ * rule `adjustStock` applies under the row lock.
+ */
+export function nextStockAfterAdjust(
+  current: { stockQty: number; reservedQty: number },
+  delta: number,
+): { ok: true; stockQty: number } | { ok: false; message: string } {
+  const next = current.stockQty + delta;
+  if (next < 0) return { ok: false, message: 'Stock cannot go below zero.' };
+  if (next < current.reservedQty) {
+    return {
+      ok: false,
+      message: `${current.reservedQty} unit(s) are reserved for orders in progress. Stock cannot go below that.`,
+    };
+  }
+  return { ok: true, stockQty: next };
+}
+
+/**
+ * Relative stock change (the seller's +/- buttons). Computed from the value
+ * read under the row lock, so two quick taps add up instead of the second
+ * overwriting the first — which an absolute `setStock` from a stale screen
+ * would do. Same reserved-quantity floor and ledger entry as `setStock`.
+ */
+export async function adjustStock(
+  sellerListingId: string,
+  delta: number,
+  actorUserId: string,
+  note?: string,
+): Promise<{ stockQty: number; reservedQty: number }> {
+  const result = await runInTransaction(async (tx) => {
+    const [current] = await tx.$queryRaw<{ stock_qty: number; reserved_qty: number }[]>`
+      SELECT stock_qty, reserved_qty FROM seller_listings
+      WHERE id = ${sellerListingId}::uuid FOR UPDATE`;
+    if (!current) {
+      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Inventory record not found.' });
+    }
+    const next = nextStockAfterAdjust({ stockQty: current.stock_qty, reservedQty: current.reserved_qty }, delta);
+    if (!next.ok) throw new AppError(ErrorCode.VALIDATION_ERROR, { message: next.message });
+
+    await tx.sellerListing.update({ where: { id: sellerListingId }, data: { stockQty: next.stockQty } });
+    await writeLedger(tx, {
+      sellerListingId,
+      delta,
+      reason: StockLedgerReason.MANUAL_ADJUST,
+      balanceAfter: next.stockQty - current.reserved_qty,
+      actorUserId,
+      note: note ?? 'manual stock adjustment',
+    });
+    return { stockQty: next.stockQty, reservedQty: current.reserved_qty };
+  });
+
+  log.info({ sellerListingId, delta, stockQty: result.stockQty, actorUserId }, 'stock adjusted by delta');
+  return result;
 }
 
 export async function markOutOfStock(
-  storeVariantId: string,
+  sellerListingId: string,
   actorUserId: string,
 ): Promise<void> {
   // Availability flag rather than zeroing stock: the shelf count may be
   // correct while the item is temporarily unsellable (damaged, misplaced), and
   // conflating the two destroys the audit trail.
-  await prisma.storeVariant.update({
-    where: { id: storeVariantId },
+  await prisma.sellerListing.update({
+    where: { id: sellerListingId },
     data: { isAvailable: false },
   });
-  log.info({ storeVariantId, actorUserId }, 'marked out of stock');
+  log.info({ sellerListingId, actorUserId }, 'marked out of stock');
 }
 
 export async function markAvailable(
-  storeVariantId: string,
+  sellerListingId: string,
   actorUserId: string,
 ): Promise<void> {
-  await prisma.storeVariant.update({
-    where: { id: storeVariantId },
+  await prisma.sellerListing.update({
+    where: { id: sellerListingId },
     data: { isAvailable: true },
   });
-  log.info({ storeVariantId, actorUserId }, 'marked available');
+  log.info({ sellerListingId, actorUserId }, 'marked available');
 }
 
 export async function updatePricing(
-  storeVariantId: string,
+  sellerListingId: string,
   input: { pricePaise?: number; mrpPaise?: number },
   actorUserId: string,
 ): Promise<void> {
-  const current = await prisma.storeVariant.findUnique({ where: { id: storeVariantId } });
+  const current = await prisma.sellerListing.findUnique({ where: { id: sellerListingId } });
   if (!current) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Inventory record not found.' });
 
   const mrpPaise = input.mrpPaise ?? current.mrpPaise;
   const pricePaise = input.pricePaise ?? current.pricePaise;
 
-  // Also enforced by a CHECK constraint; caught here so the admin gets a clear
-  // message instead of a database error.
+  // Also enforced by a CHECK constraint; caught here so the caller gets a
+  // clear message instead of a database error.
   if (pricePaise > mrpPaise) {
     throw new AppError(ErrorCode.VALIDATION_ERROR, {
       message: 'Selling price cannot be higher than MRP.',
     });
   }
 
-  await prisma.storeVariant.update({
-    where: { id: storeVariantId },
+  await prisma.sellerListing.update({
+    where: { id: sellerListingId },
     data: { pricePaise, mrpPaise },
   });
 
@@ -326,8 +388,8 @@ export async function updatePricing(
     data: {
       actorUserId,
       action: 'inventory.price.update',
-      entityType: 'StoreVariant',
-      entityId: storeVariantId,
+      entityType: 'SellerListing',
+      entityId: sellerListingId,
       before: { pricePaise: current.pricePaise, mrpPaise: current.mrpPaise },
       after: { pricePaise, mrpPaise },
     },
@@ -335,12 +397,12 @@ export async function updatePricing(
 }
 
 export async function updateLimits(
-  storeVariantId: string,
+  sellerListingId: string,
   input: { maxQtyPerOrder?: number; lowStockThreshold?: number },
   _actorUserId: string,
 ): Promise<void> {
-  await prisma.storeVariant.update({
-    where: { id: storeVariantId },
+  await prisma.sellerListing.update({
+    where: { id: sellerListingId },
     data: {
       ...(input.maxQtyPerOrder !== undefined ? { maxQtyPerOrder: input.maxQtyPerOrder } : {}),
       ...(input.lowStockThreshold !== undefined
@@ -351,49 +413,76 @@ export async function updateLimits(
 }
 
 export interface LowStockRow {
-  storeVariantId: string;
+  sellerListingId: string;
+  sellerName: string;
   productName: string;
   variantName: string;
   availableQty: number;
   lowStockThreshold: number;
 }
 
-/** Feeds the admin dashboard's low-stock panel. Uses the partial index. */
-export async function listLowStock(storeId: string, limit = 50): Promise<LowStockRow[]> {
-  const rows = await prisma.$queryRaw<
-    {
-      id: string;
-      product_name: string;
-      variant_name: string;
-      available_qty: number;
-      low_stock_threshold: number;
-    }[]
-  >`
-    SELECT sv.id, p.name AS product_name, v.variant_name,
-           (sv.stock_qty - sv.reserved_qty) AS available_qty,
-           sv.low_stock_threshold
-    FROM store_variants sv
-    JOIN product_variants v ON v.id = sv.variant_id
-    JOIN products p ON p.id = v.product_id
-    WHERE sv.store_id = ${storeId}::uuid
-      AND (sv.stock_qty - sv.reserved_qty) <= sv.low_stock_threshold
-      AND v.deleted_at IS NULL AND p.deleted_at IS NULL
-    ORDER BY (sv.stock_qty - sv.reserved_qty) ASC
-    LIMIT ${limit}`;
+type LowStockSqlRow = {
+  id: string;
+  seller_name: string;
+  product_name: string;
+  variant_name: string;
+  available_qty: number;
+  low_stock_threshold: number;
+};
 
-  return rows.map((row) => ({
-    storeVariantId: row.id,
+function toLowStockRow(row: LowStockSqlRow): LowStockRow {
+  return {
+    sellerListingId: row.id,
+    sellerName: row.seller_name,
     productName: row.product_name,
     variantName: row.variant_name,
     availableQty: Number(row.available_qty),
     lowStockThreshold: row.low_stock_threshold,
-  }));
+  };
 }
 
-/** Stock movement history for one offer — the "why is this number wrong" view. */
-export async function getLedger(storeVariantId: string, limit = 100) {
+/** Feeds the seller/admin dashboard's low-stock panel. Uses the partial index. */
+export async function listLowStock(sellerId: string, limit = 50): Promise<LowStockRow[]> {
+  const rows = await prisma.$queryRaw<LowStockSqlRow[]>`
+    SELECT sl.id, s.name AS seller_name, p.name AS product_name, v.variant_name,
+           (sl.stock_qty - sl.reserved_qty) AS available_qty,
+           sl.low_stock_threshold
+    FROM seller_listings sl
+    JOIN sellers s ON s.id = sl.seller_id
+    JOIN product_variants v ON v.id = sl.variant_id
+    JOIN products p ON p.id = v.product_id
+    WHERE sl.seller_id = ${sellerId}::uuid
+      AND (sl.stock_qty - sl.reserved_qty) <= sl.low_stock_threshold
+      AND v.deleted_at IS NULL AND p.deleted_at IS NULL
+    ORDER BY (sl.stock_qty - sl.reserved_qty) ASC
+    LIMIT ${limit}`;
+
+  return rows.map(toLowStockRow);
+}
+
+/** Same as `listLowStock`, but across EVERY seller — admin's cross-seller
+ * dashboard view (#26), rather than one seller's own panel. */
+export async function listLowStockAllSellers(limit = 50): Promise<LowStockRow[]> {
+  const rows = await prisma.$queryRaw<LowStockSqlRow[]>`
+    SELECT sl.id, s.name AS seller_name, p.name AS product_name, v.variant_name,
+           (sl.stock_qty - sl.reserved_qty) AS available_qty,
+           sl.low_stock_threshold
+    FROM seller_listings sl
+    JOIN sellers s ON s.id = sl.seller_id
+    JOIN product_variants v ON v.id = sl.variant_id
+    JOIN products p ON p.id = v.product_id
+    WHERE (sl.stock_qty - sl.reserved_qty) <= sl.low_stock_threshold
+      AND v.deleted_at IS NULL AND p.deleted_at IS NULL
+    ORDER BY (sl.stock_qty - sl.reserved_qty) ASC
+    LIMIT ${limit}`;
+
+  return rows.map(toLowStockRow);
+}
+
+/** Stock movement history for one listing — the "why is this number wrong" view. */
+export async function getLedger(sellerListingId: string, limit = 100) {
   return prisma.stockLedger.findMany({
-    where: { storeVariantId },
+    where: { sellerListingId },
     orderBy: { createdAt: 'desc' },
     take: limit,
     include: { actor: { select: { fullName: true, mobile: true } } },

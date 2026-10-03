@@ -114,6 +114,26 @@ export interface CartItemSnapshot {
   availableQty: number;
   maxQtyPerOrder: number;
   allowCod: boolean;
+  /**
+   * The seller listing a FIRST add goes to — V2's `POST /cart/items` takes a
+   * listing, not a bare variant, since one variant can be listed by several
+   * sellers. Null only for a variant the server sent without one.
+   */
+  sellerListingId: string | null;
+  /** The listing's seller (V2 VariantDto/CartItemDto). Null in a snapshot
+   * saved to disk by an older build, which did not record it. */
+  sellerId: string | null;
+  sellerName: string | null;
+}
+
+/**
+ * V2 keys cart lines and order items by seller listing: `sellerListingId` is
+ * on every VariantDto and CartItemDto. Null only for a client-side placeholder
+ * line (restored from disk, or a first add not yet confirmed) that has none.
+ */
+export function sellerListingIdOf(value: VariantDto | CartItemDto): string | null {
+  const id = value.sellerListingId;
+  return typeof id === "string" && id !== "" ? id : null;
 }
 
 export function snapshotFromProduct(
@@ -132,6 +152,9 @@ export function snapshotFromProduct(
     availableQty: variant.availableQty,
     maxQtyPerOrder: variant.maxQtyPerOrder,
     allowCod: variant.allowCod,
+    sellerListingId: sellerListingIdOf(variant),
+    sellerId: variant.sellerId,
+    sellerName: variant.sellerName,
   };
 }
 
@@ -207,6 +230,11 @@ export async function hydrateCartFromDisk(): Promise<void> {
         (entry.snapshot.mrpPaise - entry.snapshot.unitPricePaise) * entry.qty,
       ),
       ...entry.snapshot,
+      // V2 line fields — a snapshot saved by an older build lacks the seller
+      // ones. Placeholders only: the real `/cart` response replaces this line.
+      sellerListingId: entry.snapshot.sellerListingId ?? "",
+      sellerId: entry.snapshot.sellerId ?? "",
+      sellerName: entry.snapshot.sellerName ?? "",
     }));
 
     const itemsSubtotalPaise = items.reduce(
@@ -222,6 +250,9 @@ export async function hydrateCartFromDisk(): Promise<void> {
     hydratedFallbackCart = {
       id: "hydrated",
       items,
+      // Nothing before checkout reads the per-seller grouping; the real
+      // `/cart` response carries it.
+      sellerGroups: [],
       bill: {
         itemCount,
         itemsSubtotalPaise,
@@ -272,6 +303,9 @@ function persistCartSnapshot(items: CartItemDto[]): void {
       availableQty: item.availableQty,
       maxQtyPerOrder: item.maxQtyPerOrder,
       allowCod: item.allowCod,
+      sellerListingId: sellerListingIdOf(item),
+      sellerId: item.sellerId,
+      sellerName: item.sellerName,
     },
   }));
 
@@ -604,6 +638,10 @@ export function useCartActions() {
         lineTotalPaise,
         lineDiscountPaise,
         ...snapshot,
+        // V2 line fields; placeholders until the server confirms the line.
+        sellerListingId: snapshot.sellerListingId ?? "",
+        sellerId: snapshot.sellerId ?? "",
+        sellerName: snapshot.sellerName ?? "",
       });
     }
 
@@ -675,6 +713,21 @@ export function useCartActions() {
       return;
     }
 
+    // A first add needs the listing the tapping screen captured (see
+    // CartItemSnapshot.sellerListingId); an existing line is updated by id.
+    const sellerListingId = known
+      ? null
+      : (usePendingCartStore.getState().pendingSnapshots[variantId]?.sellerListingId ?? null);
+    if (!known && !sellerListingId) {
+      // Nothing can be sent, so nothing will ever confirm this qty — drop
+      // the optimistic line instead of showing one the server never saw.
+      setError("This item can't be added right now. Please try again.");
+      if (usePendingCartStore.getState().pendingQty[variantId] === targetQty) {
+        clearPending(variantId);
+      }
+      return;
+    }
+
     setError(null);
     usePendingCartStore.getState().setBusy(variantId, true);
 
@@ -685,6 +738,7 @@ export function useCartActions() {
     // Left undefined on failure — a failed request confirmed nothing, so a
     // chained re-dispatch after one reads fresh from `cart` instead.
     let confirmedKnown: KnownLine | undefined;
+    let failed = false;
 
     try {
       const response = known
@@ -700,7 +754,7 @@ export function useCartActions() {
           // variant — across every screen, not just this one — so "0 +
           // targetQty" is exactly the qty the user asked for.
           await add_.mutateAsync({
-            variantId,
+            sellerListingId: sellerListingId!,
             qty: targetQty,
             distanceKm: distanceKmRef.current,
           });
@@ -708,6 +762,7 @@ export function useCartActions() {
       const line = response.items.find((item) => item.variantId === variantId);
       confirmedKnown = line ? { id: line.id, qty: line.qty } : null;
     } catch (err) {
+      failed = true;
       setError(
         err instanceof ApiRequestError
           ? err.message
@@ -716,7 +771,15 @@ export function useCartActions() {
     } finally {
       usePendingCartStore.getState().setBusy(variantId, false);
 
-      if (usePendingCartStore.getState().pendingQty[variantId] === targetQty) {
+      if (failed && usePendingCartStore.getState().pendingQty[variantId] === targetQty) {
+        // The server refused (or never received) this qty and no newer tap
+        // is waiting, so the cart keeps whatever it last confirmed. Drop the
+        // override now: the reconciliation effect below only clears a qty
+        // the server has CONFIRMED, so a rejected one would otherwise stay
+        // on screen forever — lines and a total the server's cart (and its
+        // checkoutEnabled / checkoutBlockedReason) know nothing about.
+        clearPending(variantId);
+      } else if (usePendingCartStore.getState().pendingQty[variantId] === targetQty) {
         // Nothing changed while this was in flight — the response we just
         // applied IS the current truth. Don't clear the optimistic cover
         // HERE, though: the query cache write this same response triggers
@@ -888,6 +951,12 @@ export function useCartActions() {
     // share the exact same instantly-updating numbers instead of each
     // being its own separately-lagging source of truth.
     cart: optimisticCart,
+    /**
+     * The cart exactly as the server last confirmed it, with no pending
+     * overlay. For things the SERVER computes from its own cart (e.g. the
+     * checkout quote), which must follow this rather than the optimistic view.
+     */
+    confirmedCart: cart,
     isLoading: cartIsLoading,
     isError: cartIsError,
     refetch: refetchCart,

@@ -1,8 +1,6 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
-  ORDER_STATUS_LABELS,
-  AdminOrderTab,
   type AdminDashboardDto,
   type AdminOrderSummaryDto,
   type CursorPage,
@@ -11,6 +9,7 @@ import {
 import { formatPaise } from '@shared/money';
 import { api } from '@/lib/api';
 import { formatShortDate, todayIsoInIndia } from '@/lib/dashboardDate';
+import { orderStatusLabel } from '@/lib/v2Orders';
 import {
   Button,
   EmptyState,
@@ -151,7 +150,9 @@ export default function DashboardPage() {
     queryFn: () =>
       isToday
         ? api.get<CursorPage<AdminOrderSummaryDto>>(
-            `/admin/orders?tab=${AdminOrderTab.NEW}&limit=5`,
+            // V2 has no "new" parent tab: orders whose sellers are still
+            // accepting/preparing them are all PROCESSING.
+            `/admin/orders?tab=PROCESSING&limit=5`,
           )
         : api.get<CursorPage<AdminOrderSummaryDto>>(
             `/admin/orders?date=${selectedDate}&limit=5`,
@@ -164,7 +165,7 @@ export default function DashboardPage() {
   if (dashboard.isLoading || !data) return <Spinner label="Loading dashboard…" />;
 
   const segments = data.ordersByStatus.map((row, index) => ({
-    label: ORDER_STATUS_LABELS[row.status],
+    label: orderStatusLabel(row.status),
     count: row.count,
     colour: SLICE_COLOURS[index % SLICE_COLOURS.length]!,
   }));
@@ -240,7 +241,7 @@ export default function DashboardPage() {
             <ul className="divide-y divide-gray-100">
               {data.lowStockItems.slice(0, 5).map((item) => (
                 <li
-                  key={item.storeVariantId}
+                  key={item.sellerListingId}
                   className="flex items-center justify-between gap-3 py-2.5 text-sm"
                 >
                   <span className="min-w-0">
@@ -309,7 +310,7 @@ export default function DashboardPage() {
 
       {/* ---- recent orders ---- */}
       <Panel
-        title={data.isToday ? 'New Orders' : `Orders on ${formatShortDate(data.date)}`}
+        title={data.isToday ? 'Processing Orders' : `Orders on ${formatShortDate(data.date)}`}
         bodyClass=""
         action={
           <Link to="/orders" className="text-sm font-medium text-brand-600 hover:underline">
@@ -321,8 +322,8 @@ export default function DashboardPage() {
           <div className="p-5 pt-0">
             {data.isToday ? (
               <EmptyState
-                title="No new orders waiting"
-                hint="Accepted orders move to their own tab."
+                title="No orders being processed"
+                hint="Orders move on once every seller has marked them ready."
               />
             ) : (
               <EmptyState

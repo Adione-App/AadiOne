@@ -13,12 +13,23 @@ import { publicApiLimit } from '../middleware/rateLimit';
 import { configurationRouter } from '../modules/configuration/configuration.routes';
 import { legalRouter } from '../modules/legal/legal.routes';
 import { authRouter } from '../modules/auth/auth.routes';
-import { storeRouter } from '../modules/stores/store.routes';
+import { sellerRouter } from '../modules/sellers/seller.routes';
 import { catalogRouter } from '../modules/catalog/catalog.routes';
 import { adminRouter } from '../modules/admin/admin.routes';
 import { cartRouter } from '../modules/cart/cart.routes';
 import { addressRouter } from '../modules/addresses/address.routes';
 import { checkoutRouter, orderRouter } from '../modules/orders/order.routes';
+import { sellerOrderRouter } from '../modules/orders/seller-order.routes';
+import { sellerCatalogRouter } from '../modules/catalog/seller-catalog.routes';
+import { sellerOnboardingRouter } from '../modules/sellers/seller-onboarding.routes';
+import { sellerSettlementRouter } from '../modules/sellers/seller-settlement.routes';
+import { restaurantRouter, sellerRestaurantRouter } from '../modules/restaurants/restaurant.routes';
+import { sellerAvailabilityRouter } from '../modules/sellers/seller-availability.routes';
+import { sellerCommissionRouter } from '../modules/commission/commission.routes';
+import { sellerNotificationRouter } from '../modules/notifications/notification.routes';
+import { sellerActivityRouter } from '../modules/sellers/seller-activity.routes';
+import { authenticate, requireSellerOrAdmin } from '../middleware/auth';
+import { authenticatedApiLimit } from '../middleware/rateLimit';
 import { paymentRouter } from '../modules/payments/payment.routes';
 import {
   deviceRouter,
@@ -35,8 +46,9 @@ apiRouter.use(publicApiLimit);
 apiRouter.use('/config', configurationRouter);
 apiRouter.use('/legal', legalRouter);
 apiRouter.use('/auth', authRouter);
-apiRouter.use('/store', storeRouter);
+apiRouter.use('/store', sellerRouter);
 apiRouter.use('/', catalogRouter);
+apiRouter.use('/restaurants', restaurantRouter);
 apiRouter.use('/cart', cartRouter);
 apiRouter.use('/addresses', addressRouter);
 apiRouter.use('/checkout', checkoutRouter);
@@ -47,6 +59,21 @@ apiRouter.use('/devices', deviceRouter);
 apiRouter.use('/referrals', referralRouter);
 apiRouter.use('/rewards', rewardsRouter);
 apiRouter.use('/admin', adminRouter);
+apiRouter.use(
+  '/seller',
+  authenticate,
+  requireSellerOrAdmin,
+  authenticatedApiLimit,
+  sellerOrderRouter,
+  sellerCatalogRouter,
+  sellerOnboardingRouter,
+  sellerSettlementRouter,
+  sellerRestaurantRouter,
+  sellerAvailabilityRouter,
+  sellerCommissionRouter,
+  sellerNotificationRouter,
+  sellerActivityRouter,
+);
 
 // Phase 9  — payments
 // Phase 10 — delivery

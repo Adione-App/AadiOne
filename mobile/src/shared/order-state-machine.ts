@@ -6,24 +6,121 @@
  */
 
 /**
- * Order state machine — the single definition of which order transitions are
+ * Order state machines — the single definition of which order transitions are
  * legal, who may perform them, and how internal states are presented to the
  * customer.
  *
- * This lives in `@adione/types` (not in the API) on purpose: the admin panel
- * needs it to decide which action buttons to render, and the mobile app needs
- * the timeline mapping. One definition, three consumers, no drift.
+ * V2 has TWO machines, not one:
+ *   - SellerOrderStatus: one seller's portion. NEW -> ACCEPTED -> PREPARING ->
+ *     READY_FOR_PICKUP, or -> REJECTED/CANCELLED at any point before pickup.
+ *     This is where V1's single per-order machine actually lives now.
+ *   - OrderStatus: the parent, customer-facing envelope. Coarser, and mostly
+ *     SYSTEM-driven — it's recomputed from the aggregate of its SellerOrders
+ *     (see order.service.ts's `recomputeParentOrderStatus`) rather than
+ *     transitioned directly the way a SellerOrder is.
  *
- * The API's `transitionOrder()` service is the ONLY code permitted to write
- * `orders.status`, and it validates against `ALLOWED_TRANSITIONS` below.
+ * `transitionSellerOrder()`/`transitionOrder()` (order.service.ts) are the
+ * ONLY code permitted to write `seller_orders.status`/`orders.status`, and
+ * both validate against the tables below.
  */
 
-import { ActorType, OrderStatus, TERMINAL_ORDER_STATUSES } from "./enums";
+import {
+  ActorType,
+  OrderStatus,
+  SellerOrderStatus,
+  TERMINAL_ORDER_STATUSES,
+  TERMINAL_SELLER_ORDER_STATUSES,
+} from "./enums";
 
 /* -------------------------------------------------------------------------- */
-/* Legal transitions                                                          */
+/* SellerOrder — the per-seller machine                                       */
 /* -------------------------------------------------------------------------- */
 
+export const ALLOWED_SELLER_ORDER_TRANSITIONS: Readonly<
+  Record<SellerOrderStatus, readonly SellerOrderStatus[]>
+> = {
+  [SellerOrderStatus.NEW]: [
+    SellerOrderStatus.ACCEPTED,
+    SellerOrderStatus.REJECTED,
+    SellerOrderStatus.CANCELLED,
+  ],
+  [SellerOrderStatus.ACCEPTED]: [
+    SellerOrderStatus.PREPARING,
+    SellerOrderStatus.CANCELLED,
+  ],
+  [SellerOrderStatus.PREPARING]: [
+    SellerOrderStatus.READY_FOR_PICKUP,
+    SellerOrderStatus.CANCELLED,
+  ],
+  // Cancellable even once ready — a rider delay or a last-minute stock
+  // problem can still require pulling this portion back before pickup.
+  [SellerOrderStatus.READY_FOR_PICKUP]: [SellerOrderStatus.CANCELLED],
+  [SellerOrderStatus.REJECTED]: [],
+  [SellerOrderStatus.CANCELLED]: [],
+};
+
+/**
+ * Which actors may perform a given SellerOrder transition.
+ *
+ * NEW/ACCEPTED are cancellable by the CUSTOMER (the seller hasn't started
+ * work yet, or has only just confirmed) as well as the SELLER/ADMIN.
+ * PREPARING onward is SELLER/ADMIN only — work is already underway, so a
+ * customer-initiated cancellation past this point must go through support.
+ */
+export const SELLER_ORDER_TRANSITION_ACTORS: Readonly<
+  Partial<Record<`${SellerOrderStatus}->${SellerOrderStatus}`, readonly ActorType[]>>
+> = {
+  "NEW->ACCEPTED": [ActorType.SELLER, ActorType.ADMIN],
+  "NEW->REJECTED": [ActorType.SELLER, ActorType.ADMIN],
+  "NEW->CANCELLED": [ActorType.CUSTOMER, ActorType.SELLER, ActorType.ADMIN],
+  "ACCEPTED->PREPARING": [ActorType.SELLER, ActorType.ADMIN],
+  "ACCEPTED->CANCELLED": [ActorType.CUSTOMER, ActorType.SELLER, ActorType.ADMIN],
+  "PREPARING->READY_FOR_PICKUP": [ActorType.SELLER, ActorType.ADMIN],
+  "PREPARING->CANCELLED": [ActorType.SELLER, ActorType.ADMIN],
+  "READY_FOR_PICKUP->CANCELLED": [ActorType.ADMIN],
+};
+
+export function canTransitionSellerOrder(
+  from: SellerOrderStatus,
+  to: SellerOrderStatus,
+): boolean {
+  return (ALLOWED_SELLER_ORDER_TRANSITIONS[from] ?? []).includes(to);
+}
+
+export function isTerminalSellerOrderStatus(status: SellerOrderStatus): boolean {
+  return TERMINAL_SELLER_ORDER_STATUSES.includes(status);
+}
+
+export function canActorTransitionSellerOrder(
+  from: SellerOrderStatus,
+  to: SellerOrderStatus,
+  actor: ActorType,
+): boolean {
+  if (!canTransitionSellerOrder(from, to)) return false;
+  const allowed = SELLER_ORDER_TRANSITION_ACTORS[`${from}->${to}`];
+  return allowed ? allowed.includes(actor) : actor === ActorType.SYSTEM;
+}
+
+/** Short, user-safe label for a seller-order status (seller panel badges). */
+export const SELLER_ORDER_STATUS_LABELS: Readonly<Record<SellerOrderStatus, string>> = {
+  [SellerOrderStatus.NEW]: "New",
+  [SellerOrderStatus.ACCEPTED]: "Accepted",
+  [SellerOrderStatus.PREPARING]: "Preparing",
+  [SellerOrderStatus.READY_FOR_PICKUP]: "Ready for Pickup",
+  [SellerOrderStatus.REJECTED]: "Rejected",
+  [SellerOrderStatus.CANCELLED]: "Cancelled",
+};
+
+/* -------------------------------------------------------------------------- */
+/* Order — the parent, customer-facing machine                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Most of these are reached by `recomputeParentOrderStatus`, not chosen
+ * directly by an actor — e.g. PROCESSING -> READY_FOR_PICKUP happens the
+ * instant the last required SellerOrder reaches READY_FOR_PICKUP. Only the
+ * payment and delivery-leg edges are actor-driven in the usual sense.
+ */
 export const ALLOWED_TRANSITIONS: Readonly<
   Record<OrderStatus, readonly OrderStatus[]>
 > = {
@@ -32,41 +129,28 @@ export const ALLOWED_TRANSITIONS: Readonly<
     OrderStatus.PAYMENT_FAILED,
     OrderStatus.CANCELLED,
   ],
-  [OrderStatus.PAYMENT_CONFIRMED]: [OrderStatus.ORDER_PLACED],
-  [OrderStatus.ORDER_PLACED]: [
-    OrderStatus.STORE_ACCEPTED,
-    OrderStatus.REJECTED,
+  [OrderStatus.PAYMENT_CONFIRMED]: [OrderStatus.PROCESSING],
+  [OrderStatus.PROCESSING]: [
+    OrderStatus.READY_FOR_PICKUP,
+    OrderStatus.PARTIALLY_CANCELLED,
     OrderStatus.CANCELLED,
   ],
-  [OrderStatus.STORE_ACCEPTED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
-  [OrderStatus.PREPARING]: [
+  [OrderStatus.PARTIALLY_CANCELLED]: [
     OrderStatus.READY_FOR_PICKUP,
     OrderStatus.CANCELLED,
   ],
-  [OrderStatus.READY_FOR_PICKUP]: [
-    OrderStatus.OUT_FOR_DELIVERY,
-    OrderStatus.CANCELLED,
-  ],
-  [OrderStatus.OUT_FOR_DELIVERY]: [
-    OrderStatus.DELIVERED,
-    OrderStatus.CANCELLED,
-  ],
-  // Terminal states. REFUNDED is reachable only from a cancelled/rejected order
-  // once the money is actually back with the customer.
+  [OrderStatus.READY_FOR_PICKUP]: [OrderStatus.PICKED_UP],
+  [OrderStatus.PICKED_UP]: [OrderStatus.OUT_FOR_DELIVERY],
+  [OrderStatus.OUT_FOR_DELIVERY]: [OrderStatus.DELIVERED],
+  // Terminal states. REFUNDED is reachable only once the money is actually
+  // back with the customer.
   [OrderStatus.DELIVERED]: [],
   [OrderStatus.CANCELLED]: [OrderStatus.REFUNDED],
-  [OrderStatus.REJECTED]: [OrderStatus.REFUNDED],
   [OrderStatus.PAYMENT_FAILED]: [],
   [OrderStatus.REFUNDED]: [],
+  [OrderStatus.PARTIALLY_REFUNDED]: [OrderStatus.REFUNDED],
 };
 
-/**
- * Which actors may perform a given transition.
- *
- * Note `OUT_FOR_DELIVERY -> CANCELLED` is ADMIN-only: it is an exception path
- * (customer unreachable, address wrong) that requires a reason and a manual
- * decision about the goods, so it must never be self-service.
- */
 export const TRANSITION_ACTORS: Readonly<
   Partial<Record<`${OrderStatus}->${OrderStatus}`, readonly ActorType[]>>
 > = {
@@ -80,27 +164,19 @@ export const TRANSITION_ACTORS: Readonly<
     ActorType.PAYMENT_WEBHOOK,
   ],
   "PENDING_PAYMENT->CANCELLED": [ActorType.CUSTOMER, ActorType.SYSTEM],
-  "PAYMENT_CONFIRMED->ORDER_PLACED": [
-    ActorType.SYSTEM,
-    ActorType.PAYMENT_WEBHOOK,
-    ActorType.ADMIN,
-  ],
-  "ORDER_PLACED->STORE_ACCEPTED": [ActorType.ADMIN],
-  "ORDER_PLACED->REJECTED": [ActorType.ADMIN],
-  "ORDER_PLACED->CANCELLED": [ActorType.CUSTOMER, ActorType.ADMIN],
-  "STORE_ACCEPTED->PREPARING": [ActorType.ADMIN],
-  "STORE_ACCEPTED->CANCELLED": [ActorType.CUSTOMER, ActorType.ADMIN],
-  "PREPARING->READY_FOR_PICKUP": [ActorType.ADMIN],
-  "PREPARING->CANCELLED": [ActorType.ADMIN],
-  "READY_FOR_PICKUP->OUT_FOR_DELIVERY": [
-    ActorType.ADMIN,
-    ActorType.DELIVERY_AGENT,
-  ],
-  "READY_FOR_PICKUP->CANCELLED": [ActorType.ADMIN],
+  "PAYMENT_CONFIRMED->PROCESSING": [ActorType.SYSTEM, ActorType.PAYMENT_WEBHOOK],
+  // Every one of these is the SYSTEM reacting to a SellerOrder change, not a
+  // human choosing the parent's status directly.
+  "PROCESSING->READY_FOR_PICKUP": [ActorType.SYSTEM],
+  "PROCESSING->PARTIALLY_CANCELLED": [ActorType.SYSTEM],
+  "PROCESSING->CANCELLED": [ActorType.SYSTEM],
+  "PARTIALLY_CANCELLED->READY_FOR_PICKUP": [ActorType.SYSTEM],
+  "PARTIALLY_CANCELLED->CANCELLED": [ActorType.SYSTEM],
+  "READY_FOR_PICKUP->PICKED_UP": [ActorType.ADMIN, ActorType.DELIVERY_AGENT],
+  "PICKED_UP->OUT_FOR_DELIVERY": [ActorType.ADMIN, ActorType.DELIVERY_AGENT],
   "OUT_FOR_DELIVERY->DELIVERED": [ActorType.ADMIN, ActorType.DELIVERY_AGENT],
-  "OUT_FOR_DELIVERY->CANCELLED": [ActorType.ADMIN],
   "CANCELLED->REFUNDED": [ActorType.SYSTEM, ActorType.PAYMENT_WEBHOOK],
-  "REJECTED->REFUNDED": [ActorType.SYSTEM, ActorType.PAYMENT_WEBHOOK],
+  "PARTIALLY_REFUNDED->REFUNDED": [ActorType.SYSTEM, ActorType.PAYMENT_WEBHOOK],
 };
 
 export function canTransition(from: OrderStatus, to: OrderStatus): boolean {
@@ -123,14 +199,15 @@ export function canActorTransition(
 }
 
 /**
- * Statuses an order must have passed through for a given status to be reached.
- * Used to render the completed portion of the tracking timeline.
+ * Statuses an order must have passed through for a given status to be
+ * reached. Used to render the completed portion of the tracking timeline,
+ * and to gate customer self-cancellation (see order.service's
+ * `canCustomerCancel`).
  */
 export const STATUS_PROGRESSION: readonly OrderStatus[] = [
-  OrderStatus.ORDER_PLACED,
-  OrderStatus.STORE_ACCEPTED,
-  OrderStatus.PREPARING,
+  OrderStatus.PROCESSING,
   OrderStatus.READY_FOR_PICKUP,
+  OrderStatus.PICKED_UP,
   OrderStatus.OUT_FOR_DELIVERY,
   OrderStatus.DELIVERED,
 ];
@@ -140,9 +217,10 @@ export const STATUS_PROGRESSION: readonly OrderStatus[] = [
 /* -------------------------------------------------------------------------- */
 
 /**
- * The mockups show a 5-step timeline. Internally we track 12 states — there is
- * no "Packed" state, for example; PREPARING and READY_FOR_PICKUP both present
- * as "Order Packed".
+ * The mockups show a 5-step timeline. Internally we track more states than
+ * that (plus a whole second machine for SellerOrders) — there is no
+ * "Packed" state, for example; PROCESSING and READY_FOR_PICKUP both present
+ * as "Order Packed" once the customer has at least one accepted SellerOrder.
  *
  * Mapping here, in one place, is what lets us keep a precise internal machine
  * without ever making a client switch on a raw status string.
@@ -176,23 +254,30 @@ export const CUSTOMER_TIMELINE_LABELS: Readonly<
 };
 
 /**
- * Maps an internal status to its timeline step.
- * `null` means the order is in an exception state and the UI must show a
- * banner (cancelled / rejected / payment failed / awaiting payment) instead of
- * a progress timeline.
+ * Maps an internal PARENT status to its timeline step. `null` means the
+ * order is in an exception state and the UI must show a banner (cancelled /
+ * payment failed / awaiting payment) instead of a progress timeline.
+ *
+ * Note PROCESSING alone is ambiguous — "processing" covers everything from
+ * "no seller has accepted yet" to "every seller is packed and ready." The
+ * DTO layer (order.service.ts's `toSummary`/`getOrderDetail`) additionally
+ * inspects the SellerOrders to decide PLACED vs CONFIRMED vs PACKED for a
+ * PROCESSING parent — this function alone only distinguishes the OTHER,
+ * unambiguous statuses.
  */
 export function toCustomerTimelineStep(
   status: OrderStatus,
-): CustomerTimelineStep | null {
+): CustomerTimelineStep | "PROCESSING" | null {
   switch (status) {
     case OrderStatus.PAYMENT_CONFIRMED:
-    case OrderStatus.ORDER_PLACED:
       return CustomerTimelineStep.PLACED;
-    case OrderStatus.STORE_ACCEPTED:
-      return CustomerTimelineStep.CONFIRMED;
-    case OrderStatus.PREPARING:
+    case OrderStatus.PROCESSING:
+    case OrderStatus.PARTIALLY_CANCELLED:
+      // Ambiguous at this function's level — see doc comment above.
+      return "PROCESSING";
     case OrderStatus.READY_FOR_PICKUP:
       return CustomerTimelineStep.PACKED;
+    case OrderStatus.PICKED_UP:
     case OrderStatus.OUT_FOR_DELIVERY:
       return CustomerTimelineStep.OUT_FOR_DELIVERY;
     case OrderStatus.DELIVERED:
@@ -200,8 +285,8 @@ export function toCustomerTimelineStep(
     case OrderStatus.PENDING_PAYMENT:
     case OrderStatus.PAYMENT_FAILED:
     case OrderStatus.CANCELLED:
-    case OrderStatus.REJECTED:
     case OrderStatus.REFUNDED:
+    case OrderStatus.PARTIALLY_REFUNDED:
       return null;
     default: {
       // Exhaustiveness guard — adding a status without handling it fails the build.
@@ -211,20 +296,20 @@ export function toCustomerTimelineStep(
   }
 }
 
-/** Short, user-safe label for any internal status (badges, lists). */
+/** Short, user-safe label for any internal parent status (badges, lists). */
 export const ORDER_STATUS_LABELS: Readonly<Record<OrderStatus, string>> = {
   [OrderStatus.PENDING_PAYMENT]: "Awaiting Payment",
   [OrderStatus.PAYMENT_CONFIRMED]: "Payment Received",
-  [OrderStatus.ORDER_PLACED]: "Order Placed",
-  [OrderStatus.STORE_ACCEPTED]: "Confirmed",
-  [OrderStatus.PREPARING]: "Preparing",
-  [OrderStatus.READY_FOR_PICKUP]: "Packed",
+  [OrderStatus.PROCESSING]: "Processing",
+  [OrderStatus.READY_FOR_PICKUP]: "Ready for Pickup",
+  [OrderStatus.PICKED_UP]: "Picked Up",
   [OrderStatus.OUT_FOR_DELIVERY]: "Out for Delivery",
   [OrderStatus.DELIVERED]: "Delivered",
+  [OrderStatus.PARTIALLY_CANCELLED]: "Partially Cancelled",
   [OrderStatus.CANCELLED]: "Cancelled",
   [OrderStatus.PAYMENT_FAILED]: "Payment Failed",
-  [OrderStatus.REJECTED]: "Rejected",
   [OrderStatus.REFUNDED]: "Refunded",
+  [OrderStatus.PARTIALLY_REFUNDED]: "Partially Refunded",
 };
 
 /**
@@ -242,7 +327,6 @@ export function toOrderBucket(status: OrderStatus): OrderBucket {
   if (status === OrderStatus.DELIVERED) return OrderBucket.DELIVERED;
   if (
     status === OrderStatus.CANCELLED ||
-    status === OrderStatus.REJECTED ||
     status === OrderStatus.PAYMENT_FAILED ||
     status === OrderStatus.REFUNDED
   ) {
@@ -252,22 +336,13 @@ export function toOrderBucket(status: OrderStatus): OrderBucket {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Admin tabs (mockup section 38)                                             */
+/* Admin tabs — cross-seller order list (parent OrderStatus)                  */
 /* -------------------------------------------------------------------------- */
 
 export const AdminOrderTab = {
-  /**
-   * Orders whose payment the store must verify by hand.
-   *
-   * Only meaningful with direct-UPI payments, where no gateway confirms
-   * anything — without this tab those orders would be invisible until they
-   * expired.
-   */
   PAYMENT_PENDING: "PAYMENT_PENDING",
-  NEW: "NEW",
-  ACCEPTED: "ACCEPTED",
-  PREPARING: "PREPARING",
-  READY: "READY",
+  PROCESSING: "PROCESSING",
+  READY_FOR_PICKUP: "READY_FOR_PICKUP",
   OUT_FOR_DELIVERY: "OUT_FOR_DELIVERY",
   COMPLETED: "COMPLETED",
   CANCELLED: "CANCELLED",
@@ -278,16 +353,41 @@ export const ADMIN_TAB_STATUSES: Readonly<
   Record<AdminOrderTab, readonly OrderStatus[]>
 > = {
   [AdminOrderTab.PAYMENT_PENDING]: [OrderStatus.PENDING_PAYMENT],
-  [AdminOrderTab.NEW]: [OrderStatus.ORDER_PLACED],
-  [AdminOrderTab.ACCEPTED]: [OrderStatus.STORE_ACCEPTED],
-  [AdminOrderTab.PREPARING]: [OrderStatus.PREPARING],
-  [AdminOrderTab.READY]: [OrderStatus.READY_FOR_PICKUP],
-  [AdminOrderTab.OUT_FOR_DELIVERY]: [OrderStatus.OUT_FOR_DELIVERY],
+  [AdminOrderTab.PROCESSING]: [
+    OrderStatus.PAYMENT_CONFIRMED,
+    OrderStatus.PROCESSING,
+    OrderStatus.PARTIALLY_CANCELLED,
+  ],
+  [AdminOrderTab.READY_FOR_PICKUP]: [OrderStatus.READY_FOR_PICKUP],
+  [AdminOrderTab.OUT_FOR_DELIVERY]: [OrderStatus.PICKED_UP, OrderStatus.OUT_FOR_DELIVERY],
   [AdminOrderTab.COMPLETED]: [OrderStatus.DELIVERED],
   [AdminOrderTab.CANCELLED]: [
     OrderStatus.CANCELLED,
-    OrderStatus.REJECTED,
     OrderStatus.PAYMENT_FAILED,
     OrderStatus.REFUNDED,
+    OrderStatus.PARTIALLY_REFUNDED,
   ],
+};
+
+/* -------------------------------------------------------------------------- */
+/* Seller panel tabs — one seller's own orders (SellerOrderStatus)            */
+/* -------------------------------------------------------------------------- */
+
+export const SellerOrderTab = {
+  NEW: "NEW",
+  ACCEPTED: "ACCEPTED",
+  PREPARING: "PREPARING",
+  READY: "READY",
+  CANCELLED: "CANCELLED",
+} as const;
+export type SellerOrderTab = (typeof SellerOrderTab)[keyof typeof SellerOrderTab];
+
+export const SELLER_ORDER_TAB_STATUSES: Readonly<
+  Record<SellerOrderTab, readonly SellerOrderStatus[]>
+> = {
+  [SellerOrderTab.NEW]: [SellerOrderStatus.NEW],
+  [SellerOrderTab.ACCEPTED]: [SellerOrderStatus.ACCEPTED],
+  [SellerOrderTab.PREPARING]: [SellerOrderStatus.PREPARING],
+  [SellerOrderTab.READY]: [SellerOrderStatus.READY_FOR_PICKUP],
+  [SellerOrderTab.CANCELLED]: [SellerOrderStatus.REJECTED, SellerOrderStatus.CANCELLED],
 };

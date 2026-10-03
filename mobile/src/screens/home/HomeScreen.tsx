@@ -29,6 +29,7 @@ import {
   Zap,
 } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useIsFocused } from "@react-navigation/native";
 
 import type { HomeFeedDto, ProductSummaryDto } from "@shared";
 
@@ -36,7 +37,8 @@ type RailKey = HomeFeedDto["rails"][number]["key"];
 import { colors, radius, shadow, spacing } from "@shared/theme";
 import { formatDistance } from "@shared/distance";
 
-import { useHomeFeed, useOrders } from "@/lib/queries";
+import { useHomeFeed, useNotificationUnreadCount, useOrders } from "@/lib/queries";
+import { formatUnreadBadge } from "@/lib/notifications";
 import { useCartActions } from "@/lib/useCartActions";
 import { useLocation } from "@/lib/store";
 
@@ -150,6 +152,7 @@ export default function HomeScreen({
   onOpenSearch,
   onOpenLocation,
   onOpenProfile,
+  onOpenNotifications,
   onOpenOrderTracking,
 }: {
   onOpenProduct: (productId: string) => void;
@@ -159,10 +162,16 @@ export default function HomeScreen({
   onOpenSearch: () => void;
   onOpenLocation: () => void;
   onOpenProfile: () => void;
+  onOpenNotifications: () => void;
   onOpenOrderTracking: (orderId: string) => void;
 }) {
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
+
+  // The bell's badge. Polled only while Home is the visible screen — the
+  // tab stays mounted behind other tabs and has no reason to ask then.
+  const isFocused = useIsFocused();
+  const unreadNotifications = useNotificationUnreadCount({ poll: isFocused }).data ?? 0;
 
   const feed = useHomeFeed();
   const cart = useCartActions();
@@ -800,6 +809,31 @@ export default function HomeScreen({
             </Pressable>
 
             {/* ----------------------------------------------------------
+            NOTIFICATIONS
+        ---------------------------------------------------------- */}
+
+            <Pressable
+              onPress={onOpenNotifications}
+              style={styles.bellButton}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={
+                unreadNotifications > 0
+                  ? `Notifications, ${unreadNotifications} unread`
+                  : "Notifications"
+              }
+            >
+              <Ionicons name="notifications-outline" size={26} color={colors.primary} />
+              {unreadNotifications > 0 && (
+                <View style={styles.bellBadge}>
+                  <AppText variant="overline" color={colors.textOnPrimary} style={styles.bellBadgeText}>
+                    {formatUnreadBadge(unreadNotifications)}
+                  </AppText>
+                </View>
+              )}
+            </Pressable>
+
+            {/* ----------------------------------------------------------
             ACCOUNT
         ---------------------------------------------------------- */}
 
@@ -903,7 +937,7 @@ export default function HomeScreen({
           </View>
         )}
 
-        {serviceability?.storeOpen === false && (
+        {serviceability?.sellerOpen === false && (
           <View style={styles.noticeContainer}>
             <NoticeStrip message="The store is closed right now. You can still add items and order when we open." />
           </View>
@@ -1517,6 +1551,48 @@ const styles = StyleSheet.create({
     alignItems: "center",
 
     justifyContent: "center",
+  },
+
+  /* ================================================================
+     NOTIFICATION BELL
+  ================================================================ */
+
+  bellButton: {
+    width: 40,
+
+    height: 42,
+
+    alignItems: "center",
+
+    justifyContent: "center",
+  },
+
+  bellBadge: {
+    position: "absolute",
+
+    top: 4,
+
+    right: 2,
+
+    minWidth: 16,
+
+    height: 16,
+
+    paddingHorizontal: 3,
+
+    borderRadius: 8,
+
+    alignItems: "center",
+
+    justifyContent: "center",
+
+    backgroundColor: colors.danger,
+  },
+
+  bellBadgeText: {
+    fontSize: 9,
+
+    lineHeight: 12,
   },
 
   /* ================================================================

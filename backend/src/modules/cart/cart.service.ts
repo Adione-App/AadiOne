@@ -1,11 +1,17 @@
 /**
- * Cart (Phase 6).
+ * Cart (Phase 6, redesigned for V2's multi-seller marketplace).
  *
- * THE CART STORES NO PRICES. `cart_items` holds only (variant, qty); every
- * price, discount and availability figure is resolved live from
- * `store_variants` on each read. There is nowhere for a stale or tampered
+ * THE CART STORES NO PRICES. `cart_items` holds only (seller listing, qty);
+ * every price, discount and availability figure is resolved live from
+ * `seller_listings` on each read. There is nowhere for a stale or tampered
  * price to live, which is the "never trust client totals" rule expressed in
  * the data model rather than in a validation check.
+ *
+ * V2: the cart is SELLER-AGNOSTIC. One cart per user, not one per seller — a
+ * line points at a specific `SellerListing` (not a bare variant), so its
+ * seller is derivable per-item. This is what lets a single cart mix products
+ * from any number of sellers; checkout (order.service.ts) is what groups
+ * these lines BY seller into one SellerOrder each.
  *
  * Revalidation NEVER silently alters the basket. When stock runs out or a
  * price moves, the cart is corrected AND a `changes[]` entry is returned so
@@ -14,6 +20,7 @@
  * lost.
  */
 
+import { Prisma } from "@prisma/client";
 import {
   CodPolicy,
   ConfigKey,
@@ -21,61 +28,60 @@ import {
   type CartChangeDto,
   type CartDto,
   type CartItemDto,
+  type CartSellerGroupDto,
 } from "../../shared";
 import { resolveItemCodPolicy } from "../../shared/cod";
 import { AppError } from "../../common/errors";
 import { prisma, type DbClient } from "../../infra/db/prisma";
 import * as configService from "../configuration/configuration.service";
-import * as storeService from "../stores/store.service";
 import * as pricingService from "../pricing/pricing.service";
 import { moduleLogger } from "../../common/logger";
+import { unorderableMessage, unorderableReason } from "./orderability";
+import * as sellerService from "../sellers/seller.service";
 
 const log = moduleLogger("cart");
 
-/** Everything needed to price and validate a line, in one query. */
-const CART_INCLUDE = (storeId: string) =>
-  ({
-    items: {
-      orderBy: { createdAt: "asc" as const },
-      include: {
-        variant: {
-          include: {
-            product: {
-              include: {
-                brand: true,
-                category: true,
-                images: {
-                  orderBy: {
-                    displayOrder: "asc",
+/** Everything needed to price and validate every line, in one query. */
+const CART_INCLUDE = {
+  items: {
+    orderBy: { createdAt: "asc" },
+    include: {
+      sellerListing: {
+        include: {
+          seller: { include: { hours: { orderBy: { dayOfWeek: "asc" } } } },
+          variant: {
+            include: {
+              product: {
+                include: {
+                  brand: true,
+                  category: true,
+                  images: {
+                    orderBy: { displayOrder: "asc" },
+                    take: 1,
                   },
-                  take: 1,
                 },
               },
+              images: { orderBy: { displayOrder: "asc" }, take: 1 },
             },
-            storeVariants: { where: { storeId } },
-            images: { orderBy: { displayOrder: "asc" as const }, take: 1 },
           },
         },
       },
     },
-  }) as const;
+  },
+} satisfies Prisma.CartInclude;
 
-async function getOrCreateCart(
-  userId: string,
-  storeId: string,
-  client: DbClient = prisma,
-) {
+async function getOrCreateCart(userId: string, client: DbClient = prisma) {
   const existing = await client.cart.findFirst({
-    where: { userId, storeId, status: "ACTIVE" },
-    include: CART_INCLUDE(storeId),
+    where: { userId, status: "ACTIVE" },
+    include: CART_INCLUDE,
   });
   if (existing) return existing;
 
-  // The partial unique index `carts_one_active_per_user_store` guarantees a
+  // The partial unique index `carts_one_active_per_user` guarantees a
   // concurrent duplicate create fails rather than producing two live carts.
   return client.cart.create({
-    data: { userId, storeId, status: "ACTIVE" },
-    include: CART_INCLUDE(storeId),
+    data: { userId, status: "ACTIVE" },
+    include: CART_INCLUDE,
   });
 }
 
@@ -93,7 +99,6 @@ interface RevalidationOutcome {
 }
 
 async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
-  const store = await storeService.getActiveStore();
   const config = await configService.getMany([
     ConfigKey.DEFAULT_COD_POLICY,
     ConfigKey.DEFAULT_MAX_QTY_PER_ORDER,
@@ -108,32 +113,28 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
   const quantityFixes: { id: string; qty: number }[] = [];
 
   for (const item of cart.items) {
-    const variant = item.variant;
+    const offer = item.sellerListing;
+    const variant = offer.variant;
     const product = variant.product;
-    const offer = variant.storeVariants[0];
+    const seller = offer.seller;
     const productName = `${product.name} ${variant.variantName}`.trim();
 
-    // --- gone entirely -----------------------------------------------------
-    const inactive =
-      product.status !== "ACTIVE" ||
-      product.deletedAt !== null ||
-      variant.status !== "ACTIVE" ||
-      variant.deletedAt !== null ||
-      !offer;
+    // --- gone entirely (product withdrawn, or seller not trading) ---------
+    const unorderable = unorderableReason({ seller, product, variant });
 
-    if (inactive) {
+    if (unorderable) {
       removeIds.push(item.id);
       changes.push({
         type: "ITEM_REMOVED_UNAVAILABLE",
         variantId: variant.id,
         productName,
-        message: `${productName} is no longer available and was removed from your cart.`,
+        message: `${unorderableMessage(unorderable, productName, seller.name)} It was removed from your cart.`,
       });
       continue;
     }
 
-    const availableQty = Math.max(0, offer!.stockQty - offer!.reservedQty);
-    const inStock = offer!.isAvailable && availableQty > 0;
+    const availableQty = Math.max(0, offer.stockQty - offer.reservedQty);
+    const inStock = offer.isAvailable && availableQty > 0;
 
     if (!inStock) {
       removeIds.push(item.id);
@@ -147,7 +148,7 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
     }
 
     // --- quantity ----------------------------------------------------------
-    const maxQty = offer!.maxQtyPerOrder || config.DEFAULT_MAX_QTY_PER_ORDER;
+    const maxQty = offer.maxQtyPerOrder || config.DEFAULT_MAX_QTY_PER_ORDER;
     let qty = item.qty;
 
     if (qty > availableQty) {
@@ -178,18 +179,18 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
 
     // --- COD ---------------------------------------------------------------
     const categoryChain: CodPolicy[] = [];
-    let category = product.category;
+    const category = product.category;
     // One level is loaded eagerly; ancestors resolve from the catalog cache
     // when the full chain matters (order creation).
     if (category) categoryChain.push(category.allowCod);
 
     const resolvedPolicy = resolveItemCodPolicy(
       {
-        storeVariant: offer!.allowCod,
+        sellerListing: offer.allowCod,
         productVariant: variant.allowCod,
         product: product.allowCod,
         categoryChain,
-        store: store.allowCod,
+        seller: seller.allowCod,
       },
       config.DEFAULT_COD_POLICY,
     );
@@ -198,24 +199,27 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
     const image =
       variant.imageUrl ??
       variant.images[0]?.url ??
-      variant.product.images[0]?.url ??
+      product.images[0]?.url ??
       null;
 
     items.push({
       id: item.id,
+      sellerListingId: offer.id,
       variantId: variant.id,
       productId: product.id,
+      sellerId: seller.id,
+      sellerName: seller.name,
       productName: product.name,
       variantName: variant.variantName,
       brandName: product.brand?.name ?? null,
       imageUrl: image,
       qty,
-      mrpPaise: offer!.mrpPaise,
-      unitPricePaise: offer!.pricePaise,
-      lineTotalPaise: offer!.pricePaise * qty,
+      mrpPaise: offer.mrpPaise,
+      unitPricePaise: offer.pricePaise,
+      lineTotalPaise: offer.pricePaise * qty,
       lineDiscountPaise: Math.max(
         0,
-        (offer!.mrpPaise - offer!.pricePaise) * qty,
+        (offer.mrpPaise - offer.pricePaise) * qty,
       ),
       inStock: true,
       availableQty,
@@ -226,8 +230,8 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
     priceable.push({
       variantId: variant.id,
       qty,
-      mrpPaise: offer!.mrpPaise,
-      unitPricePaise: offer!.pricePaise,
+      mrpPaise: offer.mrpPaise,
+      unitPricePaise: offer.pricePaise,
       taxRateBp: product.taxRateBp,
     });
   }
@@ -254,13 +258,37 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
   return { items, changes, priceable, codPolicies };
 }
 
+function groupBySeller(
+  items: CartItemDto[],
+  closedMessageBySeller: ReadonlyMap<string, string>,
+): CartSellerGroupDto[] {
+  const groups = new Map<string, CartSellerGroupDto>();
+  for (const item of items) {
+    let group = groups.get(item.sellerId);
+    if (!group) {
+      const closedMessage = closedMessageBySeller.get(item.sellerId) ?? null;
+      group = {
+        sellerId: item.sellerId,
+        sellerName: item.sellerName,
+        items: [],
+        subtotalPaise: 0,
+        isOpen: closedMessage === null,
+        closedMessage,
+      };
+      groups.set(item.sellerId, group);
+    }
+    group.items.push(item);
+    group.subtotalPaise += item.lineTotalPaise;
+  }
+  return [...groups.values()];
+}
+
 /* -------------------------------------------------------------------------- */
 /* Reads                                                                      */
 /* -------------------------------------------------------------------------- */
 
 export interface CartContext {
   cartId: string;
-  storeId: string;
   priceable: pricingService.PriceableItem[];
   codPolicies: { productName: string; resolvedPolicy: CodPolicy }[];
   couponCode: string | null;
@@ -275,9 +303,24 @@ export async function getCart(
   userId: string,
   options: { distanceKm?: number | null } = {},
 ): Promise<{ dto: CartDto; context: CartContext }> {
-  const store = await storeService.getActiveStore();
-  const cart = await getOrCreateCart(userId, store.id);
+  const cart = await getOrCreateCart(userId);
   const { items, changes, priceable, codPolicies } = await revalidate(cart);
+
+  // A seller that is only temporarily closed (own switch OFF, closure, out of
+  // hours) keeps its lines — the basket must survive the night — but checkout
+  // is blocked until it reopens. Sellers that stopped trading altogether were
+  // already removed by `revalidate`.
+  const closedMessageBySeller = new Map<string, string>();
+  const remainingSellerIds = new Set(items.map((item) => item.sellerId));
+  for (const line of cart.items) {
+    const seller = line.sellerListing.seller;
+    if (!remainingSellerIds.has(seller.id) || closedMessageBySeller.has(seller.id)) continue;
+    const availability = await sellerService.evaluateSellerAvailability(seller);
+    if (!availability.acceptingOrders) {
+      closedMessageBySeller.set(seller.id, sellerService.sellerClosedMessage(seller.name, availability));
+    }
+    remainingSellerIds.delete(seller.id);
+  }
 
   let couponCode = cart.couponCode;
   let coupon: pricingService.ResolvedCoupon | null = null;
@@ -318,7 +361,9 @@ export async function getCart(
 
   let checkoutBlockedReason: string | null = null;
   if (items.length === 0) checkoutBlockedReason = "Your cart is empty.";
-  else if (shortfallPaise > 0) {
+  else if (closedMessageBySeller.size > 0) {
+    checkoutBlockedReason = [...closedMessageBySeller.values()].join(" ");
+  } else if (shortfallPaise > 0) {
     checkoutBlockedReason = `Add ₹${Math.ceil(shortfallPaise / 100)} more to place an order.`;
   }
 
@@ -326,6 +371,7 @@ export async function getCart(
     dto: {
       id: cart.id,
       items,
+      sellerGroups: groupBySeller(items, closedMessageBySeller),
       bill,
       changes,
       checkoutEnabled: checkoutBlockedReason === null,
@@ -335,7 +381,6 @@ export async function getCart(
     },
     context: {
       cartId: cart.id,
-      storeId: store.id,
       priceable,
       codPolicies,
       couponCode,
@@ -349,24 +394,33 @@ export async function getCart(
 
 export async function addItem(
   userId: string,
-  variantId: string,
+  sellerListingId: string,
   qty: number,
   distanceKm: number | null = null,
 ): Promise<CartDto> {
-  const store = await storeService.getActiveStore();
-
-  const offer = await prisma.storeVariant.findUnique({
-    where: { storeId_variantId: { storeId: store.id, variantId } },
-    include: { variant: { include: { product: true } } },
+  const offer = await prisma.sellerListing.findUnique({
+    where: { id: sellerListingId },
+    include: {
+      seller: { include: { hours: { orderBy: { dayOfWeek: "asc" } } } },
+      variant: { include: { product: true } },
+    },
   });
 
-  if (
-    !offer ||
-    offer.variant.status !== "ACTIVE" ||
-    offer.variant.product.status !== "ACTIVE"
-  ) {
-    throw new AppError(ErrorCode.PRODUCT_UNAVAILABLE);
+  if (!offer) throw new AppError(ErrorCode.PRODUCT_UNAVAILABLE);
+  const unorderable = unorderableReason({
+    seller: offer.seller,
+    product: offer.variant.product,
+    variant: offer.variant,
+  });
+  if (unorderable) {
+    throw new AppError(ErrorCode.PRODUCT_UNAVAILABLE, {
+      message: unorderableMessage(unorderable, offer.variant.product.name, offer.seller.name),
+      internalMessage: `listing ${sellerListingId} not orderable: ${unorderable}`,
+    });
   }
+  // Closed right now (own switch OFF, closure, outside hours) — refused, the
+  // same gate checkout applies.
+  await sellerService.assertSellerAcceptingOrders(offer.seller);
 
   const availableQty = Math.max(0, offer.stockQty - offer.reservedQty);
   if (!offer.isAvailable || availableQty <= 0) {
@@ -375,8 +429,8 @@ export async function addItem(
     });
   }
 
-  const cart = await getOrCreateCart(userId, store.id);
-  const existing = cart.items.find((item) => item.variantId === variantId);
+  const cart = await getOrCreateCart(userId);
+  const existing = cart.items.find((item) => item.sellerListingId === sellerListingId);
   const desiredQty = (existing?.qty ?? 0) + qty;
 
   const maxQty =
@@ -394,11 +448,11 @@ export async function addItem(
     });
   }
 
-  // The unique (cart_id, variant_id) index makes this a single atomic upsert
-  // rather than a read-then-write that two taps could race.
+  // The unique (cart_id, seller_listing_id) index makes this a single atomic
+  // upsert rather than a read-then-write that two taps could race.
   await prisma.cartItem.upsert({
-    where: { cartId_variantId: { cartId: cart.id, variantId } },
-    create: { cartId: cart.id, variantId, qty },
+    where: { cartId_sellerListingId: { cartId: cart.id, sellerListingId } },
+    create: { cartId: cart.id, sellerListingId, qty },
     update: { qty: desiredQty },
   });
 
@@ -411,16 +465,12 @@ export async function updateItemQty(
   qty: number,
   distanceKm: number | null = null,
 ): Promise<CartDto> {
-  const store = await storeService.getActiveStore();
-
   const item = await prisma.cartItem.findFirst({
     where: {
       id: cartItemId,
-      cart: { userId, storeId: store.id, status: "ACTIVE" },
+      cart: { userId, status: "ACTIVE" },
     },
-    include: {
-      variant: { include: { storeVariants: { where: { storeId: store.id } } } },
-    },
+    include: { sellerListing: true },
   });
 
   // Ownership is checked HERE, in the service — the route guard only proves
@@ -435,8 +485,7 @@ export async function updateItemQty(
     return (await getCart(userId, { distanceKm })).dto;
   }
 
-  const offer = item.variant.storeVariants[0];
-  if (!offer) throw new AppError(ErrorCode.PRODUCT_UNAVAILABLE);
+  const offer = item.sellerListing;
 
   const availableQty = Math.max(0, offer.stockQty - offer.reservedQty);
   if (qty > availableQty) {
@@ -459,11 +508,10 @@ export async function removeItem(
   cartItemId: string,
   distanceKm: number | null = null,
 ): Promise<CartDto> {
-  const store = await storeService.getActiveStore();
   const deleted = await prisma.cartItem.deleteMany({
     where: {
       id: cartItemId,
-      cart: { userId, storeId: store.id, status: "ACTIVE" },
+      cart: { userId, status: "ACTIVE" },
     },
   });
   if (deleted.count === 0) {
@@ -478,9 +526,8 @@ export async function clearCart(
   userId: string,
   distanceKm: number | null = null,
 ): Promise<CartDto> {
-  const store = await storeService.getActiveStore();
   const cart = await prisma.cart.findFirst({
-    where: { userId, storeId: store.id, status: "ACTIVE" },
+    where: { userId, status: "ACTIVE" },
   });
   if (cart) {
     await prisma.cartItem.deleteMany({ where: { cartId: cart.id } });
@@ -501,8 +548,7 @@ export async function applyCoupon(
   // than silently dropped at the next cart read.
   const coupon = await pricingService.resolveCoupon(code, userId);
 
-  const store = await storeService.getActiveStore();
-  const cart = await getOrCreateCart(userId, store.id);
+  const cart = await getOrCreateCart(userId);
   await prisma.cart.update({
     where: { id: cart.id },
     data: { couponCode: coupon.code },
@@ -515,9 +561,8 @@ export async function removeCoupon(
   userId: string,
   distanceKm: number | null = null,
 ): Promise<CartDto> {
-  const store = await storeService.getActiveStore();
   const cart = await prisma.cart.findFirst({
-    where: { userId, storeId: store.id, status: "ACTIVE" },
+    where: { userId, status: "ACTIVE" },
   });
   if (cart)
     await prisma.cart.update({

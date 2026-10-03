@@ -12,10 +12,11 @@
 
 import { useMemo, useState } from 'react';
 import { useQueries } from '@tanstack/react-query';
-import { AdminOrderTab, type AdminOrderSummaryDto, type CursorPage } from '@shared';
+import type { AdminOrderSummaryDto, CursorPage } from '@shared';
 import { formatPaise } from '@shared/money';
 import { formatIndianMobile } from '@shared/phone';
 import { api } from '@/lib/api';
+import { V2_ADMIN_ORDER_TABS } from '@/lib/v2Orders';
 import {
   EmptyState,
   Icon,
@@ -27,7 +28,8 @@ import {
   Th,
 } from '@/components/ui';
 
-const TABS = Object.values(AdminOrderTab);
+// V2's tabs — the only values GET /admin/orders accepts.
+const TABS = V2_ADMIN_ORDER_TABS.map((tab) => tab.key);
 
 interface CustomerRow {
   mobile: string;

@@ -26,7 +26,6 @@ import {
 import { AppError } from "../../common/errors";
 import { prisma } from "../../infra/db/prisma";
 import * as configService from "../configuration/configuration.service";
-import { config } from "dotenv";
 
 export interface PriceableItem {
   variantId: string;

@@ -7,99 +7,150 @@ import {
   useLocation,
   useSearchParams,
 } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import type { PublicConfig, StoreDto } from '@shared';
+import { Permission, roleHasPermission } from '@shared';
 import { useAuth } from '@/lib/auth';
-import { api, onSessionExpired } from '@/lib/api';
+import { onSessionExpired } from '@/lib/api';
 import { disconnectSocket } from '@/lib/socket';
 import { Icon, Spinner, type IconName } from '@/components/ui';
+import { NotificationBell } from '@/components/NotificationBell';
+import { useAdminNotificationSource } from '@/lib/notifications';
 import { todayIsoInIndia } from '@/lib/dashboardDate';
 import LoginPage from '@/pages/Login';
 import DashboardPage from '@/pages/Dashboard';
 import OrdersPage from '@/pages/Orders';
 import ProductsPage from '@/pages/Products';
+import ProductApprovalsPage from '@/pages/ProductApprovals';
+import SellersPage from '@/pages/Sellers';
+import SellerDetailPage from '@/pages/SellerDetail';
+import { usePendingApprovalCount } from '@/lib/productApprovals';
 import CategoriesPage from '@/pages/Categories';
 import InventoryPage from '@/pages/Inventory';
 import CustomersPage from '@/pages/Customers';
 import DeliveryPage from '@/pages/Delivery';
 import ReferralsPage from '@/pages/Referrals';
 import ConfigPage from '@/pages/Config';
+import PaymentsPage from '@/pages/Payments';
+import RefundsPage from '@/pages/Refunds';
+import CommissionPage from '@/pages/Commission';
+import SettlementsPage from '@/pages/Settlements';
+import NotificationsPage from '@/pages/Notifications';
+import AuditLogsPage from '@/pages/AuditLogs';
+import { AadioneWordmark } from '@/components/PartnerLogin';
+import SellerApp from '@/seller/SellerApp';
+
+type NavSection = 'MAIN' | 'MARKETPLACE' | 'USERS' | 'FINANCE' | 'GROWTH' | 'SYSTEM';
 
 interface NavItem {
   to: string;
   label: string;
   icon: IconName;
+  section: NavSection;
   end?: boolean;
   /** Page heading and sub-heading shown in the top bar. */
   title: string;
   subtitle: string;
+  /** A live count shown beside the label. */
+  badge?: 'pendingApprovals';
+  /** Shown only to roles holding this permission (display only — the API
+   * enforces it). Items without one are shown to every admin, as before. */
+  permission?: Permission;
 }
 
+const SECTIONS: { key: NavSection; label: string }[] = [
+  { key: 'MAIN', label: 'Main' },
+  { key: 'MARKETPLACE', label: 'Marketplace' },
+  { key: 'USERS', label: 'Users' },
+  { key: 'FINANCE', label: 'Finance' },
+  { key: 'GROWTH', label: 'Growth' },
+  { key: 'SYSTEM', label: 'System' },
+];
+
+/**
+ * The Marketplace Admin. Aadione is one seller among the others (Sellers);
+ * every seller creates its own categories and products in the Seller Panel,
+ * so admin Products / Categories are monitoring views (plus moderation).
+ */
 const NAV: NavItem[] = [
+  { to: '/', label: 'Dashboard', icon: 'dashboard', section: 'MAIN', end: true, title: 'Dashboard', subtitle: 'Marketplace overview' },
+  { to: '/orders', label: 'Orders', icon: 'orders', section: 'MAIN', title: 'Orders', subtitle: 'Customer orders across every seller' },
   {
-    to: '/',
-    label: 'Dashboard',
-    icon: 'dashboard',
-    end: true,
-    title: 'Dashboard',
-    subtitle: 'Overview of your store',
+    to: '/payments',
+    label: 'Payments',
+    icon: 'rupee',
+    section: 'MAIN',
+    title: 'Payments',
+    subtitle: 'Cashfree payments for every order',
+    permission: Permission.ORDER_REFUND,
   },
   {
-    to: '/orders',
-    label: 'Orders',
-    icon: 'orders',
-    title: 'Orders',
-    subtitle: 'Manage and track all customer orders',
+    to: '/refunds',
+    label: 'Refunds',
+    icon: 'rupee',
+    section: 'MAIN',
+    title: 'Refunds',
+    subtitle: 'Refunds sent back through Cashfree',
+    permission: Permission.ORDER_REFUND,
   },
+  { to: '/delivery', label: 'Delivery', icon: 'delivery', section: 'MAIN', title: 'Delivery', subtitle: 'Agents, assignments and cash settlement' },
   {
-    to: '/products',
-    label: 'Products',
-    icon: 'products',
-    title: 'Products',
-    subtitle: 'Manage all store products',
+    to: '/sellers',
+    label: 'Sellers',
+    icon: 'store',
+    section: 'MARKETPLACE',
+    title: 'Sellers',
+    subtitle: 'Every seller on the marketplace — Aadione included',
+    permission: Permission.SELLER_ONBOARDING_REVIEW,
+  },
+  { to: '/products', label: 'Products', icon: 'products', section: 'MARKETPLACE', title: 'Products', subtitle: 'Marketplace catalogue — monitoring and moderation' },
+  {
+    to: '/product-approvals',
+    label: 'Product Approvals',
+    icon: 'shield',
+    section: 'MARKETPLACE',
+    title: 'Product Approvals',
+    subtitle: 'Review products submitted by sellers',
+    badge: 'pendingApprovals',
   },
   {
     to: '/categories',
     label: 'Categories',
     icon: 'categories',
-    title: 'Categories',
-    subtitle: 'Organise how products are browsed',
+    section: 'MARKETPLACE',
+    title: 'Marketplace Catalogue',
+    subtitle: 'Browse categories, subcategories and products across all sellers.',
+  },
+  { to: '/inventory', label: 'Inventory', icon: 'inventory', section: 'MARKETPLACE', title: 'Inventory', subtitle: 'Stock across every seller' },
+  { to: '/customers', label: 'Customers', icon: 'customers', section: 'USERS', title: 'Customers', subtitle: 'People who order on Aadione' },
+  {
+    to: '/commission',
+    label: 'Commission',
+    icon: 'barChart',
+    section: 'FINANCE',
+    title: 'Commission',
+    subtitle: 'Commission rules and earnings by seller',
+    permission: Permission.COMMISSION_MANAGE,
   },
   {
-    to: '/inventory',
-    label: 'Inventory',
-    icon: 'inventory',
-    title: 'Inventory',
-    subtitle: 'Track stock levels and manage inventory',
+    to: '/settlements',
+    label: 'Settlements',
+    icon: 'clipboard',
+    section: 'FINANCE',
+    title: 'Settlements',
+    subtitle: 'Seller payouts',
+    permission: Permission.SETTLEMENT_READ,
   },
+  { to: '/referrals', label: 'Referrals', icon: 'gift', section: 'GROWTH', title: 'Referrals', subtitle: 'Refer & Earn activity and rewards issued' },
+  { to: '/notifications', label: 'Notifications', icon: 'bell', section: 'SYSTEM', title: 'Notifications', subtitle: 'Platform operational notifications' },
   {
-    to: '/customers',
-    label: 'Customers',
-    icon: 'customers',
-    title: 'Customers',
-    subtitle: 'People who order from your store',
+    to: '/audit-logs',
+    label: 'Audit Logs',
+    icon: 'shield',
+    section: 'SYSTEM',
+    title: 'Audit Logs',
+    subtitle: 'Who changed what, and when',
+    permission: Permission.CONFIG_WRITE,
   },
-  {
-    to: '/delivery',
-    label: 'Delivery',
-    icon: 'delivery',
-    title: 'Delivery',
-    subtitle: 'Agents, assignments and cash settlement',
-  },
-  {
-    to: '/referrals',
-    label: 'Referrals',
-    icon: 'gift',
-    title: 'Referrals',
-    subtitle: 'Refer & Earn activity and rewards issued',
-  },
-  {
-    to: '/settings',
-    label: 'Configuration',
-    icon: 'config',
-    title: 'Configuration',
-    subtitle: 'Store hours, fees and serviceability',
-  },
+  { to: '/settings', label: 'Configuration', icon: 'config', section: 'SYSTEM', title: 'Configuration', subtitle: 'Platform settings' },
 ];
 
 /**
@@ -107,88 +158,63 @@ const NAV: NavItem[] = [
  * decorative "Open": the whole point of the switch on the Configuration page
  * is that someone can see, from any screen, whether the app is taking orders.
  */
-function StoreCard() {
-  const config = useQuery({
-    queryKey: ['public-config'],
-    queryFn: () => api.get<PublicConfig>('/config/public'),
-    staleTime: 5 * 60_000,
-  });
-
-  const store = useQuery({
-    queryKey: ['store'],
-    queryFn: () => api.get<StoreDto>('/store'),
-    // A shop switched off at the counter should go grey here within the minute,
-    // not whenever the panel happens to be reloaded.
-    refetchInterval: 60_000,
-  });
-
-  const radiusKm = config.data?.MAX_SERVICE_RADIUS_KM;
-
-  const status = !store.data
-    ? { label: '—', className: 'bg-gray-100 text-gray-500' }
-    : !store.data.isActive
-      ? { label: 'Switched off', className: 'bg-danger-50 text-danger-500' }
-      : store.data.isOpenNow
-        ? { label: 'Open', className: 'bg-brand-50 text-brand-600' }
-        : { label: 'Closed', className: 'bg-warn-50 text-warn-500' };
-
+/** Products awaiting review — fetched once, refreshed after each decision. */
+function PendingApprovalsBadge() {
+  const pending = usePendingApprovalCount();
+  if (!pending.data || pending.data.count === 0) return null;
+  const { count, more } = pending.data;
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-4">
-      <div className="flex items-center justify-between gap-2">
-        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
-          <Icon name="store" />
-        </span>
-      </div>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <p className="text-sm font-semibold text-gray-900">
-          {store.data?.name ?? 'AdiOne Store'}
-        </p>
-        <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${status.className}`}>
-          {status.label}
-        </span>
-      </div>
-      <p className="mt-1 text-xs text-gray-500">
-        Service Radius: {radiusKm != null ? `${radiusKm} km` : '—'}
-      </p>
-    </div>
+    <span
+      aria-label={`${count} awaiting review`}
+      className="ml-auto rounded-full bg-warn-50 px-2 py-0.5 text-xs font-semibold text-warn-500"
+    >
+      {more ? `${count}+` : count}
+    </span>
   );
 }
 
 function Sidebar({ onNavigate }: { onNavigate: () => void }) {
+  const role = useAuth((state) => state.user?.role);
+  const items = NAV.filter((item) => !item.permission || (role !== undefined && roleHasPermission(role, item.permission)));
+
   return (
     <div className="flex h-full flex-col bg-white">
-      <div className="px-6 py-6">
-        <p className="text-2xl font-bold leading-none">
-          <span className="text-gray-900">Adi</span>
-          <span className="text-brand-500">One</span>
-        </p>
-        <p className="mt-1 text-xs font-medium text-gray-500">Admin Panel</p>
+      <div className="px-6 py-5">
+        <AadioneWordmark className="text-2xl" />
+        <p className="mt-1 text-xs font-medium text-gray-500">Marketplace Admin</p>
       </div>
 
-      <nav className="flex-1 space-y-1 overflow-y-auto px-3">
-        {NAV.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.end}
-            onClick={onNavigate}
-            className={({ isActive }) =>
-              `flex min-h-11 items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition ${
-                isActive
-                  ? 'bg-brand-50 text-brand-600'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              }`
-            }
-          >
-            <Icon name={item.icon} />
-            {item.label}
-          </NavLink>
-        ))}
+      <nav aria-label="Admin" className="flex-1 space-y-4 overflow-y-auto px-3 pb-3">
+        {SECTIONS.map((section) => {
+          const sectionItems = items.filter((item) => item.section === section.key);
+          if (sectionItems.length === 0) return null;
+          return (
+            <div key={section.key}>
+              <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400">{section.label}</p>
+              <div className="space-y-0.5">
+                {sectionItems.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.end}
+                    onClick={onNavigate}
+                    className={({ isActive }) =>
+                      `flex min-h-10 items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-brand-400 ${
+                        isActive ? 'bg-brand-50 text-brand-600' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                      }`
+                    }
+                  >
+                    <Icon name={item.icon} />
+                    {item.label}
+                    {item.badge === 'pendingApprovals' && <PendingApprovalsBadge />}
+                  </NavLink>
+                ))}
+              </div>
+            </div>
+          );
+        })}
       </nav>
 
-      <div className="p-3">
-        <StoreCard />
-      </div>
     </div>
   );
 }
@@ -202,6 +228,7 @@ function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
   const user = useAuth((state) => state.user);
   const logout = useAuth((state) => state.logout);
   const [menuOpen, setMenuOpen] = useState(false);
+  const notificationSource = useAdminNotificationSource();
 
   // Longest matching prefix, so /products/new still reads as "Products".
   const active =
@@ -267,13 +294,7 @@ function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
           </div>
         )}
 
-        <NavLink
-          to="/orders"
-          aria-label="Notifications"
-          className="rounded-lg p-2.5 text-gray-500 transition hover:bg-gray-100"
-        >
-          <Icon name="bell" />
-        </NavLink>
+        <NotificationBell source={notificationSource} />
 
         <div className="relative">
           <button
@@ -285,10 +306,10 @@ function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
             </span>
             <span className="hidden text-left sm:block">
               <span className="block text-sm font-semibold leading-tight text-gray-900">
-                {user?.fullName ?? 'Store Admin'}
+                {user?.fullName ?? 'Marketplace Admin'}
               </span>
               <span className="block text-xs leading-tight text-gray-500">
-                {user?.email ?? 'Store Manager'}
+                {user?.email ?? 'Aadione'}
               </span>
             </span>
             <Icon name="chevronDown" className="hidden h-4 w-4 text-gray-400 sm:block" />
@@ -353,7 +374,18 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * Two panels, one bundle: every `/seller` path is the seller panel (its own
+ * session, routes and layout — see seller/SellerApp.tsx); everything else is
+ * the admin panel, exactly as before.
+ */
 export default function App() {
+  const { pathname } = useLocation();
+  if (pathname === '/seller' || pathname.startsWith('/seller/')) return <SellerApp />;
+  return <AdminApp />;
+}
+
+function AdminApp() {
   const status = useAuth((state) => state.status);
   const restore = useAuth((state) => state.restore);
   const clear = useAuth((state) => state.clear);
@@ -377,11 +409,20 @@ export default function App() {
         <Route path="/" element={<DashboardPage />} />
         <Route path="/orders" element={<OrdersPage />} />
         <Route path="/products" element={<ProductsPage />} />
+        <Route path="/product-approvals" element={<ProductApprovalsPage />} />
+        <Route path="/sellers" element={<SellersPage />} />
+        <Route path="/sellers/:id" element={<SellerDetailPage />} />
         <Route path="/categories" element={<CategoriesPage />} />
         <Route path="/inventory" element={<InventoryPage />} />
         <Route path="/customers" element={<CustomersPage />} />
         <Route path="/delivery" element={<DeliveryPage />} />
         <Route path="/referrals" element={<ReferralsPage />} />
+        <Route path="/payments" element={<PaymentsPage />} />
+        <Route path="/refunds" element={<RefundsPage />} />
+        <Route path="/commission" element={<CommissionPage />} />
+        <Route path="/settlements" element={<SettlementsPage />} />
+        <Route path="/notifications" element={<NotificationsPage />} />
+        <Route path="/audit-logs" element={<AuditLogsPage />} />
         <Route path="/settings" element={<ConfigPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

@@ -22,6 +22,10 @@ declare global {
       user?: AuthUser;
       /** Set by the idempotency middleware when a stored response was replayed. */
       idempotencyKey?: string;
+      /** Set by `attachSellerContext` (middleware/sellerAuth.ts) — the ONE
+       * seller this request may act as. Never trust a client-supplied
+       * sellerId instead of this. */
+      sellerId?: string;
     }
   }
 }

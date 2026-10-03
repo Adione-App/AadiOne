@@ -465,8 +465,8 @@ export default function OrderTrackingScreen({
                   color={PAYMENT_PENDING_DESCRIPTION_COLOR}
                   style={styles.paymentBannerDescription}
                 >
-                  Your payment has been submitted. The store will verify your
-                  payment before preparing your order.
+                  We are confirming your payment. Your order is prepared as
+                  soon as the payment is verified.
                 </AppText>
               </View>
             </View>
@@ -541,7 +541,7 @@ export default function OrderTrackingScreen({
         )}
 
         {/* ====================================================
-            NORMAL / REJECTED / DELIVERED HEADER
+            NORMAL / EXCEPTION / DELIVERED HEADER
         ==================================================== */}
 
         {!paymentPending && (
@@ -579,7 +579,7 @@ export default function OrderTrackingScreen({
         )}
 
         {/* ====================================================
-            REJECTED / CANCELLED
+            EXCEPTION — CANCELLED / PAYMENT FAILED / REFUNDED
         ==================================================== */}
 
         {!paymentPending && exception && (
@@ -958,7 +958,7 @@ export default function OrderTrackingScreen({
               </AppText>
 
               <AppText variant="body" color={colors.textSecondary}>
-                The store will verify your payment soon.
+                Your order is confirmed automatically once it is verified.
               </AppText>
             </View>
           </View>

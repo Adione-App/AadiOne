@@ -38,10 +38,11 @@ export const ErrorCode = {
   OTP_RESEND_TOO_SOON: 'OTP_RESEND_TOO_SOON',
   OTP_SEND_FAILED: 'OTP_SEND_FAILED',
 
-  /* location / store ---------------------------------------------------- */
+  /* location / seller ----------------------------------------------------- */
   OUT_OF_SERVICE_AREA: 'OUT_OF_SERVICE_AREA',
-  STORE_CLOSED: 'STORE_CLOSED',
-  STORE_INACTIVE: 'STORE_INACTIVE',
+  SELLER_CLOSED: 'SELLER_CLOSED',
+  SELLER_INACTIVE: 'SELLER_INACTIVE',
+  SELLER_NOT_APPROVED: 'SELLER_NOT_APPROVED',
   INVALID_COORDINATES: 'INVALID_COORDINATES',
 
   /* catalog / inventory ------------------------------------------------- */
@@ -118,8 +119,9 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   OTP_SEND_FAILED: 502,
 
   OUT_OF_SERVICE_AREA: 422,
-  STORE_CLOSED: 409,
-  STORE_INACTIVE: 503,
+  SELLER_CLOSED: 409,
+  SELLER_INACTIVE: 503,
+  SELLER_NOT_APPROVED: 503,
   INVALID_COORDINATES: 400,
 
   PRODUCT_UNAVAILABLE: 409,
@@ -194,8 +196,9 @@ export const ERROR_DEFAULT_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   OTP_SEND_FAILED: 'We could not send the OTP right now. Please try again.',
 
   OUT_OF_SERVICE_AREA: 'Sorry, we do not deliver to this location yet.',
-  STORE_CLOSED: 'The store is closed right now. Please order during working hours.',
-  STORE_INACTIVE: 'The store is not accepting orders at the moment.',
+  SELLER_CLOSED: 'The store is closed right now. Please order during working hours.',
+  SELLER_INACTIVE: 'The store is not accepting orders at the moment.',
+  SELLER_NOT_APPROVED: 'This seller is not yet approved to sell.',
   INVALID_COORDINATES: 'We could not read that location. Please try again.',
 
   PRODUCT_UNAVAILABLE: 'This item is not available right now.',

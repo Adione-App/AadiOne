@@ -22,7 +22,7 @@ import { getAccessToken } from "./api";
 const API_BASE =
   (import.meta.env["VITE_API_URL"] as string | undefined) ?? "/api/v1";
 
-interface PresignedUpload {
+export interface PresignedUpload {
   uploadUrl: string;
   key: string;
   headers: Record<string, string>;
@@ -74,7 +74,10 @@ function needsBearerToken(uploadUrl: string): boolean {
      *
      * This route is protected by admin authentication.
      */
-    if (target.pathname.includes("/admin/uploads/direct")) {
+    if (
+      target.pathname.includes("/admin/uploads/direct") ||
+      target.pathname.includes("/seller/uploads/direct")
+    ) {
       return true;
     }
 
@@ -113,6 +116,8 @@ export async function uploadProductImage(
     fileName: string;
     contentType: string;
   }) => Promise<PresignedUpload>,
+  /** The session that owns the upload — the admin one unless a caller (the seller panel) passes its own. */
+  getToken: () => string | null = getAccessToken,
 ): Promise<string> {
   /* ---------------------------------------------------------------------- */
   /* 1. Validate image                                                      */
@@ -153,7 +158,7 @@ export async function uploadProductImage(
   /* 4. Add bearer token ONLY for our local API upload route                */
   /* ---------------------------------------------------------------------- */
 
-  const token = getAccessToken();
+  const token = getToken();
 
   if (token && needsBearerToken(target.uploadUrl)) {
     headers["Authorization"] = `Bearer ${token}`;

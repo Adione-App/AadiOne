@@ -2,14 +2,22 @@
  * Task 16.3 — end-to-end order lifecycle.
  *
  * Walks the whole business, not a single endpoint: customer registers,
- * browses, adds to cart, adds an address, checks out, pays; the store accepts,
- * prepares, packs, assigns a rider and delivers; money and stock end up where
- * they should.
+ * browses, adds to cart, adds an address, checks out, pays; the seller
+ * accepts, prepares, packs, a rider is assigned and delivers; money and stock
+ * end up where they should.
  *
  * This is the test that would catch a break BETWEEN modules — a state
  * transition that forgets to commit stock, an admin action that skips the
  * refund, a delivery OTP that never gets verified. The per-module tests each
  * pass while the journey is broken.
+ *
+ * V2: the per-seller portion of the journey (accept/prepare/ready/reject)
+ * lives on SellerOrder now, not on the parent Order — this suite only ever
+ * seeds one platform seller, so it drives that single SellerOrder through
+ * the admin's cross-seller override (`/admin/seller-orders/:id/status`).
+ * The parent Order only ever transitions for payment and the delivery leg
+ * (PICKED_UP -> OUT_FOR_DELIVERY -> DELIVERED), which is now an explicit
+ * three-step hop rather than one straight to OUT_FOR_DELIVERY.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -18,10 +26,10 @@ import {
   ErrorCode,
   OrderStatus,
   PaymentMethod,
+  SellerOrderStatus,
   UserRole,
   type AdminOrderSummaryDto,
   type CursorPage,
-  type DeliveryAgentDto,
   type OrderDetailDto,
 } from '../../src/shared';
 import { api, bearer, expectError, expectSuccess, loginAs } from '../helpers/api';
@@ -43,7 +51,7 @@ async function loginAdmin(): Promise<string> {
       email: ADMIN.email,
       fullName: 'Store Owner',
       passwordHash: await hashPassword(ADMIN.password),
-      role: UserRole.STORE_OWNER,
+      role: UserRole.ADMIN,
     },
   });
 
@@ -51,7 +59,8 @@ async function loginAdmin(): Promise<string> {
   return expectSuccess<{ tokens: { accessToken: string } }>(res.body).data.tokens.accessToken;
 }
 
-/** Drives the store's side of the board. */
+/** Drives the PARENT order's own board — payment settling and the delivery
+ * leg only; per-seller accept/prepare/ready/reject is `advanceSellerOrder`. */
 async function advance(
   adminToken: string,
   orderId: string,
@@ -63,6 +72,25 @@ async function advance(
     .set('Authorization', bearer(adminToken))
     .send({ toStatus, ...extra })
     .expect(204);
+}
+
+/** Drives the seller's own side of the board for every SellerOrder under a
+ * (single-seller, in this suite) parent order — admin's cross-seller
+ * override, since there is no seller-panel login here. */
+async function advanceSellerOrders(
+  adminToken: string,
+  orderId: string,
+  toStatus: SellerOrderStatus,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
+  const sellerOrders = await prisma.sellerOrder.findMany({ where: { orderId } });
+  for (const sellerOrder of sellerOrders) {
+    await api()
+      .patch(`/api/v1/admin/seller-orders/${sellerOrder.id}/status`)
+      .set('Authorization', bearer(adminToken))
+      .send({ toStatus, ...extra })
+      .expect(204);
+  }
 }
 
 async function orderStatus(orderId: string): Promise<OrderStatus> {
@@ -102,7 +130,7 @@ describe('E2E — online payment, delivered', () => {
     await api()
       .post('/api/v1/cart/items')
       .set('Authorization', bearer(customer.accessToken))
-      .send({ variantId: product.variantId, qty: 2 })
+      .send({ sellerListingId: product.storeVariantId, qty: 2 })
       .expect(200);
 
     /* --- 4. adds an address ---------------------------------------------- */
@@ -144,7 +172,7 @@ describe('E2E — online payment, delivered', () => {
     expect(order.order.status).toBe(OrderStatus.PENDING_PAYMENT);
 
     // Stock is HELD, not sold, while payment is outstanding.
-    let offer = await prisma.storeVariant.findUniqueOrThrow({
+    let offer = await prisma.sellerListing.findUniqueOrThrow({
       where: { id: product.storeVariantId },
     });
     expect(offer.stockQty).toBe(10);
@@ -173,10 +201,11 @@ describe('E2E — online payment, delivered', () => {
       })
       .expect(200);
 
-    expect(await orderStatus(order.order.id)).toBe(OrderStatus.ORDER_PLACED);
+    // PAYMENT_CONFIRMED is transient — the customer never rests there.
+    expect(await orderStatus(order.order.id)).toBe(OrderStatus.PROCESSING);
 
     // Reservation converted into a sale.
-    offer = await prisma.storeVariant.findUniqueOrThrow({
+    offer = await prisma.sellerListing.findUniqueOrThrow({
       where: { id: product.storeVariantId },
     });
     expect(offer.stockQty).toBe(8);
@@ -184,7 +213,7 @@ describe('E2E — online payment, delivered', () => {
 
     /* --- 8. the order appears on the store's board ------------------------ */
     const board = await api()
-      .get('/api/v1/admin/orders?tab=NEW')
+      .get('/api/v1/admin/orders?tab=PROCESSING')
       .set('Authorization', bearer(adminToken))
       .expect(200);
 
@@ -193,16 +222,21 @@ describe('E2E — online payment, delivered', () => {
     expect(newOrders[0]!.orderNumber).toBe(order.order.orderNumber);
     expect(newOrders[0]!.paymentStatus).toBe('PAID');
 
-    /* --- 9. the store works the order ------------------------------------- */
-    await advance(adminToken, order.order.id, OrderStatus.STORE_ACCEPTED);
-    await advance(adminToken, order.order.id, OrderStatus.PREPARING);
-    await advance(adminToken, order.order.id, OrderStatus.READY_FOR_PICKUP);
+    /* --- 9. the seller works the order (V2: per-seller, not per-order) --- */
+    await advanceSellerOrders(adminToken, order.order.id, SellerOrderStatus.ACCEPTED);
+    await advanceSellerOrders(adminToken, order.order.id, SellerOrderStatus.PREPARING);
+    await advanceSellerOrders(adminToken, order.order.id, SellerOrderStatus.READY_FOR_PICKUP);
+
+    // Every (here: the only) SellerOrder is ready, so the parent order is
+    // recomputed straight to READY_FOR_PICKUP without anyone choosing it
+    // directly.
+    expect(await orderStatus(order.order.id)).toBe(OrderStatus.READY_FOR_PICKUP);
 
     /* --- 10. dispatch requires a rider ------------------------------------ */
     const withoutRider = await api()
       .patch(`/api/v1/admin/orders/${order.order.id}/status`)
       .set('Authorization', bearer(adminToken))
-      .send({ toStatus: OrderStatus.OUT_FOR_DELIVERY });
+      .send({ toStatus: OrderStatus.PICKED_UP });
 
     // Nobody would be holding the parcel — refused rather than silently allowed.
     expect(withoutRider.status).toBe(422);
@@ -222,6 +256,9 @@ describe('E2E — online payment, delivered', () => {
       .send({ agentId })
       .expect(200);
 
+    // READY_FOR_PICKUP -> PICKED_UP -> OUT_FOR_DELIVERY: an explicit hop now,
+    // not a single jump straight to OUT_FOR_DELIVERY.
+    await advance(adminToken, order.order.id, OrderStatus.PICKED_UP);
     await advance(adminToken, order.order.id, OrderStatus.OUT_FOR_DELIVERY);
     await advance(adminToken, order.order.id, OrderStatus.DELIVERED);
 
@@ -246,10 +283,12 @@ describe('E2E — online payment, delivered', () => {
     expect(history.map((row) => row.toStatus)).toEqual([
       OrderStatus.PENDING_PAYMENT,
       OrderStatus.PAYMENT_CONFIRMED,
-      OrderStatus.ORDER_PLACED,
-      OrderStatus.STORE_ACCEPTED,
-      OrderStatus.PREPARING,
+      OrderStatus.PROCESSING,
+      // Recomputed the instant the SellerOrder reached READY_FOR_PICKUP —
+      // no PREPARING/ACCEPTED entries here, those live on
+      // SellerOrderStatusHistory instead (#7).
       OrderStatus.READY_FOR_PICKUP,
+      OrderStatus.PICKED_UP,
       OrderStatus.OUT_FOR_DELIVERY,
       OrderStatus.DELIVERED,
     ]);
@@ -263,7 +302,7 @@ describe('E2E — online payment, delivered', () => {
 });
 
 describe('E2E — cash on delivery', () => {
-  it('collects the delivery OTP and records the cash', async () => {
+  it('delivers without the delivery OTP and records the cash', async () => {
     const storeId = await seedStore();
     const product = await seedProduct(storeId, { pricePaise: 20000, stockQty: 5 });
     const adminToken = await loginAdmin();
@@ -273,7 +312,7 @@ describe('E2E — cash on delivery', () => {
     await api()
       .post('/api/v1/cart/items')
       .set('Authorization', bearer(customer.accessToken))
-      .send({ variantId: product.variantId, qty: 1 })
+      .send({ sellerListingId: product.storeVariantId, qty: 1 })
       .expect(200);
 
     const placed = await api()
@@ -286,9 +325,9 @@ describe('E2E — cash on delivery', () => {
     const order = expectSuccess<{ order: OrderDetailDto }>(placed.body).data.order;
 
     // COD skips the payment gate entirely and stock leaves immediately.
-    expect(order.status).toBe(OrderStatus.ORDER_PLACED);
+    expect(order.status).toBe(OrderStatus.PROCESSING);
+    // Still issued to the customer; delivery no longer depends on it.
     expect(order.deliveryOtp).toMatch(/^\d{4}$/);
-    const deliveryOtp = order.deliveryOtp!;
 
     const agent = await api()
       .post('/api/v1/admin/delivery-agents')
@@ -296,17 +335,18 @@ describe('E2E — cash on delivery', () => {
       .send({ name: 'Suresh Meena', mobile: '9876500002' })
       .expect(201);
 
-    await advance(adminToken, order.id, OrderStatus.STORE_ACCEPTED);
-    await advance(adminToken, order.id, OrderStatus.PREPARING);
-    await advance(adminToken, order.id, OrderStatus.READY_FOR_PICKUP);
+    await advanceSellerOrders(adminToken, order.id, SellerOrderStatus.ACCEPTED);
+    await advanceSellerOrders(adminToken, order.id, SellerOrderStatus.PREPARING);
+    await advanceSellerOrders(adminToken, order.id, SellerOrderStatus.READY_FOR_PICKUP);
     await api()
       .post(`/api/v1/admin/orders/${order.id}/assign`)
       .set('Authorization', bearer(adminToken))
       .send({ agentId: expectSuccess<{ id: string }>(agent.body).data.id })
       .expect(200);
+    await advance(adminToken, order.id, OrderStatus.PICKED_UP);
     await advance(adminToken, order.id, OrderStatus.OUT_FOR_DELIVERY);
 
-    /* the OTP is the proof the parcel reached the customer */
+    /* the OTP is optional — but one that IS entered must match */
     const wrongOtp = await api()
       .patch(`/api/v1/admin/orders/${order.id}/status`)
       .set('Authorization', bearer(adminToken))
@@ -316,8 +356,8 @@ describe('E2E — cash on delivery', () => {
     expect(expectError(wrongOtp.body).code).toBe(ErrorCode.DELIVERY_OTP_INVALID);
     expect(await orderStatus(order.id)).toBe(OrderStatus.OUT_FOR_DELIVERY);
 
+    // No deliveryOtp field at all.
     await advance(adminToken, order.id, OrderStatus.DELIVERED, {
-      deliveryOtp,
       cashCollectedPaise: order.bill.totalPaise,
     });
 
@@ -327,11 +367,11 @@ describe('E2E — cash on delivery', () => {
     expect(settled.paymentStatus).toBe('PAID');
 
     // Cash is recorded against the rider, so day-end reconciliation works.
-    const assignment = await prisma.deliveryAssignment.findFirstOrThrow({
+    const task = await prisma.deliveryTask.findFirstOrThrow({
       where: { orderId: order.id },
     });
-    expect(assignment.cashCollectedPaise).toBe(order.bill.totalPaise);
-    expect(assignment.status).toBe('DELIVERED');
+    expect(task.cashCollectedPaise).toBe(order.bill.totalPaise);
+    expect(task.status).toBe('DELIVERED');
   });
 });
 
@@ -345,7 +385,7 @@ describe('E2E — rejection paths', () => {
     await api()
       .post('/api/v1/cart/items')
       .set('Authorization', bearer(customer.accessToken))
-      .send({ variantId: product.variantId, qty: 1 })
+      .send({ sellerListingId: product.storeVariantId, qty: 1 })
       .expect(200);
 
     const res = await api()
@@ -359,7 +399,7 @@ describe('E2E — rejection paths', () => {
     expect(await prisma.order.count()).toBe(0);
   });
 
-  it('refunds a paid order when the store rejects it', async () => {
+  it('refunds a paid order when the seller rejects it', async () => {
     const storeId = await seedStore();
     const product = await seedProduct(storeId, { pricePaise: 20000, stockQty: 5 });
     const adminToken = await loginAdmin();
@@ -369,7 +409,7 @@ describe('E2E — rejection paths', () => {
     await api()
       .post('/api/v1/cart/items')
       .set('Authorization', bearer(customer.accessToken))
-      .send({ variantId: product.variantId, qty: 2 })
+      .send({ sellerListingId: product.storeVariantId, qty: 2 })
       .expect(200);
 
     const placed = await api()
@@ -403,8 +443,11 @@ describe('E2E — rejection paths', () => {
       })
       .expect(200);
 
-    /* the store cannot fulfil it */
-    await advance(adminToken, orderId, OrderStatus.REJECTED, { reason: 'Out of stock at counter' });
+    /* the seller cannot fulfil it — rejecting its SellerOrder is now the
+     * per-seller action; there is no order-level REJECTED status in V2. */
+    await advanceSellerOrders(adminToken, orderId, SellerOrderStatus.REJECTED, {
+      reason: 'Out of stock at counter',
+    });
 
     // Money returned WITHOUT anyone remembering to press a refund button.
     const refund = await prisma.refund.findFirstOrThrow({ where: { orderId } });
@@ -412,9 +455,12 @@ describe('E2E — rejection paths', () => {
 
     const settled = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
     expect(settled.paymentStatus).toBe('REFUNDED');
+    // Every SellerOrder under this single-seller order was rejected, so the
+    // parent has nothing left to fulfil.
+    expect(settled.status).toBe(OrderStatus.CANCELLED);
 
     // And the goods went back on the shelf.
-    const offer = await prisma.storeVariant.findUniqueOrThrow({
+    const offer = await prisma.sellerListing.findUniqueOrThrow({
       where: { id: product.storeVariantId },
     });
     expect(offer.stockQty).toBe(5);

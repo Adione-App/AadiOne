@@ -22,7 +22,9 @@ const BASE_URL =
   process.env["EXPO_PUBLIC_API_URL"] ??
   (Constants.expoConfig?.extra as { apiBaseUrl?: string } | undefined)
     ?.apiBaseUrl ??
-  "http://10.0.2.2:4000/api/v1";
+  // Last resort (no env, no app.json extra): the V2 dev backend from an
+  // Android emulator. V2 runs on :4100; :4000 was V1.
+  "http://10.0.2.2:4100/api/v1";
 
 /**
  * Converts a backend-relative image path into an absolute URL.
@@ -39,7 +41,7 @@ export function resolveImageUrl(url: string | null | undefined): string | null {
   if (!url) return null;
 
   // Android emulator:
-  // http://10.0.2.2:4000
+  // http://10.0.2.2:4100
   const serverBaseUrl = BASE_URL.replace(/\/api\/v1\/?$/, "");
 
   // If backend returns localhost, replace it with mobile backend host.

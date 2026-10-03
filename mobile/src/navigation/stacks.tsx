@@ -26,6 +26,7 @@ import RailProductsScreen from "@/screens/catalog/RailProductsScreen";
 import CartScreen from "@/screens/cart/CartScreen";
 import OrderTrackingScreen from "@/screens/orders/OrderTrackingScreen";
 import OrdersListScreen from "@/screens/orders/OrdersListScreen";
+import NotificationsScreen from "@/screens/notifications/NotificationsScreen";
 
 import AddressesScreen from "@/screens/account/AddressesScreen";
 import AddressFormScreen from "@/screens/account/AddressFormScreen";
@@ -97,7 +98,25 @@ export function HomeStack() {
              */
             onOpenLocation={() => navigation.navigate("SelectLocation")}
             onOpenProfile={() => navigation.getParent()?.navigate("Account")}
+            onOpenNotifications={() => navigation.navigate("Notifications")}
             onOpenOrderTracking={(orderId) =>
+              navigation.navigate("OrderTracking", { orderId })
+            }
+          />
+        )}
+      </CatalogStack.Screen>
+
+      {/* ---------------------------------------------------------------
+          NOTIFICATIONS — opened from Home's header bell. An order
+          notification pushes this stack's own Order Tracking, so "back"
+          from there returns to the feed.
+      --------------------------------------------------------------- */}
+
+      <CatalogStack.Screen name="Notifications">
+        {({ navigation }) => (
+          <NotificationsScreen
+            onBack={() => navigation.goBack()}
+            onOpenOrder={(orderId) =>
               navigation.navigate("OrderTracking", { orderId })
             }
           />

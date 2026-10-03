@@ -7,6 +7,7 @@
 
 import {
   keepPreviousData,
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
@@ -25,7 +26,16 @@ import type {
   ReferralSummaryDto,
   RewardCouponDto,
 } from "@shared";
-import { api } from "./api";
+import { api, ApiRequestError } from "./api";
+import { useAuth } from "./store";
+import {
+  NOTIFICATION_PAGE_SIZE,
+  parseNotificationPage,
+  parseUnreadCount,
+  type NotificationDto,
+  type NotificationFeedData,
+  type NotificationUnreadCount,
+} from "./notifications";
 
 /**
  * Tags the Categories/Products cache keys below with the installed app
@@ -57,6 +67,12 @@ export const keys = {
   order: (id: string) => ["order", id] as const,
   referralSummary: ["referral-summary"] as const,
   myCoupons: ["my-coupons"] as const,
+  // Keyed by user so a second account signing in on the same phone never
+  // sees the first one's feed; the "notifications" root is also kept off
+  // disk (see App.tsx's shouldDehydrateQuery).
+  notifications: (userId: string) => ["notifications", userId] as const,
+  notificationFeed: (userId: string) => ["notifications", userId, "feed"] as const,
+  notificationUnread: (userId: string) => ["notifications", userId, "unread"] as const,
 };
 
 export function useHomeFeed() {
@@ -313,7 +329,8 @@ export function useCartMutations() {
 
   const addItem = useMutation({
     mutationFn: (input: {
-      variantId: string;
+      /** V2 adds a seller's listing, not a bare variant (AddCartItemRequest). */
+      sellerListingId: string;
       qty?: number;
       distanceKm?: number | null;
     }) => {
@@ -325,7 +342,7 @@ export function useCartMutations() {
           : "";
 
       return api.post<CartDto>(`/cart/items${query}`, {
-        variantId: input.variantId,
+        sellerListingId: input.sellerListingId,
         qty: input.qty ?? 1,
       });
     },
@@ -494,5 +511,147 @@ export function useMyCoupons() {
 export function useApplyReferralCode() {
   return useMutation({
     mutationFn: (code: string) => api.post<{ applied: boolean }>("/referrals/apply", { code }),
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Notifications                                                              */
+/*                                                                            */
+/* The feed is cursor-paged (`nextCursor` is the last row's createdAt). The   */
+/* unread count is its own small query so Home's bell can refresh it without  */
+/* loading the feed. Read / read-all update both caches optimistically, then  */
+/* re-ask the server for the count, so the badge is right the moment the     */
+/* customer taps and self-corrects if anything else changed meanwhile.       */
+/* -------------------------------------------------------------------------- */
+
+/** How often Home's bell re-checks the unread count while Home is on screen. */
+const UNREAD_POLL_MS = 60_000;
+
+function useSignedInUserId(): string {
+  return useAuth((state) => state.user?.id ?? "");
+}
+
+function mapFeedItems(
+  data: NotificationFeedData | undefined,
+  fn: (item: NotificationDto) => NotificationDto,
+): NotificationFeedData | undefined {
+  if (!data) return data;
+  return {
+    ...data,
+    pages: data.pages.map((page) => ({ ...page, items: page.items.map(fn) })),
+  };
+}
+
+export function useNotificationFeed() {
+  const userId = useSignedInUserId();
+  return useInfiniteQuery({
+    queryKey: keys.notificationFeed(userId),
+    queryFn: ({ pageParam, signal }) => {
+      const query = new URLSearchParams({ limit: String(NOTIFICATION_PAGE_SIZE) });
+      if (pageParam) query.set("cursor", pageParam);
+      // Validated here, not trusted: whatever this returns is cached as a page
+      // of NotificationFeedData and read by the screen and the optimistic
+      // updates below.
+      return api
+        .get<unknown>(`/notifications?${query.toString()}`, { signal })
+        .then(parseNotificationPage);
+    },
+    initialPageParam: null as string | null,
+    // No cursor means the end of the feed — never request past it.
+    getNextPageParam: (last) => (last.hasMore && last.nextCursor ? last.nextCursor : undefined),
+    enabled: userId !== "",
+    refetchOnMount: "always",
+  });
+}
+
+export function useNotificationUnreadCount({ poll = false }: { poll?: boolean } = {}) {
+  const userId = useSignedInUserId();
+  return useQuery({
+    queryKey: keys.notificationUnread(userId),
+    queryFn: ({ signal }) =>
+      api.get<unknown>("/notifications/unread-count", { signal }).then(parseUnreadCount),
+    select: (data) => data.unread,
+    enabled: userId !== "",
+    refetchInterval: poll ? UNREAD_POLL_MS : false,
+  });
+}
+
+export function useMarkNotificationRead() {
+  const queryClient = useQueryClient();
+  const userId = useSignedInUserId();
+  const feedKey = keys.notificationFeed(userId);
+  const unreadKey = keys.notificationUnread(userId);
+
+  return useMutation({
+    mutationFn: (id: string) => api.post<void>(`/notifications/${id}/read`),
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: unreadKey });
+      const wasUnread =
+        queryClient
+          .getQueryData<NotificationFeedData>(feedKey)
+          ?.pages.some((page) => page.items.some((n) => n.id === id && !n.isRead)) ?? false;
+      const readAt = new Date().toISOString();
+      queryClient.setQueryData<NotificationFeedData>(feedKey, (data) =>
+        mapFeedItems(data, (n) => (n.id === id && !n.isRead ? { ...n, isRead: true, readAt } : n)),
+      );
+      if (wasUnread) {
+        queryClient.setQueryData<NotificationUnreadCount>(unreadKey, (count) =>
+          count ? { unread: Math.max(0, count.unread - 1) } : count,
+        );
+      }
+      return { wasUnread };
+    },
+    onError: (error, id, context) => {
+      // 404: the row is no longer in this customer's feed — resync the list
+      // rather than flipping it back to unread.
+      if (error instanceof ApiRequestError && error.status === 404) {
+        void queryClient.invalidateQueries({ queryKey: feedKey });
+        return;
+      }
+      if (context?.wasUnread) {
+        queryClient.setQueryData<NotificationFeedData>(feedKey, (data) =>
+          mapFeedItems(data, (n) => (n.id === id ? { ...n, isRead: false, readAt: null } : n)),
+        );
+      }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: unreadKey });
+    },
+  });
+}
+
+export function useMarkAllNotificationsRead() {
+  const queryClient = useQueryClient();
+  const userId = useSignedInUserId();
+  const feedKey = keys.notificationFeed(userId);
+  const unreadKey = keys.notificationUnread(userId);
+
+  return useMutation({
+    mutationFn: () => api.post<{ updated: number }>("/notifications/read-all"),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: unreadKey });
+      const unreadIds = new Set<string>();
+      for (const page of queryClient.getQueryData<NotificationFeedData>(feedKey)?.pages ?? []) {
+        for (const n of page.items) if (!n.isRead) unreadIds.add(n.id);
+      }
+      const readAt = new Date().toISOString();
+      queryClient.setQueryData<NotificationFeedData>(feedKey, (data) =>
+        mapFeedItems(data, (n) => (n.isRead ? n : { ...n, isRead: true, readAt })),
+      );
+      queryClient.setQueryData<NotificationUnreadCount>(unreadKey, { unread: 0 });
+      return { unreadIds };
+    },
+    onError: (_error, _vars, context) => {
+      // Only the rows this call flipped go back to unread; rows that were
+      // already read stay read. The count is re-fetched in onSettled.
+      const unreadIds = context?.unreadIds;
+      if (!unreadIds || unreadIds.size === 0) return;
+      queryClient.setQueryData<NotificationFeedData>(feedKey, (data) =>
+        mapFeedItems(data, (n) => (unreadIds.has(n.id) ? { ...n, isRead: false, readAt: null } : n)),
+      );
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: unreadKey });
+    },
   });
 }

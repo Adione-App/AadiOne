@@ -347,7 +347,7 @@ describe('POST /auth/admin/login vs /auth/login', () => {
         email: ADMIN.email,
         fullName: 'Test Owner',
         passwordHash: await hashPassword(ADMIN.password),
-        role: UserRole.STORE_OWNER,
+        role: UserRole.ADMIN,
       },
     });
     await clearLimiters();
@@ -357,7 +357,7 @@ describe('POST /auth/admin/login vs /auth/login', () => {
   it('lets staff in through the admin endpoint', async () => {
     const res = await api().post('/api/v1/auth/admin/login').send(ADMIN).expect(200);
     expect(expectSuccess<{ user: { role: string } }>(res.body).data.user.role).toBe(
-      UserRole.STORE_OWNER,
+      UserRole.ADMIN,
     );
   });
 
@@ -386,7 +386,7 @@ describe('POST /auth/admin/login vs /auth/login', () => {
     // Same credentials path; only the role restriction differs.
     const res = await api().post('/api/v1/auth/login').send(ADMIN).expect(200);
     expect(expectSuccess<{ user: { role: string } }>(res.body).data.user.role).toBe(
-      UserRole.STORE_OWNER,
+      UserRole.ADMIN,
     );
   });
 });

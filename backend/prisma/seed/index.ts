@@ -4,27 +4,43 @@
  *   npm run db:seed
  *
  * Two tiers:
- *   REFERENCE — configuration, store, hours, categories, admin login.
+ *   REFERENCE — configuration and the bootstrap admin login.
  *               Runs in every environment, including production. Idempotent.
- *   DEMO      — sample products, coupons, delivery agents.
- *               Skipped in production; a real shop's catalogue is entered
- *               through the admin panel, not shipped in a seed file.
+ *   DEMO      — sample coupons and delivery agents. Skipped in production.
+ *
+ * No seller and no catalogue is seeded: every seller — Aadione included — is
+ * created by admin (Sellers → Add seller) and builds its own categories and
+ * products in the Seller Panel.
  */
 
 import { PrismaClient } from '@prisma/client';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import dotenv from 'dotenv';
 
-dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
-dotenv.config({ path: path.resolve(__dirname, '../../.env'), override: true });
+// Explicit environment selector (see src/config/env.ts's own copy of this
+// comment) — set by `scripts/with-env.mjs` for `db:seed:v2`. When present,
+// load ONLY that file, never V1's `.env`. Unset, behavior is unchanged.
+const envFileOverride = process.env['ENV_FILE'];
 
-import {
-  seedAdminUser,
-  seedCategories,
-  seedConfiguration,
-  seedStore,
-} from './reference';
-import { seedDemoCatalog } from './demo';
+if (envFileOverride) {
+  const selectedEnv = path.resolve(__dirname, '../..', envFileOverride);
+
+  if (!fs.existsSync(selectedEnv)) {
+    console.error(
+      `\nENV_FILE=${envFileOverride} was set but backend/${envFileOverride} was not found.\n`,
+    );
+    process.exit(1);
+  }
+
+  dotenv.config({ path: selectedEnv, override: true });
+} else {
+  dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
+  dotenv.config({ path: path.resolve(__dirname, '../../.env'), override: true });
+}
+
+import { seedAdminUser, seedConfiguration } from './reference';
+import { seedDemoData } from './demo';
 
 const prisma = new PrismaClient();
 
@@ -36,8 +52,6 @@ async function main(): Promise<void> {
 
   console.log('Reference data');
   await seedConfiguration(prisma);
-  const storeId = await seedStore(prisma);
-  const categoryIds = await seedCategories(prisma);
   await seedAdminUser(prisma, {
     email: process.env['ADMIN_EMAIL'] ?? 'owner@adione.in',
     password: process.env['ADMIN_PASSWORD'] ?? 'ChangeMe@123',
@@ -48,7 +62,7 @@ async function main(): Promise<void> {
     console.log('\nDemo data skipped (NODE_ENV=production).');
   } else {
     console.log('\nDemo data');
-    await seedDemoCatalog(prisma, storeId, categoryIds);
+    await seedDemoData(prisma);
   }
 
   console.log('\nSeed complete.\n');

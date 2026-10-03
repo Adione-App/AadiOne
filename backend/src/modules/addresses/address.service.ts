@@ -11,7 +11,7 @@ import { ConfigKey, ErrorCode, type AddressDto } from '../../shared';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import * as configService from '../configuration/configuration.service';
-import * as storeService from '../stores/store.service';
+import * as sellerService from '../sellers/seller.service';
 
 export function toAddressDto(address: Address): AddressDto {
   return {
@@ -74,13 +74,16 @@ export async function getOwnedAddress(userId: string, addressId: string): Promis
   return address;
 }
 
-/** Task 7.2 — serviceability is evaluated on every save. */
+/**
+ * Task 7.2 — serviceability is evaluated on every save: serviceable when at
+ * least one live seller delivers there (distance to the nearest such seller).
+ * Checkout re-checks every cart seller against the address.
+ */
 async function evaluateServiceability(
   latitude: number,
   longitude: number,
 ): Promise<{ isServiceable: boolean; distanceKm: number }> {
-  const store = await storeService.getActiveStore();
-  const result = await storeService.checkServiceability(latitude, longitude, store);
+  const result = await sellerService.getServiceability(latitude, longitude);
   return { isServiceable: result.serviceable, distanceKm: result.distanceKm };
 }
 

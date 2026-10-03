@@ -53,15 +53,15 @@ cartRouter.post(
     query: distanceQuery,
 
     body: z.object({
-      variantId: uuid,
+      sellerListingId: uuid,
 
       // Bounded here as well as against the per-item limit.
       qty: z.number().int().positive().max(1000).default(1),
     }),
   }),
   asyncHandler(async (req: Request, res: Response) => {
-    const { variantId, qty } = req.body as {
-      variantId: string;
+    const { sellerListingId, qty } = req.body as {
+      sellerListingId: string;
       qty: number;
     };
 
@@ -70,7 +70,7 @@ cartRouter.post(
 
     const result = await service.addItem(
       requireUser(req).id,
-      variantId,
+      sellerListingId,
       qty,
       distanceKm,
     );

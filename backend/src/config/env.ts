@@ -32,6 +32,14 @@ function findEnvFile(fileName: string): string | null {
 
 const isTestRun = process.env["NODE_ENV"] === "test";
 
+// Explicit environment selector (set by `scripts/with-env.mjs`, e.g.
+// `ENV_FILE=.env.v2` for the V2 dev database). When present, this is the
+// ONLY file loaded — never the root `.env`, never `backend/.env` — so a V2
+// run can never accidentally inherit or mix with V1 configuration. Unset
+// (the default for every existing V1 command), this branch never runs and
+// V1's behavior below is exactly what it was before ENV_FILE existed.
+const envFileOverride = process.env["ENV_FILE"];
+
 if (isTestRun) {
   // TEST MODE LOADS ONLY `.env.test`.
   const testEnv = findEnvFile(".env.test");
@@ -45,6 +53,18 @@ if (isTestRun) {
   }
 
   dotenv.config({ path: testEnv });
+} else if (envFileOverride) {
+  const selectedEnv = findEnvFile(envFileOverride);
+
+  if (!selectedEnv) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `\n[AdiOne] ENV_FILE=${envFileOverride} was set but backend/${envFileOverride} was not found.\n`,
+    );
+    process.exit(1);
+  }
+
+  dotenv.config({ path: selectedEnv, override: true });
 } else {
   const rootEnv = path.resolve(process.cwd(), "..", ".env");
 
@@ -159,9 +179,36 @@ const envSchema = z
     // mock       = dev stub
     // upi_intent = pay directly to shop VPA
     // razorpay   = full gateway
+    // cashfree   = full gateway (V2 production path)
     PAYMENT_PROVIDER: z
-      .enum(["mock", "upi_intent", "razorpay"])
+      .enum(["mock", "upi_intent", "razorpay", "cashfree"])
       .default("mock"),
+
+    /**
+     * Cashfree Payments. Backend-only: the app never sees these — it receives
+     * a single-order payment_session_id instead.
+     */
+    CASHFREE_APP_ID: z.string().trim().optional(),
+
+    CASHFREE_SECRET_KEY: z.string().trim().optional(),
+
+    CASHFREE_ENV: z.enum(["sandbox", "production"]).default("sandbox"),
+
+    /**
+     * Pinned `x-api-version`. Pinned rather than "latest" so a Cashfree release
+     * can never change a response shape under a running server. An empty value
+     * (`CASHFREE_API_VERSION=`) means the default.
+     */
+    CASHFREE_API_VERSION: z
+      .string()
+      .trim()
+      .transform((v) => v || "2026-01-01")
+      .pipe(
+        z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/, "must be a date such as 2026-01-01"),
+      )
+      .default("2026-01-01"),
 
     /** The shop's UPI address. */
     UPI_VPA: z.string().optional(),
@@ -201,6 +248,10 @@ const envSchema = z
     S3_REGION: z.string().default("auto"),
 
     S3_BUCKET: z.string().optional(),
+
+    /** PRIVATE bucket for seller documents (never public). Required to upload
+     * documents when STORAGE_PROVIDER=s3; locally they go to storage-private/. */
+    S3_PRIVATE_BUCKET: z.string().optional(),
 
     S3_ACCESS_KEY_ID: z.string().optional(),
 
@@ -302,6 +353,35 @@ const envSchema = z
           "required when PAYMENT_PROVIDER=razorpay",
         );
       }
+    }
+
+    if (env.PAYMENT_PROVIDER === "cashfree") {
+      if (!env.CASHFREE_APP_ID) {
+        fail("CASHFREE_APP_ID", "required when PAYMENT_PROVIDER=cashfree");
+      }
+
+      if (!env.CASHFREE_SECRET_KEY) {
+        fail("CASHFREE_SECRET_KEY", "required when PAYMENT_PROVIDER=cashfree");
+      }
+    }
+
+    // Each environment talks to exactly one Cashfree environment: sandbox
+    // keys can never take real money in production, and a dev or staging box
+    // can never charge a real card with live keys.
+    if (env.NODE_ENV === "production" && env.CASHFREE_ENV !== "production") {
+      if (env.PAYMENT_PROVIDER === "cashfree") {
+        fail(
+          "CASHFREE_ENV",
+          "must be production when NODE_ENV=production — sandbox takes no real money",
+        );
+      }
+    }
+
+    if (env.NODE_ENV !== "production" && env.CASHFREE_ENV === "production") {
+      fail(
+        "CASHFREE_ENV",
+        `live Cashfree credentials are only allowed with NODE_ENV=production (got ${env.NODE_ENV})`,
+      );
     }
 
     /*

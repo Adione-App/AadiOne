@@ -156,6 +156,8 @@ generated/
 # ---------------------------------------------------------
 /uploads/
 /storage/
+/storage-private/
+backend/storage-private/
 
 # ---------------------------------------------------------
 # Certificates / private keys

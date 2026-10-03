@@ -13,6 +13,16 @@
  *   page is refreshing, this client detects the newer token and retries.
  *
  * This is important when the user presses F5 repeatedly.
+ *
+ * SESSIONS
+ * --------
+ * Each client made by `createApiClient` owns ONE session: its own in-memory
+ * access token, its own refresh-token localStorage key, its own refresh
+ * single-flight and its own "session lost" handler. The admin panel uses the
+ * default client exported below (unchanged key "adione.refresh"); the seller
+ * panel has a separate client (seller/sellerApi.ts), so signing in as a
+ * seller can never replace — or be replaced by — an admin session in the
+ * same browser.
  */
 
 import type { ApiError, ApiResponse, ErrorCode } from "@shared";
@@ -24,8 +34,6 @@ const BASE_HEADERS: Record<string, string> = {
   "Content-Type": "application/json",
   "ngrok-skip-browser-warning": "true",
 };
-
-const REFRESH_STORAGE_KEY = "adione.refresh";
 
 export class ApiRequestError extends Error {
   constructor(
@@ -39,91 +47,35 @@ export class ApiRequestError extends Error {
   }
 }
 
-/**
- * Access token intentionally remains memory-only.
- */
-let accessToken: string | null = null;
-
-/**
- * Refresh token has a memory copy but localStorage is the source of truth
- * between browser reloads.
- */
-let refreshToken: string | null = localStorage.getItem(REFRESH_STORAGE_KEY);
-
-let onSessionLost: (() => void) | null = null;
-
-/**
- * Save token pair.
- */
-export function setTokens(access: string | null, refresh: string | null): void {
-  accessToken = access;
-  refreshToken = refresh;
-
-  if (refresh) {
-    localStorage.setItem(REFRESH_STORAGE_KEY, refresh);
-  } else {
-    localStorage.removeItem(REFRESH_STORAGE_KEY);
-  }
+interface RefreshPayload {
+  tokens: {
+    accessToken: string;
+    refreshToken: string;
+  };
 }
 
-/**
- * Remove tokens only if the refresh token currently in storage is the
- * token we expect.
- *
- * This protects against this race:
- *
- * Page A:
- *   T1 -> refresh -> stores T2
- *
- * Page B:
- *   T1 -> refresh fails
- *
- * Page B must NOT delete T2.
- */
-export function clearTokensIfCurrent(
-  expectedRefreshToken?: string | null,
-): boolean {
-  const currentStoredToken = localStorage.getItem(REFRESH_STORAGE_KEY);
+interface RequestOptions {
+  method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+
+  body?: unknown;
+
+  /** multipart/form-data body (the browser sets the boundary header). */
+  formData?: FormData;
+
+  /** Return the response bytes (e.g. a PDF) instead of the JSON envelope. */
+  responseType?: "json" | "blob";
 
   /**
-   * If another page already stored a newer refresh token,
-   * leave it untouched.
+   * Prevent infinite:
+   *
+   * request
+   * -> 401
+   * -> refresh
+   * -> retry
+   * -> 401
+   * -> ...
    */
-  if (
-    expectedRefreshToken &&
-    currentStoredToken &&
-    currentStoredToken !== expectedRefreshToken
-  ) {
-    return false;
-  }
-
-  accessToken = null;
-  refreshToken = null;
-
-  localStorage.removeItem(REFRESH_STORAGE_KEY);
-
-  return true;
-}
-
-/**
- * Load persisted refresh token.
- */
-export function loadStoredRefreshToken(): string | null {
-  refreshToken = localStorage.getItem(REFRESH_STORAGE_KEY);
-
-  return refreshToken;
-}
-
-export function getStoredRefreshToken(): string | null {
-  return localStorage.getItem(REFRESH_STORAGE_KEY);
-}
-
-export function getAccessToken(): string | null {
-  return accessToken;
-}
-
-export function onSessionExpired(handler: () => void): void {
-  onSessionLost = handler;
+  retried?: boolean;
 }
 
 /**
@@ -142,13 +94,6 @@ function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, milliseconds);
   });
-}
-
-interface RefreshPayload {
-  tokens: {
-    accessToken: string;
-    refreshToken: string;
-  };
 }
 
 /**
@@ -189,241 +134,365 @@ async function refreshWithToken(token: string): Promise<RefreshPayload | null> {
 }
 
 /**
- * Single-flight refresh inside this JavaScript page instance.
+ * One independent authenticated session against the API.
  */
-let refreshInFlight: Promise<boolean> | null = null;
+export function createApiClient(refreshStorageKey: string) {
+  /**
+   * Access token intentionally remains memory-only.
+   */
+  let accessToken: string | null = null;
 
-/**
- * Restore/rotate the authentication tokens.
- *
- * Handles:
- *
- * 1. concurrent API requests inside one page;
- * 2. React StrictMode;
- * 3. multiple fast browser reloads where another page rotates the token;
- * 4. another tab refreshing the same session.
- */
-export async function refreshSession(): Promise<boolean> {
-  if (refreshInFlight) {
-    return refreshInFlight;
+  /**
+   * Refresh token has a memory copy but localStorage is the source of truth
+   * between browser reloads.
+   */
+  let refreshToken: string | null = localStorage.getItem(refreshStorageKey);
+
+  let onSessionLost: (() => void) | null = null;
+
+  /**
+   * Save token pair.
+   */
+  function setTokens(access: string | null, refresh: string | null): void {
+    accessToken = access;
+    refreshToken = refresh;
+
+    if (refresh) {
+      localStorage.setItem(refreshStorageKey, refresh);
+    } else {
+      localStorage.removeItem(refreshStorageKey);
+    }
   }
 
-  refreshInFlight = (async () => {
+  /**
+   * Remove tokens only if the refresh token currently in storage is the
+   * token we expect.
+   *
+   * This protects against this race:
+   *
+   * Page A:
+   *   T1 -> refresh -> stores T2
+   *
+   * Page B:
+   *   T1 -> refresh fails
+   *
+   * Page B must NOT delete T2.
+   */
+  function clearTokensIfCurrent(expectedRefreshToken?: string | null): boolean {
+    const currentStoredToken = localStorage.getItem(refreshStorageKey);
+
     /**
-     * We allow a few attempts because another browser page
-     * may replace the token while this request is running.
+     * If another page already stored a newer refresh token,
+     * leave it untouched.
      */
-    const maxAttempts = 3;
-
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const tokenUsed = localStorage.getItem(REFRESH_STORAGE_KEY);
-
-      if (!tokenUsed) {
-        return false;
-      }
-
-      refreshToken = tokenUsed;
-
-      const result = await refreshWithToken(tokenUsed);
-
-      /**
-       * Successful rotation.
-       */
-      if (result) {
-        setTokens(result.tokens.accessToken, result.tokens.refreshToken);
-
-        return true;
-      }
-
-      /**
-       * Refresh failed.
-       *
-       * Before declaring the session dead, check whether another
-       * page/tab has rotated the token.
-       */
-      let latestToken = localStorage.getItem(REFRESH_STORAGE_KEY);
-
-      if (latestToken && latestToken !== tokenUsed) {
-        /**
-         * Another page already stored a newer token.
-         *
-         * Retry with it.
-         */
-        continue;
-      }
-
-      /**
-       * Another refresh may still be finishing.
-       *
-       * Wait briefly before checking again.
-       */
-      await sleep(150);
-
-      latestToken = localStorage.getItem(REFRESH_STORAGE_KEY);
-
-      if (latestToken && latestToken !== tokenUsed) {
-        continue;
-      }
-
-      /**
-       * Stable token failed.
-       *
-       * There is no reason to hammer the backend repeatedly.
-       */
+    if (
+      expectedRefreshToken &&
+      currentStoredToken &&
+      currentStoredToken !== expectedRefreshToken
+    ) {
       return false;
     }
 
-    return false;
-  })();
+    accessToken = null;
+    refreshToken = null;
 
-  try {
-    return await refreshInFlight;
-  } finally {
-    refreshInFlight = null;
+    localStorage.removeItem(refreshStorageKey);
+
+    return true;
   }
-}
-
-interface RequestOptions {
-  method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
-
-  body?: unknown;
 
   /**
-   * Prevent infinite:
+   * Load persisted refresh token.
+   */
+  function loadStoredRefreshToken(): string | null {
+    refreshToken = localStorage.getItem(refreshStorageKey);
+
+    return refreshToken;
+  }
+
+  function getStoredRefreshToken(): string | null {
+    return localStorage.getItem(refreshStorageKey);
+  }
+
+  function getAccessToken(): string | null {
+    return accessToken;
+  }
+
+  function onSessionExpired(handler: () => void): void {
+    onSessionLost = handler;
+  }
+
+  /**
+   * Single-flight refresh inside this JavaScript page instance.
+   */
+  let refreshInFlight: Promise<boolean> | null = null;
+
+  /**
+   * Restore/rotate the authentication tokens.
    *
-   * request
-   * -> 401
-   * -> refresh
-   * -> retry
-   * -> 401
-   * -> ...
+   * Handles:
+   *
+   * 1. concurrent API requests inside one page;
+   * 2. React StrictMode;
+   * 3. multiple fast browser reloads where another page rotates the token;
+   * 4. another tab refreshing the same session.
    */
-  retried?: boolean;
-}
-
-/**
- * Main API request.
- */
-export async function request<T>(
-  path: string,
-  options: RequestOptions = {},
-): Promise<T> {
-  const headers: Record<string, string> = {
-    ...BASE_HEADERS,
-  };
-
-  if (accessToken) {
-    headers.Authorization = `Bearer ${accessToken}`;
-  }
-
-  const response = await fetch(`${BASE}${path}`, {
-    method: options.method ?? "GET",
-
-    headers,
-
-    ...(options.body !== undefined
-      ? {
-          body: JSON.stringify(options.body),
-        }
-      : {}),
-  });
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  const body = (await response
-    .json()
-    .catch(() => null)) as ApiResponse<T> | null;
-
-  /**
-   * Access token expired.
-   */
-  if (response.status === 401 && !options.retried) {
-    /**
-     * Remember the token that existed when this recovery started.
-     */
-    const tokenAtFailure = localStorage.getItem(REFRESH_STORAGE_KEY);
-
-    const refreshed = await refreshSession();
-
-    if (refreshed) {
-      return request<T>(path, {
-        ...options,
-        retried: true,
-      });
+  async function refreshSession(): Promise<boolean> {
+    if (refreshInFlight) {
+      return refreshInFlight;
     }
 
-    /**
-     * Another browser page may have rotated the refresh token while
-     * this request was waiting.
-     */
-    const currentToken = localStorage.getItem(REFRESH_STORAGE_KEY);
-
-    if (currentToken && tokenAtFailure && currentToken !== tokenAtFailure) {
+    refreshInFlight = (async () => {
       /**
-       * Try once more using the newer token.
+       * We allow a few attempts because another browser page
+       * may replace the token while this request is running.
        */
-      const recovered = await refreshSession();
+      const maxAttempts = 3;
 
-      if (recovered) {
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const tokenUsed = localStorage.getItem(refreshStorageKey);
+
+        if (!tokenUsed) {
+          return false;
+        }
+
+        refreshToken = tokenUsed;
+
+        const result = await refreshWithToken(tokenUsed);
+
+        /**
+         * Successful rotation.
+         */
+        if (result) {
+          setTokens(result.tokens.accessToken, result.tokens.refreshToken);
+
+          return true;
+        }
+
+        /**
+         * Refresh failed.
+         *
+         * Before declaring the session dead, check whether another
+         * page/tab has rotated the token.
+         */
+        let latestToken = localStorage.getItem(refreshStorageKey);
+
+        if (latestToken && latestToken !== tokenUsed) {
+          /**
+           * Another page already stored a newer token.
+           *
+           * Retry with it.
+           */
+          continue;
+        }
+
+        /**
+         * Another refresh may still be finishing.
+         *
+         * Wait briefly before checking again.
+         */
+        await sleep(150);
+
+        latestToken = localStorage.getItem(refreshStorageKey);
+
+        if (latestToken && latestToken !== tokenUsed) {
+          continue;
+        }
+
+        /**
+         * Stable token failed.
+         *
+         * There is no reason to hammer the backend repeatedly.
+         */
+        return false;
+      }
+
+      return false;
+    })();
+
+    try {
+      return await refreshInFlight;
+    } finally {
+      refreshInFlight = null;
+    }
+  }
+
+  /**
+   * Main API request.
+   */
+  async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    const headers: Record<string, string> = {
+      ...BASE_HEADERS,
+    };
+
+    // FormData must set its own multipart Content-Type (with the boundary).
+    if (options.formData) delete headers["Content-Type"];
+
+    if (accessToken) {
+      headers.Authorization = `Bearer ${accessToken}`;
+    }
+
+    const response = await fetch(`${BASE}${path}`, {
+      method: options.method ?? "GET",
+
+      headers,
+
+      ...(options.formData
+        ? { body: options.formData }
+        : options.body !== undefined
+          ? {
+              body: JSON.stringify(options.body),
+            }
+          : {}),
+    });
+
+    if (response.status === 204) {
+      return undefined as T;
+    }
+
+    // A file response: hand back the bytes. Errors still arrive as JSON below.
+    if (options.responseType === "blob" && response.ok) {
+      return (await response.blob()) as T;
+    }
+
+    const body = (await response
+      .json()
+      .catch(() => null)) as ApiResponse<T> | null;
+
+    /**
+     * Access token expired.
+     */
+    if (response.status === 401 && !options.retried) {
+      /**
+       * Remember the token that existed when this recovery started.
+       */
+      const tokenAtFailure = localStorage.getItem(refreshStorageKey);
+
+      const refreshed = await refreshSession();
+
+      if (refreshed) {
         return request<T>(path, {
           ...options,
           retried: true,
         });
       }
+
+      /**
+       * Another browser page may have rotated the refresh token while
+       * this request was waiting.
+       */
+      const currentToken = localStorage.getItem(refreshStorageKey);
+
+      if (currentToken && tokenAtFailure && currentToken !== tokenAtFailure) {
+        /**
+         * Try once more using the newer token.
+         */
+        const recovered = await refreshSession();
+
+        if (recovered) {
+          return request<T>(path, {
+            ...options,
+            retried: true,
+          });
+        }
+      }
+
+      /**
+       * Only clear if nobody replaced the token.
+       */
+      const cleared = clearTokensIfCurrent(tokenAtFailure);
+
+      if (cleared) {
+        onSessionLost?.();
+      }
     }
 
-    /**
-     * Only clear if nobody replaced the token.
-     */
-    const cleared = clearTokensIfCurrent(tokenAtFailure);
+    if (!body || body.success === false) {
+      const error = (body as ApiError | null)?.error;
 
-    if (cleared) {
-      onSessionLost?.();
+      throw new ApiRequestError(
+        (error?.code ?? "INTERNAL_ERROR") as ErrorCode,
+
+        error?.message ?? "Something went wrong. Please try again.",
+
+        response.status,
+
+        error?.requestId,
+      );
     }
+
+    return body.data;
   }
 
-  if (!body || body.success === false) {
-    const error = (body as ApiError | null)?.error;
+  const api = {
+    get: <T>(path: string) => request<T>(path),
 
-    throw new ApiRequestError(
-      (error?.code ?? "INTERNAL_ERROR") as ErrorCode,
+    post: <T>(path: string, body?: unknown) =>
+      request<T>(path, {
+        method: "POST",
+        body,
+      }),
 
-      error?.message ?? "Something went wrong. Please try again.",
+    patch: <T>(path: string, body?: unknown) =>
+      request<T>(path, {
+        method: "PATCH",
+        body,
+      }),
 
-      response.status,
+    put: <T>(path: string, body?: unknown) =>
+      request<T>(path, {
+        method: "PUT",
+        body,
+      }),
 
-      error?.requestId,
-    );
-  }
+    delete: <T>(path: string) =>
+      request<T>(path, {
+        method: "DELETE",
+      }),
 
-  return body.data;
+    /** multipart/form-data POST (file uploads). */
+    postForm: <T>(path: string, formData: FormData) =>
+      request<T>(path, {
+        method: "POST",
+        formData,
+      }),
+
+    /** Authorised file download — never a public URL. */
+    getBlob: (path: string) =>
+      request<Blob>(path, {
+        responseType: "blob",
+      }),
+  };
+
+  return {
+    api,
+    request,
+    setTokens,
+    clearTokensIfCurrent,
+    loadStoredRefreshToken,
+    getStoredRefreshToken,
+    getAccessToken,
+    onSessionExpired,
+    refreshSession,
+  };
 }
 
-export const api = {
-  get: <T>(path: string) => request<T>(path),
+export type ApiClient = ReturnType<typeof createApiClient>;
 
-  post: <T>(path: string, body?: unknown) =>
-    request<T>(path, {
-      method: "POST",
-      body,
-    }),
+/* -------------------------------------------------------------------------- */
+/* The admin panel's session — same storage key and exports as before.        */
+/* -------------------------------------------------------------------------- */
 
-  patch: <T>(path: string, body?: unknown) =>
-    request<T>(path, {
-      method: "PATCH",
-      body,
-    }),
+const adminClient = createApiClient("adione.refresh");
 
-  put: <T>(path: string, body?: unknown) =>
-    request<T>(path, {
-      method: "PUT",
-      body,
-    }),
-
-  delete: <T>(path: string) =>
-    request<T>(path, {
-      method: "DELETE",
-    }),
-};
+export const {
+  api,
+  request,
+  setTokens,
+  clearTokensIfCurrent,
+  loadStoredRefreshToken,
+  getStoredRefreshToken,
+  getAccessToken,
+  onSessionExpired,
+  refreshSession,
+} = adminClient;

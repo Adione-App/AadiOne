@@ -1,4 +1,13 @@
-/** Builds a minimal but realistic store + catalogue for integration tests. */
+/** Builds a minimal but realistic seller + catalogue for integration tests.
+ *
+ * NOTE (V2 migration): exported names (`seedStore`, `storeId`,
+ * `storeVariantId`) are kept as-is even though they now create a `Seller`
+ * row (`isPlatformOwned: true`) — renaming them would cascade into every
+ * integration test file that calls them, none of which have been migrated
+ * to the V2 multi-seller order flow yet (see the migration's final report).
+ * Only the Prisma calls inside this file were updated to match the new
+ * schema.
+ */
 
 import { CodPolicy, ProductStatus, UnitType } from '../../src/shared';
 import { prisma } from '../../src/infra/db/prisma';
@@ -8,10 +17,12 @@ export const NEARBY = { latitude: 27.6364, longitude: 75.1399 }; // ~3 km
 export const FAR = { latitude: 26.9124, longitude: 75.7873 }; // Jaipur, ~100 km
 
 export async function seedStore(options: { open?: boolean } = {}): Promise<string> {
-  const store = await prisma.store.create({
+  const seller = await prisma.seller.create({
     data: {
       code: 'TEST',
       name: 'Test Store',
+      isPlatformOwned: true,
+      onboardingStatus: 'APPROVED',
       addressLine: 'Main Road',
       city: 'Sikar',
       state: 'Rajasthan',
@@ -24,9 +35,9 @@ export async function seedStore(options: { open?: boolean } = {}): Promise<strin
   });
 
   const open = options.open ?? true;
-  await prisma.storeHours.createMany({
+  await prisma.sellerHours.createMany({
     data: Array.from({ length: 7 }, (_, dayOfWeek) => ({
-      storeId: store.id,
+      sellerId: seller.id,
       dayOfWeek,
       opensAt: open ? '00:00' : '08:00',
       closesAt: open ? '23:59' : '08:01',
@@ -34,7 +45,7 @@ export async function seedStore(options: { open?: boolean } = {}): Promise<strin
     })),
   });
 
-  return store.id;
+  return seller.id;
 }
 
 export interface SeededProduct {
@@ -76,6 +87,7 @@ export async function seedProduct(
       slug,
       categoryId: category.id,
       status: ProductStatus.ACTIVE,
+      approvalStatus: 'APPROVED',
       taxRateBp: options.taxRateBp ?? 0,
       allowCod: options.productAllowCod ?? CodPolicy.INHERIT,
       searchKeywords: [],
@@ -101,9 +113,9 @@ export async function seedProduct(
   // confusing way to learn it.
   const mrpPaise = options.mrpPaise ?? Math.round(pricePaise * 1.2);
 
-  const offer = await prisma.storeVariant.create({
+  const offer = await prisma.sellerListing.create({
     data: {
-      storeId,
+      sellerId: storeId,
       variantId: variant.id,
       mrpPaise,
       pricePaise,

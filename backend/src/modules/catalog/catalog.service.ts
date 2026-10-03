@@ -2,9 +2,17 @@
  * Catalog service — categories, products, variants, search, Home feed.
  *
  * Everything commercial on a product (price, discount, stock, COD, quantity
- * limit) is resolved HERE from `store_variants` at read time. Nothing is
+ * limit) is resolved HERE from `seller_listings` at read time. Nothing is
  * cached into the product row and nothing is trusted from a client, so a price
- * change in the admin panel is visible on the very next request.
+ * change in the seller/admin panel is visible on the very next request.
+ *
+ * MARKETPLACE: every live, non-restaurant seller's catalogue — Aadione is one
+ * of them, with no special store behind the app. Categories belong to
+ * sellers; rows with the same materialised path ("grocery/rice") are merged
+ * into one customer category, represented by the earliest such row's id, so
+ * filtering by that id returns every seller's products under the path. Each
+ * variant shows its best offer (in stock first, then cheapest) with that
+ * offer's seller (`VariantDto.sellerId/sellerName`).
  */
 
 import type { Category } from "@prisma/client";
@@ -29,9 +37,8 @@ import {
 } from "../../infra/search";
 import * as configService from "../configuration/configuration.service";
 import { ConfigKey } from "../../shared";
-import * as storeService from "../stores/store.service";
 import * as repository from "./catalog.repository";
-import type { HydratedProduct, ProductSort } from "./catalog.repository";
+import { MARKETPLACE_SELLER_WHERE, type HydratedProduct, type ProductSort } from "./catalog.repository";
 
 /* -------------------------------------------------------------------------- */
 /* Category tree                                                              */
@@ -133,31 +140,90 @@ function toCategoryDto(category: Category, productCount?: number): CategoryDto {
   };
 }
 
-/** Task 4.1 — top-level categories, optionally nested. */
+interface CategoryGroup {
+  path: string;
+  parentPath: string | null;
+  /** The earliest row with this path — its id stands for the whole group. */
+  rep: Category;
+  imageUrl: string | null;
+  productCount: number;
+}
+
+/**
+ * Sellers' own categories merged by materialised path, with customer-visible
+ * product counts (a group counts everything beneath it). Groups without a
+ * single visible product are left out — a customer never opens an empty
+ * category.
+ */
+async function marketplaceCategoryGroups(): Promise<Map<string, CategoryGroup>> {
+  const [categories, exactCounts] = await Promise.all([
+    repository.findMarketplaceCategories(),
+    repository.countProductsByPath(),
+  ]);
+
+  const groups = new Map<string, CategoryGroup>();
+  for (const category of categories) {
+    const existing = groups.get(category.path);
+    if (existing) {
+      existing.imageUrl ??= category.imageUrl;
+      continue;
+    }
+    const cut = category.path.lastIndexOf("/");
+    groups.set(category.path, {
+      path: category.path,
+      parentPath: cut === -1 ? null : category.path.slice(0, cut),
+      rep: category,
+      imageUrl: category.imageUrl,
+      productCount: 0,
+    });
+  }
+
+  for (const group of groups.values()) {
+    let total = 0;
+    for (const [path, count] of exactCounts) {
+      if (path === group.path || path.startsWith(`${group.path}/`)) total += count;
+    }
+    group.productCount = total;
+  }
+  for (const [path, group] of groups) if (group.productCount === 0) groups.delete(path);
+  return groups;
+}
+
+function groupDto(group: CategoryGroup, groups: Map<string, CategoryGroup>, withCounts: boolean): CategoryDto {
+  return {
+    ...toCategoryDto(group.rep, withCounts ? group.productCount : undefined),
+    parentId: group.parentPath ? groups.get(group.parentPath)?.rep.id ?? null : null,
+    imageUrl: group.imageUrl,
+  };
+}
+
+/** Task 4.1 — top-level categories, optionally nested — merged across sellers. */
 export async function listCategories(options: {
   parentId?: string | null;
   includeChildren?: boolean;
   withCounts?: boolean;
 }): Promise<CategoryDto[]> {
-  const store = await storeService.getActiveStore();
-  const all = await repository.findAllCategories();
+  const groups = await marketplaceCategoryGroups();
+  const withCounts = options.withCounts ?? false;
 
-  const counts = options.withCounts
-    ? await repository.countProductsByCategory(store.id)
-    : null;
+  // A parent given by id: any row of that path (another seller's id for the
+  // same category works too) selects the merged group.
+  let parentPath: string | null = null;
+  if (options.parentId) {
+    const parent = await repository.findCategoryById(options.parentId);
+    if (!parent) return [];
+    parentPath = parent.path;
+  }
 
-  const roots = all.filter((category) =>
-    options.parentId === undefined
-      ? category.parentId === null
-      : category.parentId === options.parentId,
-  );
+  const all = [...groups.values()];
+  const level = all.filter((group) => group.parentPath === parentPath);
 
-  return roots.map((category) => {
-    const dto = toCategoryDto(category, counts?.get(category.id));
+  return level.map((group) => {
+    const dto = groupDto(group, groups, withCounts);
     if (options.includeChildren) {
       dto.children = all
-        .filter((child) => child.parentId === category.id)
-        .map((child) => toCategoryDto(child, counts?.get(child.id)));
+        .filter((child) => child.parentPath === group.path)
+        .map((child) => groupDto(child, groups, withCounts));
     }
     return dto;
   });
@@ -177,22 +243,32 @@ export async function listSubcategories(
 /* -------------------------------------------------------------------------- */
 
 interface MappingContext {
-  storeAllowCod: CodPolicy;
   defaultCodPolicy: CodPolicy;
   defaultMaxQty: number;
 }
 
 async function mappingContext(): Promise<MappingContext> {
-  const store = await storeService.getActiveStore();
   const config = await configService.getMany([
     ConfigKey.DEFAULT_COD_POLICY,
     ConfigKey.DEFAULT_MAX_QTY_PER_ORDER,
   ]);
   return {
-    storeAllowCod: store.allowCod,
     defaultCodPolicy: config.DEFAULT_COD_POLICY,
     defaultMaxQty: config.DEFAULT_MAX_QTY_PER_ORDER,
   };
+}
+
+type Offer = HydratedProduct["variants"][number]["sellerListings"][number];
+
+/** In stock first, then the lowest price, then the oldest listing (stable). */
+function bestOffer(offers: Offer[]): Offer | undefined {
+  const inStock = (offer: Offer) => offer.isAvailable && offer.stockQty - offer.reservedQty > 0;
+  return [...offers].sort(
+    (a, b) =>
+      Number(inStock(b)) - Number(inStock(a)) ||
+      a.pricePaise - b.pricePaise ||
+      a.createdAt.getTime() - b.createdAt.getTime(),
+  )[0];
 }
 
 function toVariantDto(
@@ -201,10 +277,9 @@ function toVariantDto(
   productAllowCod: CodPolicy,
   context: MappingContext,
 ): VariantDto | null {
-  const offer = variant.storeVariants[0];
-  // No store_variants row means this variant is not stocked by this store at
-  // all — it is not a sellable thing here, so it is omitted rather than shown
-  // as unavailable.
+  const offer = bestOffer(variant.sellerListings);
+  // No marketplace seller lists this variant at all — it is not a sellable
+  // thing, so it is omitted rather than shown as unavailable.
   if (!offer) return null;
 
   const availableQty = Math.max(0, offer.stockQty - offer.reservedQty);
@@ -212,11 +287,11 @@ function toVariantDto(
   const allowCod =
     resolveItemCodPolicy(
       {
-        storeVariant: offer.allowCod,
+        sellerListing: offer.allowCod,
         productVariant: variant.allowCod,
         product: productAllowCod,
         categoryChain,
-        store: context.storeAllowCod,
+        seller: offer.seller.allowCod,
       },
       context.defaultCodPolicy,
     ) === CodPolicy.ALLOW;
@@ -229,6 +304,9 @@ function toVariantDto(
     unitValue: variant.unitValue,
     imageUrl: variant.imageUrl,
     isDefault: variant.isDefault,
+    sellerListingId: offer.id,
+    sellerId: offer.seller.id,
+    sellerName: offer.seller.name,
     mrpPaise: offer.mrpPaise,
     pricePaise: offer.pricePaise,
     discountPercent: discountPercent(offer.mrpPaise, offer.pricePaise),
@@ -250,6 +328,12 @@ async function toSummaryDto(
 
   const primaryImage = product.images[0] ?? null;
 
+  const sellerIds = new Set(
+    product.variants.flatMap((variant) =>
+      variant.sellerListings.map((listing) => listing.sellerId),
+    ),
+  );
+
   return {
     id: product.id,
     name: product.name,
@@ -268,7 +352,9 @@ async function toSummaryDto(
       variants[0] ??
       null,
     variantCount: variants.length,
+    sellerCount: sellerIds.size,
     status: product.status,
+    approvalStatus: product.approvalStatus,
   };
 }
 
@@ -353,8 +439,6 @@ export interface ListProductsInput {
 export async function listProducts(
   input: ListProductsInput,
 ): Promise<CursorPage<ProductSummaryDto>> {
-  const store = await storeService.getActiveStore();
-
   // The narrower of the two wins: a subcategory inside a category.
   const targetCategoryId = input.subcategoryId ?? input.categoryId;
   let categoryPath: string | null = null;
@@ -369,7 +453,6 @@ export async function listProducts(
   }
 
   const rows = await repository.listProductIds({
-    storeId: store.id,
     categoryPath,
     brandId: input.brandId ?? null,
     inStockOnly: input.inStock ?? false,
@@ -382,10 +465,7 @@ export async function listProducts(
   const hasMore = rows.length > input.limit;
   const page = hasMore ? rows.slice(0, input.limit) : rows;
 
-  const products = await repository.hydrateProducts(
-    page.map((row) => row.id),
-    store.id,
-  );
+  const products = await repository.hydrateProducts(page.map((row) => row.id));
   const items = await mapProducts(products);
   const last = page[page.length - 1];
 
@@ -399,14 +479,26 @@ export async function listProducts(
 export async function getProductDetail(
   productId: string,
 ): Promise<ProductDetailDto> {
-  const store = await storeService.getActiveStore();
-  const product = await repository.findProductById(productId, store.id);
+  const product = await repository.findProductById(productId);
 
-  if (!product || product.status !== ProductStatus.ACTIVE) {
+  if (!product || product.status !== ProductStatus.ACTIVE || !(await isOnSaleSomewhere(product))) {
     throw new AppError(ErrorCode.NOT_FOUND, { message: "Product not found." });
   }
 
   return toDetailDto(product, await mappingContext());
+}
+
+/**
+ * A product is public while some marketplace seller lists one of its live
+ * variants and its category and that category's top category are switched on
+ * (the same gates as the listing queries).
+ */
+async function isOnSaleSomewhere(product: HydratedProduct): Promise<boolean> {
+  if (!product.variants.some((variant) => variant.sellerListings.length > 0)) return false;
+  const byId = await getCategoryMap();
+  const category = byId.get(product.categoryId);
+  if (!category) return false;
+  return category.parentId === null || byId.has(category.parentId);
 }
 
 /** "You may also like" on the out-of-stock screen. */
@@ -414,17 +506,11 @@ export async function getRelatedProducts(
   productId: string,
   limit = 6,
 ): Promise<ProductSummaryDto[]> {
-  const store = await storeService.getActiveStore();
-  const product = await repository.findProductById(productId, store.id);
+  const product = await repository.findProductById(productId);
   if (!product) return [];
 
-  const ids = await repository.listRelatedProductIds(
-    store.id,
-    product.categoryId,
-    productId,
-    limit,
-  );
-  return mapProducts(await repository.hydrateProducts(ids, store.id));
+  const ids = await repository.listRelatedProductIds(product.category.path, productId, limit);
+  return mapProducts(await repository.hydrateProducts(ids));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -437,14 +523,12 @@ export async function searchProducts(input: {
   cursor?: string | null;
   inStock?: boolean;
 }): Promise<CursorPage<ProductSummaryDto>> {
-  const store = await storeService.getActiveStore();
   await configureSearchThresholds();
 
   const cursor = decodeCursor(input.cursor ?? null);
 
   const hits = await searchProvider.search({
     term: input.term,
-    storeId: store.id,
     limit: input.limit + 1,
     afterRank: cursor?.sortValue ?? null,
     inStockOnly: input.inStock ?? false,
@@ -453,10 +537,7 @@ export async function searchProducts(input: {
   const hasMore = hits.length > input.limit;
   const page = hasMore ? hits.slice(0, input.limit) : hits;
 
-  const products = await repository.hydrateProducts(
-    page.map((hit) => hit.productId),
-    store.id,
-  );
+  const products = await repository.hydrateProducts(page.map((hit) => hit.productId));
   const items = await mapProducts(products);
   const last = page[page.length - 1];
 
@@ -476,19 +557,19 @@ export async function searchProducts(input: {
  * Registers interest in an out-of-stock variant.
  *
  * Idempotent: tapping "Notify me" twice must not queue two messages. The
- * partial unique index `back_in_stock_one_open_per_user_variant` enforces one
- * OPEN subscription per (user, variant), while allowing a fresh one after the
+ * partial unique index `back_in_stock_one_open_per_user_listing` enforces one
+ * OPEN subscription per (user, listing), while allowing a fresh one after the
  * customer has already been notified once.
  */
 export async function subscribeBackInStock(
   userId: string,
   variantId: string,
 ): Promise<void> {
-  const store = await storeService.getActiveStore();
-
-  const offer = await prisma.storeVariant.findUnique({
-    where: { storeId_variantId: { storeId: store.id, variantId } },
-    select: { stockQty: true, reservedQty: true, isAvailable: true },
+  // The cheapest marketplace listing of this variant — normally its one seller.
+  const offer = await prisma.sellerListing.findFirst({
+    where: { variantId, seller: MARKETPLACE_SELLER_WHERE },
+    orderBy: [{ pricePaise: "asc" }, { createdAt: "asc" }],
+    select: { id: true, sellerId: true, stockQty: true, reservedQty: true, isAvailable: true },
   });
 
   if (!offer) {
@@ -506,13 +587,13 @@ export async function subscribeBackInStock(
   }
 
   const existing = await prisma.backInStockSubscription.findFirst({
-    where: { userId, variantId, notifiedAt: null },
+    where: { userId, sellerListingId: offer.id, notifiedAt: null },
     select: { id: true },
   });
   if (existing) return;
 
   await prisma.backInStockSubscription.create({
-    data: { userId, variantId, storeId: store.id },
+    data: { userId, sellerListingId: offer.id, sellerId: offer.sellerId },
   });
 }
 
@@ -550,7 +631,6 @@ const CATEGORY_RAIL_SIZE = 10;
  * services, not a new domain.
  */
 export async function getHomeFeed(): Promise<HomeFeedDto> {
-  const store = await storeService.getActiveStore();
   const context = await mappingContext();
 
   const categories = await listCategories({
@@ -571,11 +651,7 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
   const rails: HomeFeedDto["rails"] = [];
 
   for (const rail of RAILS) {
-    const candidateIds = await repository.listRailProductIds(
-      store.id,
-      rail.key,
-      RAIL_CANDIDATE_LIMIT,
-    );
+    const candidateIds = await repository.listRailProductIds(rail.key, RAIL_CANDIDATE_LIMIT);
 
     const freshIds = candidateIds
       .filter((id) => !usedProductIds.has(id))
@@ -588,7 +664,7 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
 
     for (const id of ids) usedProductIds.add(id);
 
-    const products = await repository.hydrateProducts(ids, store.id);
+    const products = await repository.hydrateProducts(ids);
 
     rails.push({
       key: rail.key,
@@ -605,15 +681,14 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
    * rails above) still gets real visibility on Home. `categoryPath` already
    * matches every product beneath it, not just direct children.
    */
-  const topLevelCategories = (await repository.findAllCategories()).filter(
-    (category) => category.parentId === null,
+  const topLevelCategories = [...(await marketplaceCategoryGroups()).values()].filter(
+    (group) => group.parentPath === null,
   );
 
   const categoryRails: HomeFeedDto["categoryRails"] = [];
 
   for (const category of topLevelCategories) {
     const rows = await repository.listProductIds({
-      storeId: store.id,
       categoryPath: category.path,
       inStockOnly: true,
       sort: "POPULAR",
@@ -622,14 +697,11 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
 
     if (rows.length === 0) continue;
 
-    const products = await repository.hydrateProducts(
-      rows.map((row) => row.id),
-      store.id,
-    );
+    const products = await repository.hydrateProducts(rows.map((row) => row.id));
 
     categoryRails.push({
-      categoryId: category.id,
-      title: category.name,
+      categoryId: category.rep.id,
+      title: category.rep.name,
       products: await Promise.all(
         products.map((product) => toSummaryDto(product, context)),
       ),
@@ -654,12 +726,11 @@ export async function listRailProducts(
   key: (typeof RAILS)[number]["key"],
   limit: number,
 ): Promise<{ title: string; products: HomeFeedDto["rails"][number]["products"] }> {
-  const store = await storeService.getActiveStore();
   const context = await mappingContext();
   const rail = RAILS.find((entry) => entry.key === key)!;
 
-  const ids = await repository.listRailProductIds(store.id, key, limit);
-  const products = await repository.hydrateProducts(ids, store.id);
+  const ids = await repository.listRailProductIds(key, limit);
+  const products = await repository.hydrateProducts(ids);
 
   return {
     title: rail.title,

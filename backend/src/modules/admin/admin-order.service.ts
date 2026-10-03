@@ -1,16 +1,18 @@
 /**
- * Admin order board + dashboard (Tasks 13.2, 13.3).
+ * Admin order board + dashboard (Tasks 13.2, 13.3) — V2: cross-seller.
  *
- * The order board is the highest-frequency screen in the whole system — the
- * store watches it all day — so the queries are shaped to hit the
- * `orders_active_board` partial index.
+ * Admin has full visibility across every seller (#26), so unlike V1 there is
+ * no `storeId` scoping here at all — every query below spans the whole
+ * marketplace. `getDashboard` anchors its "today" boundary on the
+ * marketplace timezone (STORE_TIMEZONE); sellers keep their own timezones
+ * for opening hours.
  */
 
 import {
-  ACTIVE_ORDER_STATUSES,
   ActorType,
   ADMIN_TAB_STATUSES,
   AdminOrderTab,
+  ConfigKey,
   ErrorCode,
   ORDER_STATUS_LABELS,
   OrderStatus,
@@ -22,49 +24,50 @@ import {
 } from "../../shared";
 import { startOfZonedDay, endOfZonedDay, getZonedParts } from "../../shared/datetime";
 import { AppError } from "../../common/errors";
+import { moduleLogger } from "../../common/logger";
 import { prisma } from "../../infra/db/prisma";
-import * as storeService from "../stores/store.service";
+import * as configService from "../configuration/configuration.service";
 import * as inventoryService from "../inventory/inventory.service";
 import * as deliveryService from "../delivery/delivery.service";
-import * as orderService from "../orders/order.service";
 import * as paymentService from "../payments/payment.service";
-import { transitionOrder } from "../orders/order-state.service";
+import { verifyDeliveryOtp } from "../orders/order.service";
+import { SellerOrderStatus } from "../../shared";
+import { transitionOrder, transitionSellerOrder } from "../orders/order-state.service";
+
+const log = moduleLogger("admin:orders");
 
 /* -------------------------------------------------------------------------- */
 /* Dashboard                                                                  */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Interprets a "YYYY-MM-DD" query param as a calendar day, independent of
- * the server's own timezone. Anchored at UTC noon rather than UTC midnight —
- * midnight would land on the PREVIOUS local day in any timezone behind UTC,
- * which `startOfZonedDay`/`endOfZonedDay` below would then read as the wrong
- * day. Noon is safely inside every real-world UTC offset (-12 to +14).
- */
 function parseCalendarDate(dateStr: string): Date {
   return new Date(`${dateStr}T12:00:00.000Z`);
 }
 
-/** "YYYY-MM-DD" for the given instant, in the given IANA timezone. */
+/**
+ * The marketplace's reporting timezone (STORE_TIMEZONE) — what "today" means
+ * on the dashboard. Not any one seller's: sellers keep their own timezones for
+ * their opening hours.
+ */
+async function marketplaceTimezone(): Promise<string> {
+  return (await configService.get(ConfigKey.STORE_TIMEZONE)) || "Asia/Kolkata";
+}
+
 function formatZonedDateOnly(date: Date, timeZone: string): string {
   const p = getZonedParts(date, timeZone);
   return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
 }
 
 /**
- * `date` is the store-local calendar day to report on ("YYYY-MM-DD"), from
- * the admin dashboard's date picker. Defaults to today when omitted — every
- * field below resolves identically to the old hardcoded-"now" behaviour in
- * that case, so the default view is unchanged.
+ * `date` is the reference calendar day to report on ("YYYY-MM-DD"), from the
+ * admin dashboard's date picker. Defaults to today when omitted.
  */
 export async function getDashboard(date?: string): Promise<AdminDashboardDto> {
-  const store = await storeService.getActiveStore();
+  const timezone = await marketplaceTimezone();
   const referenceDate = date ? parseCalendarDate(date) : new Date();
-  // The store's local day, not the server's UTC day — and not the
-  // requesting admin's own device timezone either.
-  const dayStart = startOfZonedDay(referenceDate, store.timezone);
-  const dayEnd = endOfZonedDay(referenceDate, store.timezone);
-  const todayStart = startOfZonedDay(new Date(), store.timezone);
+  const dayStart = startOfZonedDay(referenceDate, timezone);
+  const dayEnd = endOfZonedDay(referenceDate, timezone);
+  const todayStart = startOfZonedDay(new Date(), timezone);
 
   const paidStatuses = [OrderStatus.DELIVERED, OrderStatus.OUT_FOR_DELIVERY];
 
@@ -80,48 +83,36 @@ export async function getDashboard(date?: string): Promise<AdminDashboardDto> {
     lowStock,
   ] = await Promise.all([
     prisma.order.count({
-      where: { storeId: store.id, createdAt: { gte: dayStart, lte: dayEnd } },
+      where: { createdAt: { gte: dayStart, lte: dayEnd } },
     }),
     prisma.order.aggregate({
       _sum: { totalPaise: true },
-      where: {
-        storeId: store.id,
-        createdAt: { gte: dayStart, lte: dayEnd },
-        status: { in: paidStatuses },
-      },
+      where: { createdAt: { gte: dayStart, lte: dayEnd }, status: { in: paidStatuses } },
     }),
-    prisma.order.count({ where: { storeId: store.id } }),
+    prisma.order.count(),
     prisma.order.aggregate({
       _sum: { totalPaise: true },
-      where: { storeId: store.id, status: OrderStatus.DELIVERED },
+      where: { status: OrderStatus.DELIVERED },
     }),
     prisma.order.groupBy({
       by: ["status"],
       _count: { _all: true },
-      where: { storeId: store.id, status: { in: [...ACTIVE_ORDER_STATUSES] } },
+      where: { status: { in: [OrderStatus.PROCESSING, OrderStatus.PARTIALLY_CANCELLED, OrderStatus.READY_FOR_PICKUP, OrderStatus.PICKED_UP, OrderStatus.OUT_FOR_DELIVERY] } },
     }),
     prisma.order.count({
-      where: { storeId: store.id, status: OrderStatus.ORDER_PLACED },
+      where: { status: OrderStatus.PENDING_PAYMENT },
     }),
     prisma.order.count({
-      where: {
-        storeId: store.id,
-        status: OrderStatus.DELIVERED,
-        deliveredAt: { gte: dayStart, lte: dayEnd },
-      },
+      where: { status: OrderStatus.DELIVERED, deliveredAt: { gte: dayStart, lte: dayEnd } },
     }),
     prisma.order.count({
-      where: {
-        storeId: store.id,
-        status: { in: [OrderStatus.CANCELLED, OrderStatus.REJECTED] },
-        cancelledAt: { gte: dayStart, lte: dayEnd },
-      },
+      where: { status: OrderStatus.CANCELLED, cancelledAt: { gte: dayStart, lte: dayEnd } },
     }),
-    inventoryService.listLowStock(store.id, 20),
+    inventoryService.listLowStockAllSellers(20),
   ]);
 
   return {
-    date: date ?? formatZonedDateOnly(new Date(), store.timezone),
+    date: date ?? formatZonedDateOnly(new Date(), timezone),
     isToday: dayStart.getTime() === todayStart.getTime(),
     todayOrderCount: todayOrders,
     todayRevenuePaise: todayRevenue._sum.totalPaise ?? 0,
@@ -148,48 +139,30 @@ export async function listOrders(options: {
   search?: string;
   cursor?: string | null;
   limit: number;
-  /**
-   * Store-local calendar day ("YYYY-MM-DD") to restrict results to — used by
-   * the dashboard's "Recent Orders" panel when a historical date is
-   * selected, so it lists orders actually PLACED that day rather than
-   * today's live queue. Independent of `tab`/`cursor`; the admin order
-   * board (which doesn't pass this) is unaffected.
-   */
   date?: string;
 }): Promise<CursorPage<AdminOrderSummaryDto>> {
-  const store = await storeService.getActiveStore();
+  const timezone = await marketplaceTimezone();
   const statuses = options.tab ? ADMIN_TAB_STATUSES[options.tab] : undefined;
 
   const dateRange = options.date
     ? {
-        gte: startOfZonedDay(parseCalendarDate(options.date), store.timezone),
-        lte: endOfZonedDay(parseCalendarDate(options.date), store.timezone),
+        gte: startOfZonedDay(parseCalendarDate(options.date), timezone),
+        lte: endOfZonedDay(parseCalendarDate(options.date), timezone),
       }
     : null;
 
   const orders = await prisma.order.findMany({
     where: {
-      storeId: store.id,
       ...(statuses ? { status: { in: [...statuses] } } : {}),
       ...(options.search
         ? {
             OR: [
-              {
-                orderNumber: { contains: options.search, mode: "insensitive" },
-              },
+              { orderNumber: { contains: options.search, mode: "insensitive" } },
               { deliveryMobile: { contains: options.search } },
-              {
-                deliveryFullName: {
-                  contains: options.search,
-                  mode: "insensitive",
-                },
-              },
+              { deliveryFullName: { contains: options.search, mode: "insensitive" } },
             ],
           }
         : {}),
-      // Merged into one `createdAt` range rather than two separate spreads —
-      // both `dateRange` and the cursor bound write to the same field, and a
-      // second spread with the same key would silently discard the first.
       ...(dateRange || options.cursor
         ? {
             createdAt: {
@@ -200,8 +173,8 @@ export async function listOrders(options: {
         : {}),
     },
     include: {
-      items: { select: { qty: true, imageUrl: true } },
-      assignments: {
+      sellerOrders: { select: { id: true, items: { select: { qty: true, imageUrl: true } } } },
+      deliveryTasks: {
         where: { status: { not: "CANCELLED" } },
         include: { agent: { select: { name: true } } },
         take: 1,
@@ -223,42 +196,45 @@ export async function listOrders(options: {
   const now = Date.now();
 
   return {
-    items: page.map((order) => ({
-      id: order.id,
-      orderNumber: order.orderNumber,
-      status: order.status,
-      statusLabel: ORDER_STATUS_LABELS[order.status],
-      bucket: toOrderBucket(order.status),
-      paymentMethod: order.paymentMethod,
-      paymentStatus: order.paymentStatus,
-      totalPaise: order.totalPaise,
-      itemCount: order.items.reduce((sum, item) => sum + item.qty, 0),
-      lineItemCount: order.items.length,
-      itemThumbnails: order.items
-        .map((item) => item.imageUrl)
-        .filter((url): url is string => url !== null)
-        .slice(0, 3),
-      placedAt: (order.placedAt ?? order.createdAt).toISOString(),
-      deliveredAt: order.deliveredAt?.toISOString() ?? null,
-      customerName: order.deliveryFullName,
-      customerMobile: order.deliveryMobile,
-      distanceKm: order.distanceKm,
-      addressSummary: `${order.deliveryAddressLine}, ${order.deliveryCity} ${order.deliveryPincode}`,
-      deliveryAgentName: order.assignments[0]?.agent.name ?? null,
-      // Drives the "2 mins ago" ageing indicator that tells the counter which
-      // order has been waiting longest.
-      minutesSincePlaced: Math.floor(
-        (now - (order.placedAt ?? order.createdAt).getTime()) / 60_000,
-      ),
-      paymentClaim: (() => {
-        const claim = order.payments[0]?.rawPayload as
-          | { utr?: string | null; claimedAt?: string | null }
-          | null
-          | undefined;
-        if (!claim) return null;
-        return { utr: claim.utr ?? null, claimedAt: claim.claimedAt ?? null };
-      })(),
-    })),
+    items: page.map((order) => {
+      const allItems = order.sellerOrders.flatMap((so) => so.items);
+      return {
+        id: order.id,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        statusLabel: ORDER_STATUS_LABELS[order.status],
+        bucket: toOrderBucket(order.status),
+        paymentMethod: order.paymentMethod,
+        paymentStatus: order.paymentStatus,
+        totalPaise: order.totalPaise,
+        currentPayablePaise: order.currentPayablePaise,
+        itemCount: allItems.reduce((sum, item) => sum + item.qty, 0),
+        lineItemCount: allItems.length,
+        itemThumbnails: allItems
+          .map((item) => item.imageUrl)
+          .filter((url): url is string => url !== null)
+          .slice(0, 3),
+        sellerCount: order.sellerOrders.length,
+        placedAt: (order.placedAt ?? order.createdAt).toISOString(),
+        deliveredAt: order.deliveredAt?.toISOString() ?? null,
+        customerName: order.deliveryFullName,
+        customerMobile: order.deliveryMobile,
+        distanceKm: order.distanceKm,
+        addressSummary: `${order.deliveryAddressLine}, ${order.deliveryCity} ${order.deliveryPincode}`,
+        deliveryAgentName: order.deliveryTasks[0]?.agent.name ?? null,
+        minutesSincePlaced: Math.floor(
+          (now - (order.placedAt ?? order.createdAt).getTime()) / 60_000,
+        ),
+        paymentClaim: (() => {
+          const claim = order.payments[0]?.rawPayload as
+            | { utr?: string | null; claimedAt?: string | null }
+            | null
+            | undefined;
+          if (!claim) return null;
+          return { utr: claim.utr ?? null, claimedAt: claim.claimedAt ?? null };
+        })(),
+      };
+    }),
     hasMore,
     nextCursor: hasMore && last ? last.createdAt.toISOString() : null,
   };
@@ -268,15 +244,18 @@ export async function getOrderForAdmin(orderId: string) {
   const order = await prisma.order.findUnique({
     where: { id: orderId },
     include: {
-      items: true,
-      statusHistory: {
-        orderBy: { createdAt: "asc" },
-        include: { actor: true },
+      sellerOrders: {
+        include: {
+          seller: { select: { id: true, name: true } },
+          items: true,
+          statusHistory: { orderBy: { createdAt: "asc" }, include: { actor: true } },
+        },
       },
+      statusHistory: { orderBy: { createdAt: "asc" }, include: { actor: true } },
       payments: true,
       refunds: true,
       user: { select: { id: true, fullName: true, mobile: true, email: true } },
-      assignments: {
+      deliveryTasks: {
         include: { agent: true },
         orderBy: { assignedAt: "desc" },
       },
@@ -288,7 +267,8 @@ export async function getOrderForAdmin(orderId: string) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Status updates                                                             */
+/* Status updates — parent-level (delivery leg) only. Per-seller             */
+/* accept/prepare/ready/reject/cancel goes through seller-order.service.ts.  */
 /* -------------------------------------------------------------------------- */
 
 export interface UpdateStatusInput {
@@ -297,36 +277,125 @@ export interface UpdateStatusInput {
   actorUserId: string;
   reason?: string | null;
   cashCollectedPaise?: number | null;
+  deliveryOtp?: string | null;
 }
 
 /**
- * The store's accept / prepare / ready / dispatch / deliver actions.
+ * Pure filter: which of a parent order's SellerOrders are still eligible to
+ * be force-cancelled. Exported so this branching logic is unit-testable
+ * without a database (#7) — `updateOrderStatus`/`cancelWholeOrder` below are
+ * the only callers.
+ */
+export function selectSellerOrdersToCancel<T extends { status: SellerOrderStatus }>(
+  sellerOrders: readonly T[],
+): T[] {
+  return sellerOrders.filter(
+    (so) => so.status !== SellerOrderStatus.REJECTED && so.status !== SellerOrderStatus.CANCELLED,
+  );
+}
+
+/**
+ * Cancels every still-active SellerOrder under a parent order individually
+ * (#2). Each one's own transition — stock restoration, the currentPayable
+ * decrement, and its own partial refund if the order was paid online — is
+ * independently transaction-safe and idempotent (see
+ * order-state.service.ts's `transitionSellerOrder`: a row lock plus a
+ * `fromStatus === toStatus` no-op means re-running this on an
+ * already-cancelled SellerOrder is a guaranteed no-op, and
+ * `payment.service.ts`'s `refundSellerOrderIfPaid` refuses to create a
+ * second refund for one that already has one). The parent's own aggregate
+ * status is recomputed by `transitionSellerOrder` itself, AFTER each
+ * SellerOrder's row is updated, never chosen directly here.
+ *
+ * One seller's cancellation failing (e.g. a transient error from ITS OWN
+ * refund attempt) does not abort the rest — every other still-active seller
+ * order is still attempted, and the caller is told to retry so the ONE that
+ * failed gets picked up again. A retry is always safe: `selectSellerOrdersToCancel`
+ * re-reads current status each time, so an already-cancelled seller order is
+ * simply skipped, never touched twice.
+ */
+export async function cancelWholeOrder(
+  orderId: string,
+  sellerOrders: { id: string; status: SellerOrderStatus }[],
+  actorUserId: string,
+  reason: string | null,
+): Promise<void> {
+  const active = selectSellerOrdersToCancel(sellerOrders);
+  const failures: { sellerOrderId: string; error: unknown }[] = [];
+
+  for (const sellerOrder of active) {
+    try {
+      await transitionSellerOrder({
+        sellerOrderId: sellerOrder.id,
+        toStatus: SellerOrderStatus.CANCELLED,
+        actorType: ActorType.ADMIN,
+        actorUserId,
+        reason: reason ?? "Order cancelled by admin",
+      });
+    } catch (error) {
+      failures.push({ sellerOrderId: sellerOrder.id, error });
+      log.error(
+        { err: error, orderId, sellerOrderId: sellerOrder.id },
+        "seller order cancellation failed during whole-order cancel — safe to retry",
+      );
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new AppError(ErrorCode.INTERNAL_ERROR, {
+      message: `${failures.length} of ${active.length} seller order(s) could not be cancelled. Please try again.`,
+      internalMessage: `orderId=${orderId} failed=${failures.map((f) => f.sellerOrderId).join(",")}`,
+    });
+  }
+}
+
+/**
+ * The parent order's dispatch / deliver actions.
  *
  * Extra guards beyond the state machine, each protecting something physical:
  *   - dispatch requires an assigned rider (otherwise nobody has the parcel)
  *   - COD delivery requires the customer's OTP (proof it reached them)
- *   - rejecting a paid order auto-refunds
  */
-export async function updateOrderStatus(
-  input: UpdateStatusInput,
-): Promise<void> {
+export async function updateOrderStatus(input: UpdateStatusInput): Promise<void> {
   const order = await prisma.order.findUnique({
     where: { id: input.orderId },
     include: {
-      assignments: { where: { status: { not: "CANCELLED" } }, take: 1 },
+      sellerOrders: { select: { id: true, status: true } },
+      deliveryTasks: { where: { status: { not: "CANCELLED" } }, take: 1 },
     },
   });
   if (!order)
     throw new AppError(ErrorCode.NOT_FOUND, { message: "Order not found." });
 
+  // Admin force-cancelling the WHOLE order is not itself a direct parent
+  // transition once any seller has been engaged — PROCESSING/
+  // PARTIALLY_CANCELLED -> CANCELLED is derived (SYSTEM-only), by design (see
+  // order-state.service.ts). Cascading through every still-active
+  // SellerOrder gets the same end result correctly: each one's own refund
+  // fires individually (#10/#19), and the parent lands on CANCELLED once
+  // none are left active.
+  if (input.toStatus === OrderStatus.CANCELLED && order.status !== OrderStatus.PENDING_PAYMENT) {
+    await cancelWholeOrder(order.id, order.sellerOrders, input.actorUserId, input.reason ?? null);
+    return;
+  }
+
   if (
-    input.toStatus === OrderStatus.OUT_FOR_DELIVERY &&
-    order.assignments.length === 0
+    (input.toStatus === OrderStatus.PICKED_UP || input.toStatus === OrderStatus.OUT_FOR_DELIVERY) &&
+    order.deliveryTasks.length === 0
   ) {
     throw new AppError(ErrorCode.DELIVERY_AGENT_REQUIRED);
   }
 
-  await transitionOrder({
+  // The delivery OTP is OPTIONAL: an order is marked delivered without one.
+  // When one IS supplied it must still match the order's (see
+  // Order.deliveryOtpHash) — checked before the transition, so a wrong code
+  // never marks an order DELIVERED. Every other check above and in
+  // transitionOrder applies either way.
+  if (input.toStatus === OrderStatus.DELIVERED && input.deliveryOtp) {
+    await verifyDeliveryOtp(order.id, input.deliveryOtp);
+  }
+
+  const transition = await transitionOrder({
     orderId: input.orderId,
     toStatus: input.toStatus,
     actorType: ActorType.ADMIN,
@@ -334,7 +403,11 @@ export async function updateOrderStatus(
     reason: input.reason ?? null,
   });
 
-  if (input.toStatus === OrderStatus.DELIVERED) {
+  // Only the request that actually delivered the order completes the rider's
+  // task. A repeated DELIVERED on an already-delivered order is a no-op in
+  // transitionOrder (`changed: false`), and must stay one here — otherwise it
+  // would rewrite the task's deliveredAt, cash collected and notes.
+  if (input.toStatus === OrderStatus.DELIVERED && transition.changed) {
     await deliveryService.recordDelivery(order.id, {
       cashCollectedPaise:
         order.paymentMethod === PaymentMethod.COD
@@ -343,14 +416,10 @@ export async function updateOrderStatus(
     });
   }
 
-  // Money back automatically — never left as a manual step someone forgets.
-  if (
-    input.toStatus === OrderStatus.CANCELLED ||
-    input.toStatus === OrderStatus.REJECTED
-  ) {
-    await paymentService.refundIfPaid(
-      order.id,
-      input.reason ?? "Order cancelled by the store",
-    );
+  // PENDING_PAYMENT -> CANCELLED is a direct parent transition (nothing was
+  // ever engaged) — no payment could have been captured yet either, so this
+  // is a safe no-op guard, not a live refund path.
+  if (input.toStatus === OrderStatus.CANCELLED) {
+    await paymentService.refundIfPaid(order.id, input.reason ?? "Order cancelled by admin");
   }
 }

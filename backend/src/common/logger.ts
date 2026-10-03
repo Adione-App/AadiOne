@@ -23,6 +23,12 @@ const REDACT_PATHS = [
 
   "password",
   "*.password",
+  "currentPassword",
+  "*.currentPassword",
+  "newPassword",
+  "*.newPassword",
+  "temporaryPassword",
+  "*.temporaryPassword",
 
   "otp",
   "*.otp",
@@ -38,6 +44,15 @@ const REDACT_PATHS = [
 
   "signature",
   "*.signature",
+
+  // Seller document numbers (PAN/Aadhaar/GSTIN…) and identity numbers.
+  "documentNumber",
+  "*.documentNumber",
+  "*.*.documentNumber",
+  "panNumber",
+  "*.panNumber",
+  "aadhaarNumber",
+  "*.aadhaarNumber",
 
   "jwtSecret",
   "otpPepper",

@@ -14,6 +14,7 @@ import {
   ErrorCode,
   OrderStatus,
   PaymentMethod,
+  SellerOrderStatus,
   UserRole,
   type CouponDto,
   type OrderDetailDto,
@@ -37,7 +38,7 @@ async function loginAdmin(): Promise<string> {
       email: ADMIN.email,
       fullName: 'Store Owner',
       passwordHash: await hashPassword(ADMIN.password),
-      role: UserRole.STORE_OWNER,
+      role: UserRole.ADMIN,
     },
   });
   const res = await api().post('/api/v1/auth/admin/login').send(ADMIN).expect(200);
@@ -57,6 +58,25 @@ async function advance(
     .expect(204);
 }
 
+/** Accept/prepare/ready-up EVERY SellerOrder under `orderId` — V2 moved
+ * these from the parent Order to the per-seller machine (admin's
+ * cross-seller override, since this suite only ever seeds one platform
+ * seller). */
+async function advanceSellerOrders(
+  adminToken: string,
+  orderId: string,
+  toStatus: SellerOrderStatus,
+): Promise<void> {
+  const sellerOrders = await prisma.sellerOrder.findMany({ where: { orderId } });
+  for (const sellerOrder of sellerOrders) {
+    await api()
+      .patch(`/api/v1/admin/seller-orders/${sellerOrder.id}/status`)
+      .set('Authorization', bearer(adminToken))
+      .send({ toStatus })
+      .expect(204);
+  }
+}
+
 /** Places a COD order for `qty` units of `product` and walks it all the way
  * to DELIVERED — COD skips the payment gate entirely, which keeps every
  * reward-eligibility test focused on the ₹ amount / status logic rather than
@@ -65,13 +85,13 @@ async function placeAndDeliverCodOrder(
   adminToken: string,
   customerToken: string,
   addressId: string,
-  variantId: string,
+  sellerListingId: string,
   qty: number,
 ): Promise<{ orderId: string; itemsSubtotalPaise: number }> {
   await api()
     .post('/api/v1/cart/items')
     .set('Authorization', bearer(customerToken))
-    .send({ variantId, qty })
+    .send({ sellerListingId, qty })
     .expect(200);
 
   const placed = await api()
@@ -91,14 +111,15 @@ async function placeAndDeliverCodOrder(
     .expect(201);
   const agentId = expectSuccess<{ id: string }>(agent.body).data.id;
 
-  await advance(adminToken, order.id, OrderStatus.STORE_ACCEPTED);
-  await advance(adminToken, order.id, OrderStatus.PREPARING);
-  await advance(adminToken, order.id, OrderStatus.READY_FOR_PICKUP);
+  await advanceSellerOrders(adminToken, order.id, SellerOrderStatus.ACCEPTED);
+  await advanceSellerOrders(adminToken, order.id, SellerOrderStatus.PREPARING);
+  await advanceSellerOrders(adminToken, order.id, SellerOrderStatus.READY_FOR_PICKUP);
   await api()
     .post(`/api/v1/admin/orders/${order.id}/assign`)
     .set('Authorization', bearer(adminToken))
     .send({ agentId })
     .expect(200);
+  await advance(adminToken, order.id, OrderStatus.PICKED_UP);
   await advance(adminToken, order.id, OrderStatus.OUT_FOR_DELIVERY);
   await advance(adminToken, order.id, OrderStatus.DELIVERED, {
     deliveryOtp,
@@ -141,7 +162,7 @@ describe('Refer & Earn — normal referral', () => {
 
     const addressId = await seedAddress(referred.userId);
     // 1 × ₹150 = ₹150, clears the ₹99 default minimum.
-    await placeAndDeliverCodOrder(adminToken, referred.accessToken, addressId, product.variantId, 1);
+    await placeAndDeliverCodOrder(adminToken, referred.accessToken, addressId, product.storeVariantId, 1);
 
     const coupons = await prisma.coupon.findMany({ where: { issuedToUserId: referrer.userId } });
     expect(coupons).toHaveLength(1);
@@ -195,7 +216,7 @@ describe('Refer & Earn — ₹99 minimum boundary', () => {
       .expect(200);
 
     const addressId = await seedAddress(referred.userId);
-    await placeAndDeliverCodOrder(adminToken, referred.accessToken, addressId, product.variantId, 1);
+    await placeAndDeliverCodOrder(adminToken, referred.accessToken, addressId, product.storeVariantId, 1);
 
     expect(await prisma.coupon.count({ where: { issuedToUserId: referrer.userId } })).toBe(0);
     const referral = await prisma.referral.findUniqueOrThrow({ where: { referredUserId: referred.userId } });
@@ -224,7 +245,7 @@ describe('Refer & Earn — ₹99 minimum boundary', () => {
       .expect(200);
 
     const addressId = await seedAddress(referred.userId);
-    await placeAndDeliverCodOrder(adminToken, referred.accessToken, addressId, product.variantId, 1);
+    await placeAndDeliverCodOrder(adminToken, referred.accessToken, addressId, product.storeVariantId, 1);
 
     expect(await prisma.coupon.count({ where: { issuedToUserId: referrer.userId } })).toBe(1);
   });
@@ -256,14 +277,14 @@ describe('Refer & Earn — first ELIGIBLE order, not just first order', () => {
     const addressId = await seedAddress(referred.userId);
 
     // Order #1 — ₹80, below the minimum. No reward.
-    await placeAndDeliverCodOrder(adminToken, referred.accessToken, addressId, cheap.variantId, 1);
+    await placeAndDeliverCodOrder(adminToken, referred.accessToken, addressId, cheap.storeVariantId, 1);
     expect(await prisma.coupon.count({ where: { issuedToUserId: referrer.userId } })).toBe(0);
     expect(
       (await prisma.referral.findUniqueOrThrow({ where: { referredUserId: referred.userId } })).status,
     ).toBe('FIRST_ORDER_PENDING');
 
     // Order #2 — ₹150, qualifies. Reward fires now, exactly once.
-    await placeAndDeliverCodOrder(adminToken, referred.accessToken, addressId, pricey.variantId, 1);
+    await placeAndDeliverCodOrder(adminToken, referred.accessToken, addressId, pricey.storeVariantId, 1);
     expect(await prisma.coupon.count({ where: { issuedToUserId: referrer.userId } })).toBe(1);
     expect(
       (await prisma.referral.findUniqueOrThrow({ where: { referredUserId: referred.userId } })).status,
@@ -297,7 +318,7 @@ describe('Refer & Earn — cancelled / failed orders never reward', () => {
     await api()
       .post('/api/v1/cart/items')
       .set('Authorization', bearer(referred.accessToken))
-      .send({ variantId: product.variantId, qty: 1 })
+      .send({ sellerListingId: product.storeVariantId, qty: 1 })
       .expect(200);
 
     const placed = await api()
@@ -411,7 +432,7 @@ describe('Refer & Earn — multiple referrals, separate coupons', () => {
         .expect(200);
 
       const addressId = await seedAddress(friend.userId);
-      await placeAndDeliverCodOrder(adminToken, friend.accessToken, addressId, product.variantId, 1);
+      await placeAndDeliverCodOrder(adminToken, friend.accessToken, addressId, product.storeVariantId, 1);
     }
 
     const coupons = await prisma.coupon.findMany({ where: { issuedToUserId: referrer.userId } });
@@ -443,7 +464,7 @@ describe('Refer & Earn — coupon usage lifecycle', () => {
       .send({ code: referralCode })
       .expect(200);
     const referredAddressId = await seedAddress(referred.userId);
-    await placeAndDeliverCodOrder(adminToken, referred.accessToken, referredAddressId, referralUnlock.variantId, 1);
+    await placeAndDeliverCodOrder(adminToken, referred.accessToken, referredAddressId, referralUnlock.storeVariantId, 1);
 
     const coupon = await prisma.coupon.findFirstOrThrow({ where: { issuedToUserId: referrer.userId } });
 
@@ -452,7 +473,7 @@ describe('Refer & Earn — coupon usage lifecycle', () => {
     await api()
       .post('/api/v1/cart/items')
       .set('Authorization', bearer(referrer.accessToken))
-      .send({ variantId: shoppingItem.variantId, qty: 1 })
+      .send({ sellerListingId: shoppingItem.storeVariantId, qty: 1 })
       .expect(200);
 
     const applied = await api()
@@ -478,7 +499,7 @@ describe('Refer & Earn — coupon usage lifecycle', () => {
     await api()
       .post('/api/v1/cart/items')
       .set('Authorization', bearer(referrer.accessToken))
-      .send({ variantId: shoppingItem.variantId, qty: 1 })
+      .send({ sellerListingId: shoppingItem.storeVariantId, qty: 1 })
       .expect(200);
 
     const reapply = await api()
@@ -517,7 +538,7 @@ describe('Refer & Earn — coupon usage lifecycle', () => {
       .send({ code: referralCode })
       .expect(200);
     const addressId = await seedAddress(referred.userId);
-    await placeAndDeliverCodOrder(adminToken, referred.accessToken, addressId, product.variantId, 1);
+    await placeAndDeliverCodOrder(adminToken, referred.accessToken, addressId, product.storeVariantId, 1);
 
     const coupon = await prisma.coupon.findFirstOrThrow({ where: { issuedToUserId: referrer.userId } });
 
@@ -526,7 +547,7 @@ describe('Refer & Earn — coupon usage lifecycle', () => {
     await api()
       .post('/api/v1/cart/items')
       .set('Authorization', bearer(stranger.accessToken))
-      .send({ variantId: product.variantId, qty: 1 })
+      .send({ sellerListingId: product.storeVariantId, qty: 1 })
       .expect(200);
 
     const stolen = await api()
@@ -563,7 +584,7 @@ describe('Refer & Earn — duplicate/concurrent reward issuance', () => {
       adminToken,
       referred.accessToken,
       addressId,
-      product.variantId,
+      product.storeVariantId,
       1,
     );
 

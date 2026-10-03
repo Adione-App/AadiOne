@@ -4,6 +4,11 @@
  * These exercise the real configuration table, so they also prove that
  * MAX_SERVICE_RADIUS_KM is genuinely read from configuration rather than
  * hardcoded: the same coordinates flip decision when the config row changes.
+ *
+ * V2: "the store" is the platform-owned Seller row (see seller.service.ts's
+ * own scope note) — `/store*` routes are kept for the customer app's existing
+ * single-seller grocery experience, but everything underneath is Seller /
+ * SellerHours / SellerClosure now.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -11,7 +16,7 @@ import { ConfigKey, ErrorCode } from '../../src/shared';
 import { api, expectError, expectSuccess } from '../helpers/api';
 import { prisma, truncateAll } from '../helpers/db';
 import * as configService from '../../src/modules/configuration/configuration.service';
-import * as storeService from '../../src/modules/stores/store.service';
+import * as sellerService from '../../src/modules/sellers/seller.service';
 
 // Sikar, matching the seed.
 const STORE = { latitude: 27.6094, longitude: 75.1399 };
@@ -19,10 +24,12 @@ const NEARBY = { lat: 27.6364, lng: 75.1399 }; // ~3 km north
 const FAR = { lat: 26.9124, lng: 75.7873 }; // Jaipur, ~100 km
 
 async function createStore(overrides: Record<string, unknown> = {}): Promise<string> {
-  const store = await prisma.store.create({
+  const seller = await prisma.seller.create({
     data: {
       code: 'TEST-STORE',
       name: 'Test Store',
+      isPlatformOwned: true,
+      onboardingStatus: 'APPROVED',
       addressLine: 'Main Road',
       city: 'Sikar',
       state: 'Rajasthan',
@@ -36,9 +43,9 @@ async function createStore(overrides: Record<string, unknown> = {}): Promise<str
   });
 
   // Open 08:00-22:00 every day, as in the mockup.
-  await prisma.storeHours.createMany({
+  await prisma.sellerHours.createMany({
     data: Array.from({ length: 7 }, (_, dayOfWeek) => ({
-      storeId: store.id,
+      sellerId: seller.id,
       dayOfWeek,
       opensAt: '08:00',
       closesAt: '22:00',
@@ -46,7 +53,7 @@ async function createStore(overrides: Record<string, unknown> = {}): Promise<str
     })),
   });
 
-  return store.id;
+  return seller.id;
 }
 
 async function setConfig(key: Parameters<typeof configService.set>[0]['key'], value: never) {
@@ -194,67 +201,67 @@ describe('GET /store/serviceability', () => {
 
 describe('store opening hours', () => {
   it('reports open during trading hours in the store timezone', async () => {
-    const storeId = await createStore();
-    const store = (await prisma.store.findUniqueOrThrow({
-      where: { id: storeId },
+    const sellerId = await createStore();
+    const seller = (await prisma.seller.findUniqueOrThrow({
+      where: { id: sellerId },
       include: { hours: true },
     })) as never;
 
     // 12:30 IST on a Wednesday = 07:00 UTC.
     const middayIst = new Date('2026-08-12T07:00:00.000Z');
-    const state = await storeService.getStoreOpenState(store, middayIst);
+    const state = await sellerService.getSellerOpenState(seller, middayIst);
     expect(state.isOpen).toBe(true);
     expect(state.todayOpensAt).toBe('08:00');
   });
 
   it('reports closed outside trading hours and says when it opens next', async () => {
-    const storeId = await createStore();
-    const store = (await prisma.store.findUniqueOrThrow({
-      where: { id: storeId },
+    const sellerId = await createStore();
+    const seller = (await prisma.seller.findUniqueOrThrow({
+      where: { id: sellerId },
       include: { hours: true },
     })) as never;
 
     // 05:00 IST = 23:30 UTC the previous day. Evaluating this in UTC would
     // wrongly report the store as open.
     const earlyMorningIst = new Date('2026-08-11T23:30:00.000Z');
-    const state = await storeService.getStoreOpenState(store, earlyMorningIst);
+    const state = await sellerService.getSellerOpenState(seller, earlyMorningIst);
 
     expect(state.isOpen).toBe(false);
     expect(state.nextOpenText).toMatch(/Opens today at 8:00 AM/);
   });
 
   it('treats a recorded closure as shut for the whole day', async () => {
-    const storeId = await createStore();
-    await prisma.storeClosure.create({
-      data: { storeId, closedOn: new Date('2026-08-12T00:00:00.000Z'), reason: 'Holiday' },
+    const sellerId = await createStore();
+    await prisma.sellerClosure.create({
+      data: { sellerId, closedOn: new Date('2026-08-12T00:00:00.000Z'), reason: 'Holiday' },
     });
 
-    const store = (await prisma.store.findUniqueOrThrow({
-      where: { id: storeId },
+    const seller = (await prisma.seller.findUniqueOrThrow({
+      where: { id: sellerId },
       include: { hours: true },
     })) as never;
 
     const middayIst = new Date('2026-08-12T07:00:00.000Z');
-    const state = await storeService.getStoreOpenState(store, middayIst);
+    const state = await sellerService.getSellerOpenState(seller, middayIst);
     expect(state.isOpen).toBe(false);
   });
 
   it('blocks order placement while closed, unless configured otherwise', async () => {
-    const storeId = await createStore();
-    const store = (await prisma.store.findUniqueOrThrow({
-      where: { id: storeId },
+    const sellerId = await createStore();
+    const seller = (await prisma.seller.findUniqueOrThrow({
+      where: { id: sellerId },
       include: { hours: true },
     })) as never;
     const earlyMorningIst = new Date('2026-08-11T23:30:00.000Z');
 
     await expect(
-      storeService.assertStoreAcceptingOrders(store, earlyMorningIst),
-    ).rejects.toMatchObject({ code: ErrorCode.STORE_CLOSED });
+      sellerService.assertSellerAcceptingOrders(seller, earlyMorningIst),
+    ).rejects.toMatchObject({ code: ErrorCode.SELLER_CLOSED });
 
     // The override is configuration, not a code branch.
     await setConfig(ConfigKey.ALLOW_ORDERS_WHEN_CLOSED, true as never);
     await expect(
-      storeService.assertStoreAcceptingOrders(store, earlyMorningIst),
+      sellerService.assertSellerAcceptingOrders(seller, earlyMorningIst),
     ).resolves.toBeUndefined();
   });
 });
@@ -282,6 +289,6 @@ describe('GET /store', () => {
   it('reports service unavailable when no active store exists', async () => {
     const res = await api().get('/api/v1/store');
     expect(res.status).toBe(503);
-    expect(expectError(res.body).code).toBe(ErrorCode.STORE_INACTIVE);
+    expect(expectError(res.body).code).toBe(ErrorCode.SELLER_INACTIVE);
   });
 });

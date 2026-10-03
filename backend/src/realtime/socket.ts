@@ -5,8 +5,14 @@
  * long-polling fallback matter far more on rural 3G than raw efficiency.
  *
  * REALTIME IS AN OPTIMISATION, NEVER THE ONLY PATH. Both clients also poll
- * (mobile every 30 s while an order is live, admin every 20 s). A dropped
- * socket must never cause the store to miss an order.
+ * (mobile every 30 s while an order is live, admin/seller panel every 20 s).
+ * A dropped socket must never cause a seller to miss an order.
+ *
+ * V2: `rooms.seller` replaces V1's single `rooms.store` — sellers only ever
+ * see events for their OWN SellerOrders. `rooms.admin` is new: one shared
+ * room every admin-role connection joins automatically, since admin has
+ * full cross-seller visibility (#26) and previously relied on there being
+ * only one store room to subscribe to.
  */
 
 import type { Server as HttpServer } from 'node:http';
@@ -14,7 +20,8 @@ import { Server, type Socket } from 'socket.io';
 import { corsOrigins } from '../config/env';
 import { moduleLogger } from '../common/logger';
 import { verifyAccessToken } from '../modules/auth/token.service';
-import { isAdminRole, type OrderStatus } from '../shared';
+import { prisma } from '../infra/db/prisma';
+import { isAdminRole, isSellerRole, type OrderStatus, type SellerOrderStatus } from '../shared';
 
 const log = moduleLogger('realtime');
 
@@ -22,7 +29,8 @@ let io: Server | null = null;
 
 export const rooms = {
   user: (userId: string) => `user:${userId}`,
-  store: (storeId: string) => `store:${storeId}`,
+  seller: (sellerId: string) => `seller:${sellerId}`,
+  admin: () => `admin`,
 } as const;
 
 export function initRealtime(httpServer: HttpServer): Server {
@@ -59,15 +67,35 @@ export function initRealtime(httpServer: HttpServer): Server {
     const userId = socket.data.userId as string;
     const role = socket.data.role as Parameters<typeof isAdminRole>[0];
 
-    // Every client joins its own user room; only staff may join a store room.
+    // Every client joins its own user room.
     void socket.join(rooms.user(userId));
 
-    socket.on('store:subscribe', (storeId: string) => {
-      if (!isAdminRole(role)) {
-        log.warn({ userId, role }, 'non-staff attempted to subscribe to a store room');
+    // Admin staff get every order across every seller automatically — there
+    // is no per-seller subscription step for them (#26: full visibility).
+    if (isAdminRole(role)) {
+      void socket.join(rooms.admin());
+    }
+
+    socket.on('seller:subscribe', (sellerId: string) => {
+      if (isAdminRole(role)) {
+        void socket.join(rooms.seller(sellerId));
         return;
       }
-      void socket.join(rooms.store(storeId));
+      if (!isSellerRole(role)) {
+        log.warn({ userId, role }, 'non-seller attempted to subscribe to a seller room');
+        return;
+      }
+      // Ownership check: a seller role only gets events for a seller it is
+      // actually staff of (#15/#27) — never trusted from the client alone.
+      void prisma.sellerStaff
+        .findFirst({ where: { userId, sellerId, isActive: true }, select: { id: true } })
+        .then((staff) => {
+          if (!staff) {
+            log.warn({ userId, sellerId }, 'seller subscribe denied — not staff of this seller');
+            return;
+          }
+          void socket.join(rooms.seller(sellerId));
+        });
     });
 
     socket.on('disconnect', (reason) => {
@@ -87,22 +115,41 @@ export interface OrderStatusEvent {
   etaMinutes?: number | null;
 }
 
+export interface SellerOrderStatusEvent {
+  orderId: string;
+  sellerOrderId: string;
+  orderNumber: string;
+  status: SellerOrderStatus;
+  statusLabel: string;
+}
+
 /** Push a status change to the customer's devices. */
 export function emitOrderStatus(userId: string, event: OrderStatusEvent): void {
   io?.to(rooms.user(userId)).emit('order.status_changed', event);
 }
 
 /**
- * Tell the store a new order arrived.
- * The panel plays a repeating chime on this until acknowledged — a missed new
- * order is the single most costly failure at the counter (PRD §20 R7).
+ * Tell admin (every staff connection, cross-seller) a new order arrived.
+ * The panel plays a repeating chime on this until acknowledged — a missed
+ * new order is the single most costly failure at the counter (PRD §20 R7).
  */
-export function emitNewOrder(storeId: string, event: OrderStatusEvent): void {
-  io?.to(rooms.store(storeId)).emit('order.created', event);
+export function emitNewOrder(event: OrderStatusEvent): void {
+  io?.to(rooms.admin()).emit('order.created', event);
 }
 
-export function emitStoreOrderStatus(storeId: string, event: OrderStatusEvent): void {
-  io?.to(rooms.store(storeId)).emit('order.status_changed', event);
+export function emitAdminOrderStatus(event: OrderStatusEvent): void {
+  io?.to(rooms.admin()).emit('order.status_changed', event);
+}
+
+/** Tell one seller a new SellerOrder landed, or one of theirs changed. */
+export function emitNewSellerOrder(sellerId: string, event: SellerOrderStatusEvent): void {
+  io?.to(rooms.seller(sellerId)).emit('seller_order.created', event);
+  io?.to(rooms.admin()).emit('seller_order.created', event);
+}
+
+export function emitSellerOrderStatus(sellerId: string, event: SellerOrderStatusEvent): void {
+  io?.to(rooms.seller(sellerId)).emit('seller_order.status_changed', event);
+  io?.to(rooms.admin()).emit('seller_order.status_changed', event);
 }
 
 export function shutdownRealtime(): void {

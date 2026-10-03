@@ -5,9 +5,9 @@
  * aspirational. Every radius, fee, threshold, time window, limit and feature
  * flag is read through here.
  *
- * Precedence: store override -> global row -> CONFIG_DEFAULTS.
+ * Precedence: seller override -> global row -> CONFIG_DEFAULTS.
  *
- * Caching: the whole resolved map is cached per store for CONFIG_CACHE_TTL
+ * Caching: the whole resolved map is cached per seller for CONFIG_CACHE_TTL
  * seconds, and invalidated explicitly on write. The table is a few dozen rows,
  * so caching the map rather than individual keys keeps reads to a single
  * lookup and makes invalidation trivial. A 60-second TTL means an admin edit
@@ -37,19 +37,19 @@ const GLOBAL_SCOPE = 'global';
 /** All valid keys, for validating admin writes. */
 const VALID_KEYS = new Set<string>(Object.values(ConfigKey));
 
-function scopeOf(storeId: string | null): string {
-  return storeId ?? GLOBAL_SCOPE;
+function scopeOf(sellerId: string | null): string {
+  return sellerId ?? GLOBAL_SCOPE;
 }
 
 /**
- * Resolves the effective configuration map for a store.
+ * Resolves the effective configuration map for a seller.
  *
  * Defaults are the base layer, so a key that has never been seeded still
  * returns a sane value rather than `undefined` propagating into a price
  * calculation.
  */
-async function loadResolved(storeId: string | null): Promise<ConfigValues> {
-  const rows = await repository.findAllForStore(storeId);
+async function loadResolved(sellerId: string | null): Promise<ConfigValues> {
+  const rows = await repository.findAllForSeller(sellerId);
   const resolved: ConfigValues = { ...CONFIG_DEFAULTS };
 
   for (const row of rows) {
@@ -59,15 +59,15 @@ async function loadResolved(storeId: string | null): Promise<ConfigValues> {
       log.warn({ key: row.key }, 'unknown configuration key in database — ignored');
       continue;
     }
-    // Rows arrive global-first, so a store override assigned later wins.
+    // Rows arrive global-first, so a seller override assigned later wins.
     (resolved as unknown as Record<string, unknown>)[row.key] = row.value;
   }
 
   return resolved;
 }
 
-export async function getAll(storeId: string | null = null): Promise<ConfigValues> {
-  const cacheKey = CacheKey.config(scopeOf(storeId));
+export async function getAll(sellerId: string | null = null): Promise<ConfigValues> {
+  const cacheKey = CacheKey.config(scopeOf(sellerId));
 
   const cached = await cache.get(cacheKey);
   if (cached) {
@@ -80,7 +80,7 @@ export async function getAll(storeId: string | null = null): Promise<ConfigValue
     }
   }
 
-  const resolved = await loadResolved(storeId);
+  const resolved = await loadResolved(sellerId);
   await cache.set(cacheKey, JSON.stringify(resolved), CONFIG_CACHE_TTL_SECONDS);
   return resolved;
 }
@@ -94,26 +94,26 @@ export async function getAll(storeId: string | null = null): Promise<ConfigValue
  */
 export async function get<K extends keyof ConfigValues>(
   key: K,
-  storeId: string | null = null,
+  sellerId: string | null = null,
 ): Promise<ConfigValues[K]> {
-  const all = await getAll(storeId);
+  const all = await getAll(sellerId);
   return all[key];
 }
 
 /** Reads several keys in one cache hit — used by pricing and ETA. */
 export async function getMany<K extends keyof ConfigValues>(
   keys: readonly K[],
-  storeId: string | null = null,
+  sellerId: string | null = null,
 ): Promise<Pick<ConfigValues, K>> {
-  const all = await getAll(storeId);
+  const all = await getAll(sellerId);
   const out = {} as Pick<ConfigValues, K>;
   for (const key of keys) out[key] = all[key];
   return out;
 }
 
 /** The subset the unauthenticated mobile app may read. */
-export async function getPublic(storeId: string | null = null): Promise<PublicConfig> {
-  const all = await getAll(storeId);
+export async function getPublic(sellerId: string | null = null): Promise<PublicConfig> {
+  const all = await getAll(sellerId);
   const out = {} as Record<string, unknown>;
   for (const key of PUBLIC_CONFIG_KEYS) out[key] = all[key];
   return out as PublicConfig;
@@ -122,7 +122,7 @@ export async function getPublic(storeId: string | null = null): Promise<PublicCo
 export interface SetConfigInput<K extends keyof ConfigValues> {
   key: K;
   value: ConfigValues[K];
-  storeId?: string | null;
+  sellerId?: string | null;
   actorUserId?: string | null;
 }
 
@@ -136,7 +136,7 @@ export interface SetConfigInput<K extends keyof ConfigValues> {
 export async function set<K extends keyof ConfigValues>(
   input: SetConfigInput<K>,
 ): Promise<ConfigValues[K]> {
-  const storeId = input.storeId ?? null;
+  const sellerId = input.sellerId ?? null;
 
   if (!VALID_KEYS.has(input.key)) {
     throw badRequest(`Unknown configuration key: ${String(input.key)}`);
@@ -146,17 +146,17 @@ export async function set<K extends keyof ConfigValues>(
 
   await repository.upsert({
     key: input.key,
-    storeId,
+    sellerId,
     value: input.value as Prisma.InputJsonValue,
     description: CONFIG_DESCRIPTIONS[input.key as ConfigKey],
     isPublic: (PUBLIC_CONFIG_KEYS as readonly string[]).includes(input.key),
     updatedByUserId: input.actorUserId ?? null,
   });
 
-  await invalidate(storeId);
+  await invalidate(sellerId);
 
   log.info(
-    { key: input.key, storeId, actorUserId: input.actorUserId },
+    { key: input.key, sellerId, actorUserId: input.actorUserId },
     'configuration updated',
   );
 
@@ -164,13 +164,13 @@ export async function set<K extends keyof ConfigValues>(
 }
 
 /** Clears the cached map for a scope. Called after every write. */
-export async function invalidate(storeId: string | null = null): Promise<void> {
-  await cache.delete(CacheKey.config(scopeOf(storeId)));
+export async function invalidate(sellerId: string | null = null): Promise<void> {
+  await cache.delete(CacheKey.config(scopeOf(sellerId)));
 }
 
 /** Clears every scope — used by the seed script and by tests. */
-export async function invalidateAll(storeIds: string[] = []): Promise<void> {
-  await Promise.all([invalidate(null), ...storeIds.map((id) => invalidate(id))]);
+export async function invalidateAll(sellerIds: string[] = []): Promise<void> {
+  await Promise.all([invalidate(null), ...sellerIds.map((id) => invalidate(id))]);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -278,19 +278,19 @@ export interface ConfigEntry {
   value: unknown;
   description: string;
   isPublic: boolean;
-  /** True when the effective value comes from a store-level override. */
+  /** True when the effective value comes from a seller-level override. */
   isOverridden: boolean;
 }
 
 /** Everything the admin Configuration screen renders. */
-export async function listForAdmin(storeId: string | null = null): Promise<ConfigEntry[]> {
+export async function listForAdmin(sellerId: string | null = null): Promise<ConfigEntry[]> {
   const [resolved, rows] = await Promise.all([
-    getAll(storeId),
-    repository.findAllForStore(storeId),
+    getAll(sellerId),
+    repository.findAllForSeller(sellerId),
   ]);
 
   const overriddenKeys = new Set(
-    rows.filter((row) => row.storeId !== null).map((row) => row.key),
+    rows.filter((row) => row.sellerId !== null).map((row) => row.key),
   );
 
   return (Object.values(ConfigKey) as ConfigKey[]).map((key) => ({

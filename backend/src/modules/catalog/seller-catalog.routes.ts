@@ -18,6 +18,7 @@ import { requirePermission, requireUser } from '../../middleware/auth';
 import { attachSellerContext, requireSellerId } from '../../middleware/sellerAuth';
 import * as service from './product-approval.service';
 import * as listingService from './seller-listing.service';
+import * as variantService from './product-variant.service';
 import * as productService from './seller-product.service';
 import * as sellerCategoryService from './seller-category.service';
 import * as subcategoryService from './seller-subcategory.service';
@@ -40,17 +41,38 @@ const createProductSchema = z.object({
   // A product is created COMPLETE: the seller's own price and opening stock
   // are part of it from the start (same limits as the listing routes).
   mrpPaise: z.number().int().positive().optional(),
-  pricePaise: z.number().int().positive(),
+  // Required for a simple item (the service checks); with `variants`, per variant.
+  pricePaise: z.number().int().positive().optional(),
   stockQty: z.number().int().min(0).max(100_000).optional(),
   // Food items only: veg / non-veg and whether it is on the menu right now.
   diet: z.enum(['VEG', 'NON_VEG']).nullable().optional(),
   isAvailable: z.boolean().optional(),
 });
 
-const createProductBodySchema = createProductSchema.refine((v) => v.mrpPaise === undefined || v.pricePaise <= v.mrpPaise, {
-  message: 'Selling price cannot be higher than MRP.',
-  path: ['pricePaise'],
-});
+/** Optional options / variants (product-variant.service): generic groups, one row per sellable variant. */
+const optionGroupsSchema = z.array(z.object({ name: z.string().max(40), values: z.array(z.string().max(40)).min(1).max(30) }).strict()).max(3);
+const variantSchema = z
+  .object({
+    id: uuid.optional(),
+    optionValues: z.record(z.string().max(40), z.string().max(40)).optional(),
+    variantName: z.string().trim().max(80).optional(),
+    sku: z.string().trim().min(2).max(60).optional(),
+    unit: z.nativeEnum(UnitType).optional(),
+    unitValue: z.number().positive().optional(),
+    pricePaise: z.number().int().positive(),
+    mrpPaise: z.number().int().positive().optional(),
+    stockQty: z.number().int().min(0).max(100_000).optional(),
+    isAvailable: z.boolean().optional(),
+  })
+  .strict();
+const variantSetSchema = z.object({ optionGroups: optionGroupsSchema, variants: z.array(variantSchema).min(1).max(100) }).strict();
+
+const createProductBodySchema = createProductSchema
+  .extend({ optionGroups: optionGroupsSchema.optional(), variants: z.array(variantSchema.omit({ id: true })).min(1).max(100).optional() })
+  .refine((v) => v.mrpPaise === undefined || v.pricePaise === undefined || v.pricePaise <= v.mrpPaise, {
+    message: 'Selling price cannot be higher than MRP.',
+    path: ['pricePaise'],
+  });
 
 /**
  * Correcting an own product: the creation fields only, each optional. Strict,
@@ -258,6 +280,21 @@ sellerCatalogRouter.post(
       res,
       await service.createSellerProduct(requireSellerId(req), req.body, requireUser(req).id),
     );
+  }),
+);
+
+/**
+ * The product's whole option / variant set: add, edit, remove and reorder
+ * variants and option groups in one call (product-variant.service). New
+ * variants of an approved product wait for review; the product stays live.
+ */
+sellerCatalogRouter.put(
+  '/products/:id/variants',
+  requirePermission(Permission.SELLER_CATALOG_MANAGE),
+  validate({ params: z.object({ id: uuid }), body: variantSetSchema }),
+  asyncHandler(async (req: Request, res: Response) => {
+    await variantService.syncProductVariants(requireSellerId(req), req.params['id'] as string, req.body, requireUser(req).id);
+    ok(res, await productService.getOwnProduct(requireSellerId(req), req.params['id'] as string));
   }),
 );
 

@@ -5,6 +5,7 @@
   "description": "AdiOne backend API — the sole authority for price, stock, COD and serviceability",
   "main": "dist/server.js",
   "scripts": {
+    "predev": "prisma generate --schema=prisma-v2/schema.prisma",
     "dev": "tsx watch src/server.ts",
     "build": "prisma generate --schema=prisma-v2/schema.prisma && tsc -p tsconfig.json && tsc-alias -p tsconfig.json",
     "start": "node dist/server.js",
@@ -21,6 +22,7 @@
     "db:reset": "node scripts/assert-v2-database.mjs && prisma migrate reset --force --schema=prisma-v2/schema.prisma",
     "test": "vitest run",
     "test:watch": "vitest",
+    "predev:v2": "prisma generate --schema=prisma-v2/schema.prisma",
     "dev:v2": "node scripts/with-env.mjs .env.v2 tsx watch src/server.ts",
     "db:generate:v2": "node scripts/with-env.mjs .env.v2 prisma generate --schema=prisma-v2/schema.prisma",
     "db:migrate:v2": "node scripts/with-env.mjs .env.v2 node scripts/assert-v2-database.mjs && node scripts/with-env.mjs .env.v2 prisma migrate dev --schema=prisma-v2/schema.prisma",

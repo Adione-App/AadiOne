@@ -36,6 +36,7 @@ import {
 } from './sellerApi';
 import { sellerKeys } from './sellerQueries';
 import { ImageGallery, isEditable, moved, toPaise, type GalleryItem, type Notice } from './productUi';
+import { VariantEditor, editorFromVariants, variantSetFromEditor, type VariantEditorState, type VariantSetRequest } from './variantEditor';
 
 export type FoodItemFormMode = { kind: 'create'; sectionId?: string } | { kind: 'edit'; item: SellerProductInventory };
 
@@ -62,6 +63,11 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
   const [price, setPrice] = useState(rupees(item?.listing?.pricePaise));
   const [diet, setDiet] = useState<FoodDiet | ''>(item?.diet ?? '');
   const [available, setAvailable] = useState(item?.listing?.isAvailable ?? true);
+  // Optional options / variants (Portion: Half / Full, Size: Small / Medium / Large…).
+  const [options, setOptions] = useState<VariantEditorState>(() => editorFromVariants(item?.optionGroups ?? [], item?.variants ?? []));
+  const hadOptions = (item?.optionGroups.length ?? 0) > 0;
+  // Options are locked while any review of this item is open (the backend refuses then).
+  const optionsLocked = item?.latestApproval?.status === 'PENDING';
   const [problem, setProblem] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const [addedCount, setAddedCount] = useState(0);
@@ -141,6 +147,10 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
   function check(): string | null {
     if (!sectionId) return 'Choose a menu and a menu section.';
     if (name.trim().length < PRODUCT_LIMITS.name.min) return 'Enter the food item name (at least 2 characters).';
+    if (options.enabled) {
+      const set = variantSetFromEditor(options, true);
+      return typeof set === 'string' ? set : null;
+    }
     if (toPaise(price) === null) return 'Enter the selling price (greater than 0).';
     return null;
   }
@@ -153,13 +163,13 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
     setBusy(true);
     const trimmed = name.trim();
     try {
+      const set = options.enabled ? (variantSetFromEditor(options, true) as VariantSetRequest) : null;
       const created = await sellerApi.post<CreatedSellerProduct>('/seller/products', {
         categoryId: sectionId,
         name: trimmed,
         ...(description.trim() ? { description: description.trim() } : {}),
-        pricePaise: toPaise(price)!,
+        ...(set ? { optionGroups: set.optionGroups, variants: set.variants } : { pricePaise: toPaise(price)!, isAvailable: available }),
         diet: diet || null,
-        isAvailable: available,
       });
       for (const pending of pendingFiles) {
         const key = await uploadSellerImage(pending.file);
@@ -174,6 +184,7 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
         setPrice('');
         setDiet('');
         setAvailable(true);
+        setOptions(editorFromVariants([], []));
         setPendingFiles([]);
         return;
       }
@@ -192,7 +203,9 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
     setProblem(null);
     setSavedNote(null);
     setBusy(true);
-    const pricePaise = toPaise(price)!;
+    // Simple item: one price + availability. With options: every variant's own.
+    const simple = !options.enabled && !hadOptions;
+    const pricePaise = options.enabled ? null : toPaise(price)!;
     try {
       if (contentEditable) {
         const changes = {
@@ -200,13 +213,22 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
           ...((description.trim() || null) !== (item.description ?? null) ? { description: description.trim() || null } : {}),
           ...(sectionId !== item.categoryId ? { categoryId: sectionId } : {}),
           ...((diet || null) !== item.diet ? { diet: diet || null } : {}),
-          ...(item.listing && pricePaise !== item.listing.pricePaise ? { pricePaise } : {}),
+          ...(simple && item.listing && pricePaise !== item.listing.pricePaise ? { pricePaise } : {}),
         };
         if (Object.keys(changes).length > 0) await sellerApi.patch(`/seller/products/${item.id}`, changes);
-      } else if (item.listing && pricePaise !== item.listing.pricePaise) {
+      } else if (simple && item.listing && pricePaise !== item.listing.pricePaise) {
         await sellerApi.patch(`/seller/listings/${item.listing.id}`, { pricePaise });
       }
-      if (item.listing && available !== item.listing.isAvailable) {
+      if (options.enabled) {
+        await sellerApi.put(`/seller/products/${item.id}/variants`, variantSetFromEditor(options, true) as VariantSetRequest);
+      } else if (hadOptions) {
+        // Options switched off: back to one variant (the default one) with one price.
+        const keep = item.variants[0]!;
+        await sellerApi.put(`/seller/products/${item.id}/variants`, {
+          optionGroups: [],
+          variants: [{ id: keep.id, variantName: 'Regular', pricePaise: pricePaise!, isAvailable: available }],
+        });
+      } else if (item.listing && available !== item.listing.isAvailable) {
         await sellerApi.patch(`/seller/listings/${item.listing.id}`, { isAvailable: available });
       }
       await refresh();
@@ -263,9 +285,12 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
         )}
         {!contentEditable && (
           <p className="rounded-xl bg-gray-50 px-3.5 py-2.5 text-sm text-gray-600">
-            {item?.approvalStatus === 'APPROVED'
-              ? 'This item is approved: its name, description, photos, section and veg mark are fixed. You can change its price and availability.'
-              : 'This item is being reviewed by Aadione. You can change its price and availability now; other details once the review is done.'}
+            This item is in its first review by Aadione. You can change its price and availability now; other details once the review is done.
+          </p>
+        )}
+        {item?.approvalStatus === 'APPROVED' && (
+          <p className="text-xs text-gray-500">
+            Approved — your changes go live straight away. New options you add are reviewed by Aadione before customers see them.
           </p>
         )}
 
@@ -365,9 +390,11 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
         )}
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Selling price (₹)" required>
-            <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" className={inputClass} placeholder="e.g. 120" />
-          </Field>
+          {!options.enabled && (
+            <Field label="Selling price (₹)" required>
+              <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" className={inputClass} placeholder="e.g. 120" />
+            </Field>
+          )}
           <Field label="Veg / Non-veg">
             <select value={diet} disabled={!contentEditable} onChange={(e) => setDiet(e.target.value as FoodDiet | '')} className={inputClass}>
               <option value="">Not specified</option>
@@ -377,13 +404,18 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
           </Field>
         </div>
 
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-gray-200 px-3.5 py-3">
-          <div>
-            <p className="text-sm font-medium text-gray-800">Available</p>
-            <p className="text-xs text-gray-500">Switch it off when the kitchen can’t make it. Food items are made to order — there is no stock count.</p>
+        {!options.enabled && (
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-gray-200 px-3.5 py-3">
+            <div>
+              <p className="text-sm font-medium text-gray-800">Available</p>
+              <p className="text-xs text-gray-500">Switch it off when the kitchen can’t make it. Food items are made to order — there is no stock count.</p>
+            </div>
+            <Toggle checked={available} onChange={setAvailable} label="Available to customers" />
           </div>
-          <Toggle checked={available} onChange={setAvailable} label="Available to customers" />
-        </div>
+        )}
+
+        <VariantEditor state={options} onChange={setOptions} food disabled={busy || optionsLocked} />
+        {optionsLocked && <p className="-mt-3 text-xs text-gray-500">Options can be changed again once Aadione’s review is done.</p>}
       </div>
     </Modal>
   );

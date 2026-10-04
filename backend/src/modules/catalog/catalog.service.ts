@@ -36,7 +36,7 @@ import {
   configureSearchThresholds,
 } from "../../infra/search";
 import * as configService from "../configuration/configuration.service";
-import { ConfigKey } from "../../shared";
+import { ConfigKey, optionGroupsOf, optionValuesOf } from "../../shared";
 import * as repository from "./catalog.repository";
 import { MARKETPLACE_SELLER_WHERE, type HydratedProduct, type ProductSort } from "./catalog.repository";
 
@@ -300,6 +300,7 @@ function toVariantDto(
     id: variant.id,
     sku: variant.sku,
     variantName: variant.variantName,
+    optionValues: optionValuesOf(variant.optionValues),
     unit: variant.unit,
     unitValue: variant.unitValue,
     imageUrl: variant.imageUrl,
@@ -369,6 +370,7 @@ async function toDetailDto(
 
   return {
     ...summary,
+    optionGroups: optionGroupsOf(product.optionGroups),
     description: product.description,
     descriptionHi: product.descriptionHi,
     images: product.images.map((image) => ({

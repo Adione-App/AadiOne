@@ -34,7 +34,7 @@ import {
   type SubmittedApprovalBatch,
 } from '../sellerApi';
 import { useApplyListing, useRefreshInventory, useSellerAvailability, useSellerListings, useSellerProducts } from '../sellerQueries';
-import { ProductImage, StockStepper, VisibilityPill, shortDate } from '../productUi';
+import { ProductImage, StockStepper, VisibilityPill, hasOptionsToSubmit, shortDate } from '../productUi';
 import { ProductFormModal, StartSellingModal } from '../productForms';
 import { FoodItemModal } from '../foodItemForm';
 import { isHiddenBySeller, isOutOfStock, rowsOf, type ProductRow } from '../productRows';
@@ -128,7 +128,8 @@ function matchesApproval(row: ProductRow, approval: Approval): boolean {
 }
 
 /** Own, never submitted, with its price and stock — what may go into a batch. */
-const isReady = (row: ProductRow): boolean => row.own && row.draft && row.listing !== null && row.productId !== null;
+const isReady = (row: ProductRow): boolean =>
+  row.own && row.productId !== null && ((row.draft && row.listing !== null) || (row.product !== null && hasOptionsToSubmit(row.product)));
 
 /** Most products one submission takes (backend submitBatchSchema). */
 const MAX_SELECTION = 1000;

@@ -710,8 +710,10 @@ export interface ProductImageDto {
 export interface VariantDto {
   id: string;
   sku: string;
-  /** Display label such as "1 kg", "500 ml", "Pack of 6". */
+  /** Display label such as "1 kg", "500 ml", "Pack of 6", "Large / Black". */
   variantName: string;
+  /** This variant's option values ({} for a simple item); see ProductDto.optionGroups. */
+  optionValues: ProductOptionValuesDto;
   unit: UnitType;
   unitValue: number;
   imageUrl: string | null;
@@ -764,6 +766,8 @@ export interface ProductDetailDto extends ProductSummaryDto {
   descriptionHi: string | null;
   images: ProductImageDto[];
   variants: VariantDto[];
+  /** Option groups to pick a variant by (e.g. Size: Half / Full); [] for a simple item. */
+  optionGroups: ProductOptionGroupDto[];
   /** Vertical-specific display attributes (shelf life, storage, origin, …). */
   attributes: Record<string, string | number | boolean | null>;
   categoryPath: { id: string; name: string; slug: string }[];
@@ -846,6 +850,18 @@ export interface SubmittedProductVariantDto {
 }
 
 /**
+ * A product's optional option group (Size, Portion, Color, Storage, Pack
+ * Size…) and its values in display order. No groups = a simple item.
+ */
+export interface ProductOptionGroupDto {
+  name: string;
+  values: string[];
+}
+
+/** A variant's pick per option group, e.g. { Size: "Large" }; {} for a simple item. */
+export type ProductOptionValuesDto = Record<string, string>;
+
+/**
  * A seller-submitted product as the seller and admin panels review it.
  * `categoryId` is the product's own category; when that category has a
  * parent, `category` is the parent and `subcategory` the product's own.
@@ -863,6 +879,8 @@ export interface SubmittedProductDto {
   subcategory: CategoryRefDto | null;
   /** The default variant (or the first live one); null only if none is left. */
   defaultVariant: SubmittedProductVariantDto | null;
+  /** Option groups; [] for a simple item. */
+  optionGroups: ProductOptionGroupDto[];
   createdAt: string;
   updatedAt: string;
 }
@@ -902,6 +920,17 @@ export interface SellerProductDto extends SubmittedProductDto {
   images: ProductReviewImageDto[];
   /** Food items only (restaurant/cafe): veg / non-veg, when the seller set it. */
   diet: FoodDiet | null;
+  /** Every live variant, default first — each with its own listing (price, stock, availability). */
+  variants: SellerProductVariantDto[];
+}
+
+/** One sellable variant of a seller's own product. */
+export interface SellerProductVariantDto extends SubmittedProductVariantDto {
+  optionValues: ProductOptionValuesDto;
+  isDefault: boolean;
+  /** PENDING = added to an approved product, waiting for Aadione (hidden meanwhile). */
+  approvalStatus: ApprovalStatus;
+  listing: SellerProductListingDto | null;
 }
 
 export type FoodDiet = 'VEG' | 'NON_VEG';
@@ -963,6 +992,23 @@ export interface ProductApprovalBatchProductRowDto {
   productStatus: ProductStatus;
   /** The seller removed the product after submitting it. */
   removed: boolean;
+  /** Option groups; [] for a simple item. */
+  optionGroups: ProductOptionGroupDto[];
+  /** Every live variant with the seller's own figures and its review state. */
+  variants: ProductApprovalBatchVariantRowDto[];
+}
+
+export interface ProductApprovalBatchVariantRowDto {
+  id: string;
+  variantName: string;
+  optionValues: ProductOptionValuesDto;
+  /** PENDING = new variant of an approved product, decided by this review. */
+  approvalStatus: ApprovalStatus;
+  pricePaise: number | null;
+  mrpPaise: number | null;
+  stockQty: number | null;
+  tracksStock: boolean;
+  isAvailable: boolean;
 }
 
 export interface ProductApprovalBatchProductsPageDto {

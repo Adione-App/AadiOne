@@ -13,6 +13,7 @@ import { env } from './config/env';
 import { logger } from './common/logger';
 import { cache } from './infra/cache';
 import { disconnectDatabase, checkDatabaseConnection } from './infra/db/prisma';
+import { checkPrismaClientMatchesSchema } from './infra/db/prisma-client-check';
 import { initRealtime, shutdownRealtime } from './realtime/socket';
 import { startJobs, stopJobs } from './jobs';
 
@@ -22,6 +23,15 @@ let server: Server | undefined;
 let shuttingDown = false;
 
 async function start(): Promise<void> {
+  // A Prisma Client generated from another schema boots fine and then fails
+  // every query on a changed model with a 500 — refuse to start instead.
+  const client = checkPrismaClientMatchesSchema();
+  if (!client.ok) {
+    logger.error(client.message);
+    process.exit(1);
+  }
+  if ('skipped' in client) logger.warn({ reason: client.skipped }, 'Prisma Client / schema check skipped');
+
   const app = createApp();
 
   // Verify the database is reachable before announcing readiness. Booting

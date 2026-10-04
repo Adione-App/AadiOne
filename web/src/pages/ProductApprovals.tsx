@@ -348,7 +348,23 @@ function BatchModal({ batchId, onClose }: { batchId: string; onClose: () => void
                         <Thumb src={row.thumbUrl} alt={row.name} />
                         <div className="min-w-0">
                           <p className="max-w-[16rem] truncate font-medium text-gray-900">{row.name}</p>
-                          {row.variantName && <p className="text-xs text-gray-500">{row.variantName}</p>}
+                          {row.variants.length > 1 || row.variants.some((v) => v.approvalStatus !== ApprovalStatus.APPROVED) ? (
+                            // Options / variants: each with the seller's own price, stock and review state.
+                            <ul className="mt-0.5 space-y-0.5 text-xs text-gray-600" aria-label={`${row.name} variants`}>
+                              {row.variants.map((v) => (
+                                <li key={v.id} className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-medium text-gray-800">{v.variantName}</span>
+                                  <span>{v.pricePaise !== null ? formatPaise(v.pricePaise) : '—'}</span>
+                                  {v.tracksStock && v.stockQty !== null && <span className="text-gray-400">· stock {v.stockQty}</span>}
+                                  {!v.isAvailable && <span className="text-gray-400">· off</span>}
+                                  {v.approvalStatus === ApprovalStatus.PENDING && <Pill tone="amber">New</Pill>}
+                                  {v.approvalStatus === ApprovalStatus.REJECTED && <Pill tone="red">Rejected</Pill>}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            row.variantName && <p className="text-xs text-gray-500">{row.variantName}</p>
+                          )}
                         </div>
                       </div>
                     </Td>

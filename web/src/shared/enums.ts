@@ -109,6 +109,20 @@ export const FOOD_SELLER_TYPES: readonly SellerType[] = [SellerType.RESTAURANT, 
 export const isFoodSellerType = (type: string | null | undefined): boolean =>
   type === SellerType.RESTAURANT || type === SellerType.CAFE;
 
+/** Product.optionGroups (jsonb) as typed option groups; anything malformed reads as none. */
+export function optionGroupsOf(json: unknown): { name: string; values: string[] }[] {
+  if (!Array.isArray(json)) return [];
+  return json
+    .filter((g): g is { name: string; values: unknown[] } => !!g && typeof g === 'object' && typeof (g as { name?: unknown }).name === 'string' && Array.isArray((g as { values?: unknown }).values))
+    .map((g) => ({ name: g.name, values: g.values.filter((v): v is string => typeof v === 'string') }));
+}
+
+/** ProductVariant.optionValues (jsonb) as { group: value }; anything malformed reads as {}. */
+export function optionValuesOf(json: unknown): Record<string, string> {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return {};
+  return Object.fromEntries(Object.entries(json as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === 'string'));
+}
+
 /** Veg / non-veg marking of a food item, kept in Product.attributes.diet. */
 export function foodDietOf(attributes: unknown): 'VEG' | 'NON_VEG' | null {
   const diet = attributes && typeof attributes === 'object' ? (attributes as { diet?: unknown }).diet : undefined;

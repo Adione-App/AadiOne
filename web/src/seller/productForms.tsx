@@ -45,6 +45,7 @@ import {
   type GalleryItem,
   type Notice,
 } from './productUi';
+import { VariantEditor, editorFromVariants, variantSetFromEditor, type VariantEditorState } from './variantEditor';
 
 /**
  * Edit is offered only where the server allows it — never submitted, or
@@ -62,7 +63,7 @@ function productChanges(request: CreateSellerProductRequest, base: SellerProduct
   const listing = base.listing;
   return {
     ...(request.mrpPaise !== undefined && (!listing || request.mrpPaise !== listing.mrpPaise) ? { mrpPaise: request.mrpPaise } : {}),
-    ...(!listing || request.pricePaise !== listing.pricePaise ? { pricePaise: request.pricePaise } : {}),
+    ...(request.pricePaise !== undefined && (!listing || request.pricePaise !== listing.pricePaise) ? { pricePaise: request.pricePaise } : {}),
     ...(request.stockQty !== undefined && (!listing || request.stockQty !== listing.stockQty) ? { stockQty: request.stockQty } : {}),
     ...(request.categoryId !== base.categoryId ? { categoryId: request.categoryId } : {}),
     ...(request.name !== base.name ? { name: request.name } : {}),
@@ -114,6 +115,11 @@ export function ProductFormModal({
   const [mrp, setMrp] = useState(rupees(initial?.listing?.mrpPaise));
   const [price, setPrice] = useState(rupees(initial?.listing?.pricePaise));
   const [stock, setStock] = useState(initial?.listing ? String(initial.listing.stockQty) : '');
+  // Optional options / variants (Size, Pack Size, Color, Storage…).
+  const [options, setOptions] = useState<VariantEditorState>(() => editorFromVariants(saved?.optionGroups ?? [], saved?.variants ?? []));
+  const [initialOptions] = useState(() => JSON.stringify(options));
+  const hadOptions = (saved?.optionGroups.length ?? 0) > 0;
+  const optionsLocked = saved?.latestApproval?.status === 'PENDING';
   // Products saved this session with "Save & add another".
   const [addedCount, setAddedCount] = useState(0);
   const [problem, setProblem] = useState<string | null>(null);
@@ -232,6 +238,19 @@ export function ProductFormModal({
     if (!categoryId) return 'Choose a category.';
     const trimmedName = name.trim();
     if (trimmedName.length < PRODUCT_LIMITS.name.min) return 'Enter the product name (at least 2 characters).';
+    if (options.enabled) {
+      // Every variant carries its own SKU, MRP, price and stock (variantEditor).
+      const set = variantSetFromEditor(options, false);
+      if (typeof set === 'string') return set;
+      return {
+        categoryId,
+        name: trimmedName,
+        ...(nameHi.trim() ? { nameHi: nameHi.trim() } : {}),
+        ...(description.trim() ? { description: description.trim() } : {}),
+        optionGroups: set.optionGroups,
+        variants: set.variants,
+      };
+    }
     const trimmedSku = sku.trim();
     if (trimmedSku.length < PRODUCT_LIMITS.sku.min) return 'Enter a SKU (at least 2 characters).';
     const trimmedVariant = variantName.trim();
@@ -271,6 +290,7 @@ export function ProductFormModal({
     setMrp('');
     setPrice('');
     setStock('');
+    setOptions(editorFromVariants([], []));
     setPendingFiles([]);
   }
 
@@ -331,19 +351,46 @@ export function ProductFormModal({
     if (!saved) return;
     const request = validate();
     if (typeof request === 'string') return setProblem(request);
-    const changes = productChanges(request, saved);
+    const { optionGroups, variants, ...content } = request;
+    const changes = productChanges(content, saved);
+    const optionsChanged = JSON.stringify(options) !== initialOptions;
     setProblem(null);
-    if (Object.keys(changes).length === 0) return setSavedNote('Nothing to save — no changes.');
+    if (Object.keys(changes).length === 0 && !optionsChanged) return setSavedNote('Nothing to save — no changes.');
     setSavedNote(null);
     setStep('saving');
     try {
-      const updated = await sellerApi.patch<SellerProductDto>(`/seller/products/${saved.id}`, changes);
+      let updated = saved;
+      if (Object.keys(changes).length > 0) updated = await sellerApi.patch<SellerProductDto>(`/seller/products/${saved.id}`, changes);
+      if (optionsChanged && optionGroups && variants) {
+        updated = await sellerApi.put<SellerProductDto>(`/seller/products/${saved.id}/variants`, { optionGroups, variants });
+      } else if (optionsChanged && hadOptions) {
+        // Options switched off: back to one (the default) variant with the simple fields.
+        updated = await sellerApi.put<SellerProductDto>(`/seller/products/${saved.id}/variants`, {
+          optionGroups: [],
+          variants: [
+            {
+              id: saved.variants[0]!.id,
+              variantName: content.variantName,
+              sku: content.sku,
+              unit: content.unit,
+              unitValue: content.unitValue,
+              pricePaise: content.pricePaise!,
+              mrpPaise: content.mrpPaise,
+              stockQty: content.stockQty,
+            },
+          ],
+        });
+      }
       setSaved(updated);
       setSku(updated.defaultVariant?.sku ?? sku);
       setSavedNote(
-        updated.approvalStatus === 'REJECTED'
-          ? 'Changes saved. It stays rejected until you resubmit it for approval.'
-          : 'Changes saved. It goes for review with your next “Submit for Approval”.',
+        updated.approvalStatus === 'APPROVED'
+          ? updated.variants.some((v) => v.approvalStatus === 'PENDING')
+            ? 'Changes saved and live. New options wait for Aadione’s approval — submit them from Products.'
+            : 'Changes saved and live.'
+          : updated.approvalStatus === 'REJECTED'
+            ? 'Changes saved. It stays rejected until you resubmit it for approval.'
+            : 'Changes saved. It goes for review with your next “Submit for Approval”.',
       );
     } catch (error) {
       setProblem(sellerErrorMessage(error));
@@ -374,7 +421,8 @@ export function ProductFormModal({
   const loadingSource = availability.isPending || catalog.isPending;
   const sourceError = availability.error ?? catalog.error;
   const current = validate();
-  const dirty = saved !== null && (typeof current === 'string' || Object.keys(productChanges(current, saved)).length > 0);
+  const dirty =
+    saved !== null && (typeof current === 'string' || Object.keys(productChanges(current, saved)).length > 0 || JSON.stringify(options) !== initialOptions);
   const rejection = saved ? rejectionOf(saved) : null;
   const noCategories = catalog.data !== undefined && catalog.data.categories.length === 0;
   const galleryDisabled = busy || imageBusy !== null;
@@ -554,6 +602,8 @@ export function ProductFormModal({
           </div>
         )}
 
+            {!options.enabled && (
+              <>
             {/* 6–7. identifiers + pack size */}
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="SKU" required hint="Your unique product code. Saved in capital letters.">
@@ -593,6 +643,12 @@ export function ProductFormModal({
               </div>
             </div>
             <p className="-mt-2 text-xs text-gray-500">Customers see this product only after Aadione approves it. Your price and stock stay exactly as you set them.</p>
+
+              </>
+            )}
+
+            <VariantEditor state={options} onChange={setOptions} food={false} disabled={busy || optionsLocked} />
+            {optionsLocked && <p className="-mt-3 text-xs text-gray-500">Options can be changed again once Aadione’s review is done.</p>}
 
             {/* 10. other fields */}
             <Field label="Hindi name">

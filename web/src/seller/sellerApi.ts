@@ -9,7 +9,8 @@
  * seller (attachSellerContext), never to anything the client sends.
  */
 
-import type { FoodDiet, SellerProductDto, UnitType } from '@shared';
+import type { FoodDiet, ProductOptionGroupDto, SellerProductDto, UnitType } from '@shared';
+import type { VariantSetRequest } from './variantEditor';
 import { createApiClient, ApiRequestError } from '@/lib/api';
 import { uploadProductImage, type PresignedUpload } from '@/lib/upload';
 
@@ -274,10 +275,14 @@ export interface CreateSellerProductRequest {
   unit?: UnitType;
   unitValue?: number;
   mrpPaise?: number;
-  pricePaise: number;
+  /** Simple item; with `variants`, each variant has its own. */
+  pricePaise?: number;
   stockQty?: number;
   diet?: FoodDiet | null;
   isAvailable?: boolean;
+  /** Optional options / variants (variantEditor.tsx). */
+  optionGroups?: ProductOptionGroupDto[];
+  variants?: VariantSetRequest['variants'];
 }
 
 /**
@@ -285,7 +290,7 @@ export interface CreateSellerProductRequest {
  * changed (the backend refuses anything else). nameHi / description may be
  * cleared with null.
  */
-export type UpdateSellerProductRequest = Partial<Omit<CreateSellerProductRequest, 'nameHi' | 'description' | 'isAvailable'>> & {
+export type UpdateSellerProductRequest = Partial<Omit<CreateSellerProductRequest, 'nameHi' | 'description' | 'isAvailable' | 'optionGroups' | 'variants'>> & {
   nameHi?: string | null;
   description?: string | null;
 };

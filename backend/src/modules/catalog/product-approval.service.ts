@@ -25,6 +25,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import type { Prisma } from '@prisma/client';
 import {
   ApprovalStatus,
   ErrorCode,
@@ -34,8 +35,11 @@ import {
   StockLedgerReason,
   UnitType as UnitTypeValue,
   isFoodSellerType,
+  optionGroupsOf,
+  optionValuesOf,
   type CursorPage,
   type FoodDiet,
+  type ProductOptionGroupDto,
   type ProductApprovalBatchReviewDto,
   type UnitType,
 } from '../../shared';
@@ -47,6 +51,7 @@ import { assertSellerMayUseCategoryForProduct } from './seller-category.service'
 import { getOwnProduct, loadReviewProducts } from './seller-product.service';
 import { updateOwnListing } from './seller-listing.service';
 import { createSellerListing } from '../sellers/admin-seller-catalog.service';
+import { createVariantRows, normalizeVariantSet, type VariantInput } from './product-variant.service';
 import type {
   ApproveProductBatchResultDto,
   ProductApprovalBatchProductsPageDto,
@@ -114,11 +119,20 @@ export interface CreateSellerProductInput {
   /** The seller's own listing — part of a complete product, set BEFORE approval.
    * MRP and stock: marketplace products only (a food item has neither). */
   mrpPaise?: number;
-  pricePaise: number;
+  /** Required for a simple item; with `variants`, each variant has its own. */
+  pricePaise?: number;
   stockQty?: number;
   /** Food items only. */
   diet?: FoodDiet | null;
   isAvailable?: boolean;
+  /**
+   * Optional options / variants (product-variant.service). When `variants` is
+   * given, each variant carries its own price (and, for marketplace products,
+   * SKU, MRP and opening stock) and the top-level price / SKU / MRP / stock
+   * fields are not used. Omitted = the simple single-variant item, as before.
+   */
+  optionGroups?: ProductOptionGroupDto[];
+  variants?: VariantInput[];
 }
 
 /**
@@ -176,6 +190,10 @@ export async function createSellerProduct(
   // no stock count (made to order). Everyone else: the complete marketplace
   // product, MRP + price + opening stock, exactly as before.
   const food = await sellerIsFood(sellerId);
+  if (input.variants !== undefined) return createProductWithVariants(sellerId, input, food, actorUserId);
+  if (input.pricePaise === undefined) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Enter the selling price.' });
+  }
   let listingData: { mrpPaise: number; pricePaise: number; stockQty: number; tracksStock: boolean; isAvailable: boolean };
   let variantData: { sku: string; variantName: string; unit: UnitType; unitValue: number };
   if (food) {
@@ -275,18 +293,83 @@ export async function createSellerProduct(
   return { id: created.productId, variantId: created.variantId, listingId: created.listingId };
 }
 
+/** createSellerProduct with an option/variant set: the product and every variant (+ listing) in one transaction. */
+async function createProductWithVariants(
+  sellerId: string,
+  input: CreateSellerProductInput,
+  food: boolean,
+  actorUserId: string,
+): Promise<{ id: string; variantId: string; listingId: string }> {
+  const set = normalizeVariantSet({ optionGroups: input.optionGroups ?? [], variants: input.variants ?? [] }, food);
+  const created = await runInTransaction(async (tx) => {
+    const product = await tx.product.create({
+      data: {
+        name: input.name,
+        nameHi: input.nameHi ?? null,
+        slug: `${slugify(input.name)}-${Math.random().toString(36).slice(2, 8)}`,
+        categoryId: input.categoryId,
+        description: input.description ?? null,
+        searchKeywords: [],
+        status: ProductStatus.ACTIVE,
+        approvalStatus: ApprovalStatus.PENDING,
+        submittedBySellerId: sellerId,
+        optionGroups: set.optionGroups as unknown as Prisma.InputJsonValue,
+        ...(food && input.diet ? { attributes: { diet: input.diet } } : {}),
+      },
+    });
+    const rows = await createVariantRows(tx, {
+      sellerId,
+      productId: product.id,
+      food,
+      variants: set.variants,
+      startOrder: 0,
+      pendingReview: false,
+      defaultUnit: { unit: input.unit ?? UnitTypeValue.PIECE, unitValue: input.unitValue ?? 1 },
+      actorUserId,
+    });
+    await tx.productVariant.update({ where: { id: rows[0]!.variantId }, data: { isDefault: true } });
+    return { productId: product.id, ...rows[0]! };
+  });
+  await prisma.auditLog.create({
+    data: {
+      actorUserId,
+      action: 'product.seller_create',
+      entityType: 'Product',
+      entityId: created.productId,
+      after: {
+        sellerId,
+        name: input.name,
+        categoryId: input.categoryId,
+        optionGroups: set.optionGroups as unknown as Prisma.InputJsonValue,
+        variants: set.variants.map((v) => ({ name: v.variantName, pricePaise: v.pricePaise, stockQty: food ? null : (v.stockQty ?? null) })),
+      },
+    },
+  });
+  return { id: created.productId, variantId: created.variantId, listingId: created.listingId };
+}
+
 /* -------------------------------------------------------------------------- */
-/* Seller — correct its own product before (re)submission                    */
+/* Seller — edit its own product                                            */
 /* -------------------------------------------------------------------------- */
 
 /**
- * The window in which a seller may change its own product's content (details,
- * default variant, images): while nobody is reviewing it and it is not yet
- * approved — never submitted (PENDING, no open item) or REJECTED. Approval is
- * final in this model (there is no re-approval flow), and an item under review
- * must not change underneath the admin. Edits never touch `approvalStatus`:
- * a corrected REJECTED product stays REJECTED until `submitApprovalBatch`.
- * Missing and another seller's product are reported identically (NOT_FOUND).
+ * When a seller may change its own product's content (name, description,
+ * category / menu section, attributes, images, default variant):
+ *
+ *   never submitted / REJECTED   yes (a corrected REJECTED product stays
+ *                                REJECTED until `submitApprovalBatch`)
+ *   first review in progress     no — the admin must not review something that
+ *                                changes underneath
+ *   APPROVED                     yes, live, without a new review: the seller
+ *                                manages its own content after approval. The
+ *                                change is audit-logged (product.seller_update),
+ *                                the product stays APPROVED and on sale, and
+ *                                past orders keep their own copy of name,
+ *                                variant, image and price (OrderItem).
+ *
+ * New sellable VARIANTS of an approved product are the one thing still
+ * reviewed — per variant (product-variant.service). Missing and another
+ * seller's product are reported identically (NOT_FOUND).
  */
 export async function loadEditableOwnProduct(
   sellerId: string,
@@ -300,11 +383,7 @@ export async function loadEditableOwnProduct(
   if (!product || product.submittedBySellerId !== sellerId) {
     throw new AppError(ErrorCode.NOT_FOUND, { message: 'Product not found.' });
   }
-  if (product.approvalStatus === ApprovalStatus.APPROVED) {
-    throw new AppError(ErrorCode.INVALID_STATUS_TRANSITION, {
-      message: 'An approved product can no longer be edited.',
-    });
-  }
+  if (product.approvalStatus === ApprovalStatus.APPROVED) return product;
   const underReview = await client.productApprovalBatchItem.count({
     where: { productId, status: ApprovalStatus.PENDING },
   });
@@ -388,7 +467,8 @@ export async function updateSellerProduct(
   input: UpdateSellerProductInput,
   actorUserId: string,
 ) {
-  const { mrpPaise, pricePaise, stockQty, diet, isAvailable: _ignored, ...productInput } = input;
+  // Options / variants have their own endpoint (PUT /seller/products/:id/variants).
+  const { mrpPaise, pricePaise, stockQty, diet, isAvailable: _ignored, optionGroups: _groups, variants: _variants, ...productInput } = input;
   input = productInput;
   const current = await loadEditableOwnProduct(sellerId, productId);
   const variant = await prisma.productVariant.findFirst({
@@ -458,7 +538,7 @@ export async function updateSellerProduct(
         categoryId: current.categoryId,
         ...(variant ? { sku: variant.sku, variantName: variant.variantName, unit: variant.unit, unitValue: variant.unitValue } : {}),
       },
-      after: { ...input, ...(sku !== undefined ? { sku } : {}) },
+      after: { ...productInput, ...(sku !== undefined ? { sku } : {}) },
     },
   });
 
@@ -570,6 +650,13 @@ const COMPLETE_PRODUCT_WHERE = (sellerId: string) => ({
   variants: { some: { deletedAt: null, sellerListings: { some: { sellerId } } } },
 });
 
+/** An approved product with new variants awaiting review, and no review open. */
+const NEW_VARIANTS_TO_REVIEW_WHERE = {
+  approvalStatus: ApprovalStatus.APPROVED,
+  variants: { some: { deletedAt: null, approvalStatus: ApprovalStatus.PENDING } },
+  approvalBatchItems: { none: { status: ApprovalStatus.PENDING } },
+};
+
 /**
  * POST /seller/approval-batches — ONE batch for one "Submit for Approval".
  *
@@ -597,9 +684,12 @@ export async function submitApprovalBatch(
         where: {
           submittedBySellerId: sellerId,
           deletedAt: null,
-          approvalStatus: ApprovalStatus.PENDING,
-          approvalBatchItems: { none: {} },
-          ...COMPLETE_PRODUCT_WHERE(sellerId),
+          OR: [
+            // A complete product never submitted.
+            { approvalStatus: ApprovalStatus.PENDING, approvalBatchItems: { none: {} }, ...COMPLETE_PRODUCT_WHERE(sellerId) },
+            // An approved product with new variants waiting for review (and no open review).
+            NEW_VARIANTS_TO_REVIEW_WHERE,
+          ],
         },
         select: { id: true },
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -635,7 +725,7 @@ export async function submitApprovalBatch(
           submittedBySellerId: true,
           approvalStatus: true,
           deletedAt: true,
-          variants: { where: { deletedAt: null, sellerListings: { some: { sellerId } } }, select: { id: true }, take: 1 },
+          variants: { where: { deletedAt: null, sellerListings: { some: { sellerId } } }, select: { id: true, approvalStatus: true } },
         },
       });
       const byId = new Map(products.map((p) => [p.id, p]));
@@ -650,7 +740,8 @@ export async function submitApprovalBatch(
             internalMessage: `product ${id} not found or not owned by seller ${sellerId}`,
           });
         }
-        if (product.approvalStatus === ApprovalStatus.APPROVED) {
+        // An approved product is submitted only for its new (PENDING) variants.
+        if (product.approvalStatus === ApprovalStatus.APPROVED && !product.variants.some((v) => v.approvalStatus === ApprovalStatus.PENDING)) {
           throw new AppError(ErrorCode.VALIDATION_ERROR, { message: `"${product.name}" is already approved — nothing to submit.` });
         }
         if (product.variants.length === 0) {
@@ -681,8 +772,13 @@ export async function submitApprovalBatch(
       data: ids.map((productId) => ({ batchId: created.id, productId, status: ApprovalStatus.PENDING })),
     });
     // A resubmitted REJECTED product goes back under review — never silently
-    // APPROVED, and never left REJECTED while an item for it is pending.
-    await tx.product.updateMany({ where: { id: { in: ids } }, data: { approvalStatus: ApprovalStatus.PENDING } });
+    // APPROVED, and never left REJECTED while an item for it is pending. An
+    // APPROVED product submitted for new variants stays APPROVED and on sale:
+    // only those variants are under review.
+    await tx.product.updateMany({
+      where: { id: { in: ids }, approvalStatus: { not: ApprovalStatus.APPROVED } },
+      data: { approvalStatus: ApprovalStatus.PENDING },
+    });
     await tx.auditLog.create({
       data: {
         actorUserId,
@@ -790,18 +886,21 @@ export async function listBatchProducts(
             name: true,
             status: true,
             deletedAt: true,
+            optionGroups: true,
             category: { select: { name: true, parent: { select: { name: true } } } },
             images: { orderBy: { displayOrder: 'asc' }, take: 1, select: { url: true, thumbUrl: true } },
             variants: {
               where: { deletedAt: null },
               orderBy: [{ isDefault: 'desc' }, { displayOrder: 'asc' }, { createdAt: 'asc' }],
-              take: 1,
               select: {
+                id: true,
                 sku: true,
                 variantName: true,
+                optionValues: true,
+                approvalStatus: true,
                 sellerListings: {
                   where: { sellerId: batch.sellerId },
-                  select: { mrpPaise: true, pricePaise: true, stockQty: true },
+                  select: { mrpPaise: true, pricePaise: true, stockQty: true, tracksStock: true, isAvailable: true },
                 },
               },
             },
@@ -835,6 +934,21 @@ export async function listBatchProducts(
         thumbUrl: product.images[0]?.thumbUrl ?? product.images[0]?.url ?? null,
         productStatus: product.status,
         removed: product.deletedAt !== null,
+        optionGroups: optionGroupsOf(product.optionGroups),
+        variants: product.variants.map((v) => {
+          const own = v.sellerListings[0] ?? null;
+          return {
+            id: v.id,
+            variantName: v.variantName,
+            optionValues: optionValuesOf(v.optionValues),
+            approvalStatus: v.approvalStatus,
+            pricePaise: own?.pricePaise ?? null,
+            mrpPaise: own?.mrpPaise ?? null,
+            stockQty: own?.stockQty ?? null,
+            tracksStock: own?.tracksStock ?? true,
+            isAvailable: own?.isAvailable ?? false,
+          };
+        }),
       };
     }),
   };
@@ -956,6 +1070,41 @@ export async function addItemToBatch(batchId: string, productId: string, actorUs
 /* Admin — review one item (approve/reject)                                  */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Applies one review decision to products and their variants.
+ *
+ *   product not yet approved   the product takes the decision (as always);
+ *                              on APPROVED its variants are approved with it
+ *   product already APPROVED   it was submitted for NEW variants only: those
+ *                              PENDING variants take the decision — APPROVED
+ *                              ones go live (status ACTIVE), REJECTED ones stay
+ *                              hidden — and the product itself stays APPROVED
+ *                              and on sale either way.
+ */
+async function decideProducts(tx: Tx, productIds: string[], decision: ApprovalStatus): Promise<void> {
+  if (productIds.length === 0) return;
+  const approved = await tx.product.findMany({
+    where: { id: { in: productIds }, approvalStatus: ApprovalStatus.APPROVED },
+    select: { id: true },
+  });
+  const approvedIds = new Set(approved.map((p) => p.id));
+  const firstReview = productIds.filter((id) => !approvedIds.has(id));
+  if (firstReview.length > 0) {
+    await tx.product.updateMany({ where: { id: { in: firstReview } }, data: { approvalStatus: decision } });
+  }
+  if (decision === ApprovalStatus.APPROVED) {
+    await tx.productVariant.updateMany({
+      where: { productId: { in: productIds }, deletedAt: null, approvalStatus: ApprovalStatus.PENDING },
+      data: { approvalStatus: ApprovalStatus.APPROVED, status: ProductStatus.ACTIVE },
+    });
+  } else if (approvedIds.size > 0) {
+    await tx.productVariant.updateMany({
+      where: { productId: { in: [...approvedIds] }, deletedAt: null, approvalStatus: ApprovalStatus.PENDING },
+      data: { approvalStatus: ApprovalStatus.REJECTED },
+    });
+  }
+}
+
 export interface ReviewBatchItemInput {
   batchId: string;
   itemId: string;
@@ -998,10 +1147,7 @@ export async function reviewBatchItem(input: ReviewBatchItemInput) {
       data: { status: input.status, reviewNote: input.reviewNote?.trim() || null },
     });
 
-    await tx.product.update({
-      where: { id: item.productId },
-      data: { approvalStatus: input.status },
-    });
+    await decideProducts(tx, [item.productId], input.status);
 
     // Recompute the batch's own aggregate — same shape as
     // order-state.service.ts's `recomputeParentOrderStatus`: derived from
@@ -1086,10 +1232,7 @@ export async function approveBatch(batchId: string, actorUserId: string): Promis
         where: { id: { in: live.map((item) => item.id) } },
         data: { status: ApprovalStatus.APPROVED },
       });
-      await tx.product.updateMany({
-        where: { id: { in: live.map((item) => item.productId) } },
-        data: { approvalStatus: ApprovalStatus.APPROVED },
-      });
+      await decideProducts(tx, live.map((item) => item.productId), ApprovalStatus.APPROVED);
     }
     if (removed.length > 0) {
       await tx.productApprovalBatchItem.updateMany({

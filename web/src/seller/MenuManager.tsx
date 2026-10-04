@@ -323,6 +323,9 @@ function FoodItemRow({
   onAvailable: (next: boolean) => void;
 }) {
   const review = reviewState(item);
+  // Dish with options (e.g. Half / Full): each variant has its own price and
+  // availability, managed in Edit; the row shows them at a glance.
+  const options = item.variants.filter((v) => v.listing);
   return (
     <li className="flex flex-wrap items-center gap-3 p-2.5">
       <ProductImage src={item.images[0]?.thumbUrl ?? item.images[0]?.url ?? null} alt={item.name} size="h-11 w-11" />
@@ -336,10 +339,21 @@ function FoodItemRow({
             />
           )}
           <span className="truncate font-medium text-gray-900">{item.name}</span>
-          <span className="ml-auto pl-2 font-semibold text-gray-900">{item.listing ? formatPaise(item.listing.pricePaise) : '—'}</span>
+          <span className="ml-auto pl-2 font-semibold text-gray-900">
+            {options.length > 1
+              ? `from ${formatPaise(Math.min(...options.map((v) => v.listing!.pricePaise)))}`
+              : item.listing
+                ? formatPaise(item.listing.pricePaise)
+                : '—'}
+          </span>
         </p>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1">
           <Pill tone={review.tone}>{review.label}</Pill>
+          {options.length > 1 && (
+            <span className="text-xs text-gray-500">
+              {options.map((v) => `${v.variantName} ${formatPaise(v.listing!.pricePaise)}${v.listing!.isAvailable ? '' : ' (off)'}`).join(' · ')}
+            </span>
+          )}
           <button type="button" onClick={onEdit} aria-label={`Edit ${item.name}`} className={smallLink}>
             Edit
           </button>
@@ -348,7 +362,7 @@ function FoodItemRow({
           </button>
         </div>
       </div>
-      {item.listing && (
+      {item.listing && options.length <= 1 && (
         <span className="inline-flex items-center gap-2 text-xs text-gray-600">
           <span aria-hidden="true">{item.listing.isAvailable ? 'Available' : 'Unavailable'}</span>
           <Toggle checked={item.listing.isAvailable} disabled={busy} label={`${item.name} available`} onChange={onAvailable} />

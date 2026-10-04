@@ -1017,6 +1017,12 @@ model Product {
   /// never reads this.
   attributes Json @default("{}")
 
+  /// Optional OPTION GROUPS (generic — Size, Portion, Color, Storage, Pack
+  /// Size…), in display order: [{ "name": "Size", "values": ["Half", "Full"] }].
+  /// Empty = a simple item with one variant. Each sellable combination is a
+  /// ProductVariant whose `optionValues` picks one value per group.
+  optionGroups Json @default("[]") @map("option_groups")
+
   /// Full-text search document: name + Hindi name (weight A), search_keywords
   /// (B), description (D), 'simple' config. Maintained ONLY by the
   /// `products_search_vector_trigger` DB trigger (v2_product_search
@@ -1075,6 +1081,16 @@ model ProductVariant {
   allowCod CodPolicy     @default(INHERIT) @map("allow_cod")
   status   ProductStatus @default(ACTIVE)
 
+  /// This variant's values for the product's option groups, e.g.
+  /// { "Size": "Large", "Color": "Black" }; {} for a simple item.
+  optionValues   Json           @default("{}") @map("option_values")
+  /// Per-variant review. A variant added to an ALREADY-APPROVED product
+  /// starts PENDING (and status DRAFT, so every existing "variant ACTIVE"
+  /// gate keeps it hidden) and goes through the normal approval batch; the
+  /// product and its approved variants stay live meanwhile. Variants of a
+  /// not-yet-approved product are reviewed with the product itself.
+  approvalStatus ApprovalStatus @default(APPROVED) @map("approval_status")
+
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
@@ -1084,7 +1100,10 @@ model ProductVariant {
   orderItems     OrderItem[]
   images         ProductImage[]
 
-  @@unique([productId, variantName])
+  // Variant names are unique among a product's LIVE variants only (partial
+  // unique index "product_variants_live_name_unique", migration
+  // v2_product_option_variants — Prisma can't express it), so a removed
+  // variant's name can be used again.
   @@index([productId])
   @@map("product_variants")
 }

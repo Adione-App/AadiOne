@@ -171,7 +171,14 @@ export default function ProductDetailScreen({
 
           {detail.variants.length > 1 && (
             <View style={{ marginTop: spacing.lg }}>
-              <AppText variant="h3">Select size</AppText>
+              <AppText variant="h3">
+                {/* Generic option groups (Size, Portion, Color…): name the one group; "Select option" for several. */}
+                {(detail.optionGroups ?? []).length === 1
+                  ? `Select ${detail.optionGroups[0]!.name.toLowerCase()}`
+                  : (detail.optionGroups ?? []).length > 1
+                    ? 'Select option'
+                    : 'Select size'}
+              </AppText>
               <View style={styles.variantRow}>
                 {detail.variants.map((item) => {
                   const active = item.id === variant?.id;

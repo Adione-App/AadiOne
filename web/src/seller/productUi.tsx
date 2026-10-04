@@ -54,9 +54,34 @@ export function toStock(value: string): number | null {
 }
 export const STOCK_RULE = `Stock must be a whole number from 0 to ${LISTING_MAX_STOCK.toLocaleString('en-IN')}.`;
 
+type ReviewInput = Pick<SellerProductDto, 'approvalStatus' | 'latestApproval'> & {
+  listing: unknown;
+  variants?: { approvalStatus: string }[];
+};
+
+/**
+ * An APPROVED product with new options / variants that Aadione has not
+ * reviewed yet, and no review open — it can go into a batch ("Submit Selected
+ * for Approval") while the product itself stays on sale.
+ */
+export function hasOptionsToSubmit(product: ReviewInput): boolean {
+  return (
+    product.approvalStatus === 'APPROVED' &&
+    (product.variants ?? []).some((v) => v.approvalStatus === 'PENDING') &&
+    product.latestApproval?.status !== 'PENDING'
+  );
+}
+
 /** The approval state as the seller reads it — straight from the server. */
-export function reviewState(product: Pick<SellerProductDto, 'approvalStatus' | 'latestApproval'> & { listing: unknown }): { label: string; tone: Tone } {
-  if (product.approvalStatus === 'APPROVED') return { label: 'Approved', tone: 'brand' };
+export function reviewState(product: ReviewInput): { label: string; tone: Tone } {
+  if (product.approvalStatus === 'APPROVED') {
+    if ((product.variants ?? []).some((v) => v.approvalStatus === 'PENDING')) {
+      return product.latestApproval?.status === 'PENDING'
+        ? { label: 'Approved · new options in review', tone: 'amber' }
+        : { label: 'Approved · new options to submit', tone: 'blue' };
+    }
+    return { label: 'Approved', tone: 'brand' };
+  }
   if (product.approvalStatus === 'REJECTED') return { label: 'Rejected', tone: 'red' };
   if (product.approvalStatus === 'PENDING') {
     if (product.latestApproval?.status === 'PENDING') return { label: 'Pending Approval', tone: 'amber' };
@@ -66,9 +91,13 @@ export function reviewState(product: Pick<SellerProductDto, 'approvalStatus' | '
   return { label: product.approvalStatus, tone: 'gray' };
 }
 
-/** A never-submitted or rejected product — the backend's editable window. */
+/**
+ * The backend's editable window (loadEditableOwnProduct): never submitted,
+ * rejected, or APPROVED — an approved product's content is the seller's to
+ * manage. Only a product in its first review is locked.
+ */
 export function isEditable(product: Pick<SellerProductDto, 'approvalStatus' | 'latestApproval'>): boolean {
-  if (product.approvalStatus === 'REJECTED') return true;
+  if (product.approvalStatus === 'APPROVED' || product.approvalStatus === 'REJECTED') return true;
   return product.approvalStatus === 'PENDING' && product.latestApproval?.status !== 'PENDING';
 }
 

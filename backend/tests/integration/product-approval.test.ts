@@ -455,14 +455,16 @@ describe('admin batch review', () => {
     expect((await prisma.product.findUniqueOrThrow({ where: { id: bad.id } })).approvalStatus).toBe(ApprovalStatus.APPROVED);
   });
 
-  it('approved products can no longer be edited by the seller, but price and stock stay seller-controlled', async () => {
+  it('approved products stay editable by the seller (live, still APPROVED); price and stock stay seller-controlled', async () => {
     const adminToken = await loginAdmin();
     const seller = await seedSeller('9700000024', 'Post Approval Seller');
     const product = await createProduct(seller);
     const batchId = expectSuccess<{ id: string }>((await as(seller.token).submit().expect(201)).body).data.id;
     await as(adminToken).post(`/admin/approval-batches/${batchId}/approve`).expect(200);
 
-    expect((await as(seller.token).patch(`/seller/products/${product.id}`, { name: 'Renamed' })).status).toBe(409);
+    await as(seller.token).patch(`/seller/products/${product.id}`, { name: 'Renamed' }).expect(200);
+    const after = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect([after.name, after.approvalStatus]).toEqual(['Renamed', 'APPROVED']);
     await as(seller.token).patch(`/seller/listings/${product.listingId}`, { pricePaise: 9_500 }).expect(200);
     expect((await prisma.sellerListing.findUniqueOrThrow({ where: { id: product.listingId } })).pricePaise).toBe(9_500);
   });

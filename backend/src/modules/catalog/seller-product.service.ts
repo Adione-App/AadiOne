@@ -14,6 +14,8 @@ import {
   ApprovalStatus,
   ErrorCode,
   foodDietOf,
+  optionGroupsOf,
+  optionValuesOf,
   ProductStatus as ProductStatusValue,
   type ProductReviewImageDto,
   type ProductStatus,
@@ -42,6 +44,7 @@ const VARIANT_ORDER: Prisma.ProductVariantOrderByWithRelationInput[] = [
 
 const PRODUCT_FIELDS = {
   id: true,
+  optionGroups: true,
   name: true,
   nameHi: true,
   description: true,
@@ -68,6 +71,7 @@ interface SubmittedProductRow {
   updatedAt: Date;
   category: { id: string; name: string; parent: { id: string; name: string } | null };
   variants: { id: string; variantName: string; sku: string; unit: UnitType; unitValue: number }[];
+  optionGroups: unknown;
 }
 
 export function toSubmittedProductDto(product: SubmittedProductRow): SubmittedProductDto {
@@ -94,6 +98,7 @@ export function toSubmittedProductDto(product: SubmittedProductRow): SubmittedPr
           unitValue: variant.unitValue,
         }
       : null,
+    optionGroups: optionGroupsOf(product.optionGroups),
     createdAt: product.createdAt.toISOString(),
     updatedAt: product.updatedAt.toISOString(),
   };
@@ -163,6 +168,9 @@ async function findOwnProducts(sellerId: string, productId?: string): Promise<Se
           ...VARIANT_FIELDS,
           status: true,
           deletedAt: true,
+          isDefault: true,
+          optionValues: true,
+          approvalStatus: true,
           // Only ever this seller's own listing — never another seller's price.
           sellerListings: {
             where: { sellerId },
@@ -202,6 +210,20 @@ async function findOwnProducts(sellerId: string, productId?: string): Promise<Se
     products.filter((product) => product.status === ProductStatusValue.ARCHIVED).map((product) => product.id),
   );
 
+  const listingDto = (row: (typeof products)[number]['variants'][number]['sellerListings'][number]) => ({
+    id: row.id,
+    mrpPaise: row.mrpPaise,
+    pricePaise: row.pricePaise,
+    stockQty: row.stockQty,
+    reservedQty: row.reservedQty,
+    availableQty: Math.max(0, row.stockQty - row.reservedQty),
+    isAvailable: row.isAvailable,
+    tracksStock: row.tracksStock,
+    lowStockThreshold: row.lowStockThreshold,
+    maxQtyPerOrder: row.maxQtyPerOrder,
+    updatedAt: row.updatedAt.toISOString(),
+  });
+
   return products.map((product) => {
     const variant = product.variants[0] ?? null;
     const listing = variant?.sellerListings[0] ?? null;
@@ -210,21 +232,18 @@ async function findOwnProducts(sellerId: string, productId?: string): Promise<Se
     return {
       ...toSubmittedProductDto(product),
       diet: foodDietOf(product.attributes),
-      listing: listing
-        ? {
-            id: listing.id,
-            mrpPaise: listing.mrpPaise,
-            pricePaise: listing.pricePaise,
-            stockQty: listing.stockQty,
-            reservedQty: listing.reservedQty,
-            availableQty: Math.max(0, listing.stockQty - listing.reservedQty),
-            isAvailable: listing.isAvailable,
-            tracksStock: listing.tracksStock,
-            lowStockThreshold: listing.lowStockThreshold,
-            maxQtyPerOrder: listing.maxQtyPerOrder,
-            updatedAt: listing.updatedAt.toISOString(),
-          }
-        : null,
+      listing: listing ? listingDto(listing) : null,
+      variants: product.variants.map((v) => ({
+        id: v.id,
+        variantName: v.variantName,
+        sku: v.sku,
+        unit: v.unit,
+        unitValue: v.unitValue,
+        optionValues: optionValuesOf(v.optionValues),
+        isDefault: v.isDefault,
+        approvalStatus: v.approvalStatus,
+        listing: v.sellerListings[0] ? listingDto(v.sellerListings[0]) : null,
+      })),
       visibility: listingVisibility({
         store: store ?? { isActive: false, deletedAt: new Date(0), onboardingStatus: 'REJECTED' },
         product: { status: product.status, deletedAt: product.deletedAt, approvalStatus: product.approvalStatus },

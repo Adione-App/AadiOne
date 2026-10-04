@@ -24,7 +24,7 @@
  * restaurant menu sections out of the shared category tree.
  */
 
-import { ApprovalStatus, ErrorCode, FOOD_SELLER_TYPES, ProductStatus, SellerType, foodDietOf, isFoodSellerType } from '../../shared';
+import { ApprovalStatus, ErrorCode, FOOD_SELLER_TYPES, ProductStatus, SellerType, foodDietOf, isFoodSellerType, optionGroupsOf, optionValuesOf } from '../../shared';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import { invalidateCategoryCache } from '../catalog/catalog.service';
@@ -237,7 +237,7 @@ async function loadMenu(sellerId: string, publicOnly: boolean) {
       include: {
         variant: {
           include: {
-            product: { select: { id: true, name: true, description: true, categoryId: true, approvalStatus: true, attributes: true } },
+            product: { select: { id: true, name: true, description: true, categoryId: true, approvalStatus: true, attributes: true, optionGroups: true } },
           },
         },
       },
@@ -261,6 +261,10 @@ function toMenuItemDto(
     name: listing.variant.product.name,
     description: listing.variant.product.description,
     variantName: listing.variant.variantName,
+    // One menu entry per sellable variant (its own price / cart line); the
+    // dish's option groups say how to present them together, e.g. Size: Half / Full.
+    optionValues: optionValuesOf(listing.variant.optionValues),
+    optionGroups: optionGroupsOf(listing.variant.product.optionGroups),
     imageUrl: listing.variant.imageUrl,
     mrpPaise: listing.mrpPaise,
     pricePaise: listing.pricePaise,

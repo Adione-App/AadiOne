@@ -1,5 +1,6 @@
 /**
- * Food / restaurant module (V2).
+ * Food / restaurant module (V2) — restaurants AND cafes (the FOOD seller
+ * types, `isFoodSellerType`).
  *
  * Reuses the marketplace model as-is — nothing here is a parallel "food"
  * catalog:
@@ -23,11 +24,12 @@
  * restaurant menu sections out of the shared category tree.
  */
 
-import { ApprovalStatus, ErrorCode, ProductStatus, SellerType } from '../../shared';
+import { ApprovalStatus, ErrorCode, FOOD_SELLER_TYPES, ProductStatus, SellerType, foodDietOf, isFoodSellerType } from '../../shared';
 import { AppError } from '../../common/errors';
-import { prisma } from '../../infra/db/prisma';
-import { slugify } from '../../shared/text';
+import { prisma, runInTransaction } from '../../infra/db/prisma';
 import { invalidateCategoryCache } from '../catalog/catalog.service';
+import { createOwnTopCategory } from '../catalog/seller-category.service';
+import { createOwnSubcategory } from '../catalog/seller-subcategory.service';
 import { getSellerOpenState } from '../sellers/seller.service';
 
 /* -------------------------------------------------------------------------- */
@@ -40,77 +42,125 @@ async function loadRestaurantOrThrow(sellerId: string) {
     select: { id: true, sellerType: true, deletedAt: true },
   });
   if (!seller || seller.deletedAt) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Seller not found.' });
-  if (seller.sellerType !== SellerType.RESTAURANT) {
+  if (!isFoodSellerType(seller.sellerType)) {
     throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message: 'Menu sections only apply to a RESTAURANT-type seller.',
+      message: 'Menu sections only apply to a restaurant or cafe seller.',
     });
   }
   return seller;
 }
 
-function toMenuSectionDto(category: { id: string; name: string; slug: string; displayOrder: number; isActive: boolean }) {
+type SectionRow = {
+  id: string;
+  name: string;
+  slug: string;
+  displayOrder: number;
+  isActive: boolean;
+  parent?: { id: string; name: string } | null;
+};
+
+function toMenuSectionDto(category: SectionRow) {
   return {
     id: category.id,
     name: category.name,
     slug: category.slug,
     displayOrder: category.displayOrder,
     isActive: category.isActive,
+    menuId: category.parent?.id ?? null,
+    menuName: category.parent?.name ?? null,
   };
+}
+
+export const DEFAULT_MENU_NAME = 'Main Menu';
+
+/**
+ * The menu a section goes into when none is named: the seller's first menu,
+ * or a new "Main Menu" (a top category in the seller's own tree) when it has
+ * none yet — so the older one-level "add a menu section" call keeps working.
+ */
+async function defaultMenuId(sellerId: string, actorUserId: string): Promise<string> {
+  const first = await prisma.category.findFirst({
+    where: { sellerId, parentId: null, deletedAt: null },
+    orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+    select: { id: true },
+  });
+  if (first) return first.id;
+  const tree = await createOwnTopCategory(sellerId, { name: DEFAULT_MENU_NAME }, actorUserId);
+  return tree.categories.find((menu) => menu.name === DEFAULT_MENU_NAME)!.id;
 }
 
 export interface CreateMenuSectionInput {
   name: string;
+  /** The menu (one of the seller's own top categories); default: its first menu. */
+  menuId?: string;
   displayOrder?: number;
 }
 
-/** A restaurant's own menu section: a root Category scoped to it, vertical FOOD. */
-export async function createMenuSection(sellerId: string, input: CreateMenuSectionInput) {
+/**
+ * A restaurant's / cafe's menu section = a subcategory in its own category
+ * tree, under one of its menus (top categories). Created by the same service
+ * as every seller's subcategories — same ownership, naming and delete rules.
+ */
+export async function createMenuSection(sellerId: string, input: CreateMenuSectionInput, actorUserId: string) {
   await loadRestaurantOrThrow(sellerId);
-  const slug = slugify(input.name);
-
-  const duplicate = await prisma.category.findFirst({
-    where: { sellerId, slug, deletedAt: null },
-    select: { id: true },
-  });
-  if (duplicate) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      status: 409,
-      message: 'This menu already has a section with that name.',
-    });
-  }
-
-  const category = await prisma.category.create({
-    data: {
-      sellerId,
-      parentId: null,
-      name: input.name,
-      slug,
-      path: slug,
-      depth: 0,
-      displayOrder: input.displayOrder ?? 0,
-      isActive: true,
-      vertical: 'FOOD',
-    },
-  });
-  invalidateCategoryCache();
-  return toMenuSectionDto(category);
+  const menuId = input.menuId ?? (await defaultMenuId(sellerId, actorUserId));
+  const created = await createOwnSubcategory(
+    sellerId,
+    { parentId: menuId, name: input.name, ...(input.displayOrder !== undefined ? { displayOrder: input.displayOrder } : {}) },
+    actorUserId,
+  );
+  const [section] = (await listMenuSections(sellerId)).filter((row) => row.id === created.id);
+  return section!;
 }
 
+/** Every menu section of the seller (all menus), in menu order, with its food item count. */
 export async function listMenuSections(sellerId: string) {
   await loadRestaurantOrThrow(sellerId);
   const sections = await prisma.category.findMany({
-    where: { sellerId, deletedAt: null },
-    orderBy: [{ displayOrder: 'asc' }, { name: 'asc' }],
+    where: { sellerId, parentId: { not: null }, deletedAt: null, parent: { deletedAt: null } },
+    orderBy: [{ parent: { displayOrder: 'asc' } }, { parent: { name: 'asc' } }, { displayOrder: 'asc' }, { name: 'asc' }],
+    include: {
+      parent: { select: { id: true, name: true } },
+      _count: { select: { products: { where: { deletedAt: null } } } },
+    },
   });
-  return sections.map(toMenuSectionDto);
+  return sections.map((section) => ({ ...toMenuSectionDto(section), itemCount: section._count.products }));
+}
+
+/**
+ * PUT /seller/menu-sections/order — one menu's sections in their new order
+ * (every live section of that menu exactly once); positions become 0..n-1.
+ */
+export async function reorderMenuSections(sellerId: string, menuId: string, ids: string[], actorUserId: string) {
+  await loadRestaurantOrThrow(sellerId);
+  const menu = await prisma.category.findFirst({ where: { id: menuId, sellerId, parentId: null, deletedAt: null }, select: { id: true } });
+  if (!menu) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Menu not found.' });
+  const own = await prisma.category.findMany({ where: { sellerId, parentId: menuId, deletedAt: null }, select: { id: true } });
+  const ownIds = new Set(own.map((s) => s.id));
+  if (new Set(ids).size !== ids.length || ids.length !== ownIds.size || ids.some((id) => !ownIds.has(id))) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'List every menu section of this menu exactly once.' });
+  }
+  await runInTransaction(async (tx) => {
+    for (const [index, id] of ids.entries()) {
+      await tx.category.update({ where: { id }, data: { displayOrder: index } });
+    }
+  });
+  await prisma.auditLog.create({
+    data: { actorUserId, action: 'restaurant.menu_section.reorder', entityType: 'Category', entityId: menuId, after: { order: ids } },
+  });
+  invalidateCategoryCache();
+  return listMenuSections(sellerId);
 }
 
 /* -------------------------------------------------------------------------- */
 /* Restaurant + menu reads                                                   */
 /* -------------------------------------------------------------------------- */
 
+/** Restaurants and cafes — the FOOD seller types. */
+const FOOD_TYPES: SellerType[] = [...FOOD_SELLER_TYPES];
+
 const LIVE_RESTAURANT_WHERE = {
-  sellerType: SellerType.RESTAURANT,
+  sellerType: { in: FOOD_TYPES },
   isActive: true,
   deletedAt: null,
   onboardingStatus: ApprovalStatus.APPROVED,
@@ -125,7 +175,7 @@ type RestaurantRow = NonNullable<Awaited<ReturnType<typeof findRestaurant>>>;
 
 function findRestaurant(sellerId: string) {
   return prisma.seller.findFirst({
-    where: { id: sellerId, sellerType: SellerType.RESTAURANT, deletedAt: null },
+    where: { id: sellerId, sellerType: { in: FOOD_TYPES }, deletedAt: null },
     include: RESTAURANT_INCLUDE,
   });
 }
@@ -134,6 +184,7 @@ async function toRestaurantDto(seller: RestaurantRow) {
   const open = await getSellerOpenState(seller);
   return {
     sellerId: seller.id,
+    sellerType: seller.sellerType,
     name: seller.name,
     addressLine: seller.addressLine,
     city: seller.city,
@@ -152,9 +203,17 @@ async function toRestaurantDto(seller: RestaurantRow) {
 /** Menu listings for one restaurant; `publicOnly` applies the customer gates. */
 async function loadMenu(sellerId: string, publicOnly: boolean) {
   const [sections, listings] = await Promise.all([
+    // Menu sections (subcategories of the seller's menus), in menu order.
     prisma.category.findMany({
-      where: { sellerId, deletedAt: null, ...(publicOnly ? { isActive: true } : {}) },
-      orderBy: [{ displayOrder: 'asc' }, { name: 'asc' }],
+      where: {
+        sellerId,
+        parentId: { not: null },
+        deletedAt: null,
+        parent: { deletedAt: null, ...(publicOnly ? { isActive: true } : {}) },
+        ...(publicOnly ? { isActive: true } : {}),
+      },
+      orderBy: [{ parent: { displayOrder: 'asc' } }, { parent: { name: 'asc' } }, { displayOrder: 'asc' }, { name: 'asc' }],
+      include: { parent: { select: { id: true, name: true } } },
     }),
     prisma.sellerListing.findMany({
       where: {
@@ -169,11 +228,11 @@ async function loadMenu(sellerId: string, publicOnly: boolean) {
                   status: ProductStatus.ACTIVE,
                   approvalStatus: ApprovalStatus.APPROVED,
                   deletedAt: null,
-                  category: { sellerId, isActive: true, deletedAt: null },
+                  category: { sellerId, isActive: true, deletedAt: null, parent: { isActive: true, deletedAt: null } },
                 },
               },
             }
-          : {}),
+          : { variant: { deletedAt: null, product: { deletedAt: null } } }),
       },
       include: {
         variant: {
@@ -205,20 +264,35 @@ function toMenuItemDto(
     imageUrl: listing.variant.imageUrl,
     mrpPaise: listing.mrpPaise,
     pricePaise: listing.pricePaise,
-    inStock: listing.isAvailable && available > 0,
+    // A made-to-order food item (tracksStock = false) is "in stock" whenever
+    // the seller has it switched on.
+    inStock: listing.isAvailable && (!listing.tracksStock || available > 0),
+    diet: foodDietOf(listing.variant.product.attributes),
     maxQtyPerOrder: listing.maxQtyPerOrder,
   };
 }
 
-function groupBySection(
+function groupBySection<T extends { sellerListingId: string }>(
   sections: Awaited<ReturnType<typeof loadMenu>>['sections'],
-  items: ReturnType<typeof toMenuItemDto>[],
+  items: T[],
   categoryOf: Map<string, string>,
 ) {
   return sections.map((section) => ({
     ...toMenuSectionDto(section),
     items: items.filter((item) => categoryOf.get(item.sellerListingId) === section.id),
   }));
+}
+
+/** The same sections, grouped under their menus (Menu → Menu Section → Food Item). */
+function groupByMenu<T extends { menuId: string | null; menuName: string | null }>(sections: T[]) {
+  const menus: { id: string; name: string; sections: T[] }[] = [];
+  for (const section of sections) {
+    if (!section.menuId) continue;
+    let menu = menus.find((m) => m.id === section.menuId);
+    if (!menu) menus.push((menu = { id: section.menuId, name: section.menuName ?? '', sections: [] }));
+    menu.sections.push(section);
+  }
+  return menus;
 }
 
 /** Customer: every live restaurant, each identified as its own seller. */
@@ -259,7 +333,8 @@ export async function getRestaurantMenu(sellerId: string) {
   const { sections, listings } = await loadMenu(seller.id, true);
   const items = listings.map((l) => toMenuItemDto(seller, l));
   const categoryOf = new Map(listings.map((l) => [l.id, l.variant.product.categoryId]));
-  return { restaurant: await toRestaurantDto(seller), sections: groupBySection(sections, items, categoryOf) };
+  const grouped = groupBySection(sections, items, categoryOf);
+  return { restaurant: await toRestaurantDto(seller), menus: groupByMenu(grouped), sections: grouped };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -268,10 +343,10 @@ export async function getRestaurantMenu(sellerId: string) {
 
 export async function listRestaurantsForAdmin() {
   const sellers = await prisma.seller.findMany({
-    where: { sellerType: SellerType.RESTAURANT, deletedAt: null },
+    where: { sellerType: { in: FOOD_TYPES }, deletedAt: null },
     include: {
       ...RESTAURANT_INCLUDE,
-      _count: { select: { categories: true, listings: true } },
+      _count: { select: { categories: { where: { parentId: { not: null }, deletedAt: null } }, listings: true } },
     },
     orderBy: { createdAt: 'asc' },
   });
@@ -306,6 +381,7 @@ export async function getRestaurantForAdmin(sellerId: string) {
       onboardingStatus: seller.onboardingStatus,
       defaultCommissionBp: seller.defaultCommissionBp,
     },
+    menus: groupByMenu(groupBySection(sections, items, categoryOf)),
     sections: groupBySection(sections, items, categoryOf),
   };
 }

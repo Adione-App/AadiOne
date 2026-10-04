@@ -317,11 +317,12 @@ describe('customer marketplace', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('restaurants', () => {
-  it('menu sections stay restaurant-only: not deletable as categories, never marketplace categories', async () => {
+  it('a restaurant’s categories are its MENU (menu → section → item), never marketplace categories', async () => {
     const grocery = await seedSeller('9600000041', 'Grocery Seller');
     const restaurant = await seedSeller('9600000042', 'Food Place', SellerType.RESTAURANT);
     await prisma.restaurantProfile.create({ data: { sellerId: restaurant.id, cuisine: ['North Indian'] } });
 
+    // The one-call menu section lands in a "Main Menu" (a top category).
     const sectionId = expectSuccess<{ id: string }>(
       (await as(restaurant.token).post('/menu-sections', { name: 'Starters' }).expect(201)).body,
     ).data.id;
@@ -330,11 +331,17 @@ describe('restaurants', () => {
     const groceryTop = await createTop(grocery.token, 'Grocery');
     await publish(grocery.id, await createProduct(grocery.token, groceryTop, 'Atta'));
 
-    // The categories API is not the restaurant's way to manage sections.
-    expect((await tree(restaurant.token)).usesMenuSections).toBe(true);
-    expect((await as(restaurant.token).post('/categories', { name: 'Mains' })).status).toBe(400);
-    expect((await as(restaurant.token).del(`/categories/${sectionId}`)).status).toBe(400);
+    // The categories API manages the menu: menus are top categories, sections subcategories.
+    const menuTree = await tree(restaurant.token);
+    expect(menuTree.usesMenuSections).toBe(true);
+    expect(menuTree.categories.map((m) => [m.name, m.subcategories.map((s) => s.name)])).toEqual([['Main Menu', ['Starters']]]);
+    const mainMenu = menuTree.categories[0]!.id;
+    // A section with a food item (and so its menu) cannot be deleted.
+    expect((await as(restaurant.token).del(`/subcategories/${sectionId}`)).status).toBe(409);
+    expect((await as(restaurant.token).del(`/categories/${mainMenu}`)).status).toBe(409);
     expect((await prisma.category.findUniqueOrThrow({ where: { id: sectionId } })).deletedAt).toBeNull();
+    // A food item goes in a section, never directly on a menu.
+    expect((await as(restaurant.token).post('/products', { categoryId: mainMenu, name: 'Loose Item', pricePaise: 5000 })).status).toBe(400);
 
     // Marketplace categories: only the grocery seller's.
     expect((await customerCategories()).map((c) => c.name)).toEqual(['Grocery']);

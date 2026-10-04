@@ -22,7 +22,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { formatPaise } from '@shared/money';
 import { api } from '@/lib/api';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
-import { SellerStaffRole, SellerType, type AdminSellerDetailDto } from '@shared';
+import { SellerStaffRole, isFoodSellerType, type AdminSellerDetailDto } from '@shared';
 import { ApiRequestError } from '@/lib/api';
 import {
   adminSellerKeys,
@@ -155,7 +155,7 @@ function SellerDetailView() {
   const [statusOpen, setStatusOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const isRestaurant = detail.data?.sellerType === SellerType.RESTAURANT;
+  const isRestaurant = isFoodSellerType(detail.data?.sellerType);
   const tab = tabFrom(params.get('tab'), isRestaurant, perms);
   const setTab = (next: TabKey) =>
     setParams(next === 'overview' ? {} : { tab: next }, { replace: true, state: location.state });
@@ -366,7 +366,7 @@ function OverviewTab({
           <DetailRow label="Seller name">{seller.name}</DetailRow>
           <DetailRow label="Seller type">{SELLER_TYPE_LABEL[seller.sellerType] ?? seller.sellerType}</DetailRow>
           <DetailRow label="Seller code">{seller.code}</DetailRow>
-          {seller.sellerType === 'RESTAURANT' && (
+          {isFoodSellerType(seller.sellerType) && (
             <DetailRow label="Restaurant profile">{seller.restaurantProfile ? 'Added' : 'Not added yet'}</DetailRow>
           )}
           <DetailRow label="Business phone">{orDash(seller.phone)}</DetailRow>

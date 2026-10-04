@@ -29,7 +29,7 @@
  */
 
 import type { CatalogVertical } from '@prisma/client';
-import { ErrorCode, SellerType } from '../../shared';
+import { ErrorCode, SellerType, isFoodSellerType } from '../../shared';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import { storage } from '../../infra/storage';
@@ -53,7 +53,7 @@ export interface AccessCategory {
   isActive: boolean;
 }
 
-export type CategoryAccessDenial = 'NOT_FOUND' | 'INACTIVE' | 'RESTAURANT_MENU_ONLY' | 'NOT_A_TOP_CATEGORY';
+export type CategoryAccessDenial = 'NOT_FOUND' | 'INACTIVE' | 'NOT_A_MENU_SECTION' | 'NOT_A_TOP_CATEGORY';
 
 export type CategoryAccess = { ok: true } | { ok: false; reason: CategoryAccessDenial };
 
@@ -69,6 +69,10 @@ export type CategoryAccess = { ok: true } | { ok: false; reason: CategoryAccessD
  *
  * The one ownership rule: the category must be the seller's OWN. A category
  * with no owner (legacy shared taxonomy) or another seller's is NOT_FOUND.
+ *
+ * A FOOD seller (restaurant / cafe) uses the same two-level tree as a menu:
+ * top category = MENU, subcategory = MENU SECTION, product = FOOD ITEM — and
+ * a food item always sits in a menu section, never directly on a menu.
  */
 export function decideCategoryAccess(input: {
   seller: AccessSeller;
@@ -83,13 +87,13 @@ export function decideCategoryAccess(input: {
   if (!category || category.sellerId !== seller.id) return { ok: false, reason: 'NOT_FOUND' };
 
   if (purpose === 'subcategory-parent') {
-    if (seller.sellerType === SellerType.RESTAURANT) return { ok: false, reason: 'RESTAURANT_MENU_ONLY' };
     if (category.parentId !== null) return { ok: false, reason: 'NOT_A_TOP_CATEGORY' };
     if (requireActive && !category.isActive) return { ok: false, reason: 'INACTIVE' };
     return { ok: true };
   }
 
   if (!root || root.sellerId !== seller.id || root.parentId !== null) return { ok: false, reason: 'NOT_FOUND' };
+  if (isFoodSellerType(seller.sellerType) && category.parentId === null) return { ok: false, reason: 'NOT_A_MENU_SECTION' };
   if (requireActive && (!category.isActive || !root.isActive)) return { ok: false, reason: 'INACTIVE' };
   return { ok: true };
 }
@@ -97,9 +101,9 @@ export function decideCategoryAccess(input: {
 const DENIAL: Record<CategoryAccessDenial, { code: ErrorCode; message: string }> = {
   NOT_FOUND: { code: ErrorCode.NOT_FOUND, message: 'Category not found.' },
   INACTIVE: { code: ErrorCode.VALIDATION_ERROR, message: 'This category is switched off. Switch it on first.' },
-  RESTAURANT_MENU_ONLY: {
+  NOT_A_MENU_SECTION: {
     code: ErrorCode.VALIDATION_ERROR,
-    message: 'A restaurant groups its items in menu sections, not subcategories.',
+    message: 'Add food items to a menu section (e.g. Roti, Sabji) inside one of your menus.',
   },
   NOT_A_TOP_CATEGORY: {
     code: ErrorCode.VALIDATION_ERROR,
@@ -215,7 +219,8 @@ export interface SellerCatalogCategoryDto {
 }
 
 export interface SellerCatalogCategoriesDto {
-  /** Restaurants manage menu sections instead (GET /seller/menu-sections). */
+  /** Restaurant / cafe: this tree is the MENU — top categories are menus,
+   * subcategories are menu sections, products are food items. */
   usesMenuSections: boolean;
   categories: SellerCatalogCategoryDto[];
 }
@@ -263,7 +268,7 @@ async function loadTree(sellerId: string): Promise<SellerCatalogCategoryDto[]> {
 /** GET /seller/categories — the seller's own top categories with their subcategories. */
 export async function listSellerCatalogCategories(sellerId: string): Promise<SellerCatalogCategoriesDto> {
   const seller = await loadSellerForAccess(sellerId);
-  return { usesMenuSections: seller.sellerType === SellerType.RESTAURANT, categories: await loadTree(sellerId) };
+  return { usesMenuSections: isFoodSellerType(seller.sellerType), categories: await loadTree(sellerId) };
 }
 
 /** Admin, read-only: the same tree for one seller (Seller detail → Categories). */
@@ -279,6 +284,7 @@ export async function listSellerCategoriesForAdmin(sellerId: string): Promise<Se
 function verticalFor(sellerType: string): CatalogVertical {
   switch (sellerType) {
     case SellerType.RESTAURANT:
+    case SellerType.CAFE:
       return 'FOOD';
     case SellerType.PHARMACY:
       return 'PHARMACY';
@@ -341,11 +347,6 @@ export async function createOwnTopCategory(
   actorUserId: string,
 ): Promise<SellerCatalogCategoriesDto> {
   const seller = await loadSellerForAccess(sellerId);
-  if (seller.sellerType === SellerType.RESTAURANT) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message: 'A restaurant adds menu sections instead (Products → Menu sections).',
-    });
-  }
   const slug = topSlug(input.name);
   await assertNoDuplicateTop(sellerId, slug);
 
@@ -449,12 +450,15 @@ export async function setOwnTopCategoryImage(
  * product: approved products cannot be moved by the seller, so the seller
  * either moves its editable products elsewhere or hides the category.
  */
-export function linkedProductsError(kind: 'category' | 'subcategory', count: number): AppError {
+export function linkedProductsError(kind: 'category' | 'subcategory', count: number, food = false): AppError {
+  // A food seller's tree is its menu: top category = menu, subcategory = menu section.
+  const what = food ? (kind === 'category' ? 'menu' : 'menu section') : kind;
+  const items = food ? `food item${count === 1 ? ' is' : 's are'} in` : `product${count === 1 ? ' is' : 's are'} linked to`;
   return new AppError(ErrorCode.VALIDATION_ERROR, {
     status: 409,
     message:
-      `${count} product${count === 1 ? ' is' : 's are'} linked to this ${kind}, so it cannot be deleted. ` +
-      `Move ${count === 1 ? 'it' : 'them'} to another category first, or switch the ${kind} off to hide it from customers.`,
+      `${count} ${items} this ${what}, so it cannot be deleted. ` +
+      `Move ${count === 1 ? 'it' : 'them'} to another ${food ? 'menu section' : 'category'} first, or switch the ${what} off to hide it from customers.`,
     details: [{ field: 'linkedProducts', message: String(count) }],
   });
 }
@@ -486,11 +490,6 @@ export async function deleteOwnTopCategory(
   actorUserId: string,
 ): Promise<DeletedCategoryDto> {
   const seller = await loadSellerForAccess(sellerId);
-  if (seller.sellerType === SellerType.RESTAURANT) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message: 'A restaurant manages menu sections instead (Products → Menu sections).',
-    });
-  }
   const current = await loadOwnTopOrThrow(sellerId, id);
 
   const deleted = await runInTransaction(async (tx) => {
@@ -503,7 +502,7 @@ export async function deleteOwnTopCategory(
     });
     const ids = [id, ...subcategories.map((s) => s.id)];
     const linked = await tx.product.count({ where: { categoryId: { in: ids }, deletedAt: null } });
-    if (linked > 0) throw linkedProductsError('category', linked);
+    if (linked > 0) throw linkedProductsError('category', linked, isFoodSellerType(seller.sellerType));
 
     await tx.category.updateMany({
       where: { id: { in: ids }, sellerId, deletedAt: null },

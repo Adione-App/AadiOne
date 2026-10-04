@@ -165,6 +165,12 @@ export async function commitReservation(
   sellerOrderId: string,
 ): Promise<void> {
   for (const item of items) {
+    // A made-to-order food item (tracksStock = false) only releases its hold:
+    // its fixed capacity is never used up, so nothing is written off.
+    if (!(await tracksStock(tx, item.sellerListingId))) {
+      await tx.sellerListing.update({ where: { id: item.sellerListingId }, data: { reservedQty: { decrement: item.qty } } });
+      continue;
+    }
     const updated = await tx.sellerListing.update({
       where: { id: item.sellerListingId },
       data: {
@@ -217,6 +223,8 @@ export async function restockCommitted(
   sellerOrderId: string,
 ): Promise<void> {
   for (const item of items) {
+    // Nothing was written off for a made-to-order food item, so nothing returns.
+    if (!(await tracksStock(tx, item.sellerListingId))) continue;
     const updated = await tx.sellerListing.update({
       where: { id: item.sellerListingId },
       data: { stockQty: { increment: item.qty } },
@@ -233,6 +241,14 @@ export async function restockCommitted(
   }
 }
 
+async function tracksStock(tx: Tx, sellerListingId: string): Promise<boolean> {
+  const row = await tx.sellerListing.findUnique({ where: { id: sellerListingId }, select: { tracksStock: true } });
+  return row?.tracksStock ?? true;
+}
+
+/** Stock edits make no sense for a made-to-order food item — availability does. */
+const NO_STOCK_FOR_FOOD = 'This food item is made to order and has no stock count. Switch it available or unavailable instead.';
+
 /* -------------------------------------------------------------------------- */
 /* Task 5.1 — admin/seller operations                                         */
 /* -------------------------------------------------------------------------- */
@@ -244,13 +260,14 @@ export async function setStock(
   note?: string,
 ): Promise<void> {
   await runInTransaction(async (tx) => {
-    const [current] = await tx.$queryRaw<{ stock_qty: number; reserved_qty: number }[]>`
-      SELECT stock_qty, reserved_qty FROM seller_listings
+    const [current] = await tx.$queryRaw<{ stock_qty: number; reserved_qty: number; tracks_stock: boolean }[]>`
+      SELECT stock_qty, reserved_qty, tracks_stock FROM seller_listings
       WHERE id = ${sellerListingId}::uuid FOR UPDATE`;
 
     if (!current) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Inventory record not found.' });
     }
+    if (!current.tracks_stock) throw new AppError(ErrorCode.VALIDATION_ERROR, { message: NO_STOCK_FOR_FOOD });
 
     // Refusing rather than silently clamping: stock below what is already
     // promised to paying customers is a decision for a human, not a default.
@@ -310,12 +327,13 @@ export async function adjustStock(
   note?: string,
 ): Promise<{ stockQty: number; reservedQty: number }> {
   const result = await runInTransaction(async (tx) => {
-    const [current] = await tx.$queryRaw<{ stock_qty: number; reserved_qty: number }[]>`
-      SELECT stock_qty, reserved_qty FROM seller_listings
+    const [current] = await tx.$queryRaw<{ stock_qty: number; reserved_qty: number; tracks_stock: boolean }[]>`
+      SELECT stock_qty, reserved_qty, tracks_stock FROM seller_listings
       WHERE id = ${sellerListingId}::uuid FOR UPDATE`;
     if (!current) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Inventory record not found.' });
     }
+    if (!current.tracks_stock) throw new AppError(ErrorCode.VALIDATION_ERROR, { message: NO_STOCK_FOR_FOOD });
     const next = nextStockAfterAdjust({ stockQty: current.stock_qty, reservedQty: current.reserved_qty }, delta);
     if (!next.ok) throw new AppError(ErrorCode.VALIDATION_ERROR, { message: next.message });
 

@@ -60,6 +60,7 @@ export const SELLER_TYPES: readonly SellerType[] = [
   SellerType.HOME,
   SellerType.PHARMACY,
   SellerType.RESTAURANT,
+  SellerType.CAFE,
   SellerType.SPORTS,
   SellerType.BOOKS,
   SellerType.KIDS,

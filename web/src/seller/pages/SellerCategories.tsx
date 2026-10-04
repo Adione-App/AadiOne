@@ -7,6 +7,9 @@
  * builds its own; nobody else can see or change them here. The backend
  * enforces ownership on every write.
  *
+ * A restaurant / cafe sees its MENU here instead (SellerMenu.tsx): Menu →
+ * Menu Section → Food Item.
+ *
  * Delete (DELETE /seller/categories/:id, /seller/subcategories/:id) always
  * asks for confirmation first, and is refused — by the backend, and shown
  * here up front — while any product is linked: deleting a category never
@@ -29,6 +32,9 @@ import {
   type SellerSubcategory,
 } from '../sellerApi';
 import { sellerKeys, useSellerAvailability } from '../sellerQueries';
+import { ProductFormModal } from '../productForms';
+import { MenuManager } from '../MenuManager';
+import { isFoodSellerType } from '@shared';
 
 type Notice = { ok: boolean; text: string };
 
@@ -92,7 +98,8 @@ function ImagePicker({
 
 export default function SellerCategoriesPage() {
   const queryClient = useQueryClient();
-  const isRestaurant = useSellerAvailability().data?.sellerType === 'RESTAURANT';
+  const sellerType = useSellerAvailability().data?.sellerType;
+  const [addingProductTo, setAddingProductTo] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [deleting, setDeleting] = useState<Deleting | null>(null);
@@ -137,19 +144,8 @@ export default function SellerCategoriesPage() {
     }
   }
 
-  if (isRestaurant) {
-    return (
-      <div className="space-y-3">
-        <EmptyState
-          title="Restaurants use menu sections"
-          hint="Your menu sections are your categories — manage them from Products → Menu sections."
-        />
-        <Link to="/seller/products" className="inline-flex text-sm font-semibold text-brand-600">
-          Go to Products
-        </Link>
-      </div>
-    );
-  }
+  // Restaurant / cafe: this page IS the menu — Menu → Menu Section → Food Item.
+  if (isFoodSellerType(sellerType)) return <MenuManager kind={sellerType === 'CAFE' ? 'Cafe' : 'Restaurant'} />;
 
   const categories = catalog.data?.categories ?? [];
 
@@ -223,6 +219,14 @@ export default function SellerCategoriesPage() {
                         <button type="button" onClick={() => setDeleting({ kind: 'top', category: top })} aria-label={`Delete ${top.name}`} className="text-xs font-semibold text-red-600">
                           Delete
                         </button>
+                        <button type="button" onClick={() => setAddingProductTo(top.id)} aria-label={`Add product to ${top.name}`} className="text-xs font-semibold text-brand-600">
+                          + Product
+                        </button>
+                        {top.productCount + subProducts > 0 && (
+                          <Link to={`/seller/products?q=${encodeURIComponent(top.name)}`} className="text-xs font-semibold text-gray-600">
+                            View products
+                          </Link>
+                        )}
                       </div>
                     </div>
                     <Toggle
@@ -266,6 +270,14 @@ export default function SellerCategoriesPage() {
                                 <button type="button" onClick={() => setDeleting({ kind: 'sub', parent: top, sub })} aria-label={`Delete ${sub.name}`} className="text-xs font-semibold text-red-600">
                                   Delete
                                 </button>
+                                <button type="button" onClick={() => setAddingProductTo(sub.id)} aria-label={`Add product to ${sub.name}`} className="text-xs font-semibold text-brand-600">
+                                  + Product
+                                </button>
+                                {sub.productCount > 0 && (
+                                  <Link to={`/seller/products?q=${encodeURIComponent(sub.name)}`} className="text-xs font-semibold text-gray-600">
+                                    View
+                                  </Link>
+                                )}
                               </div>
                             </div>
                             <Toggle
@@ -305,6 +317,18 @@ export default function SellerCategoriesPage() {
           onDone={(text) => {
             setEditing(null);
             setNotice({ ok: true, text });
+            void refresh();
+          }}
+        />
+      )}
+
+      {addingProductTo && (
+        <ProductFormModal
+          mode={{ kind: 'create', categoryId: addingProductTo }}
+          onClose={() => setAddingProductTo(null)}
+          onDone={(result) => {
+            setAddingProductTo(null);
+            setNotice(result);
             void refresh();
           }}
         />

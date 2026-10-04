@@ -18,7 +18,7 @@
 
 import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { SellerLifecycleDto } from '@shared';
+import { isFoodSellerType, type SellerLifecycleDto } from '@shared';
 import { AadioneWordmark } from '@/components/PartnerLogin';
 import { Button, ErrorBanner, Field, Icon, Modal, Panel, Pill, inputClass, type IconName, type Tone } from '@/components/ui';
 import {
@@ -295,7 +295,7 @@ function OnboardingWorkspace({ lifecycle }: { lifecycle: SellerLifecycleDto }) {
   const data = onboarding.data;
   const serverError = save.isError ? sellerErrorMessage(save.error) : null;
   const missing = lifecycle.checklist.filter((item) => !item.met);
-  const isRestaurant = lifecycle.sellerType === 'RESTAURANT';
+  const isRestaurant = isFoodSellerType(lifecycle.sellerType);
   const open = (what: 'business' | 'bank' | 'restaurant') => {
     save.reset();
     setNotice(null);

@@ -25,6 +25,7 @@ import { formatUnreadBadge, useNotificationUnreadCount } from '@/lib/notificatio
 import { SELLER_QUERY_ROOT, sellerClient, sellerErrorMessage } from './sellerApi';
 import { useSellerAuth } from './sellerAuth';
 import { useSellerAvailability, useSellerLifecycle, useSellerOrderSummary } from './sellerQueries';
+import { isFoodSellerType } from '@shared';
 import { useSellerNotificationSource } from './sellerNotifications';
 import { ToastRegion } from './sellerUi';
 import SellerLoginPage from './pages/SellerLogin';
@@ -73,6 +74,18 @@ const NAV: { to: string; label: string; icon: IconName; section: SellerNavSectio
   { to: '/seller/notifications', label: 'Notifications', icon: 'bell', section: 'COMMUNICATION', badge: 'notifications' },
   { to: '/seller/profile', label: 'Profile', icon: 'user', section: 'BUSINESS' },
 ];
+
+/**
+ * NAV for this seller: a restaurant / cafe manages its MENU (Menu → Menu
+ * Section → Food Item) on the Categories page, so that entry reads "Menu",
+ * and has no stock to manage, so Inventory is left out.
+ */
+function useNav(): typeof NAV {
+  const isFood = isFoodSellerType(useSellerAvailability().data?.sellerType);
+  if (!isFood) return NAV;
+  // Food items are made to order — no stock to manage, so no Inventory page.
+  return NAV.filter((item) => item.to !== '/seller/inventory').map((item) => (item.to === '/seller/categories' ? { ...item, label: 'Menu' } : item));
+}
 
 /** Phone tab bar: the daily screens; everything else is under More. */
 const TABS: { to: string; label: string; icon: IconName; end?: boolean; badge?: Badge }[] = [
@@ -221,6 +234,7 @@ function SellerSidebar({
   onToggleCollapsed?: () => void;
 }) {
   const availability = useSellerAvailability();
+  const nav = useNav();
   const logout = useSellerAuth((state) => state.logout);
   const user = useSellerAuth((state) => state.user);
   const badges = useNavBadges();
@@ -265,7 +279,7 @@ function SellerSidebar({
         {SECTIONS.map((section) => (
           <div key={section.key} className={collapsed ? 'space-y-1 border-t border-gray-100 pt-2 first:border-0 first:pt-0' : 'space-y-1'}>
             {!collapsed && <p className="px-3 pb-0.5 text-[11px] font-semibold uppercase tracking-wider text-gray-400">{section.label}</p>}
-            {NAV.filter((item) => item.section === section.key).map((item) => {
+            {nav.filter((item) => item.section === section.key).map((item) => {
               const count = item.badge ? badges[item.badge] : 0;
               return (
                 <NavLink
@@ -350,9 +364,10 @@ function SellerLayout() {
   const { pathname } = useLocation();
   const notificationSource = useSellerNotificationSource();
   // The longest matching entry names the page (detail pages take their section's name).
-  const title = ([...NAV].sort((a, b) => b.to.length - a.to.length).find((item) =>
+  const nav = useNav();
+  const title = ([...nav].sort((a, b) => b.to.length - a.to.length).find((item) =>
     item.end ? pathname === item.to : pathname === item.to || pathname.startsWith(`${item.to}/`),
-  ) ?? (pathname.startsWith('/seller/listings') ? NAV.find((item) => item.to === '/seller/products') : NAV[0]))!.label;
+  ) ?? (pathname.startsWith('/seller/listings') ? nav.find((item) => item.to === '/seller/products') : nav[0]))!.label;
 
   // The drawer closes on navigation and on Escape.
   useEffect(() => setNavOpen(false), [pathname]);

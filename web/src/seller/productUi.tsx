@@ -163,7 +163,10 @@ export function ImageGallery({
   onMove,
   onRemove,
   onReplace,
+  label = 'Product images',
 }: {
+  /** The section heading — food items say "Photos". */
+  label?: string;
   items: GalleryItem[];
   disabled: boolean;
   readOnly?: boolean;
@@ -180,9 +183,9 @@ export function ImageGallery({
   const control =
     'flex h-8 w-8 items-center justify-center rounded-full bg-white/95 text-gray-700 shadow transition hover:text-gray-900 disabled:opacity-40';
   return (
-    <section aria-label="Product images" className="space-y-2">
+    <section aria-label={label} className="space-y-2">
       <div className="flex items-baseline justify-between gap-2">
-        <p className="text-sm font-medium text-gray-800">Product images</p>
+        <p className="text-sm font-medium text-gray-800">{label}</p>
         <p className="text-xs text-gray-500">
           {items.length}/{MAX_PRODUCT_IMAGES}
         </p>

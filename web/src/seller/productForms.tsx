@@ -16,7 +16,7 @@ import type { SellerProductDto, UnitType } from '@shared';
 import { ApiRequestError } from '@/lib/api';
 import { imageSrc } from '@/lib/image';
 import { validateImage } from '@/lib/upload';
-import { Button, EmptyState, ErrorBanner, Field, Modal, Pill, Spinner, Toggle, inputClass } from '@/components/ui';
+import { Button, ErrorBanner, Field, Modal, Spinner, Toggle, inputClass } from '@/components/ui';
 import {
   LISTING_MAX_STOCK,
   MAX_PRODUCT_IMAGES,
@@ -29,7 +29,6 @@ import {
   type CreateSellerProductRequest,
   type CreatedSellerProduct,
   type SellerCatalogCategories,
-  type SellerMenuSection,
   type SellerSubcategory,
   type UpdateSellerProductRequest,
 } from './sellerApi';
@@ -52,24 +51,27 @@ import {
  * rejected (backend `loadEditableOwnProduct`, which stays authoritative:
  * anything else is refused there with a 409).
  */
-export type ProductFormMode = { kind: 'create' } | { kind: 'edit'; product: SellerProductDto };
+export type ProductFormMode =
+  /** `categoryId`: preselect a category, subcategory or (food) menu section. */
+  | { kind: 'create'; categoryId?: string }
+  | { kind: 'edit'; product: SellerProductDto };
 
 /** Only what differs from the server's current version (PATCH /seller/products/:id). */
 function productChanges(request: CreateSellerProductRequest, base: SellerProductDto): UpdateSellerProductRequest {
   const variant = base.defaultVariant;
   const listing = base.listing;
   return {
-    ...(!listing || request.mrpPaise !== listing.mrpPaise ? { mrpPaise: request.mrpPaise } : {}),
+    ...(request.mrpPaise !== undefined && (!listing || request.mrpPaise !== listing.mrpPaise) ? { mrpPaise: request.mrpPaise } : {}),
     ...(!listing || request.pricePaise !== listing.pricePaise ? { pricePaise: request.pricePaise } : {}),
-    ...(!listing || request.stockQty !== listing.stockQty ? { stockQty: request.stockQty } : {}),
+    ...(request.stockQty !== undefined && (!listing || request.stockQty !== listing.stockQty) ? { stockQty: request.stockQty } : {}),
     ...(request.categoryId !== base.categoryId ? { categoryId: request.categoryId } : {}),
     ...(request.name !== base.name ? { name: request.name } : {}),
     ...((request.nameHi ?? null) !== (base.nameHi ?? null) ? { nameHi: request.nameHi ?? null } : {}),
     ...((request.description ?? null) !== (base.description ?? null) ? { description: request.description ?? null } : {}),
-    ...(variant && request.sku.toUpperCase() !== variant.sku ? { sku: request.sku } : {}),
-    ...(variant && request.variantName !== variant.variantName ? { variantName: request.variantName } : {}),
-    ...(variant && request.unit !== variant.unit ? { unit: request.unit } : {}),
-    ...(variant && request.unitValue !== variant.unitValue ? { unitValue: request.unitValue } : {}),
+    ...(variant && request.sku !== undefined && request.sku.toUpperCase() !== variant.sku ? { sku: request.sku } : {}),
+    ...(variant && request.variantName !== undefined && request.variantName !== variant.variantName ? { variantName: request.variantName } : {}),
+    ...(variant && request.unit !== undefined && request.unit !== variant.unit ? { unit: request.unit } : {}),
+    ...(variant && request.unitValue !== undefined && request.unitValue !== variant.unitValue ? { unitValue: request.unitValue } : {}),
   };
 }
 
@@ -85,27 +87,22 @@ export function ProductFormModal({
   const queryClient = useQueryClient();
   const availability = useSellerAvailability();
   const sellerType = availability.data?.sellerType;
-  const isRestaurant = sellerType === 'RESTAURANT';
   // While editing: the server's latest version of the product.
   const [saved, setSaved] = useState<SellerProductDto | null>(mode.kind === 'edit' ? mode.product : null);
 
-  // A restaurant lists under its own menu sections; every other seller under
-  // its own top categories / subcategories (the backend enforces both).
+  // A marketplace product goes under the seller's own top category /
+  // subcategory (the backend enforces it). Restaurant / cafe food items have
+  // their own form (foodItemForm.tsx) — never this one.
   const catalog = useQuery({
     queryKey: sellerKeys.catalogCategories,
     queryFn: () => sellerApi.get<SellerCatalogCategories>('/seller/categories'),
-    enabled: sellerType !== undefined && !isRestaurant,
-  });
-  const sections = useQuery({
-    queryKey: sellerKeys.menuSections,
-    queryFn: () => sellerApi.get<SellerMenuSection[]>('/seller/menu-sections'),
-    enabled: isRestaurant,
+    enabled: sellerType !== undefined,
   });
 
   const initial = saved;
+  const preset = mode.kind === 'create' ? (mode.categoryId ?? '') : '';
   const [parentId, setParentId] = useState(initial ? (initial.subcategory ? initial.category.id : initial.categoryId) : '');
   const [childId, setChildId] = useState(initial?.subcategory?.id ?? '');
-  const [sectionId, setSectionId] = useState(initial?.categoryId ?? '');
   const [name, setName] = useState(initial?.name ?? '');
   const [nameHi, setNameHi] = useState(initial?.nameHi ?? '');
   const [description, setDescription] = useState(initial?.description ?? '');
@@ -122,7 +119,6 @@ export function ProductFormModal({
   const [problem, setProblem] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const [step, setStep] = useState<'creating' | 'submitting' | 'saving' | null>(null);
-  const [addingSection, setAddingSection] = useState(false);
   const [addingSub, setAddingSub] = useState(false);
   const [addingTop, setAddingTop] = useState(false);
   // Images: while creating, files wait here (previews only) until the product
@@ -215,13 +211,25 @@ export function ProductFormModal({
     ? saved.images.map((image) => ({ id: image.id, src: imageSrc(image.thumbUrl ?? image.url) ?? '' }))
     : pendingFiles.map((pending) => ({ id: pending.id, src: pending.preview }));
 
+  // "Add product" from a category or subcategory on the Categories page.
+  useEffect(() => {
+    if (!preset || parentId || !catalog.data) return;
+    for (const top of catalog.data.categories) {
+      if (top.id === preset) return setParentId(top.id);
+      if (top.subcategories.some((sub) => sub.id === preset)) {
+        setParentId(top.id);
+        return setChildId(preset);
+      }
+    }
+  }, [preset, parentId, catalog.data]);
+
   const parent = (catalog.data?.categories ?? []).find((c) => c.id === parentId);
   // Offer active subcategories, plus the one already chosen even if it was switched off since.
   const children = (parent?.subcategories ?? []).filter((c) => c.isActive || c.id === childId);
 
   function validate(): CreateSellerProductRequest | string {
-    const categoryId = isRestaurant ? sectionId : childId || parentId;
-    if (!categoryId) return isRestaurant ? 'Choose a menu section.' : 'Choose a category.';
+    const categoryId = childId || parentId;
+    if (!categoryId) return 'Choose a category.';
     const trimmedName = name.trim();
     if (trimmedName.length < PRODUCT_LIMITS.name.min) return 'Enter the product name (at least 2 characters).';
     const trimmedSku = sku.trim();
@@ -363,12 +371,12 @@ export function ProductFormModal({
   }
 
   const busy = step !== null;
-  const loadingSource = availability.isPending || (isRestaurant ? sections.isPending : catalog.isPending);
-  const sourceError = availability.error ?? (isRestaurant ? sections.error : catalog.error);
+  const loadingSource = availability.isPending || catalog.isPending;
+  const sourceError = availability.error ?? catalog.error;
   const current = validate();
   const dirty = saved !== null && (typeof current === 'string' || Object.keys(productChanges(current, saved)).length > 0);
   const rejection = saved ? rejectionOf(saved) : null;
-  const noCategories = !isRestaurant && catalog.data !== undefined && catalog.data.categories.length === 0;
+  const noCategories = catalog.data !== undefined && catalog.data.categories.length === 0;
   const galleryDisabled = busy || imageBusy !== null;
   const chosenSub = children.find((c) => c.id === childId);
 
@@ -466,36 +474,6 @@ export function ProductFormModal({
           <Spinner label="Loading categories…" />
         ) : sourceError ? (
           <ErrorBanner message={sellerErrorMessage(sourceError)} />
-        ) : isRestaurant ? (
-          <div className="space-y-3">
-            {(sections.data ?? []).length === 0 ? (
-              <p className="text-sm text-gray-600">No menu sections yet — create one to add this item under it.</p>
-            ) : (
-              <Field label="Menu section" required>
-                <select value={sectionId} onChange={(event) => setSectionId(event.target.value)} className={inputClass}>
-                  <option value="">Choose a menu section…</option>
-                  {(sections.data ?? []).map((section) => (
-                    <option key={section.id} value={section.id}>
-                      {section.name}
-                      {section.isActive ? '' : ' (hidden from menu)'}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            )}
-            {(sections.data ?? []).length === 0 || addingSection ? (
-              <NewMenuSectionForm
-                onCreated={(section) => {
-                  setSectionId(section.id);
-                  setAddingSection(false);
-                }}
-              />
-            ) : (
-              <button type="button" onClick={() => setAddingSection(true)} className="text-sm font-semibold text-brand-600 transition hover:text-brand-700">
-                + New menu section
-              </button>
-            )}
-          </div>
         ) : noCategories ? (
           <div className="space-y-2">
             <p className="rounded-xl bg-warn-50 px-3.5 py-3 text-sm text-gray-700">
@@ -576,50 +554,51 @@ export function ProductFormModal({
           </div>
         )}
 
-        {/* 6–7. identifiers + pack size */}
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="SKU" required hint="Your unique product code. Saved in capital letters.">
-            <input value={sku} onChange={(e) => setSku(e.target.value)} maxLength={PRODUCT_LIMITS.sku.max} className={inputClass} autoCapitalize="characters" />
-          </Field>
-          <Field label="Variant name" required hint='For example "1 kg", "500 ml" or "Black, 128 GB".'>
-            <input value={variantName} onChange={(e) => setVariantName(e.target.value)} maxLength={PRODUCT_LIMITS.variantName.max} className={inputClass} />
-          </Field>
-        </div>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Unit" required>
-            <select value={unit} onChange={(e) => setUnit(e.target.value as UnitType)} className={inputClass}>
-              {UNIT_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Unit value" required>
-            <input value={unitValue} onChange={(e) => setUnitValue(e.target.value)} inputMode="decimal" className={inputClass} />
-          </Field>
-        </div>
+            {/* 6–7. identifiers + pack size */}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="SKU" required hint="Your unique product code. Saved in capital letters.">
+                <input value={sku} onChange={(e) => setSku(e.target.value)} maxLength={PRODUCT_LIMITS.sku.max} className={inputClass} autoCapitalize="characters" />
+              </Field>
+              <Field label="Variant name" required hint='For example "1 kg", "500 ml" or "Black, 128 GB".'>
+                <input value={variantName} onChange={(e) => setVariantName(e.target.value)} maxLength={PRODUCT_LIMITS.variantName.max} className={inputClass} />
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Unit" required>
+                <select value={unit} onChange={(e) => setUnit(e.target.value as UnitType)} className={inputClass}>
+                  {UNIT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Unit value" required>
+                <input value={unitValue} onChange={(e) => setUnitValue(e.target.value)} inputMode="decimal" className={inputClass} />
+              </Field>
+            </div>
 
-        {/* 8–9. price & stock — part of the product, reviewed with it */}
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-          <Field label="MRP (₹)" required>
-            <input value={mrp} onChange={(e) => setMrp(e.target.value)} inputMode="decimal" className={inputClass} />
-          </Field>
-          <Field label="Selling price (₹)" required hint="Not above MRP.">
-            <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" className={inputClass} />
-          </Field>
-          <div className="col-span-2 sm:col-span-1">
-            <Field label={saved?.listing ? 'Stock' : 'Opening stock'} required hint={`0 to ${LISTING_MAX_STOCK.toLocaleString('en-IN')}.`}>
-              <input value={stock} onChange={(e) => setStock(e.target.value)} inputMode="numeric" className={inputClass} />
+            {/* 8–9. price & stock — part of the product, reviewed with it */}
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+              <Field label="MRP (₹)" required>
+                <input value={mrp} onChange={(e) => setMrp(e.target.value)} inputMode="decimal" className={inputClass} />
+              </Field>
+              <Field label="Selling price (₹)" required hint="Not above MRP.">
+                <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" className={inputClass} />
+              </Field>
+              <div className="col-span-2 sm:col-span-1">
+                <Field label={saved?.listing ? 'Stock' : 'Opening stock'} required hint={`0 to ${LISTING_MAX_STOCK.toLocaleString('en-IN')}.`}>
+                  <input value={stock} onChange={(e) => setStock(e.target.value)} inputMode="numeric" className={inputClass} />
+                </Field>
+              </div>
+            </div>
+            <p className="-mt-2 text-xs text-gray-500">Customers see this product only after Aadione approves it. Your price and stock stay exactly as you set them.</p>
+
+            {/* 10. other fields */}
+            <Field label="Hindi name">
+              <input value={nameHi} onChange={(e) => setNameHi(e.target.value)} maxLength={PRODUCT_LIMITS.nameHi.max} className={inputClass} />
             </Field>
-          </div>
-        </div>
-        <p className="-mt-2 text-xs text-gray-500">Customers see this product only after Aadione approves it. Your price and stock stay exactly as you set them.</p>
 
-        {/* 10. other fields */}
-        <Field label="Hindi name">
-          <input value={nameHi} onChange={(e) => setNameHi(e.target.value)} maxLength={PRODUCT_LIMITS.nameHi.max} className={inputClass} />
-        </Field>
 
         {/* 11. preview */}
         <section aria-label="Preview" className="space-y-2">
@@ -629,9 +608,7 @@ export function ProductFormModal({
             <div className="min-w-0">
               <p className="line-clamp-2 font-semibold text-gray-900">{name.trim() || 'Product name'}</p>
               <p className="truncate text-xs text-gray-500">
-                {isRestaurant
-                  ? ((sections.data ?? []).find((s) => s.id === sectionId)?.name ?? 'Menu section')
-                  : [parent?.name ?? 'Category', chosenSub?.name].filter(Boolean).join(' › ')}
+                {[parent?.name ?? 'Category', chosenSub?.name].filter(Boolean).join(' › ')}
               </p>
               <p className="truncate text-xs text-gray-500">
                 {[variantName.trim(), `${unitValue || '1'} ${UNIT_SHORT[unit] ?? unit}`].filter(Boolean).join(' · ')}
@@ -739,91 +716,6 @@ function NewSubcategoryForm({
       </div>
       <ErrorBanner message={error} />
     </div>
-  );
-}
-
-/** POST /seller/menu-sections — the backend scopes it to this (restaurant) seller. */
-function NewMenuSectionForm({ onCreated }: { onCreated: (section: SellerMenuSection) => void }) {
-  const queryClient = useQueryClient();
-  const [name, setName] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const create = useMutation({
-    mutationFn: (body: { name: string }) => sellerApi.post<SellerMenuSection>('/seller/menu-sections', body),
-  });
-
-  async function submit(): Promise<void> {
-    const trimmed = name.trim();
-    if (trimmed.length < 2) return setError('Enter a section name (at least 2 characters).');
-    setError(null);
-    try {
-      const section = await create.mutateAsync({ name: trimmed });
-      await queryClient.invalidateQueries({ queryKey: sellerKeys.menuSections });
-      setName('');
-      onCreated(section);
-    } catch (err) {
-      setError(sellerErrorMessage(err));
-    }
-  }
-
-  return (
-    <div className="space-y-2 rounded-xl bg-gray-50 p-3">
-      <label htmlFor="new-menu-section" className="block text-sm font-medium text-gray-700">
-        New menu section
-      </label>
-      <div className="flex flex-wrap gap-2">
-        <input id="new-menu-section" value={name} onChange={(event) => setName(event.target.value)} maxLength={120} placeholder="e.g. Desserts" className={`${inputClass} min-w-0 flex-1`} />
-        <Button variant="soft" onClick={() => void submit()} disabled={create.isPending}>
-          {create.isPending ? 'Creating…' : 'Create section'}
-        </Button>
-      </div>
-      <ErrorBanner message={error} />
-    </div>
-  );
-}
-
-export function MenuSectionsModal({ onClose }: { onClose: () => void }) {
-  const [note, setNote] = useState<string | null>(null);
-  const sections = useQuery({
-    queryKey: sellerKeys.menuSections,
-    queryFn: () => sellerApi.get<SellerMenuSection[]>('/seller/menu-sections'),
-  });
-
-  return (
-    <Modal
-      title="Menu sections"
-      subtitle="Every item on your menu sits in one of these sections."
-      onClose={onClose}
-      footer={
-        <Button variant="secondary" onClick={onClose}>
-          Close
-        </Button>
-      }
-    >
-      <div className="space-y-4">
-        {note && (
-          <div role="status" className="rounded-xl border border-brand-500/30 bg-brand-50 px-3.5 py-2.5 text-sm text-brand-700">
-            {note}
-          </div>
-        )}
-        {sections.isPending ? (
-          <Spinner label="Loading menu sections…" />
-        ) : sections.isError ? (
-          <ErrorBanner message={sellerErrorMessage(sections.error)} />
-        ) : sections.data.length === 0 ? (
-          <EmptyState title="No menu sections yet" hint="Create your first section, for example Starters." />
-        ) : (
-          <ul aria-label="Your menu sections" className="divide-y divide-gray-100 rounded-xl border border-gray-200">
-            {sections.data.map((section) => (
-              <li key={section.id} className="flex items-center justify-between gap-3 px-3.5 py-2.5 text-sm text-gray-800">
-                {section.name}
-                {!section.isActive && <Pill tone="gray">Hidden from menu</Pill>}
-              </li>
-            ))}
-          </ul>
-        )}
-        <NewMenuSectionForm onCreated={(section) => setNote(`"${section.name}" was added to your menu.`)} />
-      </div>
-    </Modal>
   );
 }
 

@@ -49,6 +49,8 @@ export interface ListingFigures {
   isAvailable: boolean;
   lowStockThreshold: number;
   maxQtyPerOrder: number;
+  /** false = made-to-order food item: selling price only, no MRP or stock. */
+  tracksStock?: boolean;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -72,14 +74,17 @@ export function PricingPanel({ listing, onChanged }: { listing: ListingFigures; 
     mutationFn: (body: { pricePaise?: number; mrpPaise?: number }) => sellerApi.patch(`/seller/listings/${listing.id}`, body),
   });
 
+  const food = listing.tracksStock === false;
+
   async function submit(): Promise<void> {
     const pricePaise = toPaise(price);
-    const mrpPaise = toPaise(mrp);
+    // A food item has no MRP: the server mirrors it to the selling price.
+    const mrpPaise = food ? pricePaise : toPaise(mrp);
     if (pricePaise === null || mrpPaise === null) return setNotice({ ok: false, text: 'Enter valid prices greater than 0.' });
     if (pricePaise > mrpPaise) return setNotice({ ok: false, text: 'Your selling price cannot be higher than the MRP.' });
     const changes = {
       ...(pricePaise !== listing.pricePaise ? { pricePaise } : {}),
-      ...(mrpPaise !== listing.mrpPaise ? { mrpPaise } : {}),
+      ...(!food && mrpPaise !== listing.mrpPaise ? { mrpPaise } : {}),
     };
     if (Object.keys(changes).length === 0) return setNotice({ ok: true, text: 'Nothing to save — no changes.' });
     setNotice(null);
@@ -88,7 +93,7 @@ export function PricingPanel({ listing, onChanged }: { listing: ListingFigures; 
       await save.mutateAsync(changes);
       // Confirm only once the page shows the server's new figures.
       await onChanged();
-      setNotice({ ok: true, text: `Price saved: ${formatPaise(pricePaise)} (MRP ${formatPaise(mrpPaise)}).` });
+      setNotice({ ok: true, text: food ? `Price saved: ${formatPaise(pricePaise)}.` : `Price saved: ${formatPaise(pricePaise)} (MRP ${formatPaise(mrpPaise)}).` });
     } catch (error) {
       setNotice({ ok: false, text: sellerErrorMessage(error) });
     } finally {
@@ -97,6 +102,22 @@ export function PricingPanel({ listing, onChanged }: { listing: ListingFigures; 
   }
 
   const discount = listing.mrpPaise > 0 ? Math.round(((listing.mrpPaise - listing.pricePaise) / listing.mrpPaise) * 100) : 0;
+  if (food) {
+    return (
+      <div className="space-y-3">
+        <p className="text-sm text-gray-600">
+          Customers pay <span className="font-semibold text-gray-900">{formatPaise(listing.pricePaise)}</span>. Food items have no MRP.
+        </p>
+        <Field label="Selling price (₹)">
+          <input value={price} onChange={(event) => setPrice(event.target.value)} inputMode="decimal" className={inputClass} />
+        </Field>
+        <NoticeBar notice={notice} />
+        <Button onClick={() => void submit()} disabled={busy} className="w-full sm:w-auto">
+          {busy ? 'Saving…' : 'Save price'}
+        </Button>
+      </div>
+    );
+  }
   return (
     <div className="space-y-3">
       <p className="text-sm text-gray-600">
@@ -148,6 +169,32 @@ function Figure({ label, value, tone = 'text-gray-900', hint }: { label: string;
 }
 
 export function InventoryPanel({ listing, label, onChanged }: { listing: ListingFigures; label: string; onChanged: () => Promise<unknown> }) {
+  if (listing.tracksStock === false) return <FoodAvailabilityPanel listing={listing} label={label} onChanged={onChanged} />;
+  return <StockPanel listing={listing} label={label} onChanged={onChanged} />;
+}
+
+/** A made-to-order food item: no stock count — just available or not. */
+function FoodAvailabilityPanel({ listing, label, onChanged }: { listing: ListingFigures; label: string; onChanged: () => Promise<unknown> }) {
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const toggle = useMutation({
+    mutationFn: (isAvailable: boolean) => sellerApi.patch(`/seller/listings/${listing.id}`, { isAvailable }),
+    onSuccess: (_data, isAvailable) => setNotice({ ok: true, text: `${label} is now ${isAvailable ? 'available' : 'unavailable'}.` }),
+    onError: (error) => setNotice({ ok: false, text: sellerErrorMessage(error) }),
+    onSettled: () => onChanged(),
+  });
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-gray-600">Made to order — there is no stock count. Switch it off when the kitchen can’t make it.</p>
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-gray-200 px-3.5 py-3">
+        <span className="text-sm font-medium text-gray-800">{listing.isAvailable ? 'Available' : 'Unavailable'}</span>
+        <Toggle checked={listing.isAvailable} disabled={toggle.isPending} label={`${label} available`} onChange={(next) => toggle.mutate(next)} />
+      </div>
+      <NoticeBar notice={notice} />
+    </div>
+  );
+}
+
+function StockPanel({ listing, label, onChanged }: { listing: ListingFigures; label: string; onChanged: () => Promise<unknown> }) {
   const [direction, setDirection] = useState<1 | -1>(1);
   const [qty, setQty] = useState('');
   const [note, setNote] = useState('');

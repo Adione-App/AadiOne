@@ -76,9 +76,10 @@ export type CatalogVertical = (typeof CatalogVertical)[keyof typeof CatalogVerti
 
 /**
  * A broad business classification of a Seller — not its catalogue: every
- * seller creates its own categories in the Seller Panel. RESTAURANT is the
- * one type with its own behaviour (menu sections). Order = the order the
- * admin panel offers them in.
+ * seller creates its own categories in the Seller Panel. RESTAURANT and
+ * CAFE are the FOOD types with their own behaviour (menu sections, food items
+ * without MRP or stock — see isFoodSellerType). Order = the order the admin
+ * panel offers them in.
  */
 export const SellerType = {
   GROCERY: 'GROCERY',
@@ -88,6 +89,7 @@ export const SellerType = {
   HOME: 'HOME',
   PHARMACY: 'PHARMACY',
   RESTAURANT: 'RESTAURANT',
+  CAFE: 'CAFE',
   SPORTS: 'SPORTS',
   BOOKS: 'BOOKS',
   KIDS: 'KIDS',
@@ -97,6 +99,21 @@ export const SellerType = {
   OTHER: 'OTHER',
 } as const;
 export type SellerType = (typeof SellerType)[keyof typeof SellerType];
+
+/**
+ * Food sellers (restaurant, cafe) manage a MENU — Menu → Menu Section → Food
+ * Item — instead of Category → Subcategory → Product, and their food items
+ * have a selling price and availability but no MRP and no stock count.
+ */
+export const FOOD_SELLER_TYPES: readonly SellerType[] = [SellerType.RESTAURANT, SellerType.CAFE];
+export const isFoodSellerType = (type: string | null | undefined): boolean =>
+  type === SellerType.RESTAURANT || type === SellerType.CAFE;
+
+/** Veg / non-veg marking of a food item, kept in Product.attributes.diet. */
+export function foodDietOf(attributes: unknown): 'VEG' | 'NON_VEG' | null {
+  const diet = attributes && typeof attributes === 'object' ? (attributes as { diet?: unknown }).diet : undefined;
+  return diet === 'VEG' || diet === 'NON_VEG' ? diet : null;
+}
 
 /**
  * The two-gate seller lifecycle (see schema.prisma's SellerLifecycleStatus).

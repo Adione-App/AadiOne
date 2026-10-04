@@ -17,13 +17,13 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { SellerProductDto } from '@shared';
+import { isFoodSellerType, type SellerProductDto } from '@shared';
 import { ApiRequestError } from '@/lib/api';
 import { imageSrc } from '@/lib/image';
 import { validateImage } from '@/lib/upload';
 import { Button, EmptyState, ErrorBanner, Pill } from '@/components/ui';
 import { MAX_PRODUCT_IMAGES, sellerApi, sellerErrorMessage, uploadSellerImage, type SellerProductInventory } from '../sellerApi';
-import { sellerKeys } from '../sellerQueries';
+import { sellerKeys, useSellerAvailability } from '../sellerQueries';
 import {
   ImageGallery,
   NoticeBar,
@@ -38,6 +38,7 @@ import {
   type Notice,
 } from '../productUi';
 import { ProductFormModal, StartSellingModal } from '../productForms';
+import { FoodItemModal } from '../foodItemForm';
 import { InventoryPanel, PricingPanel, Section, VisibilityPanel } from '../productSections';
 import { SkeletonBlock } from '../sellerUi';
 
@@ -55,6 +56,8 @@ export default function SellerProductDetailPage() {
   const queryClient = useQueryClient();
   const [notice, setNotice] = useState<Notice | null>(null);
   const [editing, setEditing] = useState(false);
+  // Restaurant / cafe: edited with the food item form (no MRP / stock).
+  const isFood = isFoodSellerType(useSellerAvailability().data?.sellerType);
   const [starting, setStarting] = useState(false);
   const [imageBusy, setImageBusy] = useState<string | null>(null);
 
@@ -236,7 +239,7 @@ export default function SellerProductDetailPage() {
         )}
       </Section>
 
-      <Section id="inventory" title="4. Inventory">
+      <Section id="inventory" title={listing?.tracksStock === false ? '4. Availability' : '4. Inventory'}>
         {listing ? (
           <InventoryPanel key={listing.id} listing={listing} label={product.name} onChanged={refresh} />
         ) : (
@@ -300,7 +303,18 @@ export default function SellerProductDetailPage() {
         </div>
       </Section>
 
-      {editing && (
+      {editing && isFood && (
+        <FoodItemModal
+          mode={{ kind: 'edit', item: product }}
+          onClose={() => setEditing(false)}
+          onDone={(result) => {
+            setEditing(false);
+            setNotice(result);
+            void refresh();
+          }}
+        />
+      )}
+      {editing && !isFood && (
         <ProductFormModal
           mode={{ kind: 'edit', product: product satisfies SellerProductDto }}
           onClose={() => {

@@ -13,6 +13,7 @@ import type { Prisma } from '@prisma/client';
 import {
   ApprovalStatus,
   ErrorCode,
+  foodDietOf,
   ProductStatus as ProductStatusValue,
   type ProductReviewImageDto,
   type ProductStatus,
@@ -154,6 +155,7 @@ async function findOwnProducts(sellerId: string, productId?: string): Promise<Se
     select: {
       ...PRODUCT_FIELDS,
       deletedAt: true,
+      attributes: true,
       variants: {
         where: { deletedAt: null },
         orderBy: VARIANT_ORDER,
@@ -171,6 +173,7 @@ async function findOwnProducts(sellerId: string, productId?: string): Promise<Se
               stockQty: true,
               reservedQty: true,
               isAvailable: true,
+              tracksStock: true,
               lowStockThreshold: true,
               maxQtyPerOrder: true,
               updatedAt: true,
@@ -206,6 +209,7 @@ async function findOwnProducts(sellerId: string, productId?: string): Promise<Se
     const lastRejection = product.approvalBatchItems.find((item) => item.status === ApprovalStatus.REJECTED);
     return {
       ...toSubmittedProductDto(product),
+      diet: foodDietOf(product.attributes),
       listing: listing
         ? {
             id: listing.id,
@@ -215,6 +219,7 @@ async function findOwnProducts(sellerId: string, productId?: string): Promise<Se
             reservedQty: listing.reservedQty,
             availableQty: Math.max(0, listing.stockQty - listing.reservedQty),
             isAvailable: listing.isAvailable,
+            tracksStock: listing.tracksStock,
             lowStockThreshold: listing.lowStockThreshold,
             maxQtyPerOrder: listing.maxQtyPerOrder,
             updatedAt: listing.updatedAt.toISOString(),

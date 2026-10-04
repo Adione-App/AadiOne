@@ -30,18 +30,24 @@ const createProductSchema = z.object({
   name: z.string().trim().min(2).max(200),
   nameHi: z.string().trim().max(200).nullable().optional(),
   description: z.string().max(4000).nullable().optional(),
-  sku: z.string().trim().min(2).max(60),
-  variantName: z.string().trim().min(1).max(80),
-  unit: z.nativeEnum(UnitType),
-  unitValue: z.number().positive(),
+  // Optional HERE only: a marketplace product must have SKU, variant, unit,
+  // MRP and opening stock (product-approval.service enforces it by seller
+  // type); a restaurant/cafe FOOD item has none of them — just a price.
+  sku: z.string().trim().min(2).max(60).optional(),
+  variantName: z.string().trim().min(1).max(80).optional(),
+  unit: z.nativeEnum(UnitType).optional(),
+  unitValue: z.number().positive().optional(),
   // A product is created COMPLETE: the seller's own price and opening stock
   // are part of it from the start (same limits as the listing routes).
-  mrpPaise: z.number().int().positive(),
+  mrpPaise: z.number().int().positive().optional(),
   pricePaise: z.number().int().positive(),
-  stockQty: z.number().int().min(0).max(100_000),
+  stockQty: z.number().int().min(0).max(100_000).optional(),
+  // Food items only: veg / non-veg and whether it is on the menu right now.
+  diet: z.enum(['VEG', 'NON_VEG']).nullable().optional(),
+  isAvailable: z.boolean().optional(),
 });
 
-const createProductBodySchema = createProductSchema.refine((v) => v.pricePaise <= v.mrpPaise, {
+const createProductBodySchema = createProductSchema.refine((v) => v.mrpPaise === undefined || v.pricePaise <= v.mrpPaise, {
   message: 'Selling price cannot be higher than MRP.',
   path: ['pricePaise'],
 });
@@ -52,6 +58,7 @@ const createProductBodySchema = createProductSchema.refine((v) => v.pricePaise <
  * rather than silently dropped.
  */
 const updateProductSchema = createProductSchema
+  .omit({ isAvailable: true })
   .partial()
   .strict()
   .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update.' });
@@ -251,6 +258,16 @@ sellerCatalogRouter.post(
       res,
       await service.createSellerProduct(requireSellerId(req), req.body, requireUser(req).id),
     );
+  }),
+);
+
+/** Restaurant / cafe food items only — soft delete (see deleteOwnFoodItem). */
+sellerCatalogRouter.delete(
+  '/products/:id',
+  requirePermission(Permission.SELLER_CATALOG_MANAGE),
+  validate({ params: z.object({ id: uuid }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await service.deleteOwnFoodItem(requireSellerId(req), req.params['id'] as string, requireUser(req).id));
   }),
 );
 

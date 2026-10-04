@@ -658,6 +658,8 @@ export interface SellerListingDto {
   stockQty: number;
   availableQty: number;
   isAvailable: boolean;
+  /** false = made-to-order food item (restaurant/cafe): no stock count, availability only. */
+  tracksStock: boolean;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -874,6 +876,8 @@ export interface SellerProductListingDto {
   reservedQty: number;
   availableQty: number;
   isAvailable: boolean;
+  /** false = made-to-order food item (restaurant/cafe): no MRP or stock, availability only. */
+  tracksStock: boolean;
 }
 
 /** The most recent approval-batch item for a product. */
@@ -896,7 +900,11 @@ export interface SellerProductDto extends SubmittedProductDto {
   lastRejectionReason: string | null;
   /** In display order; the first is the product's primary image. */
   images: ProductReviewImageDto[];
+  /** Food items only (restaurant/cafe): veg / non-veg, when the seller set it. */
+  diet: FoodDiet | null;
 }
+
+export type FoodDiet = 'VEG' | 'NON_VEG';
 
 export interface ProductReviewImageDto {
   id: string;

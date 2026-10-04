@@ -23,6 +23,8 @@ export interface RowListing {
   isAvailable: boolean;
   lowStockThreshold: number;
   updatedAt: string | null;
+  /** false = made-to-order food item (restaurant/cafe): no stock count. */
+  tracksStock: boolean;
 }
 
 export interface ProductRow {

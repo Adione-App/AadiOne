@@ -87,17 +87,28 @@ describe('decideCategoryAccess — subcategory parents', () => {
   });
 });
 
-describe('decideCategoryAccess — restaurants keep their menu-section rule', () => {
-  const restaurant = (category: AccessCategory, purpose: 'product' | 'subcategory-parent' = 'product') =>
-    decideCategoryAccess({ seller: RESTAURANT, category, root: category, purpose });
+describe('decideCategoryAccess — restaurants / cafes: Menu → Menu Section → Food Item', () => {
+  // A food seller's own tree is its menu: top category = menu, subcategory = menu section.
+  const mainMenu: AccessCategory = { ...menuSection, id: 'menu-main' };
+  const roti: AccessCategory = { ...menuSection, id: 'section-roti', parentId: mainMenu.id };
+  const restaurant = (category: AccessCategory, root: AccessCategory, purpose: 'product' | 'subcategory-parent' = 'product') =>
+    decideCategoryAccess({ seller: RESTAURANT, category, root, purpose });
 
-  it('allows its own menu section', () => {
-    expect(restaurant(menuSection)).toEqual({ ok: true });
+  it('puts food items in its own menu sections', () => {
+    expect(restaurant(roti, mainMenu)).toEqual({ ok: true });
   });
 
-  it('rejects other sellers’ categories and subcategories under menu sections', () => {
-    expect(restaurant(groceryA)).toEqual({ ok: false, reason: 'NOT_FOUND' });
-    expect(restaurant(menuSection, 'subcategory-parent')).toEqual({ ok: false, reason: 'RESTAURANT_MENU_ONLY' });
+  it('never directly on a menu', () => {
+    expect(restaurant(mainMenu, mainMenu)).toEqual({ ok: false, reason: 'NOT_A_MENU_SECTION' });
+  });
+
+  it('creates menu sections under its own menus only', () => {
+    expect(restaurant(mainMenu, mainMenu, 'subcategory-parent')).toEqual({ ok: true });
+    expect(restaurant(roti, mainMenu, 'subcategory-parent')).toEqual({ ok: false, reason: 'NOT_A_TOP_CATEGORY' });
+  });
+
+  it('rejects other sellers’ categories', () => {
+    expect(restaurant(groceryA, groceryA)).toEqual({ ok: false, reason: 'NOT_FOUND' });
   });
 });
 

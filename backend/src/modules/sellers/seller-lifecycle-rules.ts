@@ -23,6 +23,7 @@ import {
   DocumentStatus,
   SellerLifecycleStatus,
   SellerType,
+  isFoodSellerType,
   type SellerDocumentType,
   type SellerOnboardingChecklistItemDto,
   type SellerOnboardingStage,
@@ -196,7 +197,7 @@ function hasDocument(input: ChecklistInput, type: SellerDocumentType): boolean {
  */
 export function buildOnboardingChecklist(input: ChecklistInput): SellerOnboardingChecklistItemDto[] {
   const { profile, store } = input;
-  const isRestaurant = input.sellerType === SellerType.RESTAURANT;
+  const isRestaurant = isFoodSellerType(input.sellerType);
   const items: SellerOnboardingChecklistItemDto[] = [
     {
       key: 'business',

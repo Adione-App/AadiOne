@@ -24,6 +24,7 @@ import { useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { formatPaise } from '@shared/money';
+import { isFoodSellerType } from '@shared';
 import { Button, ErrorBanner, Icon, Modal, Pill, Surface, Toggle } from '@/components/ui';
 import {
   sellerApi,
@@ -34,7 +35,8 @@ import {
 } from '../sellerApi';
 import { useApplyListing, useRefreshInventory, useSellerAvailability, useSellerListings, useSellerProducts } from '../sellerQueries';
 import { ProductImage, StockStepper, VisibilityPill, shortDate } from '../productUi';
-import { MenuSectionsModal, ProductFormModal, StartSellingModal } from '../productForms';
+import { ProductFormModal, StartSellingModal } from '../productForms';
+import { FoodItemModal } from '../foodItemForm';
 import { isHiddenBySeller, isOutOfStock, rowsOf, type ProductRow } from '../productRows';
 import { ChipTabs, EmptyPanel, FilterSelect, LoadError, SearchBox, SkeletonList, linkClass, toast } from '../sellerUi';
 
@@ -180,10 +182,10 @@ export default function SellerProductsPage() {
   const [shown, setShown] = useState(PAGE);
   const [adding, setAdding] = useState(false);
   const [starting, setStarting] = useState<SellerProductInventory | null>(null);
-  const [managingSections, setManagingSections] = useState(false);
   const [confirmingSubmit, setConfirmingSubmit] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
-  const isRestaurant = useSellerAvailability().data?.sellerType === 'RESTAURANT';
+  // Restaurant / cafe: food items — price + availability, no stock (made to order).
+  const isFood = isFoodSellerType(useSellerAvailability().data?.sellerType);
 
   const products = useSellerProducts();
   const listings = useSellerListings();
@@ -293,7 +295,7 @@ export default function SellerProductsPage() {
         <div className="flex items-center gap-2">
           <SearchBox value={search} onChange={(next) => update({ q: next || null })} placeholder="Search products or categories…" label="Search products" className="min-w-0 flex-1" />
           <Button onClick={() => setAdding(true)} className="hidden shrink-0 sm:inline-flex">
-            <Icon name="plus" className="h-4 w-4" /> Add Product
+            <Icon name="plus" className="h-4 w-4" /> {isFood ? 'Add Food Item' : 'Add Product'}
           </Button>
         </div>
         <div className="space-y-3 rounded-xl border border-brand-500/30 bg-brand-50 px-3.5 py-3">
@@ -343,18 +345,20 @@ export default function SellerProductsPage() {
           </Button>
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-          {isRestaurant ? (
-            <button type="button" onClick={() => setManagingSections(true)} className={linkClass}>
-              Menu sections
-            </button>
+          {isFood ? (
+            <Link to="/seller/categories" className={linkClass}>
+              Manage menu
+            </Link>
           ) : (
             <Link to="/seller/categories" className={linkClass}>
               Manage categories
             </Link>
           )}
-          <Link to="/seller/inventory" className={linkClass}>
-            Inventory & stock history
-          </Link>
+          {!isFood && (
+            <Link to="/seller/inventory" className={linkClass}>
+              Inventory & stock history
+            </Link>
+          )}
         </div>
       </div>
 
@@ -368,7 +372,7 @@ export default function SellerProductsPage() {
             icon="products"
             title="No products yet"
             hint="Add as many products as you need, then submit them together for approval."
-            action={<Button onClick={() => setAdding(true)}>Add Product</Button>}
+            action={<Button onClick={() => setAdding(true)}>{isFood ? 'Add Food Item' : 'Add Product'}</Button>}
           />
         ) : (
           <EmptyPanel
@@ -424,7 +428,13 @@ export default function SellerProductsPage() {
                       </div>
                     </div>
                   </Link>
-                  {row.listing && (
+                  {row.listing && !row.listing.tracksStock && (
+                    <div className="flex items-center justify-between gap-3 rounded-xl bg-gray-50 px-3 py-2.5">
+                      <p className="text-base font-bold text-gray-900">{formatPaise(row.listing.pricePaise)}</p>
+                      <p className="text-xs text-gray-500">Made to order · {row.listing.isAvailable ? 'available' : 'unavailable'}</p>
+                    </div>
+                  )}
+                  {row.listing && row.listing.tracksStock && (
                     <div className="flex items-center justify-between gap-3 rounded-xl bg-gray-50 px-3 py-2.5">
                       <div className="min-w-0">
                         <p className="text-base font-bold text-gray-900">{formatPaise(row.listing.pricePaise)}</p>
@@ -513,6 +523,12 @@ export default function SellerProductsPage() {
                           <span className="text-gray-400">—</span>
                         )}
                       </td>
+                      {row.listing && !row.listing.tracksStock ? (
+                        <td colSpan={3} className="px-2 py-3 text-center text-xs text-gray-500">
+                          Made to order · {row.listing.isAvailable ? 'available' : 'unavailable'}
+                        </td>
+                      ) : (
+                        <>
                       <td className="px-2 py-3 text-right tabular-nums">{row.listing?.stockQty ?? '—'}</td>
                       <td className="px-2 py-3 text-right tabular-nums">{row.listing?.reservedQty ?? '—'}</td>
                       <td className="px-2 py-3">
@@ -544,6 +560,8 @@ export default function SellerProductsPage() {
                           <span className="block text-center text-gray-400">—</span>
                         )}
                       </td>
+                        </>
+                      )}
                       <td className="px-3 py-3">
                         <div className="flex flex-col items-start gap-1">
                           <span className="inline-flex items-center gap-1">
@@ -586,18 +604,28 @@ export default function SellerProductsPage() {
         <Icon name="plus" className="h-5 w-5" /> Add
       </button>
 
-      {adding && (
-        <ProductFormModal
-          mode={{ kind: 'create' }}
-          onClose={() => setAdding(false)}
-          onDone={(result) => {
-            setAdding(false);
-            toast(result.text, result.ok);
-            if (view !== 'ALL' && view !== 'PENDING') update({ view: 'PENDING' });
-          }}
-        />
-      )}
-      {managingSections && isRestaurant && <MenuSectionsModal onClose={() => setManagingSections(false)} />}
+      {adding &&
+        (isFood ? (
+          // Restaurant / cafe: the food item form (price + availability, no MRP / stock).
+          <FoodItemModal
+            mode={{ kind: 'create' }}
+            onClose={() => setAdding(false)}
+            onDone={(result) => {
+              setAdding(false);
+              toast(result.text, result.ok);
+            }}
+          />
+        ) : (
+          <ProductFormModal
+            mode={{ kind: 'create' }}
+            onClose={() => setAdding(false)}
+            onDone={(result) => {
+              setAdding(false);
+              toast(result.text, result.ok);
+              if (view !== 'ALL' && view !== 'PENDING') update({ view: 'PENDING' });
+            }}
+          />
+        ))}
       {confirmingSubmit && (
         <Modal
           title={`Submit ${chosen.length} product${chosen.length === 1 ? '' : 's'} for approval?`}

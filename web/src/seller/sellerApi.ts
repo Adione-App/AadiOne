@@ -9,7 +9,7 @@
  * seller (attachSellerContext), never to anything the client sends.
  */
 
-import type { SellerProductDto, UnitType } from '@shared';
+import type { FoodDiet, SellerProductDto, UnitType } from '@shared';
 import { createApiClient, ApiRequestError } from '@/lib/api';
 import { uploadProductImage, type PresignedUpload } from '@/lib/upload';
 
@@ -258,18 +258,26 @@ export const LISTING_MAX_STOCK = 100_000;
  * created COMPLETE — its own MRP, selling price and opening stock included —
  * and waits as a draft until the seller submits its drafts for approval.
  */
+/**
+ * POST /seller/products. A marketplace product sends everything below; a
+ * restaurant / cafe FOOD item sends only category (menu section), name,
+ * description, selling price, diet and availability — no SKU, unit, MRP or
+ * stock (the backend fills the rest in).
+ */
 export interface CreateSellerProductRequest {
   categoryId: string;
   name: string;
   nameHi?: string | null;
   description?: string | null;
-  sku: string;
-  variantName: string;
-  unit: UnitType;
-  unitValue: number;
-  mrpPaise: number;
+  sku?: string;
+  variantName?: string;
+  unit?: UnitType;
+  unitValue?: number;
+  mrpPaise?: number;
   pricePaise: number;
-  stockQty: number;
+  stockQty?: number;
+  diet?: FoodDiet | null;
+  isAvailable?: boolean;
 }
 
 /**
@@ -277,7 +285,7 @@ export interface CreateSellerProductRequest {
  * changed (the backend refuses anything else). nameHi / description may be
  * cleared with null.
  */
-export type UpdateSellerProductRequest = Partial<Omit<CreateSellerProductRequest, 'nameHi' | 'description'>> & {
+export type UpdateSellerProductRequest = Partial<Omit<CreateSellerProductRequest, 'nameHi' | 'description' | 'isAvailable'>> & {
   nameHi?: string | null;
   description?: string | null;
 };
@@ -402,6 +410,8 @@ export interface SellerListingInventory {
   reservedQty: number;
   availableQty: number;
   isAvailable: boolean;
+  /** false = made-to-order food item: no stock count. */
+  tracksStock: boolean;
   lowStockThreshold: number;
   maxQtyPerOrder: number;
   productStatus: string;
@@ -452,6 +462,8 @@ export interface SellerMenuSection {
   slug: string;
   displayOrder: number;
   isActive: boolean;
+  /** Food items in the section (a section with items cannot be deleted). */
+  itemCount: number;
 }
 
 /* -------------------------------------------------------------------------- */

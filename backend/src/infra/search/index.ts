@@ -148,7 +148,7 @@ class PostgresSearchProvider implements SearchProvider {
         FROM product_variants v
         JOIN seller_listings sl ON sl.variant_id = v.id
         JOIN sellers s ON s.id = sl.seller_id
-          AND s.deleted_at IS NULL AND s.is_active AND s.onboarding_status = 'APPROVED' AND s.seller_type <> 'RESTAURANT'
+          AND s.deleted_at IS NULL AND s.is_active AND s.onboarding_status = 'APPROVED' AND s.seller_type NOT IN ('RESTAURANT', 'CAFE')
         WHERE v.product_id = m.product_id
           AND v.status = 'ACTIVE'
           AND v.deleted_at IS NULL

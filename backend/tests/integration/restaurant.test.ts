@@ -75,30 +75,17 @@ const createProduct = (token: string, categoryId: string, name: string) =>
   api()
     .post('/api/v1/seller/products')
     .set('Authorization', bearer(token))
-    // A menu item is created complete: price and stock come with it.
-    .send({
-      categoryId,
-      name,
-      sku: `SKU-${randomUUID().slice(0, 8)}`,
-      variantName: 'Full plate',
-      unit: 'PIECE',
-      unitValue: 1,
-      mrpPaise: 20000,
-      pricePaise: 19000,
-      stockQty: 20,
-    });
+    // A food item: selling price only — no MRP, SKU/unit or stock (made to order).
+    .send({ categoryId, name, variantName: 'Full plate', pricePaise: 19000 });
 
 /**
  * Sets the price of the item's own listing (created with the product) —
  * the seller's PATCH /seller/listings/:id. Resolves to the 200 response.
+ * A food item has a selling price only (its MRP mirrors it) and no stock.
  */
 async function listItem(token: string, variantId: string, pricePaise: number) {
   const listing = await prisma.sellerListing.findFirstOrThrow({ where: { variantId } });
-  return api()
-    .patch(`/api/v1/seller/listings/${listing.id}`)
-    .set('Authorization', bearer(token))
-    .send({ mrpPaise: pricePaise + 1000, pricePaise, stockQty: 20 })
-    .expect(200);
+  return api().patch(`/api/v1/seller/listings/${listing.id}`).set('Authorization', bearer(token)).send({ pricePaise }).expect(200);
 }
 
 /** Seller creates + submits; admin decides each item. Returns product -> variant. */
@@ -224,10 +211,15 @@ describe('food catalog, approval and listing gating', () => {
     const bListing = expectSuccess<{ id: string }>((await listItem(b.token, bItem.variantId, 12000)).body).data.id;
 
     expect((await api().patch(`/api/v1/seller/listings/${bListing}`).set('Authorization', bearer(a.token)).send({ pricePaise: 100 })).status).toBe(404);
-    const own = await api().patch(`/api/v1/seller/listings/${bListing}`).set('Authorization', bearer(b.token)).send({ pricePaise: 11000, stockQty: 25 }).expect(200);
-    expect(expectSuccess<{ pricePaise: number; stockQty: number }>(own.body).data).toMatchObject({ pricePaise: 11000, stockQty: 25 });
-    const ledger = await prisma.stockLedger.findFirstOrThrow({ where: { sellerListingId: bListing }, orderBy: { createdAt: 'desc' } });
-    expect([ledger.reason, ledger.delta]).toEqual(['MANUAL_ADJUST', 5]);
+    const own = await api().patch(`/api/v1/seller/listings/${bListing}`).set('Authorization', bearer(b.token)).send({ pricePaise: 11000, isAvailable: false }).expect(200);
+    expect(expectSuccess<{ pricePaise: number; mrpPaise: number; isAvailable: boolean; tracksStock: boolean }>(own.body).data).toMatchObject({
+      pricePaise: 11000,
+      mrpPaise: 11000,
+      isAvailable: false,
+      tracksStock: false,
+    });
+    // Food items are made to order: no stock to set.
+    expect((await api().patch(`/api/v1/seller/listings/${bListing}`).set('Authorization', bearer(b.token)).send({ stockQty: 25 })).status).toBe(400);
   });
 });
 

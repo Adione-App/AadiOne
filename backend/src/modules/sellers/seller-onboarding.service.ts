@@ -35,6 +35,7 @@ import {
   ErrorCode,
   SellerLifecycleStatus,
   SellerType,
+  isFoodSellerType,
   type AdminSellerOnboardingSummaryDto,
   type SellerDocumentDto,
   type SellerDocumentType,
@@ -458,9 +459,9 @@ export async function upsertRestaurantProfile(
 ) {
   const seller = await prisma.seller.findUnique({ where: { id: sellerId }, select: { sellerType: true } });
   if (!seller) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Seller not found.' });
-  if (seller.sellerType !== SellerType.RESTAURANT) {
+  if (!isFoodSellerType(seller.sellerType)) {
     throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message: 'Restaurant details only apply to a RESTAURANT-type seller.',
+      message: 'Restaurant details only apply to a restaurant or cafe seller.',
     });
   }
 

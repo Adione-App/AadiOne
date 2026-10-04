@@ -12,7 +12,7 @@
  * sellers' "Grocery › Rice" stay independent rows (merged only for display).
  */
 
-import { ErrorCode } from '../../shared';
+import { ErrorCode, isFoodSellerType } from '../../shared';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import { storage } from '../../infra/storage';
@@ -139,6 +139,13 @@ export async function createOwnSubcategory(
   const { parent } = await assertSellerMayCreateSubcategoryUnder(sellerId, input.parentId);
   const slug = subcategorySlug(input.name);
   await assertNoDuplicate(parent.id, slug);
+  // A menu section (food seller) goes to the end of its menu, so the seller's
+  // own section order (PUT /seller/menu-sections/order) is kept.
+  const position =
+    input.displayOrder ??
+    (parent.vertical === 'FOOD'
+      ? ((await prisma.category.aggregate({ where: { parentId: parent.id, deletedAt: null }, _max: { displayOrder: true } }))._max.displayOrder ?? -1) + 1
+      : 0);
 
   const created = await prisma.category.create({
     data: {
@@ -149,7 +156,7 @@ export async function createOwnSubcategory(
       slug,
       path: `${parent.path}/${slug}`,
       depth: parent.depth + 1,
-      displayOrder: input.displayOrder ?? 0,
+      displayOrder: position,
       isActive: true,
       vertical: parent.vertical,
     },
@@ -236,7 +243,10 @@ export async function deleteOwnSubcategory(sellerId: string, id: string, actorUs
   await runInTransaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM categories WHERE id = ${id}::uuid FOR UPDATE`;
     const linked = await tx.product.count({ where: { categoryId: id, deletedAt: null } });
-    if (linked > 0) throw linkedProductsError('subcategory', linked);
+    if (linked > 0) {
+      const seller = await tx.seller.findUnique({ where: { id: sellerId }, select: { sellerType: true } });
+      throw linkedProductsError('subcategory', linked, isFoodSellerType(seller?.sellerType));
+    }
     await tx.category.updateMany({ where: { id, sellerId, deletedAt: null }, data: { deletedAt: new Date() } });
   });
 

@@ -28,6 +28,7 @@ const LISTING_SELECT = {
   stockQty: true,
   reservedQty: true,
   isAvailable: true,
+  tracksStock: true,
   lowStockThreshold: true,
   maxQtyPerOrder: true,
   updatedAt: true,
@@ -85,6 +86,7 @@ function toDto(listing: ListingRow): SellerListingInventoryDto {
     stockQty: listing.stockQty,
     availableQty: Math.max(0, listing.stockQty - listing.reservedQty),
     isAvailable: listing.isAvailable,
+    tracksStock: listing.tracksStock,
     reservedQty: listing.reservedQty,
     lowStockThreshold: listing.lowStockThreshold,
     maxQtyPerOrder: listing.maxQtyPerOrder,
@@ -151,6 +153,10 @@ export async function updateOwnListing(
     });
   }
 
+  // A made-to-order food item has a selling price only: its MRP mirrors it.
+  if (!listing.tracksStock && input.pricePaise !== undefined) {
+    input = { ...input, mrpPaise: input.pricePaise };
+  }
   if (input.pricePaise !== undefined || input.mrpPaise !== undefined) {
     // Validates price <= MRP and writes the audit log (inventory.service).
     await inventoryService.updatePricing(

@@ -24,6 +24,7 @@
  * routes pass `undefined` for full cross-seller access (#26).
  */
 
+import { randomUUID } from 'node:crypto';
 import {
   ApprovalStatus,
   ErrorCode,
@@ -31,7 +32,10 @@ import {
   Permission,
   ProductStatus,
   StockLedgerReason,
+  UnitType as UnitTypeValue,
+  isFoodSellerType,
   type CursorPage,
+  type FoodDiet,
   type ProductApprovalBatchReviewDto,
   type UnitType,
 } from '../../shared';
@@ -102,14 +106,58 @@ export interface CreateSellerProductInput {
   name: string;
   nameHi?: string | null;
   description?: string | null;
-  sku: string;
-  variantName: string;
-  unit: UnitType;
-  unitValue: number;
-  /** The seller's own listing — part of a complete product, set BEFORE approval. */
-  mrpPaise: number;
+  /** Required for a marketplace product; a food item gets defaults (see foodDefaults). */
+  sku?: string;
+  variantName?: string;
+  unit?: UnitType;
+  unitValue?: number;
+  /** The seller's own listing — part of a complete product, set BEFORE approval.
+   * MRP and stock: marketplace products only (a food item has neither). */
+  mrpPaise?: number;
   pricePaise: number;
-  stockQty: number;
+  stockQty?: number;
+  /** Food items only. */
+  diet?: FoodDiet | null;
+  isAvailable?: boolean;
+}
+
+/**
+ * The fixed capacity a made-to-order food listing (tracksStock = false)
+ * carries: orders reserve against it but never use it up (inventory.service),
+ * so availability is the seller's on/off switch alone. Equals the listing
+ * routes' stock maximum.
+ */
+export const FOOD_ITEM_CAPACITY = 100_000;
+
+/** A food item's variant: one portion, no seller-visible SKU or unit. */
+function foodSku(): string {
+  return `FOOD-${randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase()}`;
+}
+
+async function sellerIsFood(sellerId: string): Promise<boolean> {
+  const seller = await prisma.seller.findUnique({ where: { id: sellerId }, select: { sellerType: true } });
+  return isFoodSellerType(seller?.sellerType);
+}
+
+/** A marketplace product is complete only with all of these (route schema leaves them optional for food). */
+function assertCompleteMarketplaceProduct(input: CreateSellerProductInput): asserts input is CreateSellerProductInput &
+  Required<Pick<CreateSellerProductInput, 'sku' | 'variantName' | 'unit' | 'unitValue' | 'mrpPaise' | 'stockQty'>> {
+  const missing = (
+    [
+      ['sku', 'SKU'],
+      ['variantName', 'variant name'],
+      ['unit', 'unit'],
+      ['unitValue', 'unit value'],
+      ['mrpPaise', 'MRP'],
+      ['stockQty', 'opening stock'],
+    ] as const
+  ).filter(([key]) => input[key] === undefined);
+  if (missing.length > 0) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message: `Enter the ${missing.map(([, label]) => label).join(', ')}.`,
+      details: missing.map(([key, label]) => ({ field: key, message: `${label} is required.` })),
+    });
+  }
 }
 
 /** Above this, a seller's single "Submit for Approval" is split across clicks. */
@@ -124,8 +172,33 @@ export async function createSellerProduct(
   // restaurant — menu section); another seller's is indistinguishable from a
   // missing one (seller-category.service).
   await assertSellerMayUseCategoryForProduct(sellerId, input.categoryId);
-  if (input.pricePaise > input.mrpPaise) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Selling price cannot be higher than MRP.' });
+  // Restaurant / cafe: a FOOD item — selling price + availability, no MRP and
+  // no stock count (made to order). Everyone else: the complete marketplace
+  // product, MRP + price + opening stock, exactly as before.
+  const food = await sellerIsFood(sellerId);
+  let listingData: { mrpPaise: number; pricePaise: number; stockQty: number; tracksStock: boolean; isAvailable: boolean };
+  let variantData: { sku: string; variantName: string; unit: UnitType; unitValue: number };
+  if (food) {
+    listingData = {
+      mrpPaise: input.pricePaise,
+      pricePaise: input.pricePaise,
+      stockQty: FOOD_ITEM_CAPACITY,
+      tracksStock: false,
+      isAvailable: input.isAvailable ?? true,
+    };
+    variantData = {
+      sku: input.sku?.trim() ? input.sku.trim().toUpperCase() : foodSku(),
+      variantName: input.variantName?.trim() || 'Regular',
+      unit: input.unit ?? UnitTypeValue.PIECE,
+      unitValue: input.unitValue ?? 1,
+    };
+  } else {
+    assertCompleteMarketplaceProduct(input);
+    if (input.pricePaise > input.mrpPaise) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Selling price cannot be higher than MRP.' });
+    }
+    listingData = { mrpPaise: input.mrpPaise, pricePaise: input.pricePaise, stockQty: input.stockQty, tracksStock: true, isAvailable: true };
+    variantData = { sku: input.sku.trim().toUpperCase(), variantName: input.variantName, unit: input.unit, unitValue: input.unitValue };
   }
 
   const created = await runInTransaction(async (tx) => {
@@ -146,16 +219,14 @@ export async function createSellerProduct(
         // case: admin-authored, pre-approved, no batch).
         approvalStatus: ApprovalStatus.PENDING,
         submittedBySellerId: sellerId,
+        ...(food && input.diet ? { attributes: { diet: input.diet } } : {}),
       },
     });
 
     const variant = await tx.productVariant.create({
       data: {
         productId: product.id,
-        sku: input.sku.trim().toUpperCase(),
-        variantName: input.variantName,
-        unit: input.unit,
-        unitValue: input.unitValue,
+        ...variantData,
         isDefault: true,
         status: ProductStatus.ACTIVE,
       },
@@ -165,16 +236,9 @@ export async function createSellerProduct(
     // is never saved half-complete. Invisible to customers until approved
     // (catalog/orderability gate on approvalStatus), so nothing sells early.
     const listing = await tx.sellerListing.create({
-      data: {
-        sellerId,
-        variantId: variant.id,
-        mrpPaise: input.mrpPaise,
-        pricePaise: input.pricePaise,
-        stockQty: input.stockQty,
-        isAvailable: true,
-      },
+      data: { sellerId, variantId: variant.id, ...listingData },
     });
-    if (listing.stockQty > 0) {
+    if (listing.tracksStock && listing.stockQty > 0) {
       await tx.stockLedger.create({
         data: {
           sellerListingId: listing.id,
@@ -201,9 +265,9 @@ export async function createSellerProduct(
         name: input.name,
         categoryId: input.categoryId,
         listingId: created.listingId,
-        mrpPaise: input.mrpPaise,
-        pricePaise: input.pricePaise,
-        stockQty: input.stockQty,
+        ...(food
+          ? { foodItem: true, pricePaise: listingData.pricePaise, isAvailable: listingData.isAvailable, diet: input.diet ?? null }
+          : { mrpPaise: listingData.mrpPaise, pricePaise: listingData.pricePaise, stockQty: listingData.stockQty }),
       },
     },
   });
@@ -270,8 +334,31 @@ async function applyListingChanges(
   if (!variantId) throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'This product has no variant to price.' });
   const listing = await prisma.sellerListing.findUnique({
     where: { sellerId_variantId: { sellerId, variantId } },
-    select: { id: true },
+    select: { id: true, tracksStock: true },
   });
+  // A food item has a selling price only: MRP follows it, there is no stock.
+  if (listing && !listing.tracksStock) {
+    if (input.pricePaise === undefined) return;
+    await updateOwnListing(sellerId, listing.id, { mrpPaise: input.pricePaise, pricePaise: input.pricePaise }, actorUserId);
+    return;
+  }
+  if (!listing && (await sellerIsFood(sellerId))) {
+    if (input.pricePaise === undefined) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Enter the selling price.' });
+    }
+    await prisma.sellerListing.create({
+      data: {
+        sellerId,
+        variantId,
+        mrpPaise: input.pricePaise,
+        pricePaise: input.pricePaise,
+        stockQty: FOOD_ITEM_CAPACITY,
+        tracksStock: false,
+        isAvailable: true,
+      },
+    });
+    return;
+  }
   if (listing) {
     await updateOwnListing(
       sellerId,
@@ -301,7 +388,7 @@ export async function updateSellerProduct(
   input: UpdateSellerProductInput,
   actorUserId: string,
 ) {
-  const { mrpPaise, pricePaise, stockQty, ...productInput } = input;
+  const { mrpPaise, pricePaise, stockQty, diet, isAvailable: _ignored, ...productInput } = input;
   input = productInput;
   const current = await loadEditableOwnProduct(sellerId, productId);
   const variant = await prisma.productVariant.findFirst({
@@ -342,6 +429,7 @@ export async function updateSellerProduct(
         ...(input.nameHi !== undefined ? { nameHi: input.nameHi } : {}),
         ...(input.description !== undefined ? { description: input.description } : {}),
         ...(input.categoryId !== undefined ? { categoryId: input.categoryId } : {}),
+        ...(diet !== undefined && (await sellerIsFood(sellerId)) ? { attributes: diet ? { diet } : {} } : {}),
       },
     });
     if (variant && variantChange) {
@@ -386,6 +474,45 @@ export async function updateSellerProduct(
   );
 
   return getOwnProduct(sellerId, productId);
+}
+
+/**
+ * DELETE /seller/products/:id — a restaurant / cafe removes one of its own
+ * FOOD items from its menu. Soft delete only: the product leaves the menu, the
+ * customer catalogue and every future order, while past orders keep their
+ * rows. An item still waiting in an approval batch is simply dropped from the
+ * review (approveBatch skips removed products). Marketplace products are not
+ * deletable here (their lifecycle is approval + show/hide), and another
+ * seller's item is NOT_FOUND.
+ */
+export async function deleteOwnFoodItem(sellerId: string, productId: string, actorUserId: string): Promise<{ id: string }> {
+  if (!(await sellerIsFood(sellerId))) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Only restaurant and cafe food items can be deleted.' });
+  }
+  const product = await prisma.product.findFirst({
+    where: { id: productId, deletedAt: null },
+    select: { id: true, name: true, categoryId: true, submittedBySellerId: true },
+  });
+  if (!product || product.submittedBySellerId !== sellerId) {
+    throw new AppError(ErrorCode.NOT_FOUND, { message: 'Food item not found.' });
+  }
+  const now = new Date();
+  await runInTransaction(async (tx) => {
+    await tx.product.updateMany({ where: { id: productId, deletedAt: null }, data: { deletedAt: now, status: ProductStatus.INACTIVE } });
+    // The listing stays (order history points at it) but can never be bought again.
+    await tx.sellerListing.updateMany({ where: { sellerId, variant: { productId } }, data: { isAvailable: false } });
+  });
+  await prisma.auditLog.create({
+    data: {
+      actorUserId,
+      action: 'product.seller_delete',
+      entityType: 'Product',
+      entityId: productId,
+      before: { name: product.name, categoryId: product.categoryId },
+      after: { deleted: true },
+    },
+  });
+  return { id: productId };
 }
 
 /**

@@ -2,7 +2,13 @@
  * Restaurant routes (V2 food module) — three audiences, three routers:
  *
  *   restaurantRouter        /restaurants              public, customer-facing
- *   sellerRestaurantRouter  /seller/menu-sections     a restaurant's own menu
+ *   sellerRestaurantRouter  /seller/menu-sections     a restaurant's / cafe's menu
+ *                                                     sections: list, create, reorder
+ *
+ * A food seller's MENU is its own category tree: menus are top categories and
+ * menu sections are subcategories, so renaming, hiding and deleting them (and
+ * creating menus) go through the ordinary /seller/categories and
+ * /seller/subcategories routes with the same ownership and delete rules.
  *   adminRestaurantRouter   /admin/restaurants        cross-restaurant view
  *
  * A restaurant's profile (cuisine / veg-only / prep time) is managed through
@@ -15,11 +21,12 @@ import { z } from 'zod';
 import { Permission } from '../../shared';
 import { asyncHandler, created, ok } from '../../common/response';
 import { validate } from '../../middleware/validate';
-import { requirePermission } from '../../middleware/auth';
+import { requirePermission, requireUser } from '../../middleware/auth';
 import { attachSellerContext, requireSellerId } from '../../middleware/sellerAuth';
 import * as service from './restaurant.service';
 
 const uuid = z.string().uuid();
+const sectionName = z.string().trim().min(2).max(120);
 
 /* customer ------------------------------------------------------------------ */
 
@@ -59,12 +66,22 @@ sellerRestaurantRouter.post(
   requirePermission(Permission.SELLER_CATALOG_MANAGE),
   validate({
     body: z.object({
-      name: z.string().trim().min(2).max(120),
+      name: sectionName,
+      menuId: uuid.optional(),
       displayOrder: z.number().int().min(0).max(10_000).optional(),
     }),
   }),
   asyncHandler(async (req: Request, res: Response) => {
-    created(res, await service.createMenuSection(requireSellerId(req), req.body));
+    created(res, await service.createMenuSection(requireSellerId(req), req.body, requireUser(req).id));
+  }),
+);
+
+sellerRestaurantRouter.put(
+  '/menu-sections/order',
+  requirePermission(Permission.SELLER_CATALOG_MANAGE),
+  validate({ body: z.object({ menuId: uuid, ids: z.array(uuid).min(1).max(500) }).strict() }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await service.reorderMenuSections(requireSellerId(req), req.body.menuId, req.body.ids, requireUser(req).id));
   }),
 );
 

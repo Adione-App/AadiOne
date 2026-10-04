@@ -21,15 +21,15 @@ import { Prisma, type Category } from "@prisma/client";
 import { ProductStatus } from "../../shared";
 import { prisma, type DbClient } from "../../infra/db/prisma";
 
-/** SQL predicate on `sellers s`: a live, non-restaurant marketplace seller. */
-export const MARKETPLACE_SELLER_SQL = Prisma.sql`s.deleted_at IS NULL AND s.is_active AND s.onboarding_status = 'APPROVED' AND s.seller_type <> 'RESTAURANT'`;
+/** SQL predicate on `sellers s`: a live marketplace seller — not a food seller (restaurant/cafe). */
+export const MARKETPLACE_SELLER_SQL = Prisma.sql`s.deleted_at IS NULL AND s.is_active AND s.onboarding_status = 'APPROVED' AND s.seller_type NOT IN ('RESTAURANT', 'CAFE')`;
 
 /** The same rule for Prisma `where` clauses on a listing's seller. */
 export const MARKETPLACE_SELLER_WHERE = {
   deletedAt: null,
   isActive: true,
   onboardingStatus: "APPROVED",
-  sellerType: { not: "RESTAURANT" },
+  sellerType: { notIn: ["RESTAURANT", "CAFE"] },
 } as const satisfies Prisma.SellerWhereInput;
 
 /**

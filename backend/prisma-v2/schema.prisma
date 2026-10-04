@@ -110,6 +110,9 @@ enum SellerType {
   HOME
   PHARMACY
   RESTAURANT
+  /// A cafe — a FOOD seller like RESTAURANT: menu sections + food items,
+  /// no MRP and no stock count (see SellerListing.tracksStock).
+  CAFE
   SPORTS
   BOOKS
   KIDS
@@ -1133,6 +1136,11 @@ model SellerListing {
   lowStockThreshold Int     @default(5) @map("low_stock_threshold")
   maxQtyPerOrder    Int     @default(10) @map("max_qty_per_order")
   isAvailable       Boolean @default(true) @map("is_available")
+  /// false = a made-to-order FOOD menu item (restaurant/cafe): no stock count.
+  /// Availability is `isAvailable` alone; stockQty holds a fixed capacity that
+  /// orders reserve against but never use up (inventory.service skips the
+  /// commit/restock arithmetic for these rows).
+  tracksStock       Boolean @default(true) @map("tracks_stock")
 
   allowCod CodPolicy @default(INHERIT) @map("allow_cod")
 

@@ -122,6 +122,16 @@ export async function verifyOtpAndAuthenticate(
 
   if (user) {
     assertUsable(user);
+    // OTP is the CUSTOMER sign-in. A seller account signs in only with its
+    // email and password (POST /auth/seller/login) — never with a mobile OTP,
+    // so an SMS code can never open the Seller Panel. Checked after the code
+    // is verified, so only the phone's owner learns why.
+    if (isSellerRole(user.role)) {
+      throw new AppError(ErrorCode.FORBIDDEN, {
+        message: 'This number belongs to a seller account. Sign in to the Seller Panel with your email and password.',
+        internalMessage: `OTP login refused for seller-role user ${user.id} (${user.role})`,
+      });
+    }
     await repository.touchLastLogin(user.id);
     // A password-signup account proves its number here, on the first OTP login.
     if (!user.mobileVerifiedAt) {
@@ -300,19 +310,21 @@ export async function loginWithPassword(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Seller panel — email + password, temporary passwords, change password      */
+/* Seller panel — email + password, change password                           */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Audit actions that decide whether a password is TEMPORARY: the latest of
- * the two for a user wins. An admin issuing seller credentials writes the
- * first; the user changing their own password writes the second. Kept in the
- * audit log (entityType 'User') rather than a new column, so every issue and
- * change is also on record.
+ * Audit actions that decide whether a password is TEMPORARY: the latest for
+ * a user wins. ISSUED_BY_ADMIN is history only — admins can no longer issue
+ * seller passwords (a password set that way before stays "change required"
+ * until the seller changes or resets it). The other two are the user choosing
+ * their own password. Kept in the audit log (entityType 'User') rather than a
+ * new column, so every change is also on record.
  */
 export const PASSWORD_AUDIT = {
   ISSUED_BY_ADMIN: 'seller_login.credentials_issued',
   CHANGED_BY_USER: 'auth.password_changed',
+  RESET_BY_USER: 'auth.password_reset',
 } as const;
 
 export async function isPasswordChangeRequired(userId: string): Promise<boolean> {
@@ -320,7 +332,7 @@ export async function isPasswordChangeRequired(userId: string): Promise<boolean>
     where: {
       entityType: 'User',
       entityId: userId,
-      action: { in: [PASSWORD_AUDIT.ISSUED_BY_ADMIN, PASSWORD_AUDIT.CHANGED_BY_USER] },
+      action: { in: [PASSWORD_AUDIT.ISSUED_BY_ADMIN, PASSWORD_AUDIT.CHANGED_BY_USER, PASSWORD_AUDIT.RESET_BY_USER] },
     },
     orderBy: { createdAt: 'desc' },
     select: { action: true },

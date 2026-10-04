@@ -3,7 +3,9 @@
 // =============================================================================
 //
 // This is the V2 redesign of the V1 single-store schema (see
-// prisma/schema.v1.backup.prisma for the frozen V1 reference). The
+// prisma/schema.prisma + prisma/migrations for the frozen V1 reference —
+// never generated, migrated or deployed on this branch; every Prisma command
+// here uses this file and prisma-v2/migrations, see prisma/README.md). The
 // fundamental shift: AdiOne is now a MARKETPLACE. AdiOne's own Grocery is one
 // Seller among many (`isPlatformOwned = true`), not a special case baked into
 // the schema.
@@ -453,6 +455,7 @@ model User {
 
   addresses          Address[]
   refreshTokens      RefreshToken[]
+  passwordResets     PasswordResetToken[]
   carts              Cart[]
   orders             Order[]
   notifications      Notification[]
@@ -507,6 +510,26 @@ model RefreshToken {
   /// Family revocation on reuse detection.
   @@index([familyId])
   @@map("refresh_tokens")
+}
+
+/// A seller "Forgot Password?" request (auth/password-reset.service.ts).
+/// Only the SHA-256 of the emailed token is stored. Single-use (`usedAt`,
+/// claimed atomically) and short-lived (`expiresAt`); a newer request
+/// invalidates the older unused ones.
+model PasswordResetToken {
+  id        String @id @default(uuid()) @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+  tokenHash String @unique @map("token_hash") @db.Char(64)
+
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz(3)
+  usedAt      DateTime? @map("used_at") @db.Timestamptz(3)
+  requestedIp String?   @map("requested_ip") @db.VarChar(64)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("password_reset_tokens")
 }
 
 model Address {

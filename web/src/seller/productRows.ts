@@ -75,7 +75,8 @@ export function rowsOf(products: SellerProductInventory[], listings: SellerListi
       productId: p.id,
       productShown: p.status === 'ACTIVE',
       adminLocked: p.status === 'ARCHIVED' || VISIBILITY[p.visibility.reason].admin === true,
-      canStartSelling: p.approvalStatus === 'APPROVED' && !p.listing && p.defaultVariant !== null,
+      // An older product saved before price/stock were part of the form.
+      canStartSelling: !p.listing && p.defaultVariant !== null && p.status !== 'ARCHIVED',
       product: p,
       updatedAt: later(p.updatedAt, listingUpdatedAt),
     };
@@ -142,10 +143,12 @@ export function attentionOf(row: ProductRow): Attention | null {
     return { kind: 'HIDDEN', label: 'Hidden from customers', tone: 'gray', action: 'Show it', href: `${row.href}#visibility` };
   }
   if (row.draft) {
-    return { kind: 'DRAFT', label: 'Draft · not submitted', tone: 'gray', action: 'Submit', href: `${row.href}#approval` };
+    return row.listing
+      ? { kind: 'DRAFT', label: 'Ready for Submission', tone: 'blue', action: 'Submit for Approval', href: '/seller/products?approval=READY' }
+      : { kind: 'DRAFT', label: 'Draft · needs price & stock', tone: 'gray', action: 'Add price & stock', href: `${row.href}#pricing` };
   }
   if (row.approval === 'PENDING') {
-    return { kind: 'PENDING', label: 'Pending approval', tone: 'amber', action: 'View', href: row.href };
+    return { kind: 'PENDING', label: 'Pending Approval', tone: 'amber', action: 'View', href: row.href };
   }
   return null;
 }

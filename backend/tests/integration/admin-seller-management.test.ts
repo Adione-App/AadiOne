@@ -22,15 +22,16 @@ import {
   type AdminSellerOnboardingSummaryDto,
   type ApprovalStatus,
   type CursorPage,
-  type ProductApprovalBatchDto,
+  type ProductApprovalBatchSummaryDto,
   type SellerListingDto,
   type SellerOnboardingDetailDto,
+  type SellerLifecycleStatus,
   type SellerProductDto,
   type SellerType,
 } from '../../src/shared';
 import { api, bearer, expectError, expectSuccess, loginAs } from '../helpers/api';
 import { prisma, truncateAll } from '../helpers/db';
-import { seedProduct } from '../helpers/fixtures';
+import { seedProduct, sellerLifecycleFields } from '../helpers/fixtures';
 import { hashPassword } from '../../src/common/crypto';
 import { AppError } from '../../src/common/errors';
 import { cache } from '../../src/infra/cache';
@@ -71,6 +72,9 @@ interface SeedSellerOptions {
   city?: string;
   sellerType?: SellerType;
   onboardingStatus?: ApprovalStatus;
+  /** Overrides the lifecycle state `sellerLifecycleFields` derives from
+   * `onboardingStatus` (it must still agree with it — DB CHECK). */
+  lifecycleStatus?: SellerLifecycleStatus;
   isActive?: boolean;
   isAcceptingOrders?: boolean;
   isPlatformOwned?: boolean;
@@ -92,7 +96,8 @@ async function seedSeller(options: SeedSellerOptions): Promise<string> {
       pincode: '332001',
       latitude: 27.62,
       longitude: 75.14,
-      onboardingStatus: options.onboardingStatus ?? 'PENDING',
+      ...sellerLifecycleFields(options.onboardingStatus ?? 'PENDING'),
+      ...(options.lifecycleStatus ? { lifecycleStatus: options.lifecycleStatus } : {}),
       isActive: options.isActive ?? true,
       deletedAt: options.deletedAt ?? null,
       ...(options.createdAt ? { createdAt: options.createdAt } : {}),
@@ -126,6 +131,17 @@ async function seedCompleteOnboarding(sellerId: string): Promise<string> {
     data: { sellerId, type: 'PAN_CARD', fileUrl: SECRET_DOC_URL },
   });
   return document.id;
+}
+
+/** What `seedCompleteOnboarding` leaves out of the onboarding checklist
+ * (seller-lifecycle-rules.ts): the owner's email, and a PAN document that is
+ * an uploaded PDF carrying its number. */
+async function completeChecklist(sellerId: string): Promise<void> {
+  await prisma.sellerProfile.update({ where: { sellerId }, data: { ownerEmail: 'owner@directory.adione.test' } });
+  await prisma.sellerDocument.updateMany({
+    where: { sellerId, type: 'PAN_CARD' },
+    data: { documentNumber: RAW_PAN, fileKey: `seller-documents/${sellerId}/pan.pdf` },
+  });
 }
 
 async function seedSellerWithOwner(mobile: string, name: string): Promise<string> {
@@ -198,19 +214,12 @@ function step2Calls(sellerId: string) {
   const base = `/api/v1/admin/sellers/${sellerId}`;
   return [
     ['PATCH status', () => api().patch(`${base}/status`).send({ isActive: false, reason: 'Security check' })],
-    ['PATCH seller', () => api().patch(base).send({ name: 'Renamed Seller' })],
-    ['PUT profile', () => api().put(`${base}/onboarding/profile`).send(adminProfileBody())],
-    ['PUT bank-detail', () => api().put(`${base}/onboarding/bank-detail`).send(adminBankBody())],
     [
       'PATCH verify',
       () =>
         api()
           .patch(`${base}/onboarding/bank-detail/verify`)
           .send({ bankDetailId: randomUUID(), expectedUpdatedAt: new Date().toISOString() }),
-    ],
-    [
-      'POST document',
-      () => api().post(`${base}/onboarding/documents`).send({ type: 'PAN_CARD', fileUrl: 'https://files.adione.test/x.pdf' }),
     ],
     ['GET listings', () => api().get(`${base}/listings`)],
     ['GET products', () => api().get(`${base}/products`)],
@@ -341,9 +350,9 @@ describe('admin seller list', () => {
     expect(names(await listSellers(token, '?onboardingStatus=PENDING'))).toEqual(['Status Pending']);
   });
 
-  it('filters by computed stage in the query (complete vs incomplete PENDING)', async () => {
+  it('filters by stage, derived from the lifecycle state (submitted for review vs still onboarding)', async () => {
     const token = await loginAdmin();
-    const complete = await seedSeller({ name: 'Stage Complete' });
+    const complete = await seedSeller({ name: 'Stage Complete', lifecycleStatus: 'ONBOARDING_PENDING_REVIEW' });
     await seedCompleteOnboarding(complete);
     await seedSeller({ name: 'Stage Incomplete' });
     await seedSeller({ name: 'Stage Approved', onboardingStatus: 'APPROVED' });
@@ -457,14 +466,20 @@ describe('admin seller detail', () => {
     expect(detail.staff[0]).toMatchObject({ role: 'OWNER', mobile: '9500000110', isActive: true });
   });
 
-  it('includes the computed stage', async () => {
+  it('includes the stage (from the lifecycle) and completeness (from the onboarding checklist)', async () => {
     const token = await loginAdmin();
     const incomplete = await seedSeller({ name: 'Detail Incomplete' });
-    const complete = await seedSeller({ name: 'Detail Complete' });
+    const complete = await seedSeller({ name: 'Detail Complete', lifecycleStatus: 'ONBOARDING_PENDING_REVIEW' });
     await seedCompleteOnboarding(complete);
+    await completeChecklist(complete);
 
-    expect(await getDetail(token, incomplete)).toMatchObject({ stage: 'PENDING', isComplete: false });
+    expect(await getDetail(token, incomplete)).toMatchObject({
+      lifecycleStatus: 'ONBOARDING_PENDING',
+      stage: 'PENDING',
+      isComplete: false,
+    });
     expect(await getDetail(token, complete)).toMatchObject({
+      lifecycleStatus: 'ONBOARDING_PENDING_REVIEW',
       stage: 'SUBMITTED',
       isComplete: true,
       documentSummary: { total: 1, pending: 1, verified: 0, rejected: 0 },
@@ -473,26 +488,32 @@ describe('admin seller detail', () => {
 
   it('includes the latest onboarding rejection reason from the audit log', async () => {
     const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Rejected Seller' });
+    const sellerId = await seedSeller({ name: 'Rejected Seller', lifecycleStatus: 'ONBOARDING_PENDING_REVIEW' });
     await seedCompleteOnboarding(sellerId);
+    const rejectAtGate2 = (reason: string) =>
+      api()
+        .patch(`/api/v1/admin/sellers/${sellerId}/verification/review`)
+        .set('Authorization', bearer(token))
+        .send({ decision: 'REJECT', reason })
+        .expect(200);
 
-    await api()
-      .patch(`/api/v1/admin/sellers/${sellerId}/onboarding/review`)
-      .set('Authorization', bearer(token))
-      .send({ status: 'REJECTED', reason: 'PAN scan is blurry' })
-      .expect(200);
+    await rejectAtGate2('PAN scan is blurry');
 
     const first = await getDetail(token, sellerId);
-    expect(first).toMatchObject({ stage: 'REJECTED', lastRejectionReason: 'PAN scan is blurry' });
+    expect(first).toMatchObject({
+      lifecycleStatus: 'ONBOARDING_REJECTED',
+      stage: 'REJECTED',
+      lastRejectionReason: 'PAN scan is blurry',
+    });
     expect(first.lastRejectedAt).not.toBeNull();
 
-    // A second review round: only the LATEST rejection is reported.
-    await prisma.seller.update({ where: { id: sellerId }, data: { onboardingStatus: 'PENDING' } });
-    await api()
-      .patch(`/api/v1/admin/sellers/${sellerId}/onboarding/review`)
-      .set('Authorization', bearer(token))
-      .send({ status: 'REJECTED', reason: 'Bank proof missing' })
-      .expect(200);
+    // A second review round (Gate 2 rejection is terminal, so the round is
+    // re-opened directly in the database): only the LATEST rejection is reported.
+    await prisma.seller.update({
+      where: { id: sellerId },
+      data: { onboardingStatus: 'PENDING', lifecycleStatus: 'ONBOARDING_PENDING_REVIEW' },
+    });
+    await rejectAtGate2('Bank proof missing');
     expect((await getDetail(token, sellerId)).lastRejectionReason).toBe('Bank proof missing');
   });
 
@@ -546,7 +567,8 @@ describe('admin seller detail', () => {
 describe('onboarding review queue', () => {
   it('returns masked PAN, Aadhaar and bank account numbers', async () => {
     const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Queue Masked Seller' });
+    // The Gate 2 queue holds sellers that submitted their onboarding.
+    const sellerId = await seedSeller({ name: 'Queue Masked Seller', lifecycleStatus: 'ONBOARDING_PENDING_REVIEW' });
     await seedCompleteOnboarding(sellerId);
 
     const res = await api().get('/api/v1/admin/sellers/onboarding').set('Authorization', bearer(token)).expect(200);
@@ -872,225 +894,37 @@ describe('admin seller status', () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* PATCH /admin/sellers/:sellerId                                             */
+/* Admin onboarding is read-only (two-gate lifecycle)                         */
 /* -------------------------------------------------------------------------- */
 
-describe('admin seller basic edit', () => {
-  const edit = (token: string, sellerId: string, body: unknown) =>
-    api().patch(`/api/v1/admin/sellers/${sellerId}`).set('Authorization', bearer(token)).send(body as object);
-
-  it('edits the allowed fields', async () => {
+// The two-gate lifecycle removed admin's seller edit and onboarding data-entry
+// routes (PATCH /admin/sellers/:id, PUT .../onboarding/profile,
+// PUT .../onboarding/bank-detail, POST .../onboarding/documents): onboarding
+// data is the seller's own, and admin asks for corrections with Gate 2
+// "request changes". The tests of those routes were replaced by this one.
+describe('admin onboarding is read-only', () => {
+  it('has no admin route that edits a seller or writes its onboarding data — 404, nothing written', async () => {
     const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Editable Seller' });
+    const sellerId = await seedSeller({ name: 'Read Only Seller' });
+    const base = `/api/v1/admin/sellers/${sellerId}`;
 
-    const res = await edit(token, sellerId, {
-      name: 'Edited Seller',
-      phone: '9812345678',
-      addressLine: 'New Market, Shop 4',
-      city: 'Jaipur',
-      state: 'Rajasthan',
-      pincode: '302001',
-      latitude: 26.91,
-      longitude: 75.79,
-    }).expect(200);
-
-    expect(expectSuccess<AdminSellerDetailDto>(res.body).data).toMatchObject({
-      name: 'Edited Seller',
-      phone: '9812345678',
-      addressLine: 'New Market, Shop 4',
-      city: 'Jaipur',
-      pincode: '302001',
-      latitude: 26.91,
-      longitude: 75.79,
-      sellerType: 'GROCERY',
-      onboardingStatus: 'PENDING',
-      isActive: true,
-    });
-  });
-
-  it('refuses sellerType, isActive and onboardingStatus (and anything else unlisted)', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Locked Fields Seller' });
-
-    for (const body of [
-      { sellerType: 'RESTAURANT' },
-      { isActive: false },
-      { onboardingStatus: 'APPROVED' },
-      { name: 'Sneaky', isAcceptingOrders: false },
-      { defaultCommissionBp: 0 },
-      { deletedAt: new Date().toISOString() },
-    ]) {
-      const res = await edit(token, sellerId, body);
-      expect(res.status).toBe(400);
-      expect(expectError(res.body).code).toBe(ErrorCode.VALIDATION_ERROR);
+    const removed = [
+      ['PATCH seller', () => api().patch(base).send({ name: 'Renamed Seller' })],
+      ['PUT profile', () => api().put(`${base}/onboarding/profile`).send(adminProfileBody())],
+      ['PUT bank-detail', () => api().put(`${base}/onboarding/bank-detail`).send(adminBankBody())],
+      ['POST document', () => api().post(`${base}/onboarding/documents`).send({ type: 'PAN_CARD', documentNumber: RAW_PAN })],
+    ] as const;
+    for (const [label, call] of removed) {
+      expect((await call().set('Authorization', bearer(token))).status, label).toBe(404);
     }
-    const seller = await prisma.seller.findUniqueOrThrow({ where: { id: sellerId } });
-    expect(seller).toMatchObject({
-      name: 'Locked Fields Seller',
-      sellerType: 'GROCERY',
-      isActive: true,
-      isAcceptingOrders: true,
-      onboardingStatus: 'PENDING',
-      deletedAt: null,
-    });
-  });
 
-  it('returns 400 for out-of-range values', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Validated Edit Seller' });
-
-    for (const body of [
-      { name: 'N'.repeat(121) },
-      { city: 'C'.repeat(81) },
-      { state: 'S'.repeat(81) },
-      { pincode: '12345' },
-      { phone: '12345' },
-      { latitude: 26.91 },
-      { latitude: 91, longitude: 75 },
-      { latitude: 0, longitude: 0 },
-      {},
-    ]) {
-      const res = await edit(token, sellerId, body);
-      expect(res.status).toBe(400);
-    }
-    expect((await prisma.seller.findUniqueOrThrow({ where: { id: sellerId } })).name).toBe('Validated Edit Seller');
-  });
-
-  it('audits only the fields that changed, with before and after', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Audited Edit Seller', city: 'Sikar' });
-
-    await edit(token, sellerId, { name: 'Audited Edit Seller', city: 'Churu' }).expect(200);
-
-    const entries = await auditRows('seller.update');
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({
-      actorUserId: await adminUserId(),
-      entityType: 'Seller',
-      entityId: sellerId,
-      before: { city: 'Sikar' },
-      after: { changedFields: ['city'], city: 'Churu' },
-    });
-
-    // A request that changes nothing writes nothing.
-    await edit(token, sellerId, { city: 'Churu' }).expect(200);
-    expect(await auditRows('seller.update')).toHaveLength(1);
-  });
-
-  it('refuses the platform seller and a deleted seller', async () => {
-    const token = await loginAdmin();
-    const platformId = await seedSeller({ name: 'Platform Edit Store', isPlatformOwned: true });
-    const deletedId = await seedSeller({ name: 'Deleted Edit Seller', deletedAt: new Date() });
-
-    expect((await edit(token, platformId, { name: 'Renamed Platform' })).status).toBe(400);
-    expect((await edit(token, deletedId, { name: 'Renamed Deleted' })).status).toBe(404);
-  });
-});
-
-/* -------------------------------------------------------------------------- */
-/* Admin onboarding data entry                                                */
-/* -------------------------------------------------------------------------- */
-
-describe('admin onboarding data entry', () => {
-  const putProfile = (token: string, sellerId: string, body: unknown) =>
-    api().put(`/api/v1/admin/sellers/${sellerId}/onboarding/profile`).set('Authorization', bearer(token)).send(body as object);
-  const putBank = (token: string, sellerId: string, body: unknown) =>
-    api().put(`/api/v1/admin/sellers/${sellerId}/onboarding/bank-detail`).set('Authorization', bearer(token)).send(body as object);
-
-  it('creates, then updates, the business profile — masked in the response, audited as ADMIN', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Stuck Seller', sellerType: 'RESTAURANT' });
-
-    const created = await putProfile(token, sellerId, adminProfileBody()).expect(200);
-    const createdData = expectSuccess<AdminSellerOnboardingSummaryDto>(created.body).data;
-    expect(createdData.profile).toMatchObject({
-      businessName: 'QA Admin Entry Business (DEV)',
-      panNumber: 'ABC******F',
-      aadhaarNumber: '123********2',
-    });
-    expectNoRawPii(created.body);
-
-    const updated = await putProfile(token, sellerId, adminProfileBody({ businessName: 'Renamed Business (DEV)' })).expect(200);
-    expect(expectSuccess<AdminSellerOnboardingSummaryDto>(updated.body).data.profile!.businessName).toBe('Renamed Business (DEV)');
-    expect(await prisma.sellerProfile.count({ where: { sellerId } })).toBe(1);
-
-    // Type, status and ownership untouched.
-    expect(await prisma.seller.findUniqueOrThrow({ where: { id: sellerId } })).toMatchObject({
-      sellerType: 'RESTAURANT',
-      onboardingStatus: 'PENDING',
-      isActive: true,
-    });
-
-    const entries = await auditRows('seller_profile.update');
-    expect(entries).toHaveLength(2);
-    expect(entryWhere(entries, true).after).toMatchObject({ sellerId, source: 'ADMIN', created: true });
-    expect(entryWhere(entries, false)).toMatchObject({
-      before: { businessName: 'QA Admin Entry Business (DEV)' },
-      after: { source: 'ADMIN', created: false, changedFields: ['businessName'], businessName: 'Renamed Business (DEV)' },
-    });
-    // PAN/Aadhaar are recorded by field name only, never by value.
-    expectNoRawPii(entries);
-  });
-
-  it('creates, then updates, the bank detail — masked in the response', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Bank Entry Seller' });
-
-    const created = await putBank(token, sellerId, adminBankBody()).expect(200);
-    expect(expectSuccess<AdminSellerOnboardingSummaryDto>(created.body).data.bankDetail).toMatchObject({
-      accountHolderName: 'QA Payout Owner (DEV)',
-      accountNumber: '********4321',
-      ifscCode: 'HDFC0000002',
-      isVerified: false,
-    });
-
-    const updated = await putBank(token, sellerId, adminBankBody({ accountNumber: RAW_ACCOUNT, bankName: 'HDFC Bank' })).expect(200);
-    expect(expectSuccess<AdminSellerOnboardingSummaryDto>(updated.body).data.bankDetail).toMatchObject({
-      accountNumber: '********6789',
-      bankName: 'HDFC Bank',
-    });
-    expect(JSON.stringify(created.body)).not.toContain(NEW_RAW_ACCOUNT);
-    expect(JSON.stringify(updated.body)).not.toContain(RAW_ACCOUNT);
-    expect(await prisma.sellerBankDetail.count({ where: { sellerId } })).toBe(1);
-  });
-
-  it('validates bank data like the seller route does', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Bank Validation Seller' });
-
-    for (const overrides of [{ ifscCode: 'NOTVALID12' }, { accountNumber: '12AB' }, { accountHolderName: '' }]) {
-      expect((await putBank(token, sellerId, adminBankBody(overrides))).status).toBe(400);
-    }
+    expect(await prisma.seller.findUniqueOrThrow({ where: { id: sellerId } })).toMatchObject({ name: 'Read Only Seller' });
+    expect(await prisma.sellerProfile.count({ where: { sellerId } })).toBe(0);
     expect(await prisma.sellerBankDetail.count({ where: { sellerId } })).toBe(0);
-  });
-
-  it('un-sticks a seller: admin-entered profile + bank make the application reviewable and approvable', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Unstuck Seller' });
-    await prisma.sellerDocument.create({ data: { sellerId, type: 'PAN_CARD', fileUrl: SECRET_DOC_URL } });
-
-    await putProfile(token, sellerId, adminProfileBody()).expect(200);
-    const bank = await putBank(token, sellerId, adminBankBody()).expect(200);
-    expect(expectSuccess<AdminSellerOnboardingSummaryDto>(bank.body).data.stage).toBe('SUBMITTED');
-
-    await api()
-      .patch(`/api/v1/admin/sellers/${sellerId}/onboarding/review`)
-      .set('Authorization', bearer(token))
-      .send({ status: 'APPROVED' })
-      .expect(200);
-    expect((await getDetail(token, sellerId)).stage).toBe('APPROVED');
-  });
-
-  it('is NOT_FOUND for a deleted seller', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Deleted Entry Seller', deletedAt: new Date() });
-
-    expect((await putProfile(token, sellerId, adminProfileBody())).status).toBe(404);
-    expect((await putBank(token, sellerId, adminBankBody())).status).toBe(404);
-    expect(await prisma.sellerProfile.count()).toBe(0);
-    expect(await prisma.sellerBankDetail.count()).toBe(0);
+    expect(await prisma.sellerDocument.count({ where: { sellerId } })).toBe(0);
   });
 });
+
 
 /* -------------------------------------------------------------------------- */
 /* Bank verification                                                          */
@@ -1106,21 +940,20 @@ describe('bank verification', () => {
   const review = async (token: string, sellerId: string) => reviewedBank(await getDetail(token, sellerId));
 
   it('every edit leaves the account unverified — including one that was verified', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Reset Verify Seller' });
+    // Bank details are edited only by the seller (admin onboarding is read-only).
+    const sellerId = await seedSellerWithOwner('9500000270', 'Reset Verify Seller');
     await seedCompleteOnboarding(sellerId);
     await prisma.sellerBankDetail.update({ where: { sellerId }, data: { isVerified: true } });
 
-    const res = await api()
-      .put(`/api/v1/admin/sellers/${sellerId}/onboarding/bank-detail`)
-      .set('Authorization', bearer(token))
+    await api()
+      .put('/api/v1/seller/onboarding/bank-detail')
+      .set('Authorization', bearer(await loginSeller('9500000270')))
       .send(adminBankBody())
       .expect(200);
-    expect(expectSuccess<AdminSellerOnboardingSummaryDto>(res.body).data.bankDetail!.isVerified).toBe(false);
     expect((await prisma.sellerBankDetail.findUniqueOrThrow({ where: { sellerId } })).isVerified).toBe(false);
 
     const [entry] = await auditRows('seller_bank_detail.update');
-    expect(entry!.after).toMatchObject({ source: 'ADMIN', verificationReset: true, isVerified: false });
+    expect(entry!.after).toMatchObject({ source: 'SELLER', verificationReset: true, isVerified: false });
   });
 
   it('verifies the reviewed account, audited, and responds masked', async () => {
@@ -1189,13 +1022,14 @@ describe('bank verification', () => {
 
   it('is 409 even when the new account shares the last 4 digits (why last-4 is not the token)', async () => {
     const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Same Last4 Seller' });
+    const sellerId = await seedSellerWithOwner('9500000271', 'Same Last4 Seller');
     await seedCompleteOnboarding(sellerId); // …6789
     const reviewed = await review(token, sellerId);
 
+    // The seller changes the account after the admin reviewed it.
     await api()
-      .put(`/api/v1/admin/sellers/${sellerId}/onboarding/bank-detail`)
-      .set('Authorization', bearer(token))
+      .put('/api/v1/seller/onboarding/bank-detail')
+      .set('Authorization', bearer(await loginSeller('9500000271')))
       .send(adminBankBody({ accountNumber: '999999996789' }))
       .expect(200);
 
@@ -1234,13 +1068,6 @@ describe('bank verification', () => {
   it('cannot be set by the client: isVerified in any body is refused or ignored', async () => {
     const token = await loginAdmin();
     const sellerId = await seedSellerWithOwner('9500000210', 'Client Verify Seller');
-
-    // Admin data entry is strict — the field is a 400.
-    const adminPut = await api()
-      .put(`/api/v1/admin/sellers/${sellerId}/onboarding/bank-detail`)
-      .set('Authorization', bearer(token))
-      .send(adminBankBody({ isVerified: true }));
-    expect(adminPut.status).toBe(400);
 
     // The verify endpoint accepts the reviewed id/version only — strict.
     expect((await verify(token, sellerId, { isVerified: true })).status).toBe(400);
@@ -1286,7 +1113,7 @@ describe('bank verification', () => {
 describe('seller-side onboarding changes', () => {
   it('an APPROVED seller changing its bank account: unverified, audited (masked), flagged for admin', async () => {
     const sellerId = await seedSellerWithOwner('9500000220', 'Approved Payout Seller');
-    await prisma.seller.update({ where: { id: sellerId }, data: { onboardingStatus: 'APPROVED' } });
+    await prisma.seller.update({ where: { id: sellerId }, data: sellerLifecycleFields('APPROVED') });
     await seedCompleteOnboarding(sellerId);
     await prisma.sellerBankDetail.update({ where: { sellerId }, data: { isVerified: true } });
     const bank = await prisma.sellerBankDetail.findUniqueOrThrow({ where: { sellerId } });
@@ -1331,16 +1158,19 @@ describe('seller-side onboarding changes', () => {
   it("the seller's own profile changes are audited, PAN/Aadhaar by field name only", async () => {
     const sellerId = await seedSellerWithOwner('9500000221', 'Profile Audit Seller');
     const token = await loginSeller('9500000221');
+    // The seller route validates Aadhaar (12 digits, first digit 2-9), which
+    // the RAW_AADHAAR fixture predates.
+    const validAadhaar = '234567890123';
 
     await api()
       .put('/api/v1/seller/onboarding/profile')
       .set('Authorization', bearer(token))
-      .send(adminProfileBody())
+      .send(adminProfileBody({ aadhaarNumber: validAadhaar }))
       .expect(200);
     await api()
       .put('/api/v1/seller/onboarding/profile')
       .set('Authorization', bearer(token))
-      .send(adminProfileBody({ panNumber: 'ZZZZZ9999Z' }))
+      .send(adminProfileBody({ aadhaarNumber: validAadhaar, panNumber: 'ZZZZZ9999Z' }))
       .expect(200);
 
     const entries = await auditRows('seller_profile.update');
@@ -1353,6 +1183,7 @@ describe('seller-side onboarding changes', () => {
     });
     expectNoRawPii(entries);
     expect(JSON.stringify(entries)).not.toContain('ZZZZZ9999Z');
+    expect(JSON.stringify(entries)).not.toContain(validAadhaar);
   });
 });
 
@@ -1455,7 +1286,7 @@ describe('approval batch sellerId filter', () => {
   }
 
   const listBatches = async (token: string, query: string) =>
-    expectSuccess<CursorPage<ProductApprovalBatchDto>>(
+    expectSuccess<CursorPage<ProductApprovalBatchSummaryDto>>(
       (await api().get(`/api/v1/admin/approval-batches${query}`).set('Authorization', bearer(token)).expect(200)).body,
     ).data;
 
@@ -1640,10 +1471,6 @@ describe('Step 2 security', () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* STEP 2.5 — POST /admin/sellers/:sellerId/onboarding/documents              */
-/* -------------------------------------------------------------------------- */
-
-/* -------------------------------------------------------------------------- */
 /* STEP 4.5 — GET /admin/sellers/:sellerId/onboarding/summary (masked read)   */
 /* -------------------------------------------------------------------------- */
 
@@ -1723,7 +1550,7 @@ describe('masked onboarding summary', () => {
 
   it('returns review metadata and rejection reasons (document and onboarding)', async () => {
     const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Summary Review Seller' });
+    const sellerId = await seedSeller({ name: 'Summary Review Seller', lifecycleStatus: 'ONBOARDING_PENDING_REVIEW' });
     const documentId = await seedCompleteOnboarding(sellerId);
 
     await api()
@@ -1732,14 +1559,15 @@ describe('masked onboarding summary', () => {
       .send({ status: 'REJECTED', rejectionReason: 'Photo is blurry' })
       .expect(200);
     await api()
-      .patch(`/api/v1/admin/sellers/${sellerId}/onboarding/review`)
+      .patch(`/api/v1/admin/sellers/${sellerId}/verification/review`)
       .set('Authorization', bearer(token))
-      .send({ status: 'REJECTED', reason: 'Identity document rejected' })
+      .send({ decision: 'REJECT', reason: 'Identity document rejected' })
       .expect(200);
 
     const { data } = await getSummary(token, sellerId);
     expect(data).toMatchObject({
       onboardingStatus: 'REJECTED',
+      lifecycleStatus: 'ONBOARDING_REJECTED',
       stage: 'REJECTED',
       lastRejectionReason: 'Identity document rejected',
       // The only identity document is rejected, so that requirement is unmet.
@@ -1782,224 +1610,6 @@ describe('masked onboarding summary', () => {
 
     const { data } = await getSummary(token, sellerB);
     expect(data).toMatchObject({ sellerId: sellerB, profile: null, bankDetail: null, documents: [] });
-  });
-});
-
-describe('profile PAN/Aadhaar keep-on-omit (masked fields a form can never echo back)', () => {
-  const putProfile = (token: string, sellerId: string, body: Record<string, unknown>) =>
-    api().put(`/api/v1/admin/sellers/${sellerId}/onboarding/profile`).set('Authorization', bearer(token)).send(body);
-
-  it('omitting PAN/Aadhaar keeps them; null clears them; a value replaces them', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Keep PAN Seller' });
-    await putProfile(token, sellerId, adminProfileBody()).expect(200);
-
-    // Edit only the business name — PAN/Aadhaar omitted, as the admin form does.
-    const { panNumber: _p, aadhaarNumber: _a, ...withoutIds } = adminProfileBody({ businessName: 'Renamed Keep Business' });
-    await putProfile(token, sellerId, withoutIds).expect(200);
-    let row = await prisma.sellerProfile.findUniqueOrThrow({ where: { sellerId } });
-    expect(row).toMatchObject({ businessName: 'Renamed Keep Business', panNumber: RAW_PAN, aadhaarNumber: RAW_AADHAAR });
-
-    // An omitted-only save changes nothing sensitive, so it is not audited as a PAN change.
-    const entries = await auditRows('seller_profile.update');
-    expect(entryWhere(entries, false).after).toMatchObject({ changedFields: ['businessName'] });
-
-    await putProfile(token, sellerId, { ...withoutIds, panNumber: 'NEWPN1234N' }).expect(200);
-    row = await prisma.sellerProfile.findUniqueOrThrow({ where: { sellerId } });
-    expect(row).toMatchObject({ panNumber: 'NEWPN1234N', aadhaarNumber: RAW_AADHAAR });
-
-    await putProfile(token, sellerId, { ...withoutIds, panNumber: null, aadhaarNumber: null }).expect(200);
-    row = await prisma.sellerProfile.findUniqueOrThrow({ where: { sellerId } });
-    expect(row).toMatchObject({ panNumber: null, aadhaarNumber: null });
-  });
-
-  it('a first save without PAN/Aadhaar creates them empty', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'No PAN Seller' });
-    const { panNumber: _p, aadhaarNumber: _a, ...withoutIds } = adminProfileBody();
-
-    await putProfile(token, sellerId, withoutIds).expect(200);
-    expect(await prisma.sellerProfile.findUniqueOrThrow({ where: { sellerId } })).toMatchObject({
-      panNumber: null,
-      aadhaarNumber: null,
-    });
-  });
-});
-
-describe('admin onboarding document entry', () => {
-  const addDocument = (token: string, sellerId: string, body: unknown) =>
-    api()
-      .post(`/api/v1/admin/sellers/${sellerId}/onboarding/documents`)
-      .set('Authorization', bearer(token))
-      .send(body as object);
-  /** NOTE: these link-based cases predate direct PDF uploads (documents are now
-   * multipart PDF uploads) and need rewriting before this DB-backed suite is
-   * re-enabled. Views never carry links or keys any more; find by type. */
-  const docOf = (body: unknown, type: string) =>
-    expectSuccess<SellerOnboardingDetailDto>(body).data.documents.find((d) => d.type === type);
-  /** The admin save never echoes a link: find the new row by its stored link,
-   * then its metadata in the (summary) response by id. */
-  const addedDoc = async (body: unknown, sellerId: string, fileUrl: string) => {
-    const row = await prisma.sellerDocument.findFirstOrThrow({ where: { sellerId, fileUrl } });
-    expect(JSON.stringify(body)).not.toContain(fileUrl);
-    return expectSuccess<AdminSellerOnboardingSummaryDto>(body).data.documents.find((d) => d.id === row.id);
-  };
-
-  it('adds a PAN document, PENDING, like a seller-uploaded one', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Doc Entry PAN Seller' });
-    const fileUrl = 'https://files.adione.test/admin-entered-pan.pdf';
-
-    const res = await addDocument(token, sellerId, { type: 'PAN_CARD', fileUrl }).expect(201);
-    expect(await addedDoc(res.body, sellerId, fileUrl)).toMatchObject({ type: 'PAN_CARD', status: 'PENDING', rejectionReason: null });
-    const row = await prisma.sellerDocument.findFirstOrThrow({ where: { sellerId } });
-    expect(row).toMatchObject({ type: 'PAN_CARD', status: 'PENDING', verifiedByUserId: null, verifiedAt: null });
-  });
-
-  it('adds an Aadhaar document, with an optional expiry', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Doc Entry Aadhaar Seller' });
-    const fileUrl = 'https://files.adione.test/admin-entered-aadhaar.pdf';
-    const expiresAt = '2030-01-01T00:00:00.000Z';
-
-    const res = await addDocument(token, sellerId, { type: 'AADHAAR_CARD', fileUrl, expiresAt }).expect(201);
-    expect(await addedDoc(res.body, sellerId, fileUrl)).toMatchObject({ type: 'AADHAAR_CARD', status: 'PENDING', expiresAt });
-  });
-
-  it('can never be created already verified (strict body)', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Doc Entry Strict Seller' });
-
-    const res = await addDocument(token, sellerId, {
-      type: 'PAN_CARD',
-      fileUrl: 'https://files.adione.test/pre-verified.pdf',
-      status: 'VERIFIED',
-    });
-    expect(res.status).toBe(400);
-    expect(await prisma.sellerDocument.count({ where: { sellerId } })).toBe(0);
-  });
-
-  it("appears in the seller's own onboarding view", async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSellerWithOwner('9500000250', 'Doc Entry Visible Seller');
-    const fileUrl = 'https://files.adione.test/visible-to-seller.pdf';
-    await addDocument(token, sellerId, { type: 'PAN_CARD', fileUrl }).expect(201);
-
-    const sellerToken = await loginSeller('9500000250');
-    const own = await api().get('/api/v1/seller/onboarding').set('Authorization', bearer(sellerToken)).expect(200);
-    expect(docOf(own.body, 'PAN_CARD')).toMatchObject({ type: 'PAN_CARD', status: 'PENDING' });
-  });
-
-  it('counts toward completeness, and is reviewed with the existing document review', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Doc Entry Complete Seller' });
-    await api().put(`/api/v1/admin/sellers/${sellerId}/onboarding/profile`).set('Authorization', bearer(token)).send(adminProfileBody()).expect(200);
-    const bank = await api()
-      .put(`/api/v1/admin/sellers/${sellerId}/onboarding/bank-detail`)
-      .set('Authorization', bearer(token))
-      .send(adminBankBody())
-      .expect(200);
-    expect(expectSuccess<AdminSellerOnboardingSummaryDto>(bank.body).data).toMatchObject({ stage: 'PENDING', isComplete: false });
-
-    const fileUrl = 'https://files.adione.test/completes-onboarding.pdf';
-    const added = await addDocument(token, sellerId, { type: 'PAN_CARD', fileUrl }).expect(201);
-    expect(expectSuccess<AdminSellerOnboardingSummaryDto>(added.body).data).toMatchObject({ stage: 'SUBMITTED', isComplete: true });
-
-    const documentId = (await addedDoc(added.body, sellerId, fileUrl))!.id;
-    const reviewed = await api()
-      .patch(`/api/v1/admin/sellers/${sellerId}/onboarding/documents/${documentId}/review`)
-      .set('Authorization', bearer(token))
-      .send({ status: 'VERIFIED' })
-      .expect(200);
-    expect(docOf(reviewed.body, 'PAN_CARD')!.status).toBe('VERIFIED');
-  });
-
-  it('is NOT_FOUND for a deleted seller', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Doc Entry Deleted Seller', deletedAt: new Date() });
-
-    const res = await addDocument(token, sellerId, { type: 'PAN_CARD', fileUrl: 'https://files.adione.test/deleted.pdf' });
-    expect(res.status).toBe(404);
-    expect(expectError(res.body).code).toBe(ErrorCode.NOT_FOUND);
-    expect(await prisma.sellerDocument.count({ where: { sellerId } })).toBe(0);
-  });
-
-  it('refuses a seller token (403) and admin STAFF (403)', async () => {
-    const sellerId = await seedSellerWithOwner('9500000251', 'Doc Entry Forbidden Seller');
-    const body = { type: 'PAN_CARD', fileUrl: 'https://files.adione.test/forbidden.pdf' };
-
-    const sellerRes = await addDocument(await loginSeller('9500000251'), sellerId, body);
-    expect(sellerRes.status).toBe(403);
-    expect(expectError(sellerRes.body).code).toBe(ErrorCode.FORBIDDEN);
-
-    const staffRes = await addDocument(await loginStaffUser(STAFF, UserRole.STAFF, '0000000002'), sellerId, body);
-    expect(staffRes.status).toBe(403);
-    expect(await prisma.sellerDocument.count({ where: { sellerId } })).toBe(0);
-  });
-
-  it('keeps the http(s)-only rule: javascript:, data:, file: and dev: are 400', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Doc Entry Scheme Seller' });
-
-    for (const fileUrl of [
-      'javascript:alert(1)',
-      'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==',
-      'file:///etc/passwd',
-      'dev://qa-test-pan.pdf',
-    ]) {
-      const res = await addDocument(token, sellerId, { type: 'PAN_CARD', fileUrl });
-      expect(res.status, fileUrl).toBe(400);
-      expect(expectError(res.body).code, fileUrl).toBe(ErrorCode.VALIDATION_ERROR);
-    }
-    expect(await prisma.sellerDocument.count({ where: { sellerId } })).toBe(0);
-  });
-
-  it('accepts http and https links', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Doc Entry Link Seller' });
-
-    await addDocument(token, sellerId, { type: 'PAN_CARD', fileUrl: 'http://files.adione.test/pan.pdf' }).expect(201);
-    await addDocument(token, sellerId, { type: 'AADHAAR_CARD', fileUrl: 'https://files.adione.test/aadhaar.pdf' }).expect(201);
-    expect(await prisma.sellerDocument.count({ where: { sellerId } })).toBe(2);
-  });
-
-  it("stays with the seller it was added to — never visible or reviewable through another seller", async () => {
-    const token = await loginAdmin();
-    const sellerA = await seedSeller({ name: 'Doc Entry Seller A' });
-    const sellerB = await seedSeller({ name: 'Doc Entry Seller B' });
-    const fileUrl = 'https://files.adione.test/seller-a-only.pdf';
-
-    const added = await addDocument(token, sellerA, { type: 'PAN_CARD', fileUrl }).expect(201);
-    const documentId = (await addedDoc(added.body, sellerA, fileUrl))!.id;
-
-    const bView = await api().get(`/api/v1/admin/sellers/${sellerB}/onboarding`).set('Authorization', bearer(token)).expect(200);
-    expect(JSON.stringify(bView.body)).not.toContain(fileUrl);
-
-    const cross = await api()
-      .patch(`/api/v1/admin/sellers/${sellerB}/onboarding/documents/${documentId}/review`)
-      .set('Authorization', bearer(token))
-      .send({ status: 'VERIFIED' });
-    expect(cross.status).toBe(404);
-    expect((await prisma.sellerDocument.findUniqueOrThrow({ where: { id: documentId } })).status).toBe('PENDING');
-  });
-
-  it('is audited as an ADMIN entry — type and status, never the link', async () => {
-    const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Doc Entry Audit Seller' });
-    const fileUrl = 'https://files.adione.test/audited-entry.pdf';
-
-    const added = await addDocument(token, sellerId, { type: 'AADHAAR_CARD', fileUrl }).expect(201);
-    const documentId = (await addedDoc(added.body, sellerId, fileUrl))!.id;
-
-    const entries = await auditRows('seller_document.submit');
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({
-      actorUserId: await adminUserId(),
-      entityType: 'SellerDocument',
-      entityId: documentId,
-      after: { sellerId, type: 'AADHAAR_CARD', status: 'PENDING', source: 'ADMIN' },
-    });
-    expect(JSON.stringify(entries)).not.toContain(fileUrl);
   });
 });
 

@@ -64,6 +64,43 @@ adminProductApprovalRouter.get(
   }),
 );
 
+/** Batch header + counts (no items) — the compact top of the review screen. */
+adminProductApprovalRouter.get(
+  '/approval-batches/:id/summary',
+  requirePermission(Permission.PRODUCT_APPROVAL_REVIEW),
+  validate({ params: z.object({ id: uuid }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await service.getApprovalBatchSummary(req.params['id'] as string));
+  }),
+);
+
+/** The batch's products as compact rows, a page at a time (1000+ products). */
+adminProductApprovalRouter.get(
+  '/approval-batches/:id/products',
+  requirePermission(Permission.PRODUCT_APPROVAL_REVIEW),
+  validate({
+    params: z.object({ id: uuid }),
+    query: z.object({
+      offset: z.coerce.number().int().min(0).default(0),
+      limit: z.coerce.number().int().positive().max(200).default(100),
+    }),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const query = validatedQuery<{ offset: number; limit: number }>(req);
+    ok(res, await service.listBatchProducts(req.params['id'] as string, query));
+  }),
+);
+
+/** "Approve Batch" — every still-pending item in one transaction. */
+adminProductApprovalRouter.post(
+  '/approval-batches/:id/approve',
+  requirePermission(Permission.PRODUCT_APPROVAL_REVIEW),
+  validate({ params: z.object({ id: uuid }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await service.approveBatch(req.params['id'] as string, requireUser(req).id));
+  }),
+);
+
 adminProductApprovalRouter.post(
   '/approval-batches/:id/items',
   requirePermission(Permission.PRODUCT_APPROVAL_REVIEW),

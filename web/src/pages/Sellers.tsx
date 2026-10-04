@@ -802,7 +802,7 @@ function CreateSellerModal({ onClose, onCreated }: { onClose: () => void; onCrea
             <Field label="Owner's full name" required>
               {input('ownerFullName')}
             </Field>
-            <Field label="Owner's mobile" required hint="Used to sign in to the Seller Panel with OTP">
+            <Field label="Owner's mobile" required hint="Contact number. The owner signs in with an email and password (set the login email on the seller page).">
               {input('ownerMobile', { inputMode: 'tel', placeholder: '10-digit mobile' })}
             </Field>
           </div>

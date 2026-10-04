@@ -9,8 +9,31 @@
  * schema.
  */
 
-import { CodPolicy, ProductStatus, UnitType } from '../../src/shared';
+import { ApprovalStatus, CodPolicy, ProductStatus, SellerLifecycleStatus, UnitType } from '../../src/shared';
 import { prisma } from '../../src/infra/db/prisma';
+
+/**
+ * The `Seller` lifecycle columns for a seeded seller whose admin onboarding
+ * outcome is `onboardingStatus`. Seeds must set both: the two-gate lifecycle
+ * migration's CHECK `sellers_lifecycle_matches_onboarding` refuses a row where
+ * they disagree, and `lifecycleStatus` defaults to APPLICATION_PENDING.
+ *
+ *   APPROVED -> ACTIVE              passed both gates (operational panel)
+ *   PENDING  -> ONBOARDING_PENDING  created by admin: past Gate 1, onboarding
+ *   REJECTED -> ONBOARDING_REJECTED Gate 2 final rejection
+ */
+export function sellerLifecycleFields(onboardingStatus: ApprovalStatus): {
+  onboardingStatus: ApprovalStatus;
+  lifecycleStatus: SellerLifecycleStatus;
+} {
+  const lifecycleStatus =
+    onboardingStatus === ApprovalStatus.APPROVED
+      ? SellerLifecycleStatus.ACTIVE
+      : onboardingStatus === ApprovalStatus.REJECTED
+        ? SellerLifecycleStatus.ONBOARDING_REJECTED
+        : SellerLifecycleStatus.ONBOARDING_PENDING;
+  return { onboardingStatus, lifecycleStatus };
+}
 
 export const STORE_COORDS = { latitude: 27.6094, longitude: 75.1399 };
 export const NEARBY = { latitude: 27.6364, longitude: 75.1399 }; // ~3 km
@@ -22,7 +45,7 @@ export async function seedStore(options: { open?: boolean } = {}): Promise<strin
       code: 'TEST',
       name: 'Test Store',
       isPlatformOwned: true,
-      onboardingStatus: 'APPROVED',
+      ...sellerLifecycleFields(ApprovalStatus.APPROVED),
       addressLine: 'Main Road',
       city: 'Sikar',
       state: 'Rajasthan',

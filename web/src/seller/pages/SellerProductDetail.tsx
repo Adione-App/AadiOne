@@ -226,13 +226,13 @@ export default function SellerProductDetailPage() {
       <Section id="pricing" title="3. Pricing">
         {listing ? (
           <PricingPanel key={listing.id} listing={listing} onChanged={refresh} />
-        ) : product.approvalStatus === 'APPROVED' && variant ? (
+        ) : variant ? (
           <div className="space-y-3">
-            <p className="text-sm text-gray-600">Approved — set your price and opening stock to start selling.</p>
-            <Button onClick={() => setStarting(true)}>Start selling</Button>
+            <p className="text-sm text-gray-600">This product has no price and stock yet. Add them — it can only be submitted for approval once it is complete.</p>
+            <Button onClick={() => setStarting(true)}>Add price &amp; stock</Button>
           </div>
         ) : (
-          <p className="text-sm text-gray-500">You set your price once Aadione approves this product.</p>
+          <p className="text-sm text-gray-500">This product has no variant to price.</p>
         )}
       </Section>
 
@@ -271,21 +271,30 @@ export default function SellerProductDetailPage() {
           {product.approvalStatus === 'APPROVED' && (
             <p className="text-gray-600">Approved. Its details and photos are locked; your price, stock and visibility stay yours to change.</p>
           )}
-          {editable && (
+          {editable && product.approvalStatus !== 'REJECTED' && (
+            <p className="text-gray-600">
+              Draft — sent for review with your other drafts when you use{' '}
+              <Link to="/seller/products" className="font-semibold text-brand-600">
+                Submit for Approval
+              </Link>{' '}
+              on Products.
+            </p>
+          )}
+          {editable && product.approvalStatus === 'REJECTED' && (
             <Button
               disabled={submit.isPending}
               onClick={() => {
                 setNotice(null);
                 submit.mutate(undefined, {
                   onSuccess: () => {
-                    setNotice({ ok: true, text: `"${product.name}" was submitted for approval.` });
+                    setNotice({ ok: true, text: `"${product.name}" was resubmitted for approval.` });
                     void refresh();
                   },
                   onError: (error) => setNotice({ ok: false, text: sellerErrorMessage(error) }),
                 });
               }}
             >
-              {submit.isPending ? 'Submitting…' : product.approvalStatus === 'REJECTED' ? 'Resubmit for approval' : 'Submit for approval'}
+              {submit.isPending ? 'Resubmitting…' : 'Resubmit for approval'}
             </Button>
           )}
         </div>

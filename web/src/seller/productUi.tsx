@@ -55,13 +55,13 @@ export function toStock(value: string): number | null {
 export const STOCK_RULE = `Stock must be a whole number from 0 to ${LISTING_MAX_STOCK.toLocaleString('en-IN')}.`;
 
 /** The approval state as the seller reads it — straight from the server. */
-export function reviewState(product: Pick<SellerProductDto, 'approvalStatus' | 'latestApproval'>): { label: string; tone: Tone } {
+export function reviewState(product: Pick<SellerProductDto, 'approvalStatus' | 'latestApproval'> & { listing: unknown }): { label: string; tone: Tone } {
   if (product.approvalStatus === 'APPROVED') return { label: 'Approved', tone: 'brand' };
   if (product.approvalStatus === 'REJECTED') return { label: 'Rejected', tone: 'red' };
   if (product.approvalStatus === 'PENDING') {
-    return product.latestApproval?.status === 'PENDING'
-      ? { label: 'Pending approval', tone: 'amber' }
-      : { label: 'Draft · not submitted', tone: 'gray' };
+    if (product.latestApproval?.status === 'PENDING') return { label: 'Pending Approval', tone: 'amber' };
+    // Never submitted: complete (price + stock saved) or still missing them.
+    return product.listing ? { label: 'Ready for Submission', tone: 'blue' } : { label: 'Draft', tone: 'gray' };
   }
   return { label: product.approvalStatus, tone: 'gray' };
 }
@@ -86,7 +86,7 @@ export const VISIBILITY: Record<ListingVisibilityReason, { label: string; tone: 
   OUT_OF_STOCK: { label: 'Out of stock', tone: 'red', help: 'Nothing available — all stock is sold or held for open orders.' },
   OFF_SALE: { label: 'Hidden', tone: 'gray', help: 'You switched this listing off sale.' },
   HIDDEN_BY_SELLER: { label: 'Hidden', tone: 'gray', help: 'You hid this product from customers.' },
-  NOT_LISTED: { label: 'Not selling yet', tone: 'gray', help: 'Approved — set your price and stock with “Start selling”.' },
+  NOT_LISTED: { label: 'No price yet', tone: 'gray', help: 'Add your price and stock (“Add price & stock”).' },
   PENDING_APPROVAL: { label: 'Pending approval', tone: 'amber', help: 'Customers see it once Aadione approves it.' },
   REJECTED: { label: 'Rejected', tone: 'red', help: 'Fix it and resubmit for approval.' },
   DISABLED_BY_ADMIN: { label: 'Disabled by Aadione', tone: 'red', help: 'Aadione disabled this product. Only Aadione can enable it again.', admin: true },

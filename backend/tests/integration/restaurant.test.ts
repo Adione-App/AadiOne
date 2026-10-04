@@ -14,7 +14,7 @@ import { cache } from '../../src/infra/cache';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as otpService from '../../src/modules/auth/otp.service';
 import { MockPaymentProvider } from '../../src/infra/payment';
-import { seedAddress, seedProduct, seedStore } from '../helpers/fixtures';
+import { seedAddress, seedProduct, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
 
@@ -51,7 +51,7 @@ async function seedSeller(
       longitude: 75.14,
       isActive: true,
       defaultCommissionBp: opts.defaultCommissionBp ?? 0,
-      onboardingStatus: opts.approved === false ? ApprovalStatus.PENDING : ApprovalStatus.APPROVED,
+      ...sellerLifecycleFields(opts.approved === false ? ApprovalStatus.PENDING : ApprovalStatus.APPROVED),
     },
   });
   const user = await prisma.user.create({ data: { mobile, fullName: `${name} Owner`, role: UserRole.SELLER_OWNER } });
@@ -75,13 +75,31 @@ const createProduct = (token: string, categoryId: string, name: string) =>
   api()
     .post('/api/v1/seller/products')
     .set('Authorization', bearer(token))
-    .send({ categoryId, name, sku: `SKU-${randomUUID().slice(0, 8)}`, variantName: 'Full plate', unit: 'PIECE', unitValue: 1 });
+    // A menu item is created complete: price and stock come with it.
+    .send({
+      categoryId,
+      name,
+      sku: `SKU-${randomUUID().slice(0, 8)}`,
+      variantName: 'Full plate',
+      unit: 'PIECE',
+      unitValue: 1,
+      mrpPaise: 20000,
+      pricePaise: 19000,
+      stockQty: 20,
+    });
 
-const listItem = (token: string, variantId: string, pricePaise: number) =>
-  api()
-    .post('/api/v1/seller/listings')
+/**
+ * Sets the price of the item's own listing (created with the product) —
+ * the seller's PATCH /seller/listings/:id. Resolves to the 200 response.
+ */
+async function listItem(token: string, variantId: string, pricePaise: number) {
+  const listing = await prisma.sellerListing.findFirstOrThrow({ where: { variantId } });
+  return api()
+    .patch(`/api/v1/seller/listings/${listing.id}`)
     .set('Authorization', bearer(token))
-    .send({ variantId, mrpPaise: pricePaise + 1000, pricePaise, stockQty: 20 });
+    .send({ mrpPaise: pricePaise + 1000, pricePaise, stockQty: 20 })
+    .expect(200);
+}
 
 /** Seller creates + submits; admin decides each item. Returns product -> variant. */
 async function approvedMenuItem(adminToken: string, token: string, categoryId: string, name: string, decision: ApprovalStatus = ApprovalStatus.APPROVED) {
@@ -135,23 +153,32 @@ describe('restaurant profile + authorization', () => {
 });
 
 describe('food catalog, approval and listing gating', () => {
-  it('menu items follow the approval workflow and only APPROVED items can be listed', async () => {
+  it('menu items carry their price from creation, but only APPROVED items reach customers', async () => {
     const adminToken = await loginAdmin();
     await seedStore();
     const a = await seedSeller('9500000020', 'Restaurant A');
+    await prisma.restaurantProfile.create({ data: { sellerId: a.id, cuisine: ['North Indian'] } });
     const starters = await section(a.token, 'Starters');
 
-    const pending = expectSuccess<{ id: string; variantId: string }>((await createProduct(a.token, starters, 'Paneer Tikka').expect(201)).body).data;
+    const pending = expectSuccess<{ id: string; variantId: string; listingId: string }>(
+      (await createProduct(a.token, starters, 'Paneer Tikka').expect(201)).body,
+    ).data;
     expect((await prisma.product.findUniqueOrThrow({ where: { id: pending.id } })).approvalStatus).toBe('PENDING');
-    expect((await listItem(a.token, pending.variantId, 20000)).status).toBe(400);
+    expect(await prisma.sellerListing.findUniqueOrThrow({ where: { id: pending.listingId } })).toMatchObject({ sellerId: a.id, pricePaise: 19000 });
 
     const approved = await approvedMenuItem(adminToken, a.token, starters, 'Hara Bhara Kabab');
-    const rejected = await approvedMenuItem(adminToken, a.token, starters, 'Mystery Dish', ApprovalStatus.REJECTED);
-    expect((await listItem(a.token, rejected.variantId, 20000)).status).toBe(400);
+    await approvedMenuItem(adminToken, a.token, starters, 'Mystery Dish', ApprovalStatus.REJECTED);
 
-    const listing = await listItem(a.token, approved.variantId, 18000).expect(201);
-    expect(expectSuccess<{ sellerId: string }>(listing.body).data.sellerId).toBe(a.id);
-    expect((await listItem(a.token, approved.variantId, 18000)).status).toBe(409);
+    // The customer menu shows only the approved item — never the pending or rejected one.
+    const menu = expectSuccess<{ sections: { items: { name: string }[] }[] }>((await api().get(`/api/v1/restaurants/${a.id}`).expect(200)).body).data;
+    expect(menu.sections.flatMap((s) => s.items.map((i) => i.name))).toEqual(['Hara Bhara Kabab']);
+
+    // One listing per item: a second one is a conflict, as before.
+    const duplicate = await api()
+      .post('/api/v1/seller/listings')
+      .set('Authorization', bearer(a.token))
+      .send({ variantId: approved.variantId, mrpPaise: 19000, pricePaise: 18000, stockQty: 5 });
+    expect(duplicate.status).toBe(409);
   });
 
   it("enforces menu-section scope: own sections only for restaurants, never another seller's", async () => {
@@ -171,7 +198,11 @@ describe('food catalog, approval and listing gating', () => {
     expect(shared.status).toBe(400);
 
     const aItem = await approvedMenuItem(adminToken, a.token, aSection, 'Paneer Tikka');
-    expect((await listItem(b.token, aItem.variantId, 15000)).status).toBe(404);
+    const crossListing = await api()
+      .post('/api/v1/seller/listings')
+      .set('Authorization', bearer(b.token))
+      .send({ variantId: aItem.variantId, mrpPaise: 16000, pricePaise: 15000, stockQty: 5 });
+    expect(crossListing.status).toBe(404);
     const adminCross = await api()
       .post(`/api/v1/admin/sellers/${b.id}/listings`)
       .set('Authorization', bearer(adminToken))
@@ -190,7 +221,7 @@ describe('food catalog, approval and listing gating', () => {
     const a = await seedSeller('9500000040', 'Restaurant A');
     const b = await seedSeller('9500000041', 'Restaurant B');
     const bItem = await approvedMenuItem(adminToken, b.token, await section(b.token, 'Dosa'), 'Masala Dosa');
-    const bListing = expectSuccess<{ id: string }>((await listItem(b.token, bItem.variantId, 12000).expect(201)).body).data.id;
+    const bListing = expectSuccess<{ id: string }>((await listItem(b.token, bItem.variantId, 12000)).body).data.id;
 
     expect((await api().patch(`/api/v1/seller/listings/${bListing}`).set('Authorization', bearer(a.token)).send({ pricePaise: 100 })).status).toBe(404);
     const own = await api().patch(`/api/v1/seller/listings/${bListing}`).set('Authorization', bearer(b.token)).send({ pricePaise: 11000, stockQty: 25 }).expect(200);
@@ -211,9 +242,9 @@ describe('customer restaurant catalog', () => {
 
     const aSection = await section(a.token, 'Starters');
     const aItem = await approvedMenuItem(adminToken, a.token, aSection, 'Paneer Tikka');
-    const aListing = expectSuccess<{ id: string }>((await listItem(a.token, aItem.variantId, 20000).expect(201)).body).data.id;
+    const aListing = expectSuccess<{ id: string }>((await listItem(a.token, aItem.variantId, 20000)).body).data.id;
     const bItem = await approvedMenuItem(adminToken, b.token, await section(b.token, 'Dosa'), 'Masala Dosa');
-    await listItem(b.token, bItem.variantId, 12000).expect(201);
+    await listItem(b.token, bItem.variantId, 12000);
     await approvedMenuItem(adminToken, a.token, aSection, 'Rejected Dish', ApprovalStatus.REJECTED);
 
     const list = expectSuccess<{ sellerId: string; menuItemCount: number }[]>((await api().get('/api/v1/restaurants').expect(200)).body).data;
@@ -241,7 +272,7 @@ describe('mixed restaurant + grocery checkout and the restaurant order lifecycle
     const a = await seedSeller('9500000060', 'Restaurant A', { defaultCommissionBp: 1500 });
     const b = await seedSeller('9500000061', 'Restaurant B');
     const aItem = await approvedMenuItem(adminToken, a.token, await section(a.token, 'Mains'), 'Butter Chicken');
-    const aListing = expectSuccess<{ id: string }>((await listItem(a.token, aItem.variantId, 30000).expect(201)).body).data.id;
+    const aListing = expectSuccess<{ id: string }>((await listItem(a.token, aItem.variantId, 30000)).body).data.id;
 
     const cust = await customer();
     await api().post('/api/v1/cart/items').set('Authorization', bearer(cust.token)).send({ sellerListingId: aListing, qty: 2 }).expect(200);
@@ -298,7 +329,7 @@ describe('mixed restaurant + grocery checkout and the restaurant order lifecycle
     const grocery = await seedProduct(platformId, { pricePaise: 7000, stockQty: 10 });
     const b = await seedSeller('9500000070', 'Restaurant B');
     const bItem = await approvedMenuItem(adminToken, b.token, await section(b.token, 'Dosa'), 'Masala Dosa');
-    const bListing = expectSuccess<{ id: string }>((await listItem(b.token, bItem.variantId, 12000).expect(201)).body).data.id;
+    const bListing = expectSuccess<{ id: string }>((await listItem(b.token, bItem.variantId, 12000)).body).data.id;
 
     const cust = await customer();
     await api().post('/api/v1/cart/items').set('Authorization', bearer(cust.token)).send({ sellerListingId: bListing, qty: 2 }).expect(200);

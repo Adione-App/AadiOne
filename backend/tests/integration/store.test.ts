@@ -17,6 +17,7 @@ import { api, expectError, expectSuccess } from '../helpers/api';
 import { prisma, truncateAll } from '../helpers/db';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as sellerService from '../../src/modules/sellers/seller.service';
+import { sellerLifecycleFields } from '../helpers/fixtures';
 
 // Sikar, matching the seed.
 const STORE = { latitude: 27.6094, longitude: 75.1399 };
@@ -29,7 +30,7 @@ async function createStore(overrides: Record<string, unknown> = {}): Promise<str
       code: 'TEST-STORE',
       name: 'Test Store',
       isPlatformOwned: true,
-      onboardingStatus: 'APPROVED',
+      ...sellerLifecycleFields('APPROVED'),
       addressLine: 'Main Road',
       city: 'Sikar',
       state: 'Rajasthan',

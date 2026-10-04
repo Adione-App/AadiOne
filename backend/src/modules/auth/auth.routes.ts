@@ -5,7 +5,10 @@ import { authenticate } from '../../middleware/auth';
 import {
   adminLoginPerIp,
   changePasswordPerUser,
+  sellerForgotPasswordPerEmail,
+  sellerForgotPasswordPerIp,
   sellerLoginPerIp,
+  sellerResetPasswordPerIp,
   sellerSignupPerIp,
   sellerSignupPerMobile,
   loginPerEmail,
@@ -24,7 +27,9 @@ import {
   loginSchema,
   logoutSchema,
   refreshSchema,
+  sellerForgotPasswordSchema,
   sellerLoginSchema,
+  sellerResetPasswordSchema,
   sellerSignupSchema,
   sendOtpSchema,
   signupSchema,
@@ -107,6 +112,26 @@ authRouter.post(
  * counts the normalised number. Creates an APPLICATION_PENDING seller — never
  * an active one.
  */
+/**
+ * Seller "Forgot Password?" — always the same 200 answer (no account
+ * enumeration); an active seller account gets an emailed single-use link.
+ */
+authRouter.post(
+  '/seller/forgot-password',
+  validate({ body: sellerForgotPasswordSchema }),
+  sellerForgotPasswordPerEmail,
+  sellerForgotPasswordPerIp,
+  asyncHandler(controller.sellerForgotPassword),
+);
+
+/** Sets the seller's new password from that link (single use, expires). */
+authRouter.post(
+  '/seller/reset-password',
+  sellerResetPasswordPerIp,
+  validate({ body: sellerResetPasswordSchema }),
+  asyncHandler(controller.sellerResetPassword),
+);
+
 authRouter.post(
   '/seller/signup',
   validate({ body: sellerSignupSchema }),

@@ -6,6 +6,11 @@
  * POST /seller/subcategories/:id/image). Every seller — Aadione included —
  * builds its own; nobody else can see or change them here. The backend
  * enforces ownership on every write.
+ *
+ * Delete (DELETE /seller/categories/:id, /seller/subcategories/:id) always
+ * asks for confirmation first, and is refused — by the backend, and shown
+ * here up front — while any product is linked: deleting a category never
+ * deletes or moves a product.
  */
 
 import { useState } from 'react';
@@ -33,6 +38,11 @@ type Editing =
   | { kind: 'rename-top'; category: SellerCatalogCategory }
   | { kind: 'new-sub'; parent: SellerCatalogCategory }
   | { kind: 'rename-sub'; parent: SellerCatalogCategory; sub: SellerCatalogSubcategoryRef };
+
+/** What the delete confirmation is about. */
+type Deleting =
+  | { kind: 'top'; category: SellerCatalogCategory }
+  | { kind: 'sub'; parent: SellerCatalogCategory; sub: SellerCatalogSubcategoryRef };
 
 function CategoryImage({ src, alt, size = 'h-12 w-12' }: { src: string | null; alt: string; size?: string }) {
   const resolved = imageSrc(src);
@@ -85,6 +95,7 @@ export default function SellerCategoriesPage() {
   const isRestaurant = useSellerAvailability().data?.sellerType === 'RESTAURANT';
   const [notice, setNotice] = useState<Notice | null>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
+  const [deleting, setDeleting] = useState<Deleting | null>(null);
   const [imageBusy, setImageBusy] = useState<string | null>(null);
 
   const catalog = useQuery({
@@ -203,11 +214,14 @@ export default function SellerCategoriesPage() {
                         {top.productCount + subProducts === 1 ? '' : 's'}
                       </p>
                       <div className="mt-1 flex flex-wrap gap-x-3">
-                        <button type="button" onClick={() => setEditing({ kind: 'rename-top', category: top })} className="text-xs font-semibold text-brand-600">
-                          Rename
+                        <button type="button" onClick={() => setEditing({ kind: 'rename-top', category: top })} aria-label={`Edit ${top.name}`} className="text-xs font-semibold text-brand-600">
+                          Edit
                         </button>
                         <button type="button" onClick={() => setEditing({ kind: 'new-sub', parent: top })} className="text-xs font-semibold text-brand-600">
                           + Subcategory
+                        </button>
+                        <button type="button" onClick={() => setDeleting({ kind: 'top', category: top })} aria-label={`Delete ${top.name}`} className="text-xs font-semibold text-red-600">
+                          Delete
                         </button>
                       </div>
                     </div>
@@ -245,9 +259,14 @@ export default function SellerCategoriesPage() {
                                 {sub.productCount} product{sub.productCount === 1 ? '' : 's'}
                                 {sub.isActive ? '' : ' · hidden'}
                               </p>
-                              <button type="button" onClick={() => setEditing({ kind: 'rename-sub', parent: top, sub })} className="mt-0.5 text-xs font-semibold text-brand-600">
-                                Rename
-                              </button>
+                              <div className="mt-0.5 flex gap-x-3">
+                                <button type="button" onClick={() => setEditing({ kind: 'rename-sub', parent: top, sub })} aria-label={`Edit ${sub.name}`} className="text-xs font-semibold text-brand-600">
+                                  Edit
+                                </button>
+                                <button type="button" onClick={() => setDeleting({ kind: 'sub', parent: top, sub })} aria-label={`Delete ${sub.name}`} className="text-xs font-semibold text-red-600">
+                                  Delete
+                                </button>
+                              </div>
                             </div>
                             <Toggle
                               checked={sub.isActive}
@@ -290,7 +309,95 @@ export default function SellerCategoriesPage() {
           }}
         />
       )}
+
+      {deleting && (
+        <DeleteModal
+          deleting={deleting}
+          onClose={() => setDeleting(null)}
+          onDone={(text) => {
+            setDeleting(null);
+            setNotice({ ok: true, text });
+            void refresh();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Delete confirmation. With products linked it explains why the delete is
+ * not possible and offers no Delete button (the backend refuses it anyway,
+ * whatever the counts on screen say).
+ */
+function DeleteModal({ deleting, onClose, onDone }: { deleting: Deleting; onClose: () => void; onDone: (text: string) => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const isTop = deleting.kind === 'top';
+  const name = isTop ? deleting.category.name : deleting.sub.name;
+  const subcategories = isTop ? deleting.category.subcategories : [];
+  const linked = isTop
+    ? deleting.category.productCount + subcategories.reduce((sum, sub) => sum + sub.productCount, 0)
+    : deleting.sub.productCount;
+
+  const remove = useMutation({
+    mutationFn: () =>
+      isTop
+        ? sellerApi.delete(`/seller/categories/${deleting.category.id}`)
+        : sellerApi.delete(`/seller/subcategories/${deleting.sub.id}`),
+  });
+
+  async function confirm(): Promise<void> {
+    setError(null);
+    try {
+      await remove.mutateAsync();
+      onDone(deleting.kind === 'top' ? `"${name}" was deleted.` : `"${name}" was removed from ${deleting.parent.name}.`);
+    } catch (err) {
+      setError(sellerErrorMessage(err));
+    }
+  }
+
+  const kindLabel = isTop ? 'category' : 'subcategory';
+
+  return (
+    <Modal
+      title={`Delete this ${kindLabel}?`}
+      subtitle={name}
+      onClose={() => {
+        if (!remove.isPending) onClose();
+      }}
+      footer={
+        <div className="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row">
+          <Button variant="secondary" onClick={onClose} disabled={remove.isPending} className="w-full sm:w-auto">
+            {linked > 0 ? 'Close' : 'Cancel'}
+          </Button>
+          {linked === 0 && (
+            <Button variant="danger" onClick={() => void confirm()} disabled={remove.isPending} className="w-full sm:w-auto">
+              {remove.isPending ? 'Deleting…' : `Delete ${kindLabel}`}
+            </Button>
+          )}
+        </div>
+      }
+    >
+      <div className="space-y-3 text-sm text-gray-700">
+        <ErrorBanner message={error} />
+        {linked > 0 ? (
+          <p>
+            {linked} product{linked === 1 ? ' is' : 's are'} linked to “{name}”. Products are never deleted with a {kindLabel}: move them to
+            another category first, or switch the {kindLabel} off to hide it from customers.
+          </p>
+        ) : (
+          <>
+            <p>This {kindLabel} will be removed from your seller catalogue. This action cannot be undone.</p>
+            {subcategories.length > 0 && (
+              <p>
+                Its {subcategories.length} empty subcategor{subcategories.length === 1 ? 'y' : 'ies'} (
+                {subcategories.map((sub) => sub.name).join(', ')}) will be deleted with it.
+              </p>
+            )}
+          </>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -319,10 +426,10 @@ function NameModal({ editing, onClose, onDone }: { editing: Editing; onClose: ()
     editing.kind === 'new-top'
       ? 'New category'
       : editing.kind === 'rename-top'
-        ? 'Rename category'
+        ? 'Edit category'
         : editing.kind === 'new-sub'
           ? `New subcategory in ${editing.parent.name}`
-          : 'Rename subcategory';
+          : 'Edit subcategory';
 
   async function submit(): Promise<void> {
     const trimmed = name.trim();

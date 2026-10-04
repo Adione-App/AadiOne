@@ -8,11 +8,14 @@ import { created, ok, noContent } from '../../common/response';
 import { requireUser } from '../../middleware/auth';
 import * as authService from './auth.service';
 import * as sellerLifecycleService from '../sellers/seller-lifecycle.service';
+import * as passwordResetService from './password-reset.service';
 import type {
   AdminLoginInput,
   ChangePasswordInput,
   LoginInput,
+  SellerForgotPasswordInput,
   SellerLoginInput,
+  SellerResetPasswordInput,
   SellerSignupInput,
   SendOtpInput,
   SignupInput,
@@ -102,6 +105,23 @@ export async function adminLogin(req: Request, res: Response): Promise<void> {
 export async function sellerLogin(req: Request, res: Response): Promise<void> {
   const { email, password } = req.body as SellerLoginInput;
   ok(res, await authService.sellerLogin(email, password, contextOf(req)));
+}
+
+/**
+ * POST /auth/seller/forgot-password — the same answer for every email, so it
+ * never reveals whether a seller account exists.
+ */
+export async function sellerForgotPassword(req: Request, res: Response): Promise<void> {
+  const { email } = req.body as SellerForgotPasswordInput;
+  await passwordResetService.requestSellerPasswordReset(email, contextOf(req));
+  ok(res, { message: passwordResetService.FORGOT_PASSWORD_MESSAGE });
+}
+
+/** POST /auth/seller/reset-password — sets the new password from the emailed link. */
+export async function sellerResetPassword(req: Request, res: Response): Promise<void> {
+  const { token, newPassword } = req.body as SellerResetPasswordInput;
+  await passwordResetService.resetSellerPassword(token, newPassword, contextOf(req));
+  ok(res, { message: 'Your password has been changed. Sign in with your new password.' });
 }
 
 /** POST /auth/change-password — the signed-in user's own password. */

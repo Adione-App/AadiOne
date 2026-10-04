@@ -165,6 +165,27 @@ export const adminLoginPerIp = rateLimit({
   errorCode: ErrorCode.RATE_LIMITED,
 });
 
+/** Seller "Forgot Password?" — per email (no inbox flooding) and per IP. */
+export const sellerForgotPasswordPerEmail = rateLimit({
+  scope: 'seller:forgot:email',
+  limit: 3,
+  windowSeconds: HOUR,
+  identify: byEmail,
+});
+
+export const sellerForgotPasswordPerIp = rateLimit({
+  scope: 'seller:forgot:ip',
+  limit: 10,
+  windowSeconds: HOUR,
+});
+
+/** Seller password reset from the emailed link — no token guessing at scale. */
+export const sellerResetPasswordPerIp = rateLimit({
+  scope: 'seller:reset:ip',
+  limit: 10,
+  windowSeconds: 15 * MINUTE,
+});
+
 /** Seller-panel password login — same budget as the admin panel, own counter. */
 export const sellerLoginPerIp = rateLimit({
   scope: 'seller:login:ip',

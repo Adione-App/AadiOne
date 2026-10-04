@@ -10,6 +10,7 @@ import {
   buildOnboardingChecklist,
   checklistComplete,
   isOnboardingEditable,
+  isSellerOnboardingWrite,
   lifecycleStatesForStage,
   onboardingStatusFor,
   sellerPanelAccess,
@@ -224,5 +225,37 @@ describe('buildOnboardingChecklist', () => {
 
   it('rejects the 0,0 "broken GPS" location', () => {
     expect(unmet({ ...complete, store: { ...complete.store, latitude: 0, longitude: 0 } })).toEqual(['storeLocation']);
+  });
+});
+
+describe('isSellerOnboardingWrite (admin never writes seller onboarding data)', () => {
+  it('flags every write to the onboarding area and the store location', () => {
+    for (const [method, path] of [
+      ['PUT', '/onboarding/profile'],
+      ['PUT', '/onboarding/bank-detail'],
+      ['PUT', '/onboarding/restaurant-profile'],
+      ['POST', '/onboarding/documents'],
+      ['DELETE', '/onboarding/documents/123'],
+      ['POST', '/onboarding/submit'],
+      ['PATCH', '/location'],
+      ['PATCH', '/location/'],
+    ] as const) {
+      expect(isSellerOnboardingWrite(method, path), `${method} ${path}`).toBe(true);
+    }
+  });
+
+  it('leaves reads and every other seller route alone', () => {
+    for (const [method, path] of [
+      ['GET', '/onboarding'],
+      ['GET', '/onboarding/documents/123/file'],
+      ['GET', '/location'],
+      ['HEAD', '/onboarding'],
+      ['PATCH', '/orders/1/status'],
+      ['POST', '/products'],
+      ['PATCH', '/availability'],
+      ['PUT', '/onboardings'],
+    ] as const) {
+      expect(isSellerOnboardingWrite(method, path), `${method} ${path}`).toBe(false);
+    }
   });
 });

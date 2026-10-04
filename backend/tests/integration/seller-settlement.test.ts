@@ -18,7 +18,7 @@ import * as otpService from '../../src/modules/auth/otp.service';
 import { MockPaymentProvider } from '../../src/infra/payment';
 import * as paymentsInfra from '../../src/infra/payment';
 import * as paymentService from '../../src/modules/payments/payment.service';
-import { seedAddress, seedProduct, seedStore } from '../helpers/fixtures';
+import { seedAddress, seedProduct, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
 import { SETTLEMENT_CLOSE_LAG_MS } from '../../src/modules/sellers/seller-settlement.service';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
@@ -53,7 +53,7 @@ async function seedSellerWithOwner(mobile: string, name: string, defaultCommissi
       isActive: true,
       defaultCommissionBp,
       // Customers can only order from a live seller (cart/orderability.ts).
-      onboardingStatus: 'APPROVED',
+      ...sellerLifecycleFields('APPROVED'),
     },
   });
   const user = await prisma.user.create({

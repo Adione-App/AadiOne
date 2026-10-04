@@ -6,7 +6,7 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
-import { ApprovalStatus, type CursorPage, type ProductApprovalBatchDto } from '@shared';
+import { ApprovalStatus, type CursorPage, type ProductApprovalBatchSummaryDto } from '@shared';
 import { api, ApiRequestError } from '@/lib/api';
 
 export const approvalKeys = {
@@ -31,18 +31,15 @@ export const retryServerErrorsOnce = (count: number, error: Error): boolean =>
 
 /**
  * Sidebar badge: products still awaiting review in the newest 100 open
- * batches. Fetched once and refreshed whenever a decision invalidates the
+ * batches (summed from each batch's own pending count — never its items). Fetched once and refreshed whenever a decision invalidates the
  * approvals root — deliberately no polling.
  */
 export function usePendingApprovalCount() {
   return useQuery({
     queryKey: approvalKeys.pendingCount,
-    queryFn: () => api.get<CursorPage<ProductApprovalBatchDto>>(pendingBatchesPath(null, 100)),
+    queryFn: () => api.get<CursorPage<ProductApprovalBatchSummaryDto>>(pendingBatchesPath(null, 100)),
     select: (page) => ({
-      count: page.items.reduce(
-        (sum, batch) => sum + batch.items.filter((item) => item.status === ApprovalStatus.PENDING).length,
-        0,
-      ),
+      count: page.items.reduce((sum, batch) => sum + batch.pendingCount, 0),
       more: page.hasMore,
     }),
     retry: retryServerErrorsOnce,

@@ -163,12 +163,14 @@ adminSellerRouter.post(
 );
 
 /**
- * GET  /admin/sellers/:sellerId/login-credentials — the owner's panel-login
- *      status (email, has a password, still temporary?). Never a secret.
- * POST /admin/sellers/:sellerId/login-credentials — sets the owner's login
- *      email and a NEW temporary password (also the reset path). The password
- *      is in this one response only — hand it to the seller; it is not
- *      stored in plain text and cannot be shown again.
+ * GET /admin/sellers/:sellerId/login-credentials — the owner's login EMAIL
+ *     (and name / last sign-in). Never a password, a hash or password state.
+ * PUT /admin/sellers/:sellerId/login-email — sets the login email ONCE, for an
+ *     owner that has none (409 otherwise). No password is created: the seller
+ *     sets its own with "Forgot Password?".
+ *
+ * There is NO admin route that issues, resets, changes or reveals a seller
+ * password — the seller alone manages it (seller-login.service.ts).
  */
 const sellerIdParams = z.object({ sellerId: z.string().uuid() });
 
@@ -181,18 +183,17 @@ adminSellerRouter.get(
   }),
 );
 
-adminSellerRouter.post(
-  '/sellers/:sellerId/login-credentials',
+adminSellerRouter.put(
+  '/sellers/:sellerId/login-email',
   requirePermission(Permission.SELLER_MANAGE),
   validate({
     params: sellerIdParams,
-    body: z.object({ email: z.string().trim().email('Enter a valid email address').max(160) }),
+    body: z.object({ email: z.string().trim().email('Enter a valid email address').max(160) }).strict(),
   }),
   asyncHandler(async (req: Request, res: Response) => {
-    res.setHeader('Cache-Control', 'no-store');
     ok(
       res,
-      await sellerLoginService.issueSellerLoginCredentials(
+      await sellerLoginService.setInitialSellerLoginEmail(
         req.params['sellerId'] as string,
         (req.body as { email: string }).email,
         requireUser(req).id,

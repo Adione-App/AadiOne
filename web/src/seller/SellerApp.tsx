@@ -29,6 +29,8 @@ import { useSellerNotificationSource } from './sellerNotifications';
 import { ToastRegion } from './sellerUi';
 import SellerLoginPage from './pages/SellerLogin';
 import SellerRegisterPage from './pages/SellerRegister';
+import SellerForgotPasswordPage from './pages/SellerForgotPassword';
+import SellerResetPasswordPage from './pages/SellerResetPassword';
 import SellerOnboardingPage from './pages/SellerOnboarding';
 import SellerDashboardPage from './pages/SellerDashboard';
 import SellerOrdersPage from './pages/SellerOrders';
@@ -123,6 +125,8 @@ export default function SellerApp() {
       <Routes>
         <Route path="/seller/login" element={<SellerLoginPage />} />
         <Route path="/seller/register" element={<SellerRegisterPage />} />
+        <Route path="/seller/forgot-password" element={<SellerForgotPasswordPage />} />
+        <Route path="/seller/reset-password" element={<SellerResetPasswordPage />} />
         <Route path="*" element={<Navigate to="/seller/login" replace />} />
       </Routes>
     );

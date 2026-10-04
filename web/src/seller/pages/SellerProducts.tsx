@@ -11,6 +11,11 @@
  *   Stock −/+              → POST /seller/listings/:id/stock-adjust
  *   Show / Hide            → own product: PATCH /seller/products/:id/status;
  *                            catalogue product: the listing's on-sale switch
+ *   Submit Selected for    → POST /seller/approval-batches { productIds }: the
+ *   Approval                 ticked "Ready for Submission" products go to
+ *                            Aadione as ONE batch. The server refuses pending,
+ *                            approved, incomplete or another seller's products,
+ *                            so nothing is ever sent twice.
  *
  * Status always comes from the server; every action re-fetches.
  */
@@ -19,8 +24,14 @@ import { useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { formatPaise } from '@shared/money';
-import { Button, Icon, Pill, Surface, Toggle } from '@/components/ui';
-import { sellerApi, sellerErrorMessage, type SellerListingInventory, type SellerProductInventory } from '../sellerApi';
+import { Button, ErrorBanner, Icon, Modal, Pill, Surface, Toggle } from '@/components/ui';
+import {
+  sellerApi,
+  sellerErrorMessage,
+  type SellerListingInventory,
+  type SellerProductInventory,
+  type SubmittedApprovalBatch,
+} from '../sellerApi';
 import { useApplyListing, useRefreshInventory, useSellerAvailability, useSellerListings, useSellerProducts } from '../sellerQueries';
 import { ProductImage, StockStepper, VisibilityPill, shortDate } from '../productUi';
 import { MenuSectionsModal, ProductFormModal, StartSellingModal } from '../productForms';
@@ -45,8 +56,9 @@ type View = (typeof VIEWS)[number]['value'];
 const APPROVALS = [
   { value: 'ALL', label: 'Any approval' },
   { value: 'APPROVED', label: 'Approved' },
-  { value: 'IN_REVIEW', label: 'In review' },
-  { value: 'DRAFT', label: 'Draft (not submitted)' },
+  { value: 'IN_REVIEW', label: 'Pending Approval' },
+  { value: 'READY', label: 'Ready for Submission' },
+  { value: 'DRAFT', label: 'Draft (needs price & stock)' },
   { value: 'REJECTED', label: 'Rejected' },
 ] as const;
 type Approval = (typeof APPROVALS)[number]['value'];
@@ -56,7 +68,7 @@ const STOCKS = [
   { value: 'IN_STOCK', label: 'In stock' },
   { value: 'LOW', label: 'Low stock' },
   { value: 'OUT', label: 'Out of stock' },
-  { value: 'NOT_LISTED', label: 'Not selling yet' },
+  { value: 'NOT_LISTED', label: 'No price yet' },
 ] as const;
 type Stock = (typeof STOCKS)[number]['value'];
 
@@ -104,12 +116,20 @@ function matchesApproval(row: ProductRow, approval: Approval): boolean {
       return row.approval === 'APPROVED';
     case 'IN_REVIEW':
       return row.approval === 'PENDING' && !row.draft;
+    case 'READY':
+      return isReady(row);
     case 'DRAFT':
-      return row.draft;
+      return row.draft && row.listing === null;
     case 'REJECTED':
       return row.approval === 'REJECTED';
   }
 }
+
+/** Own, never submitted, with its price and stock — what may go into a batch. */
+const isReady = (row: ProductRow): boolean => row.own && row.draft && row.listing !== null && row.productId !== null;
+
+/** Most products one submission takes (backend submitBatchSchema). */
+const MAX_SELECTION = 1000;
 
 function matchesStock(row: ProductRow, stock: Stock): boolean {
   switch (stock) {
@@ -161,6 +181,8 @@ export default function SellerProductsPage() {
   const [adding, setAdding] = useState(false);
   const [starting, setStarting] = useState<SellerProductInventory | null>(null);
   const [managingSections, setManagingSections] = useState(false);
+  const [confirmingSubmit, setConfirmingSubmit] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const isRestaurant = useSellerAvailability().data?.sellerType === 'RESTAURANT';
 
   const products = useSellerProducts();
@@ -216,6 +238,26 @@ export default function SellerProductsPage() {
   const onToggle = (row: ProductRow) => guarded(row, (done) => toggle.mutate(row, { onSettled: done }));
 
   const rows = useMemo(() => rowsOf(products.data ?? [], listings.data ?? []), [products.data, listings.data]);
+  const readyIds = useMemo(() => new Set(rows.filter(isReady).map((row) => row.productId!)), [rows]);
+  const incompleteDrafts = rows.filter((row) => row.own && row.draft && row.listing === null).length;
+  // Only products that are still eligible stay ticked (a refetch may have moved some on).
+  const chosen = [...selected].filter((id) => readyIds.has(id));
+  const toggleSelected = (id: string) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const submitSelected = useMutation({
+    mutationFn: (productIds: string[]) => sellerApi.post<SubmittedApprovalBatch>('/seller/approval-batches', { productIds }),
+    onSuccess: (batch) => {
+      setConfirmingSubmit(false);
+      setSelected(new Set());
+      toast(`${batch.items.length} product${batch.items.length === 1 ? '' : 's'} sent to Aadione for approval as one batch.`);
+    },
+    onSettled: () => refresh(),
+  });
   const term = search.trim().toLowerCase();
   const narrowed = rows.filter(
     (row) =>
@@ -227,6 +269,18 @@ export default function SellerProductsPage() {
   const loading = products.isPending || listings.isPending;
   const error = products.error ?? listings.error;
   const filtersOn = view !== 'ALL' || approval !== 'ALL' || stock !== 'ALL' || term !== '';
+  // "Select all eligible" covers the eligible products the current filters show.
+  const eligibleShown = visible.filter(isReady).map((row) => row.productId!);
+  const allEligibleChosen = eligibleShown.length > 0 && eligibleShown.every((id) => selected.has(id));
+  const selectAllEligible = (on: boolean) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const id of eligibleShown) {
+        if (on) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
 
   const isShown = (row: ProductRow) => (row.own ? row.productShown : row.listing?.isAvailable ?? false);
   const adjusting = (row: ProductRow) => adjust.isPending && adjust.variables?.row.key === row.key;
@@ -241,6 +295,38 @@ export default function SellerProductsPage() {
           <Button onClick={() => setAdding(true)} className="hidden shrink-0 sm:inline-flex">
             <Icon name="plus" className="h-4 w-4" /> Add Product
           </Button>
+        </div>
+        <div className="space-y-3 rounded-xl border border-brand-500/30 bg-brand-50 px-3.5 py-3">
+          <p className="text-sm text-gray-800">Add as many products as you need, then submit them together for approval.</p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-gray-700">
+              <span className="font-semibold">{readyIds.size}</span> ready for submission
+              {chosen.length > 0 && (
+                <>
+                  {' '}
+                  · <span className="font-semibold">{chosen.length}</span> selected
+                </>
+              )}
+              {incompleteDrafts > 0 && (
+                <span className="text-gray-600">
+                  {' '}
+                  · {incompleteDrafts} draft{incompleteDrafts === 1 ? '' : 's'} still need{incompleteDrafts === 1 ? 's' : ''} a price and stock
+                </span>
+              )}
+            </p>
+            <Button
+              onClick={() => {
+                submitSelected.reset();
+                setConfirmingSubmit(true);
+              }}
+              disabled={chosen.length === 0 || chosen.length > MAX_SELECTION}
+            >
+              Submit Selected for Approval{chosen.length > 0 ? ` (${chosen.length})` : ''}
+            </Button>
+          </div>
+          {chosen.length > MAX_SELECTION && (
+            <p className="text-sm text-danger-600">Select up to {MAX_SELECTION.toLocaleString('en-IN')} products per submission.</p>
+          )}
         </div>
         <ChipTabs
           label="Quick views"
@@ -281,7 +367,7 @@ export default function SellerProductsPage() {
           <EmptyPanel
             icon="products"
             title="No products yet"
-            hint="Add a product — Aadione reviews it, then you set your price and stock to start selling."
+            hint="Add as many products as you need, then submit them together for approval."
             action={<Button onClick={() => setAdding(true)}>Add Product</Button>}
           />
         ) : (
@@ -298,14 +384,33 @@ export default function SellerProductsPage() {
         )
       ) : (
         <>
-          <p className="text-sm text-gray-500">
-            Showing {Math.min(shown, visible.length)} of {visible.length} product{visible.length === 1 ? '' : 's'}
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-gray-500">
+              Showing {Math.min(shown, visible.length)} of {visible.length} product{visible.length === 1 ? '' : 's'}
+            </p>
+            {eligibleShown.length > 0 && (
+              <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 text-sm font-medium text-gray-700">
+                <input
+                  type="checkbox"
+                  className={checkboxClass}
+                  checked={allEligibleChosen}
+                  onChange={(event) => selectAllEligible(event.target.checked)}
+                />
+                Select all eligible ({eligibleShown.length})
+              </label>
+            )}
+          </div>
           {/* below lg: cards */}
           <ul className="grid gap-3 md:grid-cols-2 lg:hidden" aria-label="Your products">
             {visible.slice(0, shown).map((row) => (
               <li key={row.key}>
                 <Surface className="space-y-3 p-3.5">
+                  {isReady(row) && (
+                    <label className="flex min-h-10 cursor-pointer items-center gap-2 text-sm font-medium text-gray-700">
+                      <input type="checkbox" className={checkboxClass} checked={selected.has(row.productId!)} onChange={() => toggleSelected(row.productId!)} />
+                      Select for approval
+                    </label>
+                  )}
                   <Link to={row.href} className="flex items-start gap-3 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-brand-400">
                     <ProductImage src={row.image} alt={row.name} size="h-16 w-16" />
                     <div className="min-w-0 flex-1">
@@ -350,6 +455,18 @@ export default function SellerProductsPage() {
                 <caption className="sr-only">Your products</caption>
                 <thead className="border-b border-gray-200 bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
                   <tr>
+                    <th scope="col" className="w-10 py-3 pl-4">
+                      <span className="sr-only">Select</span>
+                      {eligibleShown.length > 0 && (
+                        <input
+                          type="checkbox"
+                          className={checkboxClass}
+                          aria-label="Select all eligible products"
+                          checked={allEligibleChosen}
+                          onChange={(event) => selectAllEligible(event.target.checked)}
+                        />
+                      )}
+                    </th>
                     <th scope="col" className="px-4 py-3">Product</th>
                     <th scope="col" className="px-3 py-3">Price</th>
                     <th scope="col" className="px-2 py-3 text-right">Stock</th>
@@ -363,6 +480,17 @@ export default function SellerProductsPage() {
                 <tbody className="divide-y divide-gray-100">
                   {visible.slice(0, shown).map((row) => (
                     <tr key={row.key} className="align-middle hover:bg-gray-50/60">
+                      <td className="py-3 pl-4">
+                        {isReady(row) && (
+                          <input
+                            type="checkbox"
+                            className={checkboxClass}
+                            aria-label={`Select ${row.name} for approval`}
+                            checked={selected.has(row.productId!)}
+                            onChange={() => toggleSelected(row.productId!)}
+                          />
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         <div className="flex min-w-[12rem] items-center gap-3">
                           <ProductImage src={row.image} alt={row.name} size="h-11 w-11" />
@@ -470,6 +598,33 @@ export default function SellerProductsPage() {
         />
       )}
       {managingSections && isRestaurant && <MenuSectionsModal onClose={() => setManagingSections(false)} />}
+      {confirmingSubmit && (
+        <Modal
+          title={`Submit ${chosen.length} product${chosen.length === 1 ? '' : 's'} for approval?`}
+          subtitle="They go to Aadione together as one batch."
+          onClose={() => {
+            if (!submitSelected.isPending) setConfirmingSubmit(false);
+          }}
+          footer={
+            <div className="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row">
+              <Button variant="secondary" onClick={() => setConfirmingSubmit(false)} disabled={submitSelected.isPending} className="w-full sm:w-auto">
+                Cancel
+              </Button>
+              <Button onClick={() => submitSelected.mutate(chosen)} disabled={submitSelected.isPending || chosen.length === 0} className="w-full sm:w-auto">
+                {submitSelected.isPending ? 'Submitting…' : 'Submit for Approval'}
+              </Button>
+            </div>
+          }
+        >
+          <div className="space-y-3 text-sm text-gray-700">
+            <ErrorBanner message={submitSelected.error ? sellerErrorMessage(submitSelected.error) : null} />
+            <p>
+              The selected products — with the price and stock you entered — are sent for review in one batch. While Aadione reviews them
+              they can’t be edited, but you can keep adding new products. Products already sent are never sent twice.
+            </p>
+          </div>
+        </Modal>
+      )}
       {starting && (
         <StartSellingModal
           product={starting}
@@ -483,6 +638,8 @@ export default function SellerProductsPage() {
     </div>
   );
 }
+
+const checkboxClass = 'h-4 w-4 cursor-pointer rounded border-gray-300 text-brand-600 focus-visible:ring-2 focus-visible:ring-brand-400';
 
 /**
  * What customers see. When that is just the approval state again (pending /
@@ -499,7 +656,7 @@ function legacyView(filter: string | null): string | null {
   return null;
 }
 
-/** View · Edit · Images · Stock · Show/Hide (+ Start selling for an approved, unlisted product). */
+/** View · Edit · Images · Stock · Show/Hide (+ Add price & stock for an older product without them). */
 function RowActions({
   row,
   shown,
@@ -553,7 +710,7 @@ function RowActions({
         </div>
         {row.canStartSelling ? (
           <Button onClick={onStart} className="min-h-8 px-2.5 text-xs">
-            Start selling
+            Add price &amp; stock
           </Button>
         ) : (
           toggleEl
@@ -571,7 +728,7 @@ function RowActions({
           {action.label}
         </Link>
       ))}
-      {row.canStartSelling && <Button onClick={onStart}>Start selling</Button>}
+      {row.canStartSelling && <Button onClick={onStart}>Add price &amp; stock</Button>}
       {toggleEl}
     </div>
   );

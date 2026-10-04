@@ -14,10 +14,10 @@
 
 import { ErrorCode } from '../../shared';
 import { AppError } from '../../common/errors';
-import { prisma } from '../../infra/db/prisma';
+import { prisma, runInTransaction } from '../../infra/db/prisma';
 import { storage } from '../../infra/storage';
 import { slugify } from '../../shared/text';
-import { assertSellerMayCreateSubcategoryUnder } from './seller-category.service';
+import { assertSellerMayCreateSubcategoryUnder, linkedProductsError } from './seller-category.service';
 import { assertOwnSellerKey } from './seller-image.service';
 import { invalidateCategoryCache } from './catalog.service';
 
@@ -222,4 +222,31 @@ export async function setOwnSubcategoryImage(
   await audit(actorUserId, 'category.seller_subcategory.image', id, { imageUrl: current.imageUrl }, { imageUrl });
   invalidateCategoryCache();
   return toDto(await loadOwnOrThrow(sellerId, id));
+}
+
+/**
+ * DELETE /seller/subcategories/:id — deletes one of the seller's own
+ * subcategories. Same rules as a top category (seller-category.service.ts
+ * `deleteOwnTopCategory`): refused (409) while any product is attached,
+ * products are never touched, soft delete only, another seller's is NOT_FOUND.
+ */
+export async function deleteOwnSubcategory(sellerId: string, id: string, actorUserId: string): Promise<{ id: string }> {
+  const current = await loadOwnOrThrow(sellerId, id);
+
+  await runInTransaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM categories WHERE id = ${id}::uuid FOR UPDATE`;
+    const linked = await tx.product.count({ where: { categoryId: id, deletedAt: null } });
+    if (linked > 0) throw linkedProductsError('subcategory', linked);
+    await tx.category.updateMany({ where: { id, sellerId, deletedAt: null }, data: { deletedAt: new Date() } });
+  });
+
+  await audit(
+    actorUserId,
+    'category.seller_subcategory.delete',
+    id,
+    { sellerId, parentId: current.parentId, name: current.name, path: current.path },
+    { deleted: true },
+  );
+  invalidateCategoryCache();
+  return { id };
 }

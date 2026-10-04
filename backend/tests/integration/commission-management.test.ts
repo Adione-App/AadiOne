@@ -13,7 +13,7 @@ import { hashPassword } from '../../src/common/crypto';
 import { cache } from '../../src/infra/cache';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as otpService from '../../src/modules/auth/otp.service';
-import { seedAddress, seedProduct, seedStore } from '../helpers/fixtures';
+import { seedAddress, seedProduct, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
 
@@ -37,7 +37,7 @@ async function seedSeller(mobile: string, defaultCommissionBp: number): Promise<
       latitude: 27.62,
       longitude: 75.14,
       defaultCommissionBp,
-      onboardingStatus: ApprovalStatus.APPROVED,
+      ...sellerLifecycleFields(ApprovalStatus.APPROVED),
     },
   });
   const user = await prisma.user.create({ data: { mobile, fullName: 'Owner', role: UserRole.SELLER_OWNER } });

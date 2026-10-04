@@ -915,8 +915,60 @@ export interface ProductApprovalBatchReviewDto extends Omit<ProductApprovalBatch
   items: ProductApprovalReviewItemDto[];
 }
 
+/**
+ * POST /seller/approval-batches. Without `productIds`: every complete,
+ * never-submitted product of the seller goes into ONE new batch ("Submit for
+ * Approval"). With `productIds`: exactly those (e.g. resubmitting a rejected
+ * product after fixing it).
+ */
 export interface SubmitProductApprovalBatchRequest {
-  productIds: string[];
+  productIds?: string[];
+}
+
+/** A batch in a list — counts only, never its (possibly 1000+) items. */
+export interface ProductApprovalBatchSummaryDto extends Omit<ProductApprovalBatchDto, 'items'> {
+  sellerType: string;
+  itemCount: number;
+  pendingCount: number;
+  approvedCount: number;
+  rejectedCount: number;
+  /** Distinct categories (top categories and subcategories) the products sit in. */
+  categoryCount: number;
+}
+
+/** One product of a batch as admin scans it — compact, no full detail. */
+export interface ProductApprovalBatchProductRowDto {
+  itemId: string;
+  productId: string;
+  itemStatus: ApprovalStatus;
+  reviewNote: string | null;
+  name: string;
+  category: string;
+  subcategory: string | null;
+  sku: string | null;
+  variantName: string | null;
+  /** The seller's own price/stock, exactly as entered — review never changes them. */
+  mrpPaise: number | null;
+  pricePaise: number | null;
+  stockQty: number | null;
+  thumbUrl: string | null;
+  productStatus: ProductStatus;
+  /** The seller removed the product after submitting it. */
+  removed: boolean;
+}
+
+export interface ProductApprovalBatchProductsPageDto {
+  total: number;
+  offset: number;
+  items: ProductApprovalBatchProductRowDto[];
+}
+
+/** POST /admin/approval-batches/:id/approve — what one click decided. */
+export interface ApproveProductBatchResultDto {
+  batch: ProductApprovalBatchSummaryDto;
+  approvedCount: number;
+  /** Items whose product the seller deleted meanwhile — closed as rejected. */
+  removedCount: number;
 }
 
 export interface ReviewProductApprovalBatchItemRequest {

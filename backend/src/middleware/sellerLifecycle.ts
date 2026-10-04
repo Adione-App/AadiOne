@@ -9,15 +9,19 @@
  * see `sellerPanelAccess` (seller-lifecycle-rules.ts) for the exact table.
  * The React route guards mirror this, but this is the enforcement.
  *
- * Admin roles are not gated: they act on any seller through `:sellerId`
- * routes, exactly as before.
+ * Admin roles are not lifecycle-gated: they act on any seller through
+ * `:sellerId` routes, exactly as before — with one hard exception: a seller's
+ * onboarding data (profile, bank, documents, restaurant details, store
+ * location, submission) is the seller's own. Admin views and reviews it but
+ * can never write it, so every onboarding write here is refused for admin
+ * roles (`isSellerOnboardingWrite`), whatever permissions the role holds.
  */
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { ErrorCode, isAdminRole, type SellerLifecycleStatus } from '../shared';
 import { AppError } from '../common/errors';
 import { prisma } from '../infra/db/prisma';
-import { sellerPanelAccess } from '../modules/sellers/seller-lifecycle-rules';
+import { isSellerOnboardingWrite, sellerPanelAccess } from '../modules/sellers/seller-lifecycle-rules';
 import { resolveOwnSellerId } from './sellerAuth';
 
 const DENIAL_MESSAGE: Record<'NOT_ACTIVE' | 'UNDER_REVIEW' | 'NO_ONBOARDING', string> = {
@@ -35,6 +39,12 @@ export const requireSellerLifecycleAccess: RequestHandler = (req: Request, _res:
         });
       }
       if (isAdminRole(req.user.role)) {
+        if (isSellerOnboardingWrite(req.method, req.path)) {
+          throw new AppError(ErrorCode.FORBIDDEN, {
+            message: 'Seller onboarding details can only be changed by the seller. Admin can review them and request changes.',
+            internalMessage: `admin ${req.user.id} (${req.user.role}) tried ${req.method} /seller${req.path}`,
+          });
+        }
         next();
         return;
       }

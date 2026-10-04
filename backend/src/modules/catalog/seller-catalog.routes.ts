@@ -34,6 +34,16 @@ const createProductSchema = z.object({
   variantName: z.string().trim().min(1).max(80),
   unit: z.nativeEnum(UnitType),
   unitValue: z.number().positive(),
+  // A product is created COMPLETE: the seller's own price and opening stock
+  // are part of it from the start (same limits as the listing routes).
+  mrpPaise: z.number().int().positive(),
+  pricePaise: z.number().int().positive(),
+  stockQty: z.number().int().min(0).max(100_000),
+});
+
+const createProductBodySchema = createProductSchema.refine((v) => v.pricePaise <= v.mrpPaise, {
+  message: 'Selling price cannot be higher than MRP.',
+  path: ['pricePaise'],
 });
 
 /**
@@ -46,9 +56,12 @@ const updateProductSchema = createProductSchema
   .strict()
   .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update.' });
 
-const submitBatchSchema = z.object({
-  productIds: z.array(uuid).min(1).max(50),
-});
+/** Empty body = "Submit for Approval": every complete, never-submitted product. */
+const submitBatchSchema = z
+  .object({
+    productIds: z.array(uuid).min(1).max(1000).optional(),
+  })
+  .strict();
 
 export const sellerCatalogRouter: Router = Router();
 
@@ -135,6 +148,16 @@ sellerCatalogRouter.patch(
   }),
 );
 
+/** Refused (409) while any product is linked — see deleteOwnTopCategory. */
+sellerCatalogRouter.delete(
+  '/categories/:id',
+  requirePermission(Permission.SELLER_CATALOG_MANAGE),
+  validate({ params: z.object({ id: uuid }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await sellerCategoryService.deleteOwnTopCategory(requireSellerId(req), req.params['id'] as string, requireUser(req).id));
+  }),
+);
+
 sellerCatalogRouter.post(
   '/categories/:id/image',
   requirePermission(Permission.SELLER_CATALOG_MANAGE),
@@ -196,6 +219,16 @@ sellerCatalogRouter.patch(
   }),
 );
 
+/** Refused (409) while any product is linked — see deleteOwnSubcategory. */
+sellerCatalogRouter.delete(
+  '/subcategories/:id',
+  requirePermission(Permission.SELLER_CATALOG_MANAGE),
+  validate({ params: z.object({ id: uuid }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await subcategoryService.deleteOwnSubcategory(requireSellerId(req), req.params['id'] as string, requireUser(req).id));
+  }),
+);
+
 sellerCatalogRouter.post(
   '/subcategories/:id/image',
   requirePermission(Permission.SELLER_CATALOG_MANAGE),
@@ -212,7 +245,7 @@ sellerCatalogRouter.post(
 sellerCatalogRouter.post(
   '/products',
   requirePermission(Permission.SELLER_CATALOG_MANAGE),
-  validate({ body: createProductSchema }),
+  validate({ body: createProductBodySchema }),
   asyncHandler(async (req: Request, res: Response) => {
     created(
       res,
@@ -239,7 +272,7 @@ sellerCatalogRouter.post(
   requirePermission(Permission.PRODUCT_APPROVAL_SUBMIT),
   validate({ body: submitBatchSchema }),
   asyncHandler(async (req: Request, res: Response) => {
-    const { productIds } = req.body as { productIds: string[] };
+    const { productIds } = (req.body ?? {}) as { productIds?: string[] };
     created(
       res,
       await service.submitApprovalBatch(requireSellerId(req), productIds, requireUser(req).id),

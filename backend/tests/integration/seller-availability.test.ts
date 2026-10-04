@@ -15,7 +15,7 @@ import { cache } from '../../src/infra/cache';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as otpService from '../../src/modules/auth/otp.service';
 import * as sellerService from '../../src/modules/sellers/seller.service';
-import { seedAddress, seedProduct, seedStore } from '../helpers/fixtures';
+import { seedAddress, seedProduct, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
 
@@ -39,7 +39,7 @@ async function seedSeller(mobile: string, name: string): Promise<{ id: string; t
       latitude: 27.62,
       longitude: 75.14,
       timezone: 'Asia/Kolkata',
-      onboardingStatus: ApprovalStatus.APPROVED,
+      ...sellerLifecycleFields(ApprovalStatus.APPROVED),
     },
   });
   const user = await prisma.user.create({ data: { mobile, fullName: `${name} Owner`, role: UserRole.SELLER_OWNER } });

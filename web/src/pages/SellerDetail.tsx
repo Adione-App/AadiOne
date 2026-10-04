@@ -488,7 +488,7 @@ function SellerLoginTab({ seller, onNotice }: { seller: AdminSellerDetailDto; on
   const assign = useMutation({
     mutationFn: () => api.post(`/admin/sellers/${seller.id}/owner`, { ownerMobile: mobile.trim(), ownerFullName: name.trim() }),
     onSuccess: () => {
-      onNotice(`${name.trim()} is now the owner of ${seller.name}. Issue their Seller Panel login below.`);
+      onNotice(`${name.trim()} is now the owner of ${seller.name}. Set their login email below; they choose their own password with “Forgot Password?”.`);
       void queryClient.invalidateQueries({ queryKey: adminSellerKeys.detail(seller.id) });
     },
   });
@@ -506,7 +506,7 @@ function SellerLoginTab({ seller, onNotice }: { seller: AdminSellerDetailDto; on
           <Field label="Owner full name" required>
             <input value={name} maxLength={120} onChange={(event) => setName(event.target.value)} className={inputClass} />
           </Field>
-          <Field label="Owner mobile number" hint="They can sign in with an OTP to this number." required>
+          <Field label="Owner mobile number" hint="Contact number. Sellers sign in with their email and password, not with an OTP." required>
             <input value={mobile} inputMode="tel" maxLength={15} onChange={(event) => setMobile(event.target.value)} className={inputClass} placeholder="10-digit mobile" />
           </Field>
           <Button disabled={!valid || assign.isPending} onClick={() => assign.mutate()}>

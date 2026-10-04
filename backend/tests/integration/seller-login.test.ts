@@ -1,21 +1,28 @@
 /**
- * Admin-issued seller logins and the seller email + password sign-in.
+ * Seller authentication — EMAIL + PASSWORD only.
  *
- * Sellers never register themselves: an admin creates the seller (owner with
- * a mobile only), then issues the owner's login — an email and a temporary
- * password shown once. The seller signs in at /auth/seller/login (the server
- * checks the account's own role and seller membership) and changes it.
+ *   - Sellers sign in at POST /auth/seller/login with their email and password.
+ *     A mobile OTP never opens a seller session (customers keep OTP).
+ *   - "Forgot Password?" emails a single-use, expiring link; the seller sets a
+ *     new password; every old session ends; the old password stops working.
+ *   - Admin sees a seller's login EMAIL only. No admin route issues, resets,
+ *     changes or reveals a seller password (the old temporary-password route
+ *     is gone); admin may set a login email once for an owner that has none.
+ *   - Lifecycle gating and seller isolation are unchanged after sign-in.
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ErrorCode, UserRole } from '../../src/shared';
 import { api, bearer, expectError, expectSuccess } from '../helpers/api';
 import { prisma, truncateAll } from '../helpers/db';
-import { hashPassword } from '../../src/common/crypto';
+import { hashPassword, sha256 } from '../../src/common/crypto';
 import { cache } from '../../src/infra/cache';
+import { emailProvider } from '../../src/infra/email';
 import * as configService from '../../src/modules/configuration/configuration.service';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
+const SELLER_PASSWORD = 'MyShop@2026';
+const NEW_PASSWORD = 'BetterShop@2027';
 
 async function loginAdmin(role: UserRole = UserRole.ADMIN, email = ADMIN.email): Promise<string> {
   await prisma.user.create({
@@ -25,7 +32,17 @@ async function loginAdmin(role: UserRole = UserRole.ADMIN, email = ADMIN.email):
   return expectSuccess<{ tokens: { accessToken: string } }>(res.body).data.tokens.accessToken;
 }
 
-async function createSeller(adminToken: string, name: string, ownerMobile: string): Promise<string> {
+/** Seller self-signup (an APPLICATION_PENDING seller) with email + password. */
+async function signupSeller(mobile: string, email: string, password = SELLER_PASSWORD): Promise<string> {
+  const res = await api()
+    .post('/api/v1/auth/seller/signup')
+    .send({ fullName: 'Shop Owner', mobile, email, password, businessName: `Shop ${mobile}`, sellerType: 'GROCERY' })
+    .expect(201);
+  return expectSuccess<{ sellerId: string }>(res.body).data.sellerId;
+}
+
+/** Admin-created seller: its owner account has a mobile only — no email, no password. */
+async function createSellerByAdmin(adminToken: string, name: string, ownerMobile: string): Promise<string> {
   const res = await api()
     .post('/api/v1/admin/sellers')
     .set('Authorization', bearer(adminToken))
@@ -34,132 +51,315 @@ async function createSeller(adminToken: string, name: string, ownerMobile: strin
   return expectSuccess<{ sellerId: string }>(res.body).data.sellerId;
 }
 
-async function issueLogin(adminToken: string, sellerId: string, email: string) {
-  const res = await api().post(`/api/v1/admin/sellers/${sellerId}/login-credentials`).set('Authorization', bearer(adminToken)).send({ email });
-  return res;
+const sellerLogin = (email: string, password: string) => api().post('/api/v1/auth/seller/login').send({ email, password });
+const forgot = (email: string) => api().post('/api/v1/auth/seller/forgot-password').send({ email });
+const reset = (token: string, newPassword: string) => api().post('/api/v1/auth/seller/reset-password').send({ token, newPassword });
+
+async function sellerTokens(email: string, password = SELLER_PASSWORD) {
+  return expectSuccess<{ tokens: { accessToken: string; refreshToken: string }; user: { id: string; role: string } }>(
+    (await sellerLogin(email, password).expect(200)).body,
+  ).data;
 }
 
-const sellerLogin = (email: string, password: string) => api().post('/api/v1/auth/seller/login').send({ email, password });
+/** Every email "sent" in this test (the console provider is replaced by this spy). */
+let sentEmails: { to: string; subject: string; text: string }[] = [];
+
+function resetTokenFromLastEmail(to: string): string {
+  const message = [...sentEmails].reverse().find((m) => m.to === to);
+  if (!message) throw new Error(`no email sent to ${to}`);
+  const match = /reset-password\?token=([^\s]+)/.exec(message.text);
+  if (!match) throw new Error('no reset link in the email');
+  return decodeURIComponent(match[1]!);
+}
 
 beforeEach(async () => {
   await truncateAll();
   await configService.invalidateAll();
   await cache.clear();
-});
-
-describe('admin issues a seller login', () => {
-  it('creates the seller without a password, then issues an email + temporary password shown once', async () => {
-    const admin = await loginAdmin();
-    const sellerId = await createSeller(admin, 'Login Seller', '9400000101');
-
-    const before = await api().get(`/api/v1/admin/sellers/${sellerId}/login-credentials`).set('Authorization', bearer(admin)).expect(200);
-    expect(expectSuccess<{ hasPassword: boolean; email: string | null }>(before.body).data).toMatchObject({ hasPassword: false, email: null });
-
-    const issued = await issueLogin(admin, sellerId, 'Seller@Example.test');
-    expect(issued.status).toBe(200);
-    expect(issued.headers['cache-control']).toBe('no-store');
-    const data = expectSuccess<{ email: string; temporaryPassword: string; passwordChangeRequired: boolean; ownerUserId: string }>(issued.body).data;
-    expect(data.email).toBe('seller@example.test');
-    expect(data.temporaryPassword).toMatch(/^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9]{14}$/);
-    expect(data.passwordChangeRequired).toBe(true);
-
-    // Stored only as a hash; never returned again; audited without the password.
-    const owner = await prisma.user.findUniqueOrThrow({ where: { id: data.ownerUserId } });
-    expect(owner.passwordHash).not.toContain(data.temporaryPassword);
-    const again = await api().get(`/api/v1/admin/sellers/${sellerId}/login-credentials`).set('Authorization', bearer(admin)).expect(200);
-    expect(JSON.stringify(again.body)).not.toContain(data.temporaryPassword);
-    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: 'seller_login.credentials_issued', entityId: data.ownerUserId } });
-    expect(JSON.stringify(audit)).not.toContain(data.temporaryPassword);
-  });
-
-  it('refuses an email another account already uses (case-insensitive)', async () => {
-    const admin = await loginAdmin();
-    const a = await createSeller(admin, 'Seller A', '9400000102');
-    const b = await createSeller(admin, 'Seller B', '9400000103');
-    expect((await issueLogin(admin, a, 'same@example.test')).status).toBe(200);
-    const clash = await issueLogin(admin, b, 'SAME@example.test');
-    expect(clash.status).toBe(400);
-    expect(expectError(clash.body).message).toMatch(/already used/i);
-  });
-
-  it('is admin-only: STAFF (no SELLER_MANAGE) and sellers are refused', async () => {
-    const admin = await loginAdmin();
-    const sellerId = await createSeller(admin, 'Guarded Seller', '9400000104');
-    const staff = await loginAdmin(UserRole.STAFF, 'staff@adione.test');
-    expect((await issueLogin(staff, sellerId, 'x@example.test')).status).toBe(403);
-    const issued = expectSuccess<{ temporaryPassword: string }>((await issueLogin(admin, sellerId, 'guarded@example.test')).body).data;
-    const seller = expectSuccess<{ tokens: { accessToken: string } }>((await sellerLogin('guarded@example.test', issued.temporaryPassword)).body).data;
-    expect((await issueLogin(seller.tokens.accessToken, sellerId, 'other@example.test')).status).toBe(403);
+  sentEmails = [];
+  vi.spyOn(emailProvider, 'send').mockImplementation(async (input) => {
+    sentEmails.push({ to: input.to, subject: input.subject, text: input.text });
+    return { messageId: 'test', delivered: true };
   });
 });
 
-describe('seller sign-in', () => {
-  it('signs a seller in, asks for a password change, and the change ends other sessions', async () => {
-    const admin = await loginAdmin();
-    const sellerId = await createSeller(admin, 'Flow Seller', '9400000105');
-    const temp = expectSuccess<{ temporaryPassword: string }>((await issueLogin(admin, sellerId, 'flow@example.test')).body).data.temporaryPassword;
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
-    const res = await sellerLogin('flow@example.test', temp).expect(200);
-    const login = expectSuccess<{ user: { role: string }; tokens: { accessToken: string; refreshToken: string }; passwordChangeRequired: boolean }>(res.body).data;
-    expect(login.user.role).toBe(UserRole.SELLER_OWNER);
-    expect(login.passwordChangeRequired).toBe(true);
-    const own = await api().get('/api/v1/seller/onboarding').set('Authorization', bearer(login.tokens.accessToken)).expect(200);
-    expect(expectSuccess<{ sellerId: string }>(own.body).data.sellerId).toBe(sellerId);
+/* -------------------------------------------------------------------------- */
 
-    // A wrong current password is a 400 — the session itself is fine.
-    const wrong = await api().post('/api/v1/auth/change-password').set('Authorization', bearer(login.tokens.accessToken)).send({ currentPassword: 'nope-1234', newPassword: 'MyShop2026x' });
-    expect(wrong.status).toBe(400);
+describe('seller sign-in — email + password only', () => {
+  it('signs a seller in with its email and password; the lifecycle still decides what opens', async () => {
+    await signupSeller('9400000101', 'shop101@example.test');
 
-    const changed = await api().post('/api/v1/auth/change-password').set('Authorization', bearer(login.tokens.accessToken)).send({ currentPassword: temp, newPassword: 'MyShop2026x' }).expect(200);
-    const fresh = expectSuccess<{ tokens: { accessToken: string } }>(changed.body).data.tokens.accessToken;
-    expect((await api().post('/api/v1/auth/refresh').send({ refreshToken: login.tokens.refreshToken })).status).toBe(401);
-    const status = await api().get('/api/v1/auth/password-status').set('Authorization', bearer(fresh)).expect(200);
-    expect(expectSuccess(status.body).data).toEqual({ hasPassword: true, passwordChangeRequired: false });
-    expect((await sellerLogin('flow@example.test', temp)).status).toBe(401);
-    expect((await sellerLogin('flow@example.test', 'MyShop2026x')).status).toBe(200);
+    const session = await sellerTokens('SHOP101@example.test'); // email in any case
+    expect(session.user.role).toBe(UserRole.SELLER_OWNER);
+
+    // Signed in, but only an APPLICATION_PENDING seller: status yes, operations no.
+    await api().get('/api/v1/seller/lifecycle').set('Authorization', bearer(session.tokens.accessToken)).expect(200);
+    const orders = await api().get('/api/v1/seller/orders').set('Authorization', bearer(session.tokens.accessToken));
+    expect(orders.status).toBe(403);
+    expect(expectError(orders.body).code).toBe(ErrorCode.SELLER_ACCOUNT_NOT_ACTIVE);
   });
 
-  it('refuses admins, customers, unknown emails and wrong passwords with one identical error', async () => {
-    const admin = await loginAdmin();
-    const sellerId = await createSeller(admin, 'Refusal Seller', '9400000106');
-    const temp = expectSuccess<{ temporaryPassword: string }>((await issueLogin(admin, sellerId, 'refusal@example.test')).body).data.temporaryPassword;
-    await prisma.user.create({ data: { mobile: '9400000107', email: 'customer@example.test', fullName: 'Customer', passwordHash: await hashPassword('Customer123'), role: UserRole.CUSTOMER } });
+  it('refuses a wrong password, an unknown email, and non-seller accounts — with one identical error', async () => {
+    await signupSeller('9400000102', 'shop102@example.test');
+    await loginAdmin();
+    await api().post('/api/v1/auth/signup').send({ fullName: 'A Customer', email: 'customer@example.test', password: 'Customer@123', mobile: '9400000199' }).expect(201);
 
     const attempts = [
+      await sellerLogin('shop102@example.test', 'WrongPass@1'),
+      await sellerLogin('nobody@example.test', SELLER_PASSWORD),
       await sellerLogin(ADMIN.email, ADMIN.password),
-      await sellerLogin('customer@example.test', 'Customer123'),
-      await sellerLogin('nobody@example.test', 'Whatever123'),
-      await sellerLogin('refusal@example.test', 'Wrong12345'),
+      await sellerLogin('customer@example.test', 'Customer@123'),
     ];
     for (const res of attempts) {
       expect(res.status).toBe(401);
       expect(expectError(res.body).code).toBe(ErrorCode.INVALID_CREDENTIALS);
     }
-    expect(new Set(attempts.map((r) => expectError(r.body).message)).size).toBe(1);
-    // …and seller credentials cannot open the admin panel.
-    const onAdmin = await api().post('/api/v1/auth/admin/login').send({ email: 'refusal@example.test', password: temp });
-    expect(onAdmin.status).toBe(401);
+    expect(new Set(attempts.map((res) => JSON.stringify(expectError(res.body).message))).size).toBe(1);
+  });
+
+  it('a seller cannot sign in with a mobile OTP — no session is issued; customers still can', async () => {
+    const sellerId = await signupSeller('9400000103', 'shop103@example.test');
+    const owner = await prisma.sellerStaff.findFirstOrThrow({ where: { sellerId } });
+    const sessionsBefore = await prisma.refreshToken.count({ where: { userId: owner.userId } });
+
+    const sent = await api().post('/api/v1/auth/send-otp').send({ mobile: '9400000103' }).expect(200);
+    const otp = expectSuccess<{ devOtp: string }>(sent.body).data.devOtp;
+    const verified = await api().post('/api/v1/auth/verify-otp').send({ mobile: '9400000103', otp });
+    expect(verified.status).toBe(403);
+    expect(expectError(verified.body).code).toBe(ErrorCode.FORBIDDEN);
+    expect(expectError(verified.body).message).toMatch(/email and password/);
+    expect(JSON.stringify(verified.body)).not.toContain('accessToken');
+    expect(await prisma.refreshToken.count({ where: { userId: owner.userId } })).toBe(sessionsBefore);
+
+    // Customer OTP login is unchanged: a new number signs up, an existing customer signs in.
+    for (const expectNew of [true, false]) {
+      const customerOtp = expectSuccess<{ devOtp: string }>((await api().post('/api/v1/auth/send-otp').send({ mobile: '9400000198' }).expect(200)).body).data.devOtp;
+      const customer = await api().post('/api/v1/auth/verify-otp').send({ mobile: '9400000198', otp: customerOtp });
+      expect(customer.status).toBe(expectNew ? 201 : 200); // a first OTP login creates the account
+      const data = expectSuccess<{ user: { role: string; isNewUser?: boolean }; tokens: { accessToken: string } }>(customer.body).data;
+      expect(data.user.role).toBe(UserRole.CUSTOMER);
+      expect(Boolean(data.user.isNewUser)).toBe(expectNew);
+      await cache.clear(); // OTP resend cooldown, not under test here
+    }
   });
 
   it('refuses a seller account whose membership was revoked', async () => {
-    const admin = await loginAdmin();
-    const sellerId = await createSeller(admin, 'Revoked Seller', '9400000108');
-    const temp = expectSuccess<{ temporaryPassword: string }>((await issueLogin(admin, sellerId, 'revoked@example.test')).body).data.temporaryPassword;
+    const sellerId = await signupSeller('9400000104', 'shop104@example.test');
     await prisma.sellerStaff.updateMany({ where: { sellerId }, data: { isActive: false } });
-    expect((await sellerLogin('revoked@example.test', temp)).status).toBe(401);
+    expect((await sellerLogin('shop104@example.test', SELLER_PASSWORD)).status).toBe(401);
   });
 
-  it('keeps sellers isolated: no admin routes, never another seller’s data (X-Seller-Id cannot switch)', async () => {
-    const admin = await loginAdmin();
-    const a = await createSeller(admin, 'Isolated A', '9400000109');
-    const b = await createSeller(admin, 'Isolated B', '9400000110');
-    const tempB = expectSuccess<{ temporaryPassword: string }>((await issueLogin(admin, b, 'isob@example.test')).body).data.temporaryPassword;
-    const token = expectSuccess<{ tokens: { accessToken: string } }>((await sellerLogin('isob@example.test', tempB)).body).data.tokens.accessToken;
+  it('keeps sellers isolated: the seller id comes from the session, never from X-Seller-Id; no admin routes', async () => {
+    const a = await signupSeller('9400000105', 'shopa@example.test');
+    const b = await signupSeller('9400000106', 'shopb@example.test');
+    const token = (await sellerTokens('shopb@example.test')).tokens.accessToken;
 
     for (const path of ['/api/v1/admin/orders', '/api/v1/admin/sellers', `/api/v1/admin/sellers/${a}/login-credentials`]) {
       expect((await api().get(path).set('Authorization', bearer(token))).status).toBe(403);
     }
-    const spoof = await api().get('/api/v1/seller/onboarding').set('Authorization', bearer(token)).set('X-Seller-Id', a).expect(200);
+    const spoof = await api().get('/api/v1/seller/lifecycle').set('Authorization', bearer(token)).set('X-Seller-Id', a).expect(200);
     expect(expectSuccess<{ sellerId: string }>(spoof.body).data.sellerId).toBe(b);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe('Forgot Password', () => {
+  it('answers every email identically (no account enumeration); only a seller account gets a link', async () => {
+    await signupSeller('9400000111', 'shop111@example.test');
+    await loginAdmin();
+    await api().post('/api/v1/auth/signup').send({ fullName: 'A Customer', email: 'buyer@example.test', password: 'Customer@123', mobile: '9400000197' }).expect(201);
+
+    const responses = [
+      await forgot('shop111@example.test'),
+      await forgot('nobody@example.test'),
+      await forgot(ADMIN.email),
+      await forgot('buyer@example.test'),
+    ];
+    for (const res of responses) expect(res.status).toBe(200);
+    expect(new Set(responses.map((res) => JSON.stringify(res.body.data))).size).toBe(1);
+
+    expect(sentEmails.map((m) => m.to)).toEqual(['shop111@example.test']);
+    expect(await prisma.passwordResetToken.count()).toBe(1);
+    // A malformed email is a plain validation error, like any form.
+    expect((await forgot('not-an-email')).status).toBe(400);
+  });
+
+  it('resets the password: the new one works, the old one does not, and every old session ends', async () => {
+    const sellerId = await signupSeller('9400000112', 'shop112@example.test');
+    const before = await sellerTokens('shop112@example.test');
+
+    await forgot('shop112@example.test').expect(200);
+    const token = resetTokenFromLastEmail('shop112@example.test');
+    await reset(token, NEW_PASSWORD).expect(200);
+
+    await sellerTokens('shop112@example.test', NEW_PASSWORD);
+    expect((await sellerLogin('shop112@example.test', SELLER_PASSWORD)).status).toBe(401);
+    // The session from before the reset is gone.
+    expect((await api().post('/api/v1/auth/refresh').send({ refreshToken: before.tokens.refreshToken })).status).toBe(401);
+
+    // Still the same seller, still gated by its lifecycle.
+    const after = (await sellerTokens('shop112@example.test', NEW_PASSWORD)).tokens.accessToken;
+    const lifecycle = await api().get('/api/v1/seller/lifecycle').set('Authorization', bearer(after)).expect(200);
+    expect(expectSuccess<{ sellerId: string; lifecycleStatus: string }>(lifecycle.body).data).toMatchObject({
+      sellerId,
+      lifecycleStatus: 'APPLICATION_PENDING',
+    });
+    const status = await api().get('/api/v1/auth/password-status').set('Authorization', bearer(after)).expect(200);
+    expect(expectSuccess<{ passwordChangeRequired: boolean }>(status.body).data.passwordChangeRequired).toBe(false);
+  });
+
+  it('a reset link works once; a newer link replaces an older one', async () => {
+    await signupSeller('9400000113', 'shop113@example.test');
+
+    await forgot('shop113@example.test').expect(200);
+    const older = resetTokenFromLastEmail('shop113@example.test');
+    await forgot('shop113@example.test').expect(200);
+    const newer = resetTokenFromLastEmail('shop113@example.test');
+    expect(newer).not.toBe(older);
+
+    expect((await reset(older, NEW_PASSWORD)).status).toBe(400);
+    await reset(newer, NEW_PASSWORD).expect(200);
+    const reused = await reset(newer, 'Another@2028');
+    expect(reused.status).toBe(400);
+    expect(expectError(reused.body).message).toMatch(/invalid, already used or expired/);
+    await sellerTokens('shop113@example.test', NEW_PASSWORD);
+  });
+
+  it('an expired link fails; a weak new password is refused without spending the link', async () => {
+    await signupSeller('9400000114', 'shop114@example.test');
+    await forgot('shop114@example.test').expect(200);
+    const token = resetTokenFromLastEmail('shop114@example.test');
+
+    expect((await reset(token, 'short')).status).toBe(400);
+    await prisma.passwordResetToken.updateMany({ data: { expiresAt: new Date(Date.now() - 1000) } });
+    expect((await reset(token, NEW_PASSWORD)).status).toBe(400);
+    await sellerTokens('shop114@example.test'); // the old password is unchanged
+  });
+
+  it('an admin-created seller sets its own first password through Forgot Password', async () => {
+    const admin = await loginAdmin();
+    const sellerId = await createSellerByAdmin(admin, 'Admin Made Store', '9400000115');
+
+    await api().put(`/api/v1/admin/sellers/${sellerId}/login-email`).set('Authorization', bearer(admin)).send({ email: 'madestore@example.test' }).expect(200);
+    // No password was created by that: sign-in is impossible until the seller sets one.
+    expect((await sellerLogin('madestore@example.test', SELLER_PASSWORD)).status).toBe(401);
+
+    await forgot('madestore@example.test').expect(200);
+    await reset(resetTokenFromLastEmail('madestore@example.test'), NEW_PASSWORD).expect(200);
+    await sellerTokens('madestore@example.test', NEW_PASSWORD);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe('admin and seller credentials', () => {
+  it('admin sees the seller login email — never a password, a hash or password state', async () => {
+    const admin = await loginAdmin();
+    const sellerId = await signupSeller('9400000121', 'shop121@example.test');
+
+    const res = await api().get(`/api/v1/admin/sellers/${sellerId}/login-credentials`).set('Authorization', bearer(admin)).expect(200);
+    const data = expectSuccess<Record<string, unknown>>(res.body).data;
+    expect(Object.keys(data).sort()).toEqual(['email', 'lastLoginAt', 'ownerName', 'sellerId']);
+    expect(data['email']).toBe('shop121@example.test');
+    const text = JSON.stringify(res.body);
+    expect(text).not.toMatch(/password/i);
+    expect(text).not.toContain('$2'); // no bcrypt hash
+
+    // The seller detail and onboarding views carry no password data either.
+    for (const path of [`/api/v1/admin/sellers/${sellerId}`, `/api/v1/admin/sellers/${sellerId}/onboarding/summary`]) {
+      const view = await api().get(path).set('Authorization', bearer(admin)).expect(200);
+      expect(JSON.stringify(view.body)).not.toMatch(/passwordHash|\$2[aby]\$/);
+    }
+  });
+
+  it('admin cannot issue, reset, change or reveal a seller password — and cannot take over the login email', async () => {
+    const admin = await loginAdmin();
+    const sellerId = await signupSeller('9400000122', 'shop122@example.test');
+    const owner = await prisma.user.findFirstOrThrow({ where: { email: 'shop122@example.test' } });
+
+    // The former temporary-password route is gone, in every verb.
+    for (const method of ['post', 'put', 'patch'] as const) {
+      const res = await api()[method](`/api/v1/admin/sellers/${sellerId}/login-credentials`).set('Authorization', bearer(admin)).send({ email: 'shop122@example.test', password: 'Hijack@123' });
+      expect(res.status, method).toBe(404);
+    }
+    // Setting an email over an existing one would allow a takeover via reset — refused.
+    const takeover = await api().put(`/api/v1/admin/sellers/${sellerId}/login-email`).set('Authorization', bearer(admin)).send({ email: 'attacker@example.test' });
+    expect(takeover.status).toBe(409);
+    // Admin's own change-password only ever changes the admin's own password.
+    await api().post('/api/v1/auth/change-password').set('Authorization', bearer(admin)).send({ currentPassword: ADMIN.password, newPassword: 'NewAdmin@456' }).expect(200);
+
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: owner.id } });
+    expect(after.email).toBe('shop122@example.test');
+    expect(after.passwordHash).toBe(owner.passwordHash);
+    await sellerTokens('shop122@example.test');
+
+    // Login email: SELLER_MANAGE only — STAFF and sellers are refused.
+    const staff = await loginAdmin(UserRole.STAFF, 'staff@adione.test');
+    const sellerToken = (await sellerTokens('shop122@example.test')).tokens.accessToken;
+    for (const token of [staff, sellerToken]) {
+      expect((await api().get(`/api/v1/admin/sellers/${sellerId}/login-credentials`).set('Authorization', bearer(token))).status).toBe(403);
+      expect((await api().put(`/api/v1/admin/sellers/${sellerId}/login-email`).set('Authorization', bearer(token)).send({ email: 'x@example.test' })).status).toBe(403);
+    }
+  });
+
+  it('the seller changes its own password after login; other sessions end', async () => {
+    await signupSeller('9400000124', 'shop124@example.test');
+    const first = await sellerTokens('shop124@example.test');
+    const second = await sellerTokens('shop124@example.test');
+
+    const changed = await api()
+      .post('/api/v1/auth/change-password')
+      .set('Authorization', bearer(second.tokens.accessToken))
+      .send({ currentPassword: SELLER_PASSWORD, newPassword: NEW_PASSWORD })
+      .expect(200);
+    expect(JSON.stringify(changed.body)).not.toContain(NEW_PASSWORD);
+    expect((await api().post('/api/v1/auth/refresh').send({ refreshToken: first.tokens.refreshToken })).status).toBe(401);
+    expect((await sellerLogin('shop124@example.test', SELLER_PASSWORD)).status).toBe(401);
+    await sellerTokens('shop124@example.test', NEW_PASSWORD);
+  });
+
+  it('admin setting a first login email refuses one another account already uses (any case)', async () => {
+    const admin = await loginAdmin();
+    await signupSeller('9400000125', 'taken@example.test');
+    const sellerId = await createSellerByAdmin(admin, 'No Email Store', '9400000126');
+
+    const clash = await api().put(`/api/v1/admin/sellers/${sellerId}/login-email`).set('Authorization', bearer(admin)).send({ email: 'TAKEN@example.test' });
+    expect(clash.status).toBe(400);
+    expect(expectError(clash.body).message).toMatch(/already used/);
+    const owner = await prisma.sellerStaff.findFirstOrThrow({ where: { sellerId }, include: { user: true } });
+    expect(owner.user.email).toBeNull();
+  });
+
+  it('no plaintext password or reset token is stored, returned or audited', async () => {
+    const admin = await loginAdmin();
+    const sellerId = await createSellerByAdmin(admin, 'Leak Check Store', '9400000123');
+    const bodies: unknown[] = [];
+    bodies.push((await api().put(`/api/v1/admin/sellers/${sellerId}/login-email`).set('Authorization', bearer(admin)).send({ email: 'leak@example.test' }).expect(200)).body);
+    bodies.push((await forgot('leak@example.test').expect(200)).body);
+    const token = resetTokenFromLastEmail('leak@example.test');
+    bodies.push((await reset(token, NEW_PASSWORD).expect(200)).body);
+    bodies.push((await sellerLogin('leak@example.test', NEW_PASSWORD).expect(200)).body);
+    bodies.push((await api().get(`/api/v1/admin/sellers/${sellerId}/login-credentials`).set('Authorization', bearer(admin)).expect(200)).body);
+
+    for (const body of bodies) {
+      const text = JSON.stringify(body);
+      expect(text).not.toContain(NEW_PASSWORD);
+      expect(text).not.toContain(token);
+    }
+    const owner = await prisma.user.findFirstOrThrow({ where: { email: 'leak@example.test' } });
+    expect(owner.passwordHash).toMatch(/^\$2[aby]\$/); // bcrypt, never plaintext
+    const audit = JSON.stringify(await prisma.auditLog.findMany());
+    expect(audit).not.toContain(NEW_PASSWORD);
+    expect(audit).not.toContain(token);
+    // Only the hash of the reset token is stored.
+    const rows = await prisma.passwordResetToken.findMany();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.tokenHash).toBe(sha256(token));
+    expect(JSON.stringify(rows)).not.toContain(token);
   });
 });

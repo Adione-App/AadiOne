@@ -246,7 +246,9 @@ function compose(type: NotificationType, c: NotifyContext): { title: string; bod
     case NotificationType.SELLER_APPLICATION_REJECTED:
       return { title: 'Application not approved', body: `Your seller application was not approved${c.reason ? `: ${c.reason}` : '.'}` };
     case NotificationType.SELLER_PRODUCT_APPROVED:
-      return { title: 'Product approved', body: `"${c.productName ?? 'Your product'}" is approved and can now be listed.` };
+      return c.count
+        ? { title: 'Products approved', body: `${c.count} product${c.count === 1 ? ' is' : 's are'} approved and now live for customers (when in stock).` }
+        : { title: 'Product approved', body: `"${c.productName ?? 'Your product'}" is approved and now live for customers (when in stock).` };
     case NotificationType.SELLER_PRODUCT_REJECTED:
       return { title: 'Product not approved', body: `"${c.productName ?? 'Your product'}" was not approved${c.reason ? `: ${c.reason}` : '.'}` };
     case NotificationType.SELLER_SETTLEMENT_CREATED:

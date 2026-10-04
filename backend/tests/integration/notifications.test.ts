@@ -12,7 +12,7 @@ import { hashPassword } from '../../src/common/crypto';
 import { cache } from '../../src/infra/cache';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as otpService from '../../src/modules/auth/otp.service';
-import { seedAddress, seedProduct, seedStore } from '../helpers/fixtures';
+import { seedAddress, seedProduct, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
 import { SETTLEMENT_CLOSE_LAG_MS } from '../../src/modules/sellers/seller-settlement.service';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
@@ -36,7 +36,7 @@ async function seedSeller(mobile: string, approved = true): Promise<{ id: string
       pincode: '332001',
       latitude: 27.62,
       longitude: 75.14,
-      onboardingStatus: approved ? ApprovalStatus.APPROVED : ApprovalStatus.PENDING,
+      ...sellerLifecycleFields(approved ? ApprovalStatus.APPROVED : ApprovalStatus.PENDING),
     },
   });
   const user = await prisma.user.create({ data: { mobile, fullName: 'Owner', role: UserRole.SELLER_OWNER } });
@@ -142,21 +142,34 @@ describe('read / unread and isolation', () => {
 describe('onboarding, product approval and settlement notifications', () => {
   it('admin is told about submissions; the seller about decisions — per round, once', async () => {
     const adminToken = await loginAdmin();
-    const s = await seedSeller('9900000020', false);
-    await prisma.sellerProfile.create({ data: { sellerId: s.id, businessName: 'QA', ownerFullName: 'QA', ownerMobile: '9900000020' } });
+    const s = await seedSeller('9900000020', false); // ONBOARDING_PENDING (admin-created)
+    // A checklist-complete onboarding (seller-lifecycle-rules.ts): contact
+    // email, PAN number, and an uploaded PAN PDF carrying its number.
+    await prisma.sellerProfile.create({
+      data: { sellerId: s.id, businessName: 'QA', ownerFullName: 'QA', ownerMobile: '9900000020', ownerEmail: 'qa@seller.adione.test', panNumber: 'ABCDE1234F' },
+    });
     await prisma.sellerBankDetail.create({ data: { sellerId: s.id, accountHolderName: 'QA', accountNumber: '123456789012', ifscCode: 'SBIN0000001' } });
-    await prisma.sellerDocument.create({ data: { sellerId: s.id, type: 'PAN_CARD', fileUrl: 'x' } });
+    await prisma.sellerDocument.create({
+      data: { sellerId: s.id, type: 'PAN_CARD', documentNumber: 'ABCDE1234F', fileKey: `seller-documents/${s.id}/${randomUUID()}.pdf` },
+    });
+    const gate2 = (body: object) =>
+      api().patch(`/api/v1/admin/sellers/${s.id}/verification/review`).set('Authorization', bearer(adminToken)).send(body).expect(200);
 
     await api().post('/api/v1/seller/onboarding/submit').set('Authorization', bearer(s.token)).expect(200);
-    await api().post('/api/v1/seller/onboarding/submit').set('Authorization', bearer(s.token)).expect(200); // same round
+    // Same round: the onboarding is locked under review, so a repeat submit is
+    // refused — and no second notice is sent.
+    await api().post('/api/v1/seller/onboarding/submit').set('Authorization', bearer(s.token)).expect(403);
     expect(types(await feed('/api/v1/admin/notifications', adminToken))).toEqual(['ADMIN_ONBOARDING_SUBMITTED']);
 
-    await api().patch(`/api/v1/admin/sellers/${s.id}/onboarding/review`).set('Authorization', bearer(adminToken)).send({ status: 'REJECTED', reason: 'Blurry PAN' }).expect(200);
+    await gate2({ decision: 'REQUEST_CHANGES', reason: 'Blurry PAN' });
     await api().post('/api/v1/seller/onboarding/submit').set('Authorization', bearer(s.token)).expect(200); // new round
-    await api().patch(`/api/v1/admin/sellers/${s.id}/onboarding/review`).set('Authorization', bearer(adminToken)).send({ status: 'APPROVED' }).expect(200);
+    await gate2({ decision: 'APPROVE' });
 
     expect(types(await feed('/api/v1/admin/notifications', adminToken))).toEqual(['ADMIN_ONBOARDING_SUBMITTED', 'ADMIN_ONBOARDING_SUBMITTED']);
-    expect(types(await feed('/api/v1/seller/notifications', s.token))).toEqual(['SELLER_ONBOARDING_APPROVED', 'SELLER_ONBOARDING_REJECTED']);
+    expect(types(await feed('/api/v1/seller/notifications', s.token))).toEqual([
+      'SELLER_ONBOARDING_APPROVED',
+      'SELLER_ONBOARDING_CHANGES_REQUESTED',
+    ]);
   });
 
   it('settlement created / processing / paid reach the seller once each', async () => {

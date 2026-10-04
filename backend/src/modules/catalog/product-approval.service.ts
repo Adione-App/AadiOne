@@ -1,12 +1,17 @@
 /**
  * Seller-submitted product catalog approval.
  *
- * A seller creates its own Product (PENDING by construction — see
- * `createSellerProduct`), bundles one or more of its own pending/rejected
- * products into a `ProductApprovalBatch`, and admin reviews each item
- * independently. `Product.approvalStatus` is the single gate that matters
- * downstream (see admin-seller-catalog.service.ts's `createSellerListing`,
- * which refuses anything not APPROVED) — this module is the ONLY code
+ * A seller creates its own Product COMPLETE — details, category, SKU, and
+ * its own listing (MRP, selling price, opening stock) in one go (PENDING by
+ * construction — see `createSellerProduct`). It can save any number of them
+ * as drafts, then "Submit for Approval" puts every complete, never-submitted
+ * one into ONE `ProductApprovalBatch` (`submitApprovalBatch`). Admin approves
+ * the whole batch in one transactional action (`approveBatch`) or decides
+ * items individually (`reviewBatchItem`). Approval never touches the
+ * seller's price or stock; it only flips `Product.approvalStatus`, which is
+ * what makes the already-priced product visible to customers. `Product.approvalStatus` is the single gate that matters
+ * downstream (catalog visibility and orderability show/sell only APPROVED
+ * products) — this module is the ONLY code
  * permitted to move it away from its PENDING default, exactly mirroring how
  * `transitionSellerOrder` (order-state.service.ts) is the only code allowed
  * to write `seller_orders.status`.
@@ -25,6 +30,7 @@ import {
   NotificationType,
   Permission,
   ProductStatus,
+  StockLedgerReason,
   type CursorPage,
   type ProductApprovalBatchReviewDto,
   type UnitType,
@@ -35,6 +41,13 @@ import { prisma, runInTransaction, type Tx } from '../../infra/db/prisma';
 import { slugify } from '../../shared/text';
 import { assertSellerMayUseCategoryForProduct } from './seller-category.service';
 import { getOwnProduct, loadReviewProducts } from './seller-product.service';
+import { updateOwnListing } from './seller-listing.service';
+import { createSellerListing } from '../sellers/admin-seller-catalog.service';
+import type {
+  ApproveProductBatchResultDto,
+  ProductApprovalBatchProductsPageDto,
+  ProductApprovalBatchSummaryDto,
+} from '../../shared';
 
 /* -------------------------------------------------------------------------- */
 /* DTO mapping                                                                */
@@ -93,17 +106,27 @@ export interface CreateSellerProductInput {
   variantName: string;
   unit: UnitType;
   unitValue: number;
+  /** The seller's own listing — part of a complete product, set BEFORE approval. */
+  mrpPaise: number;
+  pricePaise: number;
+  stockQty: number;
 }
+
+/** Above this, a seller's single "Submit for Approval" is split across clicks. */
+export const MAX_BATCH_PRODUCTS = 5000;
 
 export async function createSellerProduct(
   sellerId: string,
   input: CreateSellerProductInput,
   actorUserId: string,
-): Promise<{ id: string; variantId: string }> {
+): Promise<{ id: string; variantId: string; listingId: string }> {
   // Only the seller's OWN categories (top category, subcategory or — for a
   // restaurant — menu section); another seller's is indistinguishable from a
   // missing one (seller-category.service).
   await assertSellerMayUseCategoryForProduct(sellerId, input.categoryId);
+  if (input.pricePaise > input.mrpPaise) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Selling price cannot be higher than MRP.' });
+  }
 
   const created = await runInTransaction(async (tx) => {
     const product = await tx.product.create({
@@ -138,7 +161,33 @@ export async function createSellerProduct(
       },
     });
 
-    return { productId: product.id, variantId: variant.id };
+    // The seller's own price and stock, in the same transaction: a product
+    // is never saved half-complete. Invisible to customers until approved
+    // (catalog/orderability gate on approvalStatus), so nothing sells early.
+    const listing = await tx.sellerListing.create({
+      data: {
+        sellerId,
+        variantId: variant.id,
+        mrpPaise: input.mrpPaise,
+        pricePaise: input.pricePaise,
+        stockQty: input.stockQty,
+        isAvailable: true,
+      },
+    });
+    if (listing.stockQty > 0) {
+      await tx.stockLedger.create({
+        data: {
+          sellerListingId: listing.id,
+          delta: listing.stockQty,
+          reason: StockLedgerReason.PURCHASE,
+          balanceAfter: listing.stockQty,
+          actorUserId,
+          note: 'Opening stock',
+        },
+      });
+    }
+
+    return { productId: product.id, variantId: variant.id, listingId: listing.id };
   });
 
   await prisma.auditLog.create({
@@ -147,11 +196,19 @@ export async function createSellerProduct(
       action: 'product.seller_create',
       entityType: 'Product',
       entityId: created.productId,
-      after: { sellerId, name: input.name, categoryId: input.categoryId },
+      after: {
+        sellerId,
+        name: input.name,
+        categoryId: input.categoryId,
+        listingId: created.listingId,
+        mrpPaise: input.mrpPaise,
+        pricePaise: input.pricePaise,
+        stockQty: input.stockQty,
+      },
     },
   });
 
-  return { id: created.productId, variantId: created.variantId };
+  return { id: created.productId, variantId: created.variantId, listingId: created.listingId };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -198,12 +255,54 @@ export async function loadEditableOwnProduct(
 /** The same fields `createSellerProduct` accepts — nothing else is editable. */
 export type UpdateSellerProductInput = Partial<CreateSellerProductInput>;
 
+/**
+ * The listing part of a product edit: updates the seller's own listing
+ * (inventory.service rules: price <= MRP, ledgered stock), or creates it for
+ * an older product that has none yet (then MRP, price and stock are all needed).
+ */
+async function applyListingChanges(
+  sellerId: string,
+  variantId: string | null,
+  input: Pick<UpdateSellerProductInput, 'mrpPaise' | 'pricePaise' | 'stockQty'>,
+  actorUserId: string,
+): Promise<void> {
+  if (input.mrpPaise === undefined && input.pricePaise === undefined && input.stockQty === undefined) return;
+  if (!variantId) throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'This product has no variant to price.' });
+  const listing = await prisma.sellerListing.findUnique({
+    where: { sellerId_variantId: { sellerId, variantId } },
+    select: { id: true },
+  });
+  if (listing) {
+    await updateOwnListing(
+      sellerId,
+      listing.id,
+      {
+        ...(input.mrpPaise !== undefined ? { mrpPaise: input.mrpPaise } : {}),
+        ...(input.pricePaise !== undefined ? { pricePaise: input.pricePaise } : {}),
+        ...(input.stockQty !== undefined ? { stockQty: input.stockQty } : {}),
+      },
+      actorUserId,
+    );
+    return;
+  }
+  if (input.mrpPaise === undefined || input.pricePaise === undefined || input.stockQty === undefined) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Enter the MRP, selling price and stock together.' });
+  }
+  await createSellerListing(
+    sellerId,
+    { variantId, mrpPaise: input.mrpPaise, pricePaise: input.pricePaise, stockQty: input.stockQty, isAvailable: true },
+    actorUserId,
+  );
+}
+
 export async function updateSellerProduct(
   sellerId: string,
   productId: string,
   input: UpdateSellerProductInput,
   actorUserId: string,
 ) {
+  const { mrpPaise, pricePaise, stockQty, ...productInput } = input;
+  input = productInput;
   const current = await loadEditableOwnProduct(sellerId, productId);
   const variant = await prisma.productVariant.findFirst({
     where: { productId, deletedAt: null },
@@ -275,6 +374,17 @@ export async function updateSellerProduct(
     },
   });
 
+  await applyListingChanges(
+    sellerId,
+    variant?.id ?? null,
+    {
+      ...(mrpPaise !== undefined ? { mrpPaise } : {}),
+      ...(pricePaise !== undefined ? { pricePaise } : {}),
+      ...(stockQty !== undefined ? { stockQty } : {}),
+    },
+    actorUserId,
+  );
+
   return getOwnProduct(sellerId, productId);
 }
 
@@ -324,96 +434,141 @@ export async function setOwnProductStatus(
 /* Seller — submit a batch of its own products for review                    */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * A product the seller may submit: owned, not deleted, not approved, and
+ * COMPLETE — a live variant with the seller's own listing (MRP, price,
+ * stock). Price and stock are part of the product before review, never after.
+ */
+const COMPLETE_PRODUCT_WHERE = (sellerId: string) => ({
+  variants: { some: { deletedAt: null, sellerListings: { some: { sellerId } } } },
+});
+
+/**
+ * POST /seller/approval-batches — ONE batch for one "Submit for Approval".
+ *
+ *   no productIds  every complete product of this seller that was never
+ *                  submitted (no batch item at all), oldest first, up to
+ *                  MAX_BATCH_PRODUCTS — the normal flow;
+ *   productIds     exactly those (resubmitting a fixed REJECTED product).
+ *
+ * Race-safe: the seller row is locked for the whole submission, and the
+ * eligibility and "already awaiting review" checks run inside that lock, so
+ * two clicks (or two tabs) can never put the same product into two batches.
+ * Items are inserted in one statement, so 1000+ products is one round trip.
+ */
 export async function submitApprovalBatch(
   sellerId: string,
-  productIds: string[],
+  productIds: string[] | undefined,
   actorUserId: string,
 ) {
-  const uniqueIds = [...new Set(productIds)];
-  if (uniqueIds.length !== productIds.length) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message: 'The same product was listed more than once.',
-    });
-  }
+  const batchId = await runInTransaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM sellers WHERE id = ${sellerId}::uuid FOR UPDATE`;
 
-  const products = await prisma.product.findMany({
-    where: { id: { in: uniqueIds } },
-    select: { id: true, name: true, submittedBySellerId: true, approvalStatus: true, deletedAt: true },
-  });
-  const byId = new Map(products.map((p) => [p.id, p]));
-
-  for (const id of uniqueIds) {
-    const product = byId.get(id);
-    // A missing id and one belonging to another seller are reported
-    // IDENTICALLY — a seller must never learn that a product id merely
-    // belonging to someone else exists (#15/#27), same principle as
-    // seller-order.service.ts's `loadOwned`.
-    if (!product || product.deletedAt || product.submittedBySellerId !== sellerId) {
-      throw new AppError(ErrorCode.NOT_FOUND, {
-        message: 'One of the selected products could not be found.',
-        internalMessage: `product ${id} not found or not owned by seller ${sellerId}`,
-      });
-    }
-    if (product.approvalStatus === ApprovalStatus.APPROVED) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, {
-        message: `"${product.name}" is already approved — nothing to submit.`,
-      });
-    }
-  }
-
-  // Duplicate/pending guard: none of these may already be awaiting review in
-  // ANOTHER open batch (a product's own `approvalStatus` doubles as "has an
-  // open item" once submitted — see the PENDING write below — so this is the
-  // one place that still has to ask the batch items directly, since a fresh,
-  // never-submitted product is ALSO `PENDING` by schema default).
-  const openItems = await prisma.productApprovalBatchItem.findMany({
-    where: { productId: { in: uniqueIds }, status: ApprovalStatus.PENDING },
-    select: { productId: true },
-  });
-  if (openItems.length > 0) {
-    const names = openItems.map((i) => byId.get(i.productId)?.name ?? i.productId);
-    throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      status: 409,
-      message: `Already awaiting review: ${names.join(', ')}.`,
-      internalMessage: `duplicate submission for products ${openItems.map((i) => i.productId).join(',')}`,
-    });
-  }
-
-  const batch = await runInTransaction(async (tx) => {
-    const created = await tx.productApprovalBatch.create({
-      data: {
-        sellerId,
-        status: ApprovalStatus.PENDING,
-        submittedByUserId: actorUserId,
-        items: {
-          create: uniqueIds.map((productId) => ({ productId, status: ApprovalStatus.PENDING })),
+    let ids: string[];
+    if (productIds === undefined) {
+      const ready = await tx.product.findMany({
+        where: {
+          submittedBySellerId: sellerId,
+          deletedAt: null,
+          approvalStatus: ApprovalStatus.PENDING,
+          approvalBatchItems: { none: {} },
+          ...COMPLETE_PRODUCT_WHERE(sellerId),
         },
+        select: { id: true },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        take: MAX_BATCH_PRODUCTS,
+      });
+      if (ready.length === 0) {
+        const incomplete = await tx.product.count({
+          where: {
+            submittedBySellerId: sellerId,
+            deletedAt: null,
+            approvalStatus: ApprovalStatus.PENDING,
+            approvalBatchItems: { none: {} },
+          },
+        });
+        throw new AppError(ErrorCode.VALIDATION_ERROR, {
+          message:
+            incomplete > 0
+              ? `Nothing is ready to submit: ${incomplete} draft product${incomplete === 1 ? ' needs' : 's need'} a price and stock first.`
+              : 'Nothing to submit — every product has already been submitted for approval.',
+        });
+      }
+      ids = ready.map((p) => p.id);
+    } else {
+      ids = [...new Set(productIds)];
+      if (ids.length !== productIds.length) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'The same product was listed more than once.' });
+      }
+      const products = await tx.product.findMany({
+        where: { id: { in: ids } },
+        select: {
+          id: true,
+          name: true,
+          submittedBySellerId: true,
+          approvalStatus: true,
+          deletedAt: true,
+          variants: { where: { deletedAt: null, sellerListings: { some: { sellerId } } }, select: { id: true }, take: 1 },
+        },
+      });
+      const byId = new Map(products.map((p) => [p.id, p]));
+      for (const id of ids) {
+        const product = byId.get(id);
+        // A missing id and one belonging to another seller are reported
+        // IDENTICALLY — a seller must never learn that a product id merely
+        // belonging to someone else exists (#15/#27).
+        if (!product || product.deletedAt || product.submittedBySellerId !== sellerId) {
+          throw new AppError(ErrorCode.NOT_FOUND, {
+            message: 'One of the selected products could not be found.',
+            internalMessage: `product ${id} not found or not owned by seller ${sellerId}`,
+          });
+        }
+        if (product.approvalStatus === ApprovalStatus.APPROVED) {
+          throw new AppError(ErrorCode.VALIDATION_ERROR, { message: `"${product.name}" is already approved — nothing to submit.` });
+        }
+        if (product.variants.length === 0) {
+          throw new AppError(ErrorCode.VALIDATION_ERROR, {
+            message: `"${product.name}" is incomplete: add its MRP, selling price and stock before submitting it.`,
+          });
+        }
+      }
+      const openItems = await tx.productApprovalBatchItem.findMany({
+        where: { productId: { in: ids }, status: ApprovalStatus.PENDING },
+        select: { productId: true },
+      });
+      if (openItems.length > 0) {
+        const names = openItems.map((i) => byId.get(i.productId)?.name ?? i.productId);
+        throw new AppError(ErrorCode.VALIDATION_ERROR, {
+          status: 409,
+          message: `Already awaiting review: ${names.join(', ')}.`,
+          internalMessage: `duplicate submission for products ${openItems.map((i) => i.productId).join(',')}`,
+        });
+      }
+    }
+
+    const created = await tx.productApprovalBatch.create({
+      data: { sellerId, status: ApprovalStatus.PENDING, submittedByUserId: actorUserId },
+      select: { id: true },
+    });
+    await tx.productApprovalBatchItem.createMany({
+      data: ids.map((productId) => ({ batchId: created.id, productId, status: ApprovalStatus.PENDING })),
+    });
+    // A resubmitted REJECTED product goes back under review — never silently
+    // APPROVED, and never left REJECTED while an item for it is pending.
+    await tx.product.updateMany({ where: { id: { in: ids } }, data: { approvalStatus: ApprovalStatus.PENDING } });
+    await tx.auditLog.create({
+      data: {
+        actorUserId,
+        action: 'approval_batch.submit',
+        entityType: 'ProductApprovalBatch',
+        entityId: created.id,
+        after: { sellerId, productCount: ids.length, submitAll: productIds === undefined },
       },
-      include: BATCH_INCLUDE,
     });
-
-    // Resubmission of a previously REJECTED product puts it back under
-    // review — never silently APPROVED, and never left REJECTED while an
-    // item for it is actively pending (see the duplicate guard above, which
-    // relies on exactly this invariant).
-    await tx.product.updateMany({
-      where: { id: { in: uniqueIds } },
-      data: { approvalStatus: ApprovalStatus.PENDING },
-    });
-
-    return created;
+    return created.id;
   });
 
-  await prisma.auditLog.create({
-    data: {
-      actorUserId,
-      action: 'approval_batch.submit',
-      entityType: 'ProductApprovalBatch',
-      entityId: batch.id,
-      after: { sellerId, productIds: uniqueIds },
-    },
-  });
-
+  const batch = await loadBatchOrThrow(batchId);
   await notificationService.notifyAdmins(Permission.PRODUCT_APPROVAL_REVIEW, {
     type: NotificationType.ADMIN_PRODUCTS_SUBMITTED,
     dedupeKey: `approval-batch:${batch.id}:submitted`,
@@ -423,6 +578,141 @@ export async function submitApprovalBatch(
   return toBatchDto(batch);
 }
 
+/** Counts for a page of batches — one grouped query, never the items themselves. */
+async function summarise(
+  batches: { id: string; sellerId: string; status: ApprovalStatus; submittedAt: Date; reviewedAt: Date | null; reviewNote: string | null; seller: { name: string; sellerType: string } }[],
+): Promise<ProductApprovalBatchSummaryDto[]> {
+  if (batches.length === 0) return [];
+  const ids = batches.map((b) => b.id);
+  const [statusCounts, categoryCounts] = await Promise.all([
+    prisma.productApprovalBatchItem.groupBy({ by: ['batchId', 'status'], where: { batchId: { in: ids } }, _count: { _all: true } }),
+    prisma.$queryRaw<{ batch_id: string; categories: bigint }[]>`
+      SELECT i.batch_id, COUNT(DISTINCT p.category_id) AS categories
+      FROM product_approval_batch_items i JOIN products p ON p.id = i.product_id
+      WHERE i.batch_id = ANY(${ids}::uuid[])
+      GROUP BY i.batch_id`,
+  ]);
+  const count = (batchId: string, status?: ApprovalStatus) =>
+    statusCounts
+      .filter((row) => row.batchId === batchId && (!status || row.status === status))
+      .reduce((sum, row) => sum + row._count._all, 0);
+  const categories = new Map(categoryCounts.map((row) => [row.batch_id, Number(row.categories)]));
+  return batches.map((batch) => ({
+    id: batch.id,
+    sellerId: batch.sellerId,
+    sellerName: batch.seller.name,
+    sellerType: batch.seller.sellerType,
+    status: batch.status,
+    submittedAt: batch.submittedAt.toISOString(),
+    reviewedAt: batch.reviewedAt?.toISOString() ?? null,
+    reviewNote: batch.reviewNote,
+    itemCount: count(batch.id),
+    pendingCount: count(batch.id, ApprovalStatus.PENDING),
+    approvedCount: count(batch.id, ApprovalStatus.APPROVED),
+    rejectedCount: count(batch.id, ApprovalStatus.REJECTED),
+    categoryCount: categories.get(batch.id) ?? 0,
+  }));
+}
+
+const SUMMARY_SELECT = {
+  id: true,
+  sellerId: true,
+  status: true,
+  submittedAt: true,
+  reviewedAt: true,
+  reviewNote: true,
+  seller: { select: { name: true, sellerType: true } },
+} as const;
+
+export async function getApprovalBatchSummary(batchId: string, scopeSellerId?: string): Promise<ProductApprovalBatchSummaryDto> {
+  const batch = await prisma.productApprovalBatch.findUnique({ where: { id: batchId }, select: SUMMARY_SELECT });
+  if (!batch || (scopeSellerId && batch.sellerId !== scopeSellerId)) {
+    throw new AppError(ErrorCode.NOT_FOUND, { message: 'Approval batch not found.' });
+  }
+  return (await summarise([batch]))[0]!;
+}
+
+/**
+ * Admin — one page of a batch's products as a compact table row each:
+ * name, category/subcategory, SKU, the seller's MRP/price/stock, thumbnail,
+ * status. Built for batches of 1000+ products (offset pages, max 200 rows).
+ */
+export async function listBatchProducts(
+  batchId: string,
+  options: { offset: number; limit: number },
+): Promise<ProductApprovalBatchProductsPageDto> {
+  const batch = await prisma.productApprovalBatch.findUnique({ where: { id: batchId }, select: { sellerId: true } });
+  if (!batch) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Approval batch not found.' });
+
+  const [total, items] = await Promise.all([
+    prisma.productApprovalBatchItem.count({ where: { batchId } }),
+    prisma.productApprovalBatchItem.findMany({
+      where: { batchId },
+      // Items of one submission share their insert time: the products' own
+      // creation order is what the seller will recognise.
+      orderBy: [{ product: { createdAt: 'asc' } }, { id: 'asc' }],
+      skip: options.offset,
+      take: options.limit,
+      select: {
+        id: true,
+        status: true,
+        reviewNote: true,
+        product: {
+          select: {
+            id: true,
+            name: true,
+            status: true,
+            deletedAt: true,
+            category: { select: { name: true, parent: { select: { name: true } } } },
+            images: { orderBy: { displayOrder: 'asc' }, take: 1, select: { url: true, thumbUrl: true } },
+            variants: {
+              where: { deletedAt: null },
+              orderBy: [{ isDefault: 'desc' }, { displayOrder: 'asc' }, { createdAt: 'asc' }],
+              take: 1,
+              select: {
+                sku: true,
+                variantName: true,
+                sellerListings: {
+                  where: { sellerId: batch.sellerId },
+                  select: { mrpPaise: true, pricePaise: true, stockQty: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    }),
+  ]);
+
+  return {
+    total,
+    offset: options.offset,
+    items: items.map((item) => {
+      const product = item.product;
+      const variant = product.variants[0] ?? null;
+      const listing = variant?.sellerListings[0] ?? null;
+      const parent = product.category.parent;
+      return {
+        itemId: item.id,
+        productId: product.id,
+        itemStatus: item.status,
+        reviewNote: item.reviewNote,
+        name: product.name,
+        category: parent ? parent.name : product.category.name,
+        subcategory: parent ? product.category.name : null,
+        sku: variant?.sku ?? null,
+        variantName: variant?.variantName ?? null,
+        mrpPaise: listing?.mrpPaise ?? null,
+        pricePaise: listing?.pricePaise ?? null,
+        stockQty: listing?.stockQty ?? null,
+        thumbUrl: product.images[0]?.thumbUrl ?? product.images[0]?.url ?? null,
+        productStatus: product.status,
+        removed: product.deletedAt !== null,
+      };
+    }),
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Reads — shared by seller (scoped) and admin (unscoped)                    */
 /* -------------------------------------------------------------------------- */
@@ -430,14 +720,14 @@ export async function submitApprovalBatch(
 export async function listApprovalBatches(
   scopeSellerId: string | undefined,
   options: { status?: ApprovalStatus; cursor?: string | null; limit: number },
-): Promise<CursorPage<ReturnType<typeof toBatchDto>>> {
+): Promise<CursorPage<ProductApprovalBatchSummaryDto>> {
   const batches = await prisma.productApprovalBatch.findMany({
     where: {
       ...(scopeSellerId ? { sellerId: scopeSellerId } : {}),
       ...(options.status ? { status: options.status } : {}),
       ...(options.cursor ? { submittedAt: { lt: new Date(options.cursor) } } : {}),
     },
-    include: BATCH_INCLUDE,
+    select: SUMMARY_SELECT,
     orderBy: { submittedAt: 'desc' },
     take: options.limit + 1,
   });
@@ -447,7 +737,7 @@ export async function listApprovalBatches(
   const last = page[page.length - 1];
 
   return {
-    items: page.map(toBatchDto),
+    items: await summarise(page),
     hasMore,
     nextCursor: hasMore && last ? last.submittedAt.toISOString() : null,
   };
@@ -630,4 +920,91 @@ export async function reviewBatchItem(input: ReviewBatchItemInput) {
     },
   });
   return detail;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Admin — approve a whole batch in one action                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * POST /admin/approval-batches/:id/approve — every still-PENDING item of the
+ * batch is approved in ONE transaction (the batch row locked, so a second
+ * click or a concurrent item review cannot double-decide). Items already
+ * decided one by one keep their decision. An item whose product the seller
+ * deleted meanwhile is closed as REJECTED instead of approving a removed
+ * product. Only `approvalStatus` changes: the seller's price, stock and
+ * listing are never touched — approval just makes them visible.
+ */
+export async function approveBatch(batchId: string, actorUserId: string): Promise<ApproveProductBatchResultDto> {
+  const outcome = await runInTransaction(async (tx) => {
+    const [locked] = await tx.$queryRaw<{ status: ApprovalStatus; seller_id: string }[]>`
+      SELECT status, seller_id FROM product_approval_batches WHERE id = ${batchId}::uuid FOR UPDATE`;
+    if (!locked) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Approval batch not found.' });
+    if (locked.status !== ApprovalStatus.PENDING) {
+      throw new AppError(ErrorCode.INVALID_STATUS_TRANSITION, {
+        message: 'This batch has already been fully reviewed.',
+        internalMessage: `approve on batch ${batchId} in status ${locked.status}`,
+      });
+    }
+
+    const pending = await tx.productApprovalBatchItem.findMany({
+      where: { batchId, status: ApprovalStatus.PENDING },
+      select: { id: true, productId: true, product: { select: { deletedAt: true } } },
+    });
+    const live = pending.filter((item) => item.product.deletedAt === null);
+    const removed = pending.filter((item) => item.product.deletedAt !== null);
+
+    if (live.length > 0) {
+      await tx.productApprovalBatchItem.updateMany({
+        where: { id: { in: live.map((item) => item.id) } },
+        data: { status: ApprovalStatus.APPROVED },
+      });
+      await tx.product.updateMany({
+        where: { id: { in: live.map((item) => item.productId) } },
+        data: { approvalStatus: ApprovalStatus.APPROVED },
+      });
+    }
+    if (removed.length > 0) {
+      await tx.productApprovalBatchItem.updateMany({
+        where: { id: { in: removed.map((item) => item.id) } },
+        data: { status: ApprovalStatus.REJECTED, reviewNote: 'The seller removed this product before review.' },
+      });
+    }
+
+    // Same aggregate rule as reviewBatchItem: APPROVED only if every item was.
+    const rejected = await tx.productApprovalBatchItem.count({ where: { batchId, status: ApprovalStatus.REJECTED } });
+    await tx.productApprovalBatch.update({
+      where: { id: batchId },
+      data: {
+        status: rejected === 0 ? ApprovalStatus.APPROVED : ApprovalStatus.REJECTED,
+        reviewedByUserId: actorUserId,
+        reviewedAt: new Date(),
+      },
+    });
+    await tx.auditLog.create({
+      data: {
+        actorUserId,
+        action: 'approval_batch.approve',
+        entityType: 'ProductApprovalBatch',
+        entityId: batchId,
+        after: { approvedCount: live.length, removedCount: removed.length },
+      },
+    });
+    return { sellerId: locked.seller_id, approved: live.length, removed: removed.length };
+  });
+
+  // One notice for the whole batch, not one per product.
+  if (outcome.approved > 0) {
+    await notificationService.notifySeller(outcome.sellerId, {
+      type: NotificationType.SELLER_PRODUCT_APPROVED,
+      dedupeKey: `approval-batch:${batchId}:approved`,
+      context: { count: outcome.approved },
+    });
+  }
+
+  return {
+    batch: await getApprovalBatchSummary(batchId),
+    approvedCount: outcome.approved,
+    removedCount: outcome.removed,
+  };
 }

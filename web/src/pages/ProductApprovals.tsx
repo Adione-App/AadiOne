@@ -1,23 +1,34 @@
 /**
- * Product Approvals — seller-submitted products waiting for admin review.
+ * Product Approvals — sellers submit their products in BATCHES (one per
+ * "Submit for Approval", possibly 1000+ products), so admin reviews batches,
+ * not single products.
  *
- * List: GET /admin/approval-batches?status=PENDING (cursor pages of batches,
- * one row per product in them). Detail: GET /admin/approval-batches/:id,
- * which carries each item's product details. A decision is
- * PATCH /admin/approval-batches/:id/items/:itemId — its response is not used:
- * the list, the open detail and the sidebar count are re-fetched, and the
- * screen shows only what the server now says.
+ *   List    GET  /admin/approval-batches?status=PENDING — one compact row per
+ *                batch (seller, type, product and category counts, status).
+ *   Review  GET  /admin/approval-batches/:id/summary and
+ *           GET  /admin/approval-batches/:id/products?offset&limit — a compact
+ *                table (name, category › subcategory, SKU, the seller's MRP,
+ *                price and stock, thumbnail, status), 100 rows at a time.
+ *   Decide  POST /admin/approval-batches/:id/approve — ONE action approves every
+ *                still-pending product; PATCH .../items/:itemId rejects one
+ *                product with a reason. Approval never changes the seller's
+ *                price or stock.
+ *
+ * Responses of decisions are not trusted for display: the list, the open batch
+ * and the sidebar count are re-fetched from the server.
  */
 
-import { useMemo, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ApprovalStatus,
+  type ApproveProductBatchResultDto,
   type CursorPage,
-  type ProductApprovalBatchDto,
-  type ProductApprovalBatchReviewDto,
-  type ProductApprovalReviewItemDto,
+  type ProductApprovalBatchProductRowDto,
+  type ProductApprovalBatchProductsPageDto,
+  type ProductApprovalBatchSummaryDto,
 } from '@shared';
+import { formatPaise } from '@shared/money';
 import { api, ApiRequestError } from '@/lib/api';
 import { imageSrc } from '@/lib/image';
 import { approvalKeys, pendingBatchesPath, retryServerErrorsOnce } from '@/lib/productApprovals';
@@ -38,6 +49,8 @@ import {
 
 /** Backend limit on a review note (reviewItemSchema: max 400). */
 const REVIEW_NOTE_MAX = 400;
+/** Rows per page of a batch's product table (backend max 200). */
+const PRODUCT_PAGE = 100;
 
 const APPROVAL_LOOK: Record<string, { label: string; tone: Tone }> = {
   [ApprovalStatus.PENDING]: { label: 'Pending review', tone: 'amber' },
@@ -50,10 +63,6 @@ function ApprovalPill({ status }: { status: string }) {
   return <Pill tone={look.tone}>{look.label}</Pill>;
 }
 
-function ProductStatusPill({ status }: { status: string }) {
-  return <Pill tone={status === 'ACTIVE' ? 'brand' : 'gray'}>{status.charAt(0) + status.slice(1).toLowerCase()}</Pill>;
-}
-
 const dateTime = new Intl.DateTimeFormat('en-IN', {
   day: 'numeric',
   month: 'short',
@@ -64,6 +73,8 @@ const dateTime = new Intl.DateTimeFormat('en-IN', {
 });
 const formatDateTime = (iso: string): string => dateTime.format(new Date(iso));
 const shortId = (id: string): string => id.slice(0, 8).toUpperCase();
+const titleCase = (value: string): string => value.charAt(0) + value.slice(1).toLowerCase();
+const plural = (count: number, word: string): string => `${count.toLocaleString('en-IN')} ${word}${count === 1 ? '' : 's'}`;
 
 function errorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiRequestError) {
@@ -79,38 +90,31 @@ function errorMessage(error: unknown, fallback: string): string {
 
 export default function ProductApprovalsPage() {
   const queryClient = useQueryClient();
-  const [selected, setSelected] = useState<{ batchId: string; itemId: string } | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
 
   const pending = useInfiniteQuery({
     queryKey: approvalKeys.pending,
-    queryFn: ({ pageParam }) => api.get<CursorPage<ProductApprovalBatchDto>>(pendingBatchesPath(pageParam)),
+    queryFn: ({ pageParam }) => api.get<CursorPage<ProductApprovalBatchSummaryDto>>(pendingBatchesPath(pageParam)),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => (last.hasMore && last.nextCursor ? last.nextCursor : undefined),
     retry: retryServerErrorsOnce,
   });
 
-  // One row per product; a batch seen on two pages (same submittedAt) counts once.
-  const { rows, batchCount } = useMemo(() => {
-    const seen = new Set<string>();
-    const batches = (pending.data?.pages ?? [])
-      .flatMap((page) => page.items)
-      .filter((batch) => (seen.has(batch.id) ? false : (seen.add(batch.id), true)));
-    return {
-      batchCount: batches.length,
-      rows: batches.flatMap((batch) => batch.items.map((item, index) => ({ batch, item, index }))),
-    };
-  }, [pending.data]);
-  const waiting = rows.filter((row) => row.item.status === ApprovalStatus.PENDING).length;
+  // A batch seen on two pages (same submittedAt) is listed once.
+  const seen = new Set<string>();
+  const batches = (pending.data?.pages ?? [])
+    .flatMap((page) => page.items)
+    .filter((batch) => (seen.has(batch.id) ? false : (seen.add(batch.id), true)));
+  const waiting = batches.reduce((sum, batch) => sum + batch.pendingCount, 0);
 
   const refresh = (): void => {
-    void queryClient.invalidateQueries({ queryKey: approvalKeys.pending });
-    void queryClient.invalidateQueries({ queryKey: approvalKeys.pendingCount });
+    void queryClient.invalidateQueries({ queryKey: approvalKeys.all });
   };
 
   return (
     <div className="space-y-5">
       <Panel
-        title="Waiting for review"
+        title="Approval batches waiting for review"
         bodyClass=""
         action={
           <Button variant="secondary" onClick={refresh} disabled={pending.isFetching}>
@@ -119,68 +123,60 @@ export default function ProductApprovalsPage() {
         }
       >
         {pending.isPending ? (
-          <Spinner label="Loading submissions…" />
-        ) : pending.isError && rows.length === 0 ? (
+          <Spinner label="Loading batches…" />
+        ) : pending.isError && batches.length === 0 ? (
           <div className="space-y-3 p-5 pt-0">
-            <ErrorBanner message={errorMessage(pending.error, 'Could not load submissions.')} />
+            <ErrorBanner message={errorMessage(pending.error, 'Could not load approval batches.')} />
             <Button variant="secondary" onClick={() => void pending.refetch()}>
               Try again
             </Button>
           </div>
-        ) : rows.length === 0 ? (
+        ) : batches.length === 0 ? (
           <div className="p-5 pt-0">
-            <EmptyState
-              title="No products waiting for review"
-              hint="Products sellers submit for approval will appear here."
-            />
+            <EmptyState title="No batches waiting for review" hint="When a seller submits products for approval, the batch appears here." />
           </div>
         ) : (
           <>
             <p className="px-5 pb-3 text-sm text-gray-500">
-              {waiting} {waiting === 1 ? 'product' : 'products'} awaiting a decision across {batchCount}{' '}
-              {batchCount === 1 ? 'submission' : 'submissions'}.
+              {plural(waiting, 'product')} awaiting a decision in {plural(batches.length, 'batch')}.
             </p>
             <div className="overflow-x-auto border-t border-gray-100">
-              <table className="w-full min-w-[720px] text-sm">
+              <table className="w-full min-w-[760px] text-sm">
                 <thead className="border-b border-gray-200 bg-gray-50">
                   <tr>
-                    <Th>Product</Th>
+                    <Th>Batch ID</Th>
                     <Th>Seller</Th>
+                    <Th>Product Count</Th>
+                    <Th>Categories</Th>
                     <Th>Submitted</Th>
                     <Th>Status</Th>
-                    <Th>Submission</Th>
-                    <Th className="text-right">Action</Th>
+                    <Th className="text-right">Actions</Th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {rows.map(({ batch, item, index }) => (
-                    <tr key={item.id} className="transition hover:bg-gray-50/60">
+                  {batches.map((batch) => (
+                    <tr key={batch.id} className="transition hover:bg-gray-50/60">
+                      <Td className="whitespace-nowrap font-mono text-xs text-gray-600">#{shortId(batch.id)}</Td>
                       <Td>
-                        <p className="font-medium text-gray-900">{item.productName}</p>
-                        {item.reviewNote && (
-                          <p className="mt-0.5 max-w-xs truncate text-xs text-gray-500">Note: {item.reviewNote}</p>
-                        )}
+                        <p className="font-medium text-gray-900">{batch.sellerName}</p>
+                        <p className="text-xs text-gray-500">{titleCase(batch.sellerType)}</p>
                       </Td>
-                      <Td className="text-gray-700">{batch.sellerName}</Td>
+                      <Td>
+                        <p className="font-semibold text-gray-900">{batch.itemCount.toLocaleString('en-IN')}</p>
+                        <p className="text-xs text-gray-500">
+                          {batch.pendingCount.toLocaleString('en-IN')} pending
+                          {batch.rejectedCount > 0 ? ` · ${batch.rejectedCount} rejected` : ''}
+                        </p>
+                      </Td>
+                      <Td className="text-gray-700">{batch.categoryCount}</Td>
                       <Td className="whitespace-nowrap text-gray-600">{formatDateTime(batch.submittedAt)}</Td>
                       <Td>
-                        <ApprovalPill status={item.status} />
-                      </Td>
-                      <Td className="whitespace-nowrap text-xs text-gray-500">
-                        #{shortId(batch.id)}
-                        {batch.items.length > 1 && (
-                          <span className="block">
-                            Item {index + 1} of {batch.items.length}
-                          </span>
-                        )}
+                        <ApprovalPill status={batch.status} />
                       </Td>
                       <Td>
                         <div className="flex justify-end">
-                          <Button
-                            variant={item.status === ApprovalStatus.PENDING ? 'soft' : 'ghost'}
-                            onClick={() => setSelected({ batchId: batch.id, itemId: item.id })}
-                          >
-                            {item.status === ApprovalStatus.PENDING ? 'Review' : 'View'}
+                          <Button variant="soft" onClick={() => setSelected(batch.id)}>
+                            Review batch
                           </Button>
                         </div>
                       </Td>
@@ -191,14 +187,8 @@ export default function ProductApprovalsPage() {
             </div>
             {pending.hasNextPage && (
               <div className="border-t border-gray-100 p-4 text-center">
-                {pending.isFetchNextPageError && (
-                  <p className="mb-2 text-sm text-danger-600">Could not load more submissions.</p>
-                )}
-                <Button
-                  variant="secondary"
-                  disabled={pending.isFetchingNextPage}
-                  onClick={() => void pending.fetchNextPage()}
-                >
+                {pending.isFetchNextPageError && <p className="mb-2 text-sm text-danger-600">Could not load more batches.</p>}
+                <Button variant="secondary" disabled={pending.isFetchingNextPage} onClick={() => void pending.fetchNextPage()}>
                   {pending.isFetchingNextPage ? 'Loading…' : 'Load more'}
                 </Button>
               </div>
@@ -207,312 +197,233 @@ export default function ProductApprovalsPage() {
         )}
       </Panel>
 
-      {selected && (
-        <ReviewModal
-          batchId={selected.batchId}
-          focusItemId={selected.itemId}
-          onClose={() => setSelected(null)}
-        />
-      )}
+      {selected && <BatchModal batchId={selected} onClose={() => setSelected(null)} />}
     </div>
   );
 }
 
 /* -------------------------------------------------------------------------- */
-/* review                                                                      */
+/* one batch                                                                   */
 /* -------------------------------------------------------------------------- */
 
-type Decision = typeof ApprovalStatus.APPROVED | typeof ApprovalStatus.REJECTED;
-
-function ReviewModal({
-  batchId,
-  focusItemId,
-  onClose,
-}: {
-  batchId: string;
-  focusItemId: string;
-  onClose: () => void;
-}) {
+function BatchModal({ batchId, onClose }: { batchId: string; onClose: () => void }) {
   const queryClient = useQueryClient();
-  const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
-  const [rejecting, setRejecting] = useState<ProductApprovalReviewItemDto | null>(null);
-  const [rejectError, setRejectError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [rejecting, setRejecting] = useState<ProductApprovalBatchProductRowDto | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const detail = useQuery({
-    queryKey: approvalKeys.detail(batchId),
-    queryFn: () => api.get<ProductApprovalBatchReviewDto>(`/admin/approval-batches/${batchId}`),
-    // Always re-read on open: another admin may have decided since.
-    refetchOnMount: 'always',
+  const summary = useQuery({
+    queryKey: [...approvalKeys.detail(batchId), 'summary'],
+    queryFn: () => api.get<ProductApprovalBatchSummaryDto>(`/admin/approval-batches/${batchId}/summary`),
+    retry: retryServerErrorsOnce,
+  });
+  const products = useInfiniteQuery({
+    queryKey: [...approvalKeys.detail(batchId), 'products'],
+    queryFn: ({ pageParam }) =>
+      api.get<ProductApprovalBatchProductsPageDto>(`/admin/approval-batches/${batchId}/products?offset=${pageParam}&limit=${PRODUCT_PAGE}`),
+    initialPageParam: 0,
+    getNextPageParam: (last) => (last.offset + last.items.length < last.total ? last.offset + last.items.length : undefined),
     retry: retryServerErrorsOnce,
   });
 
-  const decide = useMutation({
-    mutationFn: (input: { itemId: string; status: Decision; reviewNote?: string }) =>
-      api.patch(
-        `/admin/approval-batches/${batchId}/items/${input.itemId}`,
-        input.status === ApprovalStatus.REJECTED
-          ? { status: input.status, reviewNote: input.reviewNote }
-          : { status: input.status },
-      ),
+  const refresh = () => queryClient.invalidateQueries({ queryKey: approvalKeys.all });
+
+  const approve = useMutation({
+    mutationFn: () => api.post<ApproveProductBatchResultDto>(`/admin/approval-batches/${batchId}/approve`),
+    onSuccess: (result) => {
+      setConfirming(false);
+      setNotice(
+        `${plural(result.approvedCount, 'product')} approved and now live for customers (when in stock).` +
+          (result.removedCount > 0 ? ` ${plural(result.removedCount, 'product')} removed by the seller were closed.` : ''),
+      );
+    },
+    onSettled: () => refresh(),
+  });
+  const reject = useMutation({
+    mutationFn: (input: { itemId: string; reviewNote: string }) =>
+      api.patch(`/admin/approval-batches/${batchId}/items/${input.itemId}`, { status: ApprovalStatus.REJECTED, reviewNote: input.reviewNote }),
+    onSuccess: () => setRejecting(null),
+    onSettled: () => refresh(),
   });
 
-  /** List, this detail and the sidebar count — all re-read from the server. */
-  const refreshFromServer = () => queryClient.invalidateQueries({ queryKey: approvalKeys.all });
-
-  async function submitDecision(item: ProductApprovalReviewItemDto, status: Decision, reviewNote?: string) {
-    setFeedback(null);
-    setRejectError(null);
-    try {
-      await decide.mutateAsync({ itemId: item.id, status, ...(reviewNote ? { reviewNote } : {}) });
-    } catch (error) {
-      if (error instanceof ApiRequestError && (error.status === 409 || error.status === 404)) {
-        setRejecting(null);
-        await refreshFromServer();
-        setFeedback({
-          ok: false,
-          text:
-            error.status === 409
-              ? `"${item.productName}" was already reviewed. Showing its current status.`
-              : 'This submission could not be found any more. The list has been refreshed.',
-        });
-        return;
-      }
-      const text = errorMessage(error, 'Could not save the decision. Please try again.');
-      if (status === ApprovalStatus.REJECTED) setRejectError(text);
-      else setFeedback({ ok: false, text });
-      return;
-    }
-    await refreshFromServer();
-    setRejecting(null);
-    setFeedback({
-      ok: true,
-      text: status === ApprovalStatus.APPROVED ? `Approved "${item.productName}".` : `Rejected "${item.productName}".`,
-    });
-  }
-
-  const batch = detail.data;
+  const batch = summary.data;
+  const rows = (products.data?.pages ?? []).flatMap((page) => page.items);
+  const total = products.data?.pages[0]?.total ?? batch?.itemCount ?? 0;
+  const open = batch?.status === ApprovalStatus.PENDING && batch.pendingCount > 0;
 
   return (
-    <>
-      <Modal
-        wide
-        title="Review submission"
-        subtitle={batch ? `${batch.sellerName} · submitted ${formatDateTime(batch.submittedAt)}` : undefined}
-        // While the reject dialog is open, Escape belongs to it alone.
-        onClose={() => {
-          if (!rejecting) onClose();
-        }}
-        footer={
-          <Button variant="secondary" onClick={onClose}>
+    <Modal
+      wide
+      title={batch ? `Approval batch #${shortId(batch.id)}` : 'Approval batch'}
+      subtitle={batch ? `${batch.sellerName} · ${plural(batch.itemCount, 'product')}` : undefined}
+      onClose={() => {
+        if (!approve.isPending) onClose();
+      }}
+      footer={
+        <div className="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row">
+          <Button variant="secondary" onClick={onClose} disabled={approve.isPending} className="w-full sm:w-auto">
             Close
           </Button>
-        }
-      >
-        <div className="space-y-4">
-          {feedback &&
-            (feedback.ok ? (
-              <div
-                role="status"
-                className="rounded-xl border border-brand-500/30 bg-brand-50 px-3.5 py-2.5 text-sm text-brand-700"
-              >
-                {feedback.text}
-              </div>
-            ) : (
-              <ErrorBanner message={feedback.text} />
-            ))}
-
-          {detail.isPending ? (
-            <Spinner label="Loading submission…" />
-          ) : detail.isError || !batch ? (
-            <div className="space-y-3">
-              <ErrorBanner message={errorMessage(detail.error, 'Could not load this submission.')} />
-              <Button variant="secondary" onClick={() => void detail.refetch()}>
-                Try again
+          {open &&
+            (confirming ? (
+              <Button onClick={() => approve.mutate()} disabled={approve.isPending} className="w-full sm:w-auto">
+                {approve.isPending ? 'Approving…' : `Yes, approve ${plural(batch.pendingCount, 'product')}`}
               </Button>
-            </div>
-          ) : (
-            <>
-              <BatchSummary batch={batch} />
-              {batch.items.map((item) => (
-                <ReviewItemCard
-                  key={item.id}
-                  item={item}
-                  focused={item.id === focusItemId && batch.items.length > 1}
-                  busyItemId={decide.isPending ? (decide.variables?.itemId ?? null) : null}
-                  onApprove={() => void submitDecision(item, ApprovalStatus.APPROVED)}
-                  onReject={() => {
-                    setRejectError(null);
-                    setRejecting(item);
-                  }}
-                />
-              ))}
-            </>
-          )}
+            ) : (
+              <Button onClick={() => setConfirming(true)} className="w-full sm:w-auto">
+                Approve Batch
+              </Button>
+            ))}
         </div>
-      </Modal>
+      }
+    >
+      <div className="space-y-4">
+        {summary.isPending ? (
+          <Spinner label="Loading batch…" />
+        ) : summary.isError ? (
+          <ErrorBanner message={errorMessage(summary.error, 'Could not load this batch.')} />
+        ) : (
+          batch && (
+            <dl className="grid grid-cols-2 gap-3 rounded-xl bg-gray-50 p-3.5 text-sm sm:grid-cols-4">
+              <Fact label="Seller">
+                {batch.sellerName}
+                <span className="block text-xs font-normal text-gray-500">{titleCase(batch.sellerType)}</span>
+              </Fact>
+              <Fact label="Products">
+                {batch.itemCount.toLocaleString('en-IN')}
+                <span className="block text-xs font-normal text-gray-500">
+                  {batch.pendingCount} pending · {batch.approvedCount} approved · {batch.rejectedCount} rejected
+                </span>
+              </Fact>
+              <Fact label="Categories">{batch.categoryCount}</Fact>
+              <Fact label="Status">
+                <ApprovalPill status={batch.status} />
+                <span className="mt-1 block text-xs font-normal text-gray-500">Submitted {formatDateTime(batch.submittedAt)}</span>
+              </Fact>
+            </dl>
+          )
+        )}
+
+        {notice && (
+          <div role="status" className="rounded-xl border border-brand-500/30 bg-brand-50 px-3.5 py-2.5 text-sm text-brand-700">
+            {notice}
+          </div>
+        )}
+        {confirming && open && (
+          <div className="rounded-xl border border-warn-500/40 bg-warn-50 px-3.5 py-3 text-sm text-gray-800">
+            Approve all {plural(batch.pendingCount, 'pending product')} in this batch? They go live for customers with the seller’s own
+            price and stock. Products you rejected individually stay rejected.{' '}
+            <button type="button" className="font-semibold text-gray-600 underline" onClick={() => setConfirming(false)}>
+              Cancel
+            </button>
+          </div>
+        )}
+        <ErrorBanner message={approve.error ? errorMessage(approve.error, 'Could not approve this batch.') : null} />
+
+        {products.isPending ? (
+          <Spinner label="Loading products…" />
+        ) : products.isError && rows.length === 0 ? (
+          <ErrorBanner message={errorMessage(products.error, 'Could not load the products in this batch.')} />
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-gray-200">
+            <table className="w-full min-w-[940px] text-sm">
+              <thead className="border-b border-gray-200 bg-gray-50">
+                <tr>
+                  <Th>Product</Th>
+                  <Th>SKU</Th>
+                  <Th>Category</Th>
+                  <Th>Subcategory</Th>
+                  <Th className="text-right">MRP</Th>
+                  <Th className="text-right">Price</Th>
+                  <Th className="text-right">Stock</Th>
+                  <Th>Status</Th>
+                  <Th className="text-right">Action</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {rows.map((row) => (
+                  <tr key={row.itemId}>
+                    <Td>
+                      <div className="flex items-center gap-2.5">
+                        <Thumb src={row.thumbUrl} alt={row.name} />
+                        <div className="min-w-0">
+                          <p className="max-w-[16rem] truncate font-medium text-gray-900">{row.name}</p>
+                          {row.variantName && <p className="text-xs text-gray-500">{row.variantName}</p>}
+                        </div>
+                      </div>
+                    </Td>
+                    <Td className="whitespace-nowrap font-mono text-xs text-gray-600">{row.sku ?? '—'}</Td>
+                    <Td className="text-gray-700">{row.category}</Td>
+                    <Td className="text-gray-700">{row.subcategory ?? '—'}</Td>
+                    <Td className="whitespace-nowrap text-right text-gray-600">{row.mrpPaise !== null ? formatPaise(row.mrpPaise) : '—'}</Td>
+                    <Td className="whitespace-nowrap text-right font-semibold text-gray-900">
+                      {row.pricePaise !== null ? formatPaise(row.pricePaise) : '—'}
+                    </Td>
+                    <Td className="whitespace-nowrap text-right text-gray-700">{row.stockQty ?? '—'}</Td>
+                    <Td>
+                      {row.removed ? <Pill tone="gray">Removed by seller</Pill> : <ApprovalPill status={row.itemStatus} />}
+                      {row.reviewNote && <p className="mt-0.5 max-w-[12rem] truncate text-xs text-gray-500">{row.reviewNote}</p>}
+                    </Td>
+                    <Td>
+                      <div className="flex justify-end">
+                        {row.itemStatus === ApprovalStatus.PENDING && !row.removed && (
+                          <Button variant="ghost" onClick={() => setRejecting(row)}>
+                            Reject
+                          </Button>
+                        )}
+                      </div>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 px-3.5 py-2.5 text-xs text-gray-500">
+              <span>
+                Showing {rows.length.toLocaleString('en-IN')} of {total.toLocaleString('en-IN')}
+              </span>
+              {products.hasNextPage && (
+                <Button variant="secondary" disabled={products.isFetchingNextPage} onClick={() => void products.fetchNextPage()}>
+                  {products.isFetchingNextPage ? 'Loading…' : `Load next ${Math.min(PRODUCT_PAGE, total - rows.length)}`}
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
 
       {rejecting && (
         <RejectModal
-          productName={rejecting.productName}
-          busy={decide.isPending}
-          error={rejectError}
-          onCancel={() => setRejecting(null)}
-          onConfirm={(reason) => void submitDecision(rejecting, ApprovalStatus.REJECTED, reason)}
+          productName={rejecting.name}
+          busy={reject.isPending}
+          error={reject.error ? errorMessage(reject.error, 'Could not reject this product.') : null}
+          onCancel={() => {
+            reject.reset();
+            setRejecting(null);
+          }}
+          onConfirm={(reviewNote) => reject.mutate({ itemId: rejecting.itemId, reviewNote })}
         />
       )}
-    </>
+    </Modal>
   );
 }
 
-function BatchSummary({ batch }: { batch: ProductApprovalBatchReviewDto }) {
-  return (
-    <dl className="grid gap-3 rounded-xl bg-gray-50 p-4 text-sm sm:grid-cols-2">
-      <div>
-        <dt className="text-gray-500">Seller</dt>
-        <dd className="font-medium text-gray-900">{batch.sellerName}</dd>
-      </div>
-      <div>
-        <dt className="text-gray-500">Submitted</dt>
-        <dd className="font-medium text-gray-900">{formatDateTime(batch.submittedAt)}</dd>
-      </div>
-      <div>
-        <dt className="text-gray-500">Submission</dt>
-        <dd className="font-medium text-gray-900">
-          #{shortId(batch.id)} · {batch.items.length} {batch.items.length === 1 ? 'product' : 'products'}
-        </dd>
-      </div>
-      <div>
-        <dt className="text-gray-500">Submission status</dt>
-        <dd className="mt-0.5">
-          <ApprovalPill status={batch.status} />
-          {batch.reviewedAt && (
-            <span className="ml-2 text-xs text-gray-500">Reviewed {formatDateTime(batch.reviewedAt)}</span>
-          )}
-        </dd>
-      </div>
-      {batch.reviewNote && (
-        <div className="sm:col-span-2">
-          <dt className="text-gray-500">Submission note</dt>
-          <dd className="text-gray-900">{batch.reviewNote}</dd>
-        </div>
-      )}
-    </dl>
-  );
-}
-
-function Detail({ label, children }: { label: string; children: ReactNode }) {
+function Fact({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div>
-      <dt className="text-xs text-gray-500">{label}</dt>
-      <dd className="mt-0.5 text-sm text-gray-900">{children}</dd>
+      <dt className="text-xs uppercase tracking-wide text-gray-500">{label}</dt>
+      <dd className="mt-0.5 font-semibold text-gray-900">{children}</dd>
     </div>
   );
 }
 
-function ReviewItemCard({
-  item,
-  focused,
-  busyItemId,
-  onApprove,
-  onReject,
-}: {
-  item: ProductApprovalReviewItemDto;
-  focused: boolean;
-  busyItemId: string | null;
-  onApprove: () => void;
-  onReject: () => void;
-}) {
-  const product = item.product;
-  const variant = product?.defaultVariant ?? null;
-  const busy = busyItemId !== null;
-  const pending = item.status === ApprovalStatus.PENDING;
-
-  return (
-    <section
-      aria-label={item.productName}
-      className={`rounded-2xl border bg-white p-4 ${focused ? 'border-brand-500/50 ring-2 ring-brand-100' : 'border-gray-200'}`}
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="text-base font-semibold text-gray-900">{product?.name ?? item.productName}</h3>
-          {product?.nameHi && <p className="text-sm text-gray-500">{product.nameHi}</p>}
-        </div>
-        <ApprovalPill status={item.status} />
-      </div>
-
-      {!product ? (
-        <p className="mt-3 text-sm text-gray-500">Product details are not available.</p>
-      ) : (
-        <>
-          <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
-            <Detail label="Category">{product.category.name}</Detail>
-            <Detail label="Subcategory">{product.subcategory?.name ?? '—'}</Detail>
-            <Detail label="SKU">
-              <span className="font-mono text-xs">{variant?.sku ?? '—'}</span>
-            </Detail>
-            <Detail label="Variant">{variant?.variantName ?? '—'}</Detail>
-            <Detail label="Unit">{variant?.unit ?? '—'}</Detail>
-            <Detail label="Unit value">{variant?.unitValue ?? '—'}</Detail>
-            <Detail label="Product status">
-              <ProductStatusPill status={product.status} />
-            </Detail>
-            <Detail label="Approval status">
-              <ApprovalPill status={product.approvalStatus} />
-            </Detail>
-          </dl>
-
-          <div className="mt-4">
-            <p className="text-xs text-gray-500">Description</p>
-            <p className="mt-0.5 whitespace-pre-line text-sm text-gray-800">
-              {product.description?.trim() || <span className="text-gray-400">No description</span>}
-            </p>
-          </div>
-
-          <div className="mt-4">
-            <p className="text-xs text-gray-500">Images</p>
-            {product.images.length === 0 ? (
-              <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-dashed border-gray-300 px-3 py-4 text-sm text-gray-500">
-                <Icon name="image" className="h-5 w-5 text-gray-400" />
-                No images
-              </div>
-            ) : (
-              <div className="mt-1.5 flex flex-wrap gap-2">
-                {product.images.map((image) => (
-                  <img
-                    key={image.id}
-                    src={imageSrc(image.thumbUrl ?? image.url)}
-                    alt={image.altText ?? product.name}
-                    className="h-24 w-24 rounded-xl border border-gray-200 object-cover"
-                    loading="lazy"
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </>
-      )}
-
-      {item.reviewNote && (
-        <div
-          className={`mt-4 rounded-xl px-3.5 py-2.5 text-sm ${
-            item.status === ApprovalStatus.REJECTED ? 'bg-danger-50 text-danger-600' : 'bg-gray-50 text-gray-700'
-          }`}
-        >
-          <span className="font-semibold">Review note:</span> {item.reviewNote}
-        </div>
-      )}
-
-      {pending && (
-        <div className="mt-4 flex flex-wrap justify-end gap-3 border-t border-gray-100 pt-4">
-          <Button variant="danger" onClick={onReject} disabled={busy}>
-            Reject
-          </Button>
-          <Button onClick={onApprove} disabled={busy}>
-            {busyItemId === item.id ? 'Approving…' : 'Approve'}
-          </Button>
-        </div>
-      )}
-    </section>
+function Thumb({ src, alt }: { src: string | null; alt: string }) {
+  const resolved = imageSrc(src);
+  return resolved ? (
+    <img src={resolved} alt={alt} loading="lazy" className="h-10 w-10 shrink-0 rounded-lg border border-gray-200 bg-white object-cover" />
+  ) : (
+    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-400">
+      <Icon name="products" className="h-4 w-4" />
+    </span>
   );
 }
 

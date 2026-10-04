@@ -1,9 +1,13 @@
 /**
- * Seller product dialogs: add / edit a product (POST|PATCH /seller/products,
- * images, POST /seller/approval-batches), inline subcategory and menu-section
- * creation, and "Start selling" (POST /seller/listings). Used by the product
- * list and the product detail page. The backend stays authoritative for every
- * rule (category assignment, editable window, approval, ownership).
+ * Seller product dialogs: add / edit a COMPLETE product — details, category,
+ * SKU, images AND the seller's own MRP, selling price and stock
+ * (POST|PATCH /seller/products) — saved as a draft; inline subcategory and
+ * menu-section creation; and "Add price & stock" (POST /seller/listings) for
+ * an older product saved without them. Drafts are sent for review together
+ * from the Products page ("Submit for Approval" — one batch); a rejected
+ * product is resubmitted from here (POST /seller/approval-batches with its
+ * id). The backend stays authoritative for every rule (category ownership,
+ * editable window, price ≤ MRP, stock limits, approval, ownership).
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -53,7 +57,11 @@ export type ProductFormMode = { kind: 'create' } | { kind: 'edit'; product: Sell
 /** Only what differs from the server's current version (PATCH /seller/products/:id). */
 function productChanges(request: CreateSellerProductRequest, base: SellerProductDto): UpdateSellerProductRequest {
   const variant = base.defaultVariant;
+  const listing = base.listing;
   return {
+    ...(!listing || request.mrpPaise !== listing.mrpPaise ? { mrpPaise: request.mrpPaise } : {}),
+    ...(!listing || request.pricePaise !== listing.pricePaise ? { pricePaise: request.pricePaise } : {}),
+    ...(!listing || request.stockQty !== listing.stockQty ? { stockQty: request.stockQty } : {}),
     ...(request.categoryId !== base.categoryId ? { categoryId: request.categoryId } : {}),
     ...(request.name !== base.name ? { name: request.name } : {}),
     ...((request.nameHi ?? null) !== (base.nameHi ?? null) ? { nameHi: request.nameHi ?? null } : {}),
@@ -105,6 +113,12 @@ export function ProductFormModal({
   const [variantName, setVariantName] = useState(initial?.defaultVariant?.variantName ?? '');
   const [unit, setUnit] = useState<UnitType>(initial?.defaultVariant?.unit ?? 'PIECE');
   const [unitValue, setUnitValue] = useState(initial?.defaultVariant ? String(initial.defaultVariant.unitValue) : '1');
+  const rupees = (paise: number | undefined): string => (paise === undefined ? '' : String(paise / 100));
+  const [mrp, setMrp] = useState(rupees(initial?.listing?.mrpPaise));
+  const [price, setPrice] = useState(rupees(initial?.listing?.pricePaise));
+  const [stock, setStock] = useState(initial?.listing ? String(initial.listing.stockQty) : '');
+  // Products saved this session with "Save & add another".
+  const [addedCount, setAddedCount] = useState(0);
   const [problem, setProblem] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const [step, setStep] = useState<'creating' | 'submitting' | 'saving' | null>(null);
@@ -216,6 +230,13 @@ export function ProductFormModal({
     if (trimmedVariant.length < PRODUCT_LIMITS.variantName.min) return 'Enter the variant, e.g. "1 kg" or "500 ml".';
     const value = Number(unitValue);
     if (!unitValue.trim() || !Number.isFinite(value) || value <= 0) return 'Unit value must be a number greater than 0.';
+    const mrpPaise = toPaise(mrp);
+    if (mrpPaise === null) return 'Enter the MRP (greater than 0).';
+    const pricePaise = toPaise(price);
+    if (pricePaise === null) return 'Enter the selling price (greater than 0).';
+    if (pricePaise > mrpPaise) return 'Selling price cannot be higher than MRP.';
+    const stockQty = toStock(stock);
+    if (stockQty === null) return STOCK_RULE;
     return {
       categoryId,
       name: trimmedName,
@@ -225,13 +246,31 @@ export function ProductFormModal({
       variantName: trimmedVariant,
       unit,
       unitValue: value,
+      mrpPaise,
+      pricePaise,
+      stockQty,
     };
   }
 
-  async function create(): Promise<void> {
+  /** After "Save & add another": a fresh form that keeps the category and pack unit. */
+  function resetForNext(): void {
+    setName('');
+    setNameHi('');
+    setDescription('');
+    setSku('');
+    setVariantName('');
+    setUnitValue('1');
+    setMrp('');
+    setPrice('');
+    setStock('');
+    setPendingFiles([]);
+  }
+
+  async function create(addAnother: boolean): Promise<void> {
     const request = validate();
     if (typeof request === 'string') return setProblem(request);
     setProblem(null);
+    setSavedNote(null);
 
     setStep('creating');
     let created: CreatedSellerProduct;
@@ -249,36 +288,35 @@ export function ProductFormModal({
     }
     await queryClient.invalidateQueries({ queryKey: sellerKeys.products });
 
-    // Images before the review (a product under review can no longer change),
-    // in gallery order so the ★ Main one is uploaded first.
+    // Images in gallery order, so the ★ Main one is uploaded first.
     for (const pending of pendingFiles) {
       try {
         const key = await uploadSellerImage(pending.file);
         await sellerApi.post(`/seller/products/${created.id}/images`, { key });
       } catch (error) {
+        setStep(null);
         await queryClient.invalidateQueries({ queryKey: sellerKeys.products });
         const reason = error instanceof ApiRequestError ? sellerErrorMessage(error) : (error as Error).message;
         onDone({
           ok: false,
-          text: `"${request.name}" was created, but an image could not be uploaded (${reason}). Open the product to add images, then submit it for approval.`,
+          text: `"${request.name}" was saved as a draft, but an image could not be uploaded (${reason}). Open the product to add images before you submit it for approval.`,
         });
         return;
       }
     }
+    await queryClient.invalidateQueries({ queryKey: sellerKeys.products });
+    setStep(null);
 
-    setStep('submitting');
-    try {
-      await sellerApi.post('/seller/approval-batches', { productIds: [created.id] });
-    } catch (error) {
-      await queryClient.invalidateQueries({ queryKey: sellerKeys.products });
-      onDone({
-        ok: false,
-        text: `"${request.name}" was created, but submitting it for approval failed (${sellerErrorMessage(error)}). Use "Submit for approval" on the product to try again.`,
-      });
+    if (addAnother) {
+      setAddedCount((count) => count + 1);
+      setSavedNote(`"${request.name}" saved as a draft. Add the next product.`);
+      resetForNext();
       return;
     }
-    await queryClient.invalidateQueries({ queryKey: sellerKeys.products });
-    onDone({ ok: true, text: `"${request.name}" was submitted for approval. You will be notified when Aadione reviews it.` });
+    onDone({
+      ok: true,
+      text: `"${request.name}" saved as Ready for Submission. Select your products and use “Submit Selected for Approval” to send them for review together.`,
+    });
   }
 
   async function save(): Promise<void> {
@@ -294,7 +332,11 @@ export function ProductFormModal({
       const updated = await sellerApi.patch<SellerProductDto>(`/seller/products/${saved.id}`, changes);
       setSaved(updated);
       setSku(updated.defaultVariant?.sku ?? sku);
-      setSavedNote(updated.approvalStatus === 'REJECTED' ? 'Changes saved. It stays rejected until you submit it for approval.' : 'Changes saved.');
+      setSavedNote(
+        updated.approvalStatus === 'REJECTED'
+          ? 'Changes saved. It stays rejected until you resubmit it for approval.'
+          : 'Changes saved. It goes for review with your next “Submit for Approval”.',
+      );
     } catch (error) {
       setProblem(sellerErrorMessage(error));
     } finally {
@@ -334,7 +376,11 @@ export function ProductFormModal({
     <Modal
       wide
       title={!saved ? 'Add Product' : saved.approvalStatus === 'REJECTED' ? 'Edit & Resubmit' : 'Edit Product'}
-      subtitle={!saved ? 'Aadione reviews every new product before it can be sold.' : saved.name}
+      subtitle={
+        !saved
+          ? `Add complete product information including price and stock. Aadione will review your product before it goes live.${addedCount > 0 ? ` (${addedCount} added so far)` : ''}`
+          : saved.name
+      }
       onClose={() => {
         if (!busy) onClose();
       }}
@@ -344,8 +390,11 @@ export function ProductFormModal({
             <Button variant="secondary" onClick={onClose} disabled={busy} className="w-full sm:w-auto">
               Cancel
             </Button>
-            <Button onClick={() => void create()} disabled={busy || loadingSource || noCategories} className="w-full sm:w-auto">
-              {step === 'creating' ? 'Creating…' : step === 'submitting' ? 'Submitting for approval…' : 'Save & submit for approval'}
+            <Button variant="secondary" onClick={() => void create(true)} disabled={busy || loadingSource || noCategories} className="w-full sm:w-auto">
+              Save &amp; Add Another
+            </Button>
+            <Button onClick={() => void create(false)} disabled={busy || loadingSource || noCategories} className="w-full sm:w-auto">
+              {step === 'creating' ? 'Saving…' : 'Save Product'}
             </Button>
           </div>
         ) : (
@@ -356,9 +405,11 @@ export function ProductFormModal({
             <Button variant="secondary" onClick={() => void save()} disabled={busy || loadingSource} className="w-full sm:w-auto">
               {step === 'saving' ? 'Saving…' : 'Save changes'}
             </Button>
-            <Button onClick={() => void submitForReview()} disabled={busy || dirty || loadingSource} className="w-full sm:w-auto">
-              {step === 'submitting' ? 'Submitting…' : 'Submit for approval'}
-            </Button>
+            {saved.approvalStatus === 'REJECTED' && (
+              <Button onClick={() => void submitForReview()} disabled={busy || dirty || loadingSource} className="w-full sm:w-auto">
+                {step === 'submitting' ? 'Resubmitting…' : 'Resubmit for approval'}
+              </Button>
+            )}
           </div>
         )
       }
@@ -375,7 +426,9 @@ export function ProductFormModal({
             {savedNote}
           </div>
         )}
-        {saved && dirty && <p className="text-xs text-gray-500">Save your changes before submitting for approval.</p>}
+        {saved && dirty && saved.approvalStatus === 'REJECTED' && (
+          <p className="text-xs text-gray-500">Save your changes before resubmitting for approval.</p>
+        )}
 
         {/* 1. images */}
         <ImageGallery
@@ -547,11 +600,21 @@ export function ProductFormModal({
           </Field>
         </div>
 
-        {/* 8–9. price & stock come after approval */}
-        <div className="rounded-xl bg-gray-50 px-3.5 py-3 text-sm text-gray-600">
-          <p className="font-medium text-gray-800">Price &amp; stock</p>
-          <p className="mt-0.5">Set your price and stock with “Start selling” once Aadione approves this product, then manage them on the product page.</p>
+        {/* 8–9. price & stock — part of the product, reviewed with it */}
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+          <Field label="MRP (₹)" required>
+            <input value={mrp} onChange={(e) => setMrp(e.target.value)} inputMode="decimal" className={inputClass} />
+          </Field>
+          <Field label="Selling price (₹)" required hint="Not above MRP.">
+            <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" className={inputClass} />
+          </Field>
+          <div className="col-span-2 sm:col-span-1">
+            <Field label={saved?.listing ? 'Stock' : 'Opening stock'} required hint={`0 to ${LISTING_MAX_STOCK.toLocaleString('en-IN')}.`}>
+              <input value={stock} onChange={(e) => setStock(e.target.value)} inputMode="numeric" className={inputClass} />
+            </Field>
+          </div>
         </div>
+        <p className="-mt-2 text-xs text-gray-500">Customers see this product only after Aadione approves it. Your price and stock stay exactly as you set them.</p>
 
         {/* 10. other fields */}
         <Field label="Hindi name">
@@ -764,7 +827,7 @@ export function MenuSectionsModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** POST /seller/listings — price + stock for an approved product with no listing yet. */
+/** POST /seller/listings — price + stock for an older product saved without them. */
 export function StartSellingModal({
   product,
   onClose,
@@ -813,14 +876,14 @@ export function StartSellingModal({
       return;
     }
     await refresh();
-    onDone({ ok: true, text: available ? `"${product.name}" is now on sale.` : `"${product.name}" is listed but switched off.` });
+    onDone({ ok: true, text: `Price and stock saved for "${product.name}".` });
   }
 
   const variant = product.defaultVariant;
 
   return (
     <Modal
-      title="Start Selling"
+      title="Add price & stock"
       subtitle={[product.name, variant?.variantName].filter(Boolean).join(' · ')}
       onClose={() => {
         if (!create.isPending) onClose();
@@ -831,7 +894,7 @@ export function StartSellingModal({
             Cancel
           </Button>
           <Button onClick={() => void submit()} disabled={create.isPending} className="w-full sm:w-auto">
-            {create.isPending ? 'Saving…' : 'Start selling'}
+            {create.isPending ? 'Saving…' : 'Save price & stock'}
           </Button>
         </div>
       }

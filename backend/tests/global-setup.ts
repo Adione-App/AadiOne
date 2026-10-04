@@ -2,7 +2,7 @@
  * Runs ONCE before the whole suite.
  *
  * Creates the test database if it does not exist and brings it up to the
- * current migration state.
+ * current V2 migration state (prisma-v2/schema.prisma + prisma-v2/migrations).
  *
  * Integration tests run against real PostgreSQL rather than a mocked client on
  * purpose: the properties that matter most in this system — row locks, CHECK
@@ -34,10 +34,17 @@ export default async function globalSetup(): Promise<void> {
 
   await ensureDatabaseExists(databaseUrl);
 
-  execSync('npx prisma migrate deploy', {
+  const env = { ...process.env, DATABASE_URL: databaseUrl };
+
+  // V2 only. A test database created from the V1 history (prisma/migrations)
+  // is refused rather than migrated over — point .env.test at a separate V2
+  // test database instead. execSync's error carries the guard's stderr.
+  execSync('node scripts/assert-v2-database.mjs', { cwd: backendRoot, stdio: 'pipe', env });
+
+  execSync('npx prisma migrate deploy --schema=prisma-v2/schema.prisma', {
     cwd: backendRoot,
     stdio: 'pipe',
-    env: { ...process.env, DATABASE_URL: databaseUrl },
+    env,
   });
 }
 

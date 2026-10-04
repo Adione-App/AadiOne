@@ -22,6 +22,10 @@
  * Everything is decided server-side from the seller id `attachSellerContext`
  * resolved from the caller's own membership. Another seller's category is
  * reported exactly like a missing one (NOT_FOUND).
+ *
+ * DELETION is a soft delete, refused while any product is still attached
+ * (see `deleteOwnTopCategory`) — a category is never the reason a product,
+ * listing or order disappears.
  */
 
 import type { CatalogVertical } from '@prisma/client';
@@ -400,7 +404,10 @@ export async function updateOwnTopCategory(
       },
     });
     if (slug !== current.slug) {
-      const children = await tx.category.findMany({ where: { parentId: id, sellerId }, select: { id: true, slug: true } });
+      const children = await tx.category.findMany({
+        where: { parentId: id, sellerId, deletedAt: null },
+        select: { id: true, slug: true },
+      });
       for (const child of children) {
         await tx.category.update({ where: { id: child.id }, data: { path: `${slug}/${child.slug}` } });
       }
@@ -431,4 +438,84 @@ export async function setOwnTopCategoryImage(
   await audit(actorUserId, 'category.seller_category.image', id, { imageUrl: current.imageUrl }, { imageUrl });
   invalidateCategoryCache();
   return listSellerCatalogCategories(sellerId);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Seller deletes                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The refusal when products are still attached. Deleting never touches a
+ * product: approved products cannot be moved by the seller, so the seller
+ * either moves its editable products elsewhere or hides the category.
+ */
+export function linkedProductsError(kind: 'category' | 'subcategory', count: number): AppError {
+  return new AppError(ErrorCode.VALIDATION_ERROR, {
+    status: 409,
+    message:
+      `${count} product${count === 1 ? ' is' : 's are'} linked to this ${kind}, so it cannot be deleted. ` +
+      `Move ${count === 1 ? 'it' : 'them'} to another category first, or switch the ${kind} off to hide it from customers.`,
+    details: [{ field: 'linkedProducts', message: String(count) }],
+  });
+}
+
+export interface DeletedCategoryDto {
+  id: string;
+  /** Subcategories (all empty) deleted together with a top category. */
+  deletedSubcategoryIds: string[];
+}
+
+/**
+ * DELETE /seller/categories/:id — deletes one of the seller's own top
+ * categories, together with its (empty) subcategories.
+ *
+ * SAFE BY CONSTRUCTION:
+ *   - refused (409) while ANY product — approved, pending, draft, inactive —
+ *     is attached to the category or one of its subcategories; products are
+ *     never deleted, moved or touched here;
+ *   - a SOFT delete (`deletedAt`), never a row delete, so nothing that
+ *     references the category (products' history, commission rules, audit)
+ *     loses its row and no FK cascade can fire; orders snapshot their items
+ *     and never read the category;
+ *   - another seller's category is NOT_FOUND, exactly like a missing one;
+ *   - restaurants' top categories are their menu sections — not deletable here.
+ */
+export async function deleteOwnTopCategory(
+  sellerId: string,
+  id: string,
+  actorUserId: string,
+): Promise<DeletedCategoryDto> {
+  const seller = await loadSellerForAccess(sellerId);
+  if (seller.sellerType === SellerType.RESTAURANT) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message: 'A restaurant manages menu sections instead (Products → Menu sections).',
+    });
+  }
+  const current = await loadOwnTopOrThrow(sellerId, id);
+
+  const deleted = await runInTransaction(async (tx) => {
+    // Lock the category row so two deletes (or a delete and a rename) of the
+    // same category serialise.
+    await tx.$queryRaw`SELECT id FROM categories WHERE id = ${id}::uuid FOR UPDATE`;
+    const subcategories = await tx.category.findMany({
+      where: { sellerId, parentId: id, deletedAt: null },
+      select: { id: true },
+    });
+    const ids = [id, ...subcategories.map((s) => s.id)];
+    const linked = await tx.product.count({ where: { categoryId: { in: ids }, deletedAt: null } });
+    if (linked > 0) throw linkedProductsError('category', linked);
+
+    await tx.category.updateMany({
+      where: { id: { in: ids }, sellerId, deletedAt: null },
+      data: { deletedAt: new Date() },
+    });
+    return subcategories.map((s) => s.id);
+  });
+
+  await audit(actorUserId, 'category.seller_category.delete', id, { sellerId, name: current.name, path: current.path }, {
+    deleted: true,
+    deletedSubcategoryIds: deleted,
+  });
+  invalidateCategoryCache();
+  return { id, deletedSubcategoryIds: deleted };
 }

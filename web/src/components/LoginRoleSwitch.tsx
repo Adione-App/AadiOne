@@ -4,8 +4,10 @@
  * Purely a UX choice of WHICH sign-in to show: the admin form calls
  * /auth/admin/login, the seller form /auth/seller/login. No role value is
  * ever sent to the server or trusted — each endpoint checks the account's own
- * role (and, for sellers, an active seller membership). There is no seller
- * sign-up: Aadione creates seller accounts and issues their login.
+ * role (and, for sellers, an active seller membership). Sellers sign in with
+ * email + password only (no OTP); they apply at /seller/register or are
+ * created by Aadione, and reset a forgotten password themselves ("Forgot
+ * Password?").
  */
 
 import { Icon, type IconName } from '@/components/ui';

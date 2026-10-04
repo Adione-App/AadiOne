@@ -1,61 +1,50 @@
 /**
  * Seller Detail → Overview → Seller login (admins with SELLER_MANAGE).
  *
- * Sellers do not register themselves: AdiOne creates the seller, then issues
- * the owner's panel login here — an email and a server-generated temporary
- * password. The password is shown ONCE (it is stored only as a hash and is
- * never returned again); the admin hands it to the seller, who signs in at
- * the web login (Seller) and is asked to change it. Issuing again resets it
- * and signs the seller out everywhere.
+ * VIEW ONLY: the owner's login EMAIL and last sign-in
+ * (GET /admin/sellers/:id/login-credentials). A seller signs in with its email
+ * and password, and the password is the seller's alone — chosen at signup,
+ * changed in the Seller Panel, or reset by the seller with "Forgot Password?"
+ * on the seller sign-in page. Admin never sees, issues, resets or changes it
+ * (the server has no such route).
+ *
+ * The one admin action: a seller AdiOne created without an email gets its
+ * login email set ONCE here (PUT /admin/sellers/:id/login-email); the seller
+ * then uses "Forgot Password?" to choose its own password. An email that is
+ * already set is the seller's and cannot be changed from here.
  */
 
 import { useState, type FormEvent } from 'react';
 import { Button, ErrorBanner, Field, Panel, Pill, inputClass } from '@/components/ui';
-import { useIssueSellerLogin, useSellerLoginAccount } from '@/lib/sellers';
+import { useSellerLoginAccount, useSetSellerLoginEmail } from '@/lib/sellers';
 
 const formatDateTime = (iso: string): string =>
   new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 
 export function SellerLoginPanel({ sellerId, suggestedEmail }: { sellerId: string; suggestedEmail: string | null }) {
   const account = useSellerLoginAccount(sellerId);
-  const issue = useIssueSellerLogin(sellerId);
+  const setLoginEmail = useSetSellerLoginEmail(sellerId);
   const [email, setEmail] = useState<string | null>(null);
-  const [issued, setIssued] = useState<{ email: string; password: string } | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   const current = account.data;
-  const emailValue = email ?? current?.email ?? suggestedEmail ?? '';
-  const isReset = Boolean(current?.hasPassword);
+  const emailValue = email ?? suggestedEmail ?? '';
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
-    if (
-      isReset &&
-      !window.confirm(
-        'Reset this seller’s password?\n\nA new temporary password replaces the current one, and the seller is signed out on every device.',
-      )
-    ) {
-      return;
-    }
-    setIssued(null);
-    setCopied(false);
-    const result = await issue.mutateAsync(emailValue.trim()).catch(() => null);
+    setSaved(false);
+    const result = await setLoginEmail.mutateAsync(emailValue.trim()).catch(() => null);
     if (result) {
-      setIssued({ email: result.email ?? emailValue.trim(), password: result.temporaryPassword });
       setEmail(null);
+      setSaved(true);
     }
   }
 
-  const status = !current
-    ? null
-    : !current.hasPassword
-      ? { tone: 'gray' as const, label: 'No login issued' }
-      : current.passwordChangeRequired
-        ? { tone: 'amber' as const, label: 'Temporary password' }
-        : { tone: 'brand' as const, label: 'Password set by seller' };
-
   return (
-    <Panel title="Seller login" action={status ? <Pill tone={status.tone}>{status.label}</Pill> : undefined}>
+    <Panel
+      title="Seller login"
+      action={current ? <Pill tone={current.email ? 'brand' : 'gray'}>{current.email ? 'Email + password' : 'No login email'}</Pill> : undefined}
+    >
       {account.isPending ? (
         <p className="text-sm text-gray-500">Loading…</p>
       ) : account.isError ? (
@@ -63,64 +52,49 @@ export function SellerLoginPanel({ sellerId, suggestedEmail }: { sellerId: strin
       ) : (
         <div className="space-y-4">
           <p className="text-sm text-gray-500">
-            The owner{current?.ownerName ? ` (${current.ownerName})` : ''} signs in to the Seller Panel with this email and a
-            password Aadione issues. Sellers cannot create their own login.
+            The owner{current?.ownerName ? ` (${current.ownerName})` : ''} signs in to the Seller Panel with this email and their own
+            password. Aadione never sees or sets seller passwords — a seller who forgot theirs uses “Forgot Password?” on the seller
+            sign-in page.
           </p>
-          {current?.hasPassword && (
-            <dl className="divide-y divide-gray-100 text-sm">
-              <div className="flex justify-between gap-4 py-2">
-                <dt className="text-gray-500">Login email</dt>
-                <dd className="font-medium text-gray-900">{current.email ?? '—'}</dd>
-              </div>
-              <div className="flex justify-between gap-4 py-2">
-                <dt className="text-gray-500">Last sign-in</dt>
-                <dd className="font-medium text-gray-900">{current.lastLoginAt ? formatDateTime(current.lastLoginAt) : 'Never'}</dd>
-              </div>
-            </dl>
-          )}
+          <dl className="divide-y divide-gray-100 text-sm">
+            <div className="flex justify-between gap-4 py-2">
+              <dt className="text-gray-500">Login email</dt>
+              <dd className="font-medium text-gray-900">{current?.email ?? '—'}</dd>
+            </div>
+            <div className="flex justify-between gap-4 py-2">
+              <dt className="text-gray-500">Last sign-in</dt>
+              <dd className="font-medium text-gray-900">{current?.lastLoginAt ? formatDateTime(current.lastLoginAt) : 'Never'}</dd>
+            </div>
+          </dl>
 
-          {issued && (
-            <div role="status" className="space-y-2 rounded-xl border border-amber-300 bg-amber-50 p-3.5 text-sm">
-              <p className="font-semibold text-amber-800">Temporary password — copy it now; it will not be shown again.</p>
-              <p className="text-gray-700">
-                Email: <span className="font-medium">{issued.email}</span>
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <code className="rounded-lg bg-white px-2.5 py-1.5 font-mono text-base tracking-wide text-gray-900">{issued.password}</code>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => {
-                    void navigator.clipboard?.writeText(issued.password).then(() => setCopied(true));
-                  }}
-                >
-                  {copied ? 'Copied' : 'Copy'}
-                </Button>
-                <Button type="button" variant="secondary" onClick={() => setIssued(null)}>
-                  Done
-                </Button>
-              </div>
-              <p className="text-gray-600">Give it to the seller privately. They will be asked to choose their own password after signing in.</p>
+          {saved && current?.email && (
+            <div role="status" className="rounded-xl border border-brand-500/30 bg-brand-50 px-3.5 py-2.5 text-sm text-brand-700">
+              Login email set. Ask the seller to open the seller sign-in page and use “Forgot Password?” with {current.email} to
+              choose their password.
             </div>
           )}
 
-          <form onSubmit={(event) => void submit(event)} className="space-y-3">
-            <ErrorBanner message={issue.isError ? (issue.error instanceof Error ? issue.error.message : 'Could not issue the login.') : null} />
-            <Field label="Login email">
-              <input
-                type="email"
-                value={emailValue}
-                onChange={(event) => setEmail(event.target.value)}
-                className={inputClass}
-                placeholder="owner@theirstore.in"
-                autoComplete="off"
-                required
+          {current && !current.email && (
+            <form onSubmit={(event) => void submit(event)} className="space-y-3">
+              <ErrorBanner
+                message={setLoginEmail.isError ? (setLoginEmail.error instanceof Error ? setLoginEmail.error.message : 'Could not set the login email.') : null}
               />
-            </Field>
-            <Button type="submit" disabled={issue.isPending || !emailValue.trim()}>
-              {issue.isPending ? 'Issuing…' : isReset ? 'Reset password' : 'Create seller login'}
-            </Button>
-          </form>
+              <Field label="Login email" hint="Set once. The seller then chooses their own password with “Forgot Password?”.">
+                <input
+                  type="email"
+                  value={emailValue}
+                  onChange={(event) => setEmail(event.target.value)}
+                  className={inputClass}
+                  placeholder="owner@theirstore.in"
+                  autoComplete="off"
+                  required
+                />
+              </Field>
+              <Button type="submit" disabled={setLoginEmail.isPending || !emailValue.trim()}>
+                {setLoginEmail.isPending ? 'Saving…' : 'Set login email'}
+              </Button>
+            </form>
+          )}
         </div>
       )}
     </Panel>

@@ -9,7 +9,7 @@
  *     listings for any seller — Aadione included — they all manage their own.
  */
 
-import { ApprovalStatus, ErrorCode, ProductStatus, StockLedgerReason } from '../../shared';
+import { ErrorCode, ProductStatus, StockLedgerReason } from '../../shared';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import { assertSellerMayUseCategoryForProduct } from '../catalog/seller-category.service';
@@ -119,34 +119,30 @@ export async function createSellerListing(
     });
   }
 
-  // --- #2/#3: variant must exist, and its Product must be APPROVED -------
+  // --- #2/#3: variant must exist under one of the seller's OWN categories --
+  // Approval is NOT required: price and stock are part of a complete product
+  // BEFORE it is submitted for review (product-approval.service.ts). Nothing
+  // sells early — customers only ever see APPROVED products (catalog and
+  // orderability gate on approvalStatus).
   const variant = await prisma.productVariant.findUnique({
     where: { id: input.variantId },
     select: {
       id: true,
       deletedAt: true,
-      product: { select: { id: true, approvalStatus: true, category: { select: { id: true, sellerId: true } } } },
+      product: { select: { id: true, deletedAt: true, category: { select: { id: true, sellerId: true } } } },
     },
   });
 
-  if (!variant || variant.deletedAt) {
+  if (!variant || variant.deletedAt || variant.product.deletedAt) {
     throw new AppError(ErrorCode.NOT_FOUND, { message: 'Product variant not found.' });
   }
-  // Checked before approval so a seller learns nothing (not even approval
-  // state) about another seller's product: the product must sit under one
-  // of the seller's OWN categories (seller-category.service.ts); category
-  // status is not gated, as before.
+  // The product must sit under one of the seller's OWN categories
+  // (seller-category.service.ts) — another seller's is reported as missing;
+  // category status is not gated, as before.
   await assertSellerMayUseCategoryForProduct(sellerId, variant.product.category.id, {
     requireActive: false,
     notFoundMessage: 'Product variant not found.',
   });
-
-  if (variant.product.approvalStatus !== ApprovalStatus.APPROVED) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message: 'This product has not been approved for sale yet.',
-      internalMessage: `variant ${input.variantId}'s product ${variant.product.id} has approvalStatus ${variant.product.approvalStatus}`,
-    });
-  }
 
   // --- #4/#5: no silent update — a pre-existing listing is a conflict, ---
   // not a target to overwrite. The schema's own `@@unique([sellerId,

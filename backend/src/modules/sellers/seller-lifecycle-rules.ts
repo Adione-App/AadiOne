@@ -132,6 +132,21 @@ export function sellerPanelAccess(status: SellerLifecycleStatus, method: string,
   };
 }
 
+/**
+ * Is `method path` (relative to the /seller mount) a write to the seller's
+ * own onboarding data — business/contact/tax profile, bank account,
+ * restaurant details, documents, store address/location, or the submission?
+ *
+ * That data is the SELLER's: admin views and reviews it (admin-seller.routes
+ * has read and decision routes only) but never writes it, not even through
+ * a seller route — middleware/sellerLifecycle.ts refuses these for admin roles.
+ */
+export function isSellerOnboardingWrite(method: string, path: string): boolean {
+  if (READ_METHODS.has(method.toUpperCase())) return false;
+  const normalised = path.replace(/\/+$/, '') || '/';
+  return under(normalised, '/onboarding') || normalised === '/location';
+}
+
 /* -------------------------------------------------------------------------- */
 /* Onboarding checklist                                                       */
 /* -------------------------------------------------------------------------- */

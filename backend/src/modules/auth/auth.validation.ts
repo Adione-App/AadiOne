@@ -84,6 +84,20 @@ export const adminLoginSchema = loginSchema;
 /** Seller-panel email + password login — same shape as every login. */
 export const sellerLoginSchema = loginSchema;
 
+/** Seller "Forgot Password?" — just the email; strict, nothing else accepted. */
+export const sellerForgotPasswordSchema = z.object({ email: emailSchema }).strict();
+
+/** Seller password reset from the emailed link. */
+export const sellerResetPasswordSchema = z
+  .object({
+    token: z.string({ required_error: 'The reset link is incomplete.' }).trim().min(20).max(200),
+    newPassword: newPasswordSchema,
+  })
+  .strict();
+
+export type SellerForgotPasswordInput = z.infer<typeof sellerForgotPasswordSchema>;
+export type SellerResetPasswordInput = z.infer<typeof sellerResetPasswordSchema>;
+
 /** Change your own password: the current one proves it is you. */
 export const changePasswordSchema = z.object({
   currentPassword: z

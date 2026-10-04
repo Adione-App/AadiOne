@@ -236,7 +236,8 @@ export interface SellerListingUpdate {
   isAvailable?: boolean;
 }
 
-/** POST /seller/listings body (backend createListingSchema) — approved products only. */
+/** POST /seller/listings body (backend createListingSchema) — price and stock
+ * for one of the seller's own products that has none yet (an older draft). */
 export interface CreateSellerListingRequest {
   variantId: string;
   mrpPaise: number;
@@ -252,7 +253,11 @@ export const LISTING_MAX_STOCK = 100_000;
 /* Own products (submissions)                                                 */
 /* -------------------------------------------------------------------------- */
 
-/** POST /seller/products body (backend createProductSchema). */
+/**
+ * POST /seller/products body (backend createProductSchema). A product is
+ * created COMPLETE — its own MRP, selling price and opening stock included —
+ * and waits as a draft until the seller submits its drafts for approval.
+ */
 export interface CreateSellerProductRequest {
   categoryId: string;
   name: string;
@@ -262,6 +267,9 @@ export interface CreateSellerProductRequest {
   variantName: string;
   unit: UnitType;
   unitValue: number;
+  mrpPaise: number;
+  pricePaise: number;
+  stockQty: number;
 }
 
 /**
@@ -287,10 +295,18 @@ export function uploadSellerImage(file: File): Promise<string> {
   );
 }
 
-/** POST /seller/products — the new product and its one default variant. */
+/** POST /seller/products — the new product, its default variant and its listing. */
 export interface CreatedSellerProduct {
   id: string;
   variantId: string;
+  listingId: string;
+}
+
+/** POST /seller/approval-batches — the new batch (one per "Submit for Approval"). */
+export interface SubmittedApprovalBatch {
+  id: string;
+  status: string;
+  items: { id: string; productId: string; productName: string; status: string }[];
 }
 
 /* -------------------------------------------------------------------------- */

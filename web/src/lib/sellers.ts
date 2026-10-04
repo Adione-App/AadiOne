@@ -30,7 +30,7 @@ import {
   type CursorPage,
   type AdminSellerOnboardingDocumentDto,
   type AdminSellerOnboardingSummaryDto,
-  type ProductApprovalBatchDto,
+  type ProductApprovalBatchSummaryDto,
   type SellerClosedReason,
   type SellerHoursDto,
   type SellerLifecycleFilter,
@@ -335,12 +335,13 @@ export const sellersApi = {
   products: (sellerId: string) => api.get<SellerProductDto[]>(`/admin/sellers/${sellerId}/products`),
   loginAccount: (sellerId: string) =>
     api.get<SellerLoginAccount>(`/admin/sellers/${sellerId}/login-credentials`),
-  issueLogin: (sellerId: string, email: string) =>
-    api.post<IssuedSellerCredentials>(`/admin/sellers/${sellerId}/login-credentials`, { email }),
+  /** Sets the owner's login email once (only while it has none). No password is involved. */
+  setLoginEmail: (sellerId: string, email: string) =>
+    api.put<SellerLoginAccount>(`/admin/sellers/${sellerId}/login-email`, { email }),
   approvalBatches: (sellerId: string, cursor: string | null, limit = SELLER_PAGE_SIZE) => {
     const query = new URLSearchParams({ sellerId, limit: String(limit) });
     if (cursor) query.set('cursor', cursor);
-    return api.get<CursorPage<ProductApprovalBatchDto>>(`/admin/approval-batches?${query.toString()}`);
+    return api.get<CursorPage<ProductApprovalBatchSummaryDto>>(`/admin/approval-batches?${query.toString()}`);
   },
   /** Admin's cross-seller seller-order list, filtered to this seller; newest
    * first, cursor pages. Customer name/mobile are stripped here. */
@@ -518,20 +519,12 @@ export function useAdminSellerListings(sellerId: string, enabled = true) {
  * seller-login.service) — the seller owner's panel login. Local types: not
  * part of the shared contract.
  */
+/** GET /admin/sellers/:id/login-credentials — the login email only; never a password or its state. */
 export interface SellerLoginAccount {
   sellerId: string;
-  ownerUserId: string;
   ownerName: string | null;
   email: string | null;
-  hasPassword: boolean;
-  /** Issued by AdiOne and not yet changed by the seller. */
-  passwordChangeRequired: boolean;
   lastLoginAt: string | null;
-}
-
-/** POST response only: the temporary password, shown to the admin once. */
-export interface IssuedSellerCredentials extends SellerLoginAccount {
-  temporaryPassword: string;
 }
 
 export function useSellerLoginAccount(sellerId: string, enabled = true) {
@@ -543,13 +536,12 @@ export function useSellerLoginAccount(sellerId: string, enabled = true) {
   });
 }
 
-/** Issues (or re-issues) the owner's login. The temporary password is returned
- * to the caller only — it is never written into the query cache. */
-export function useIssueSellerLogin(sellerId: string) {
+/** Sets the owner's login email when it has none (the seller then sets its own password). */
+export function useSetSellerLoginEmail(sellerId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (email: string) => sellersApi.issueLogin(sellerId, email),
-    onSuccess: ({ temporaryPassword: _secret, ...account }) => {
+    mutationFn: (email: string) => sellersApi.setLoginEmail(sellerId, email),
+    onSuccess: (account) => {
       queryClient.setQueryData(adminSellerKeys.loginAccount(sellerId), account);
     },
   });

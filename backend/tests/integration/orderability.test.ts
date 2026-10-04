@@ -14,7 +14,7 @@ import { hashPassword } from '../../src/common/crypto';
 import { cache } from '../../src/infra/cache';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as otpService from '../../src/modules/auth/otp.service';
-import { seedAddress, seedProduct, seedStore } from '../helpers/fixtures';
+import { seedAddress, seedProduct, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
 
@@ -38,7 +38,7 @@ async function seedSeller(onboardingStatus: ApprovalStatus): Promise<string> {
       latitude: 27.62,
       longitude: 75.14,
       isActive: true,
-      onboardingStatus,
+      ...sellerLifecycleFields(onboardingStatus),
     },
   });
   return seller.id;

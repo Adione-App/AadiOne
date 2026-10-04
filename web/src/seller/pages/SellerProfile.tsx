@@ -76,7 +76,7 @@ export function PasswordPanel() {
     return (
       <Panel title="Sign-in & Password">
         <Note>
-          You sign in with a mobile OTP. To sign in with an email and password instead, ask Aadione to issue your seller login.
+          Your account has no password yet. Sign out, then use “Forgot Password?” on the seller sign-in page to choose one by email.
         </Note>
       </Panel>
     );

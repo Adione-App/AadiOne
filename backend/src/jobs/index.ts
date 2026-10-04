@@ -173,6 +173,10 @@ export async function cleanupExpired(): Promise<void> {
   await prisma.refreshToken.deleteMany({
     where: { expiresAt: { lt: new Date(now.getTime() - 7 * 86_400_000) } },
   });
+  // Seller password-reset links: long past expiry or use, nothing to keep.
+  await prisma.passwordResetToken.deleteMany({
+    where: { createdAt: { lt: new Date(now.getTime() - 7 * 86_400_000) } },
+  });
 }
 
 function schedule(name: string, intervalMs: number, task: () => Promise<unknown>): void {

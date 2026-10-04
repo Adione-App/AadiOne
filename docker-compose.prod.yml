@@ -61,7 +61,11 @@ services:
         condition: service_healthy
     # Migrations run BEFORE the server starts, and a failure stops the
     # container rather than letting it serve against an outdated schema.
-    command: sh -c "npx prisma migrate deploy && node dist/server.js"
+    # V2 only: the guard refuses a database carrying V1 migration history, and
+    # `migrate deploy` is pinned to the V2 schema + prisma-v2/migrations (the
+    # image contains no V1 migrations). `prisma` is a runtime dependency, so
+    # npx uses the pinned 5.x CLI rather than downloading one.
+    command: sh -c "node scripts/assert-v2-database.mjs && npx prisma migrate deploy --schema=prisma-v2/schema.prisma && node dist/server.js"
 
   web:
     build:

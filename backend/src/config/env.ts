@@ -222,6 +222,20 @@ const envSchema = z
 
     RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
 
+    // Transactional email (seller password reset). `console` is the only
+    // provider wired so far: outside production it logs the message (with
+    // the reset link) for local testing; in production it delivers nothing
+    // and never logs the link — a real provider must be added for delivery.
+    EMAIL_PROVIDER: z.enum(["console"]).default("console"),
+
+    EMAIL_FROM: z.string().default("Aadione <no-reply@adione.in>"),
+
+    /** Public origin of the web app hosting the Seller Panel (reset links). */
+    SELLER_PANEL_URL: z.string().url().default("http://localhost:5173"),
+
+    /** Lifetime of a seller password-reset link. */
+    PASSWORD_RESET_TTL_MINUTES: z.coerce.number().int().min(5).max(1440).default(30),
+
     // Notifications
     NOTIFICATION_PROVIDER: z.enum(["console", "fcm"]).default("console"),
 

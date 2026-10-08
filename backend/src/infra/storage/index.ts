@@ -114,6 +114,14 @@ const ALLOWED_CONTENT_TYPES = new Set([
 
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
+/**
+ * Cache-Control stored on every image the server writes to the bucket. Keys
+ * are UUID-named and never rewritten with other content, so a year with
+ * `immutable` is safe. (Supabase/Cloudflare answer HEAD with `no-cache`
+ * whatever is stored — check it with a GET.)
+ */
+export const IMAGE_CACHE_CONTROL = "public, max-age=31536000, immutable";
+
 export function assertUploadable(
   contentType: string,
   sizeBytes?: number,
@@ -293,6 +301,8 @@ class S3StorageProvider implements StorageProvider {
    *
    * For PUT:
    *   Signed headers = content-type;host
+   *   (cache-control;content-type;host when `cacheControl` is given — the
+   *   request must then send exactly that Cache-Control value)
    *
    * For DELETE:
    *   Signed headers = host
@@ -306,6 +316,7 @@ class S3StorageProvider implements StorageProvider {
     contentType: string | undefined,
     expiresInSeconds: number,
     bucket: string | undefined = env.S3_BUCKET,
+    cacheControl?: string,
   ): string {
     if (!env.S3_ENDPOINT) {
       throw new Error("S3_ENDPOINT is required when STORAGE_PROVIDER=s3");
@@ -367,7 +378,14 @@ class S3StorageProvider implements StorageProvider {
 
     const isPut = method === "PUT";
 
-    const signedHeaders = isPut ? "content-type;host" : "host";
+    const withCacheControl = isPut && Boolean(cacheControl);
+
+    // Canonical headers are sorted by name.
+    const signedHeaders = isPut
+      ? withCacheControl
+        ? "cache-control;content-type;host"
+        : "content-type;host"
+      : "host";
 
     let canonicalHeaders: string;
 
@@ -376,7 +394,10 @@ class S3StorageProvider implements StorageProvider {
         throw new Error("Content-Type is required for PUT presigned uploads");
       }
 
-      canonicalHeaders = `content-type:${contentType}\n` + `host:${host}\n`;
+      canonicalHeaders =
+        (withCacheControl ? `cache-control:${cacheControl!.trim()}\n` : "") +
+        `content-type:${contentType}\n` +
+        `host:${host}\n`;
     } else {
       canonicalHeaders = `host:${host}\n`;
     }
@@ -507,7 +528,9 @@ class S3StorageProvider implements StorageProvider {
   ): Promise<StoredImage> {
     assertUploadable(contentType, body.byteLength);
 
-    const url = this.sign("PUT", key, contentType, 300);
+    // Server-side writes are the stored images themselves (UUID-named,
+    // never reused for other content): cache them for a year.
+    const url = this.sign("PUT", key, contentType, 300, env.S3_BUCKET, IMAGE_CACHE_CONTROL);
 
     const response = await fetch(url, {
       method: "PUT",
@@ -516,6 +539,7 @@ class S3StorageProvider implements StorageProvider {
 
       headers: {
         "Content-Type": contentType,
+        "Cache-Control": IMAGE_CACHE_CONTROL,
       },
     });
 
@@ -661,8 +685,8 @@ class S3StorageProvider implements StorageProvider {
 
 /**
  * SigV4-presigned URL for any bucket — used by the PRIVATE seller-document
- * store (private-documents.ts) for its own bucket. Short-lived; never handed
- * to a browser.
+ * store (private-documents.ts) for its own bucket, and by
+ * scripts/migrate-images-to-s3.ts. Short-lived; never handed to a browser.
  */
 export function presignS3(
   method: "PUT" | "DELETE" | "GET",
@@ -670,8 +694,9 @@ export function presignS3(
   key: string,
   contentType: string | undefined,
   expiresInSeconds: number,
+  cacheControl?: string,
 ): string {
-  return new S3StorageProvider().sign(method, key, contentType, expiresInSeconds, bucket);
+  return new S3StorageProvider().sign(method, key, contentType, expiresInSeconds, bucket, cacheControl);
 }
 
 /* -------------------------------------------------------------------------- */

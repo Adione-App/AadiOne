@@ -171,3 +171,8 @@ secrets/
 *.secret
 # Image migration rollback manifests (scripts/optimize-images.ts) — per environment
 /image-migrations/
+
+# Database backups (pg_dump) — real customer/seller data, never commit
+*.dump
+*.dump.gz
+*.sql.gz

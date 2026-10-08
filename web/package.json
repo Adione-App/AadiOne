@@ -5,7 +5,8 @@
   "description": "AdiOne store / admin web panel",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev-v2.mjs",
+    "dev:prod-api": "vite",
     "dev:v2": "node scripts/dev-v2.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",

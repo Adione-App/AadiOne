@@ -25,7 +25,7 @@ import { sendDocumentFile } from './document-response';
 
 const uuid = z.string().uuid();
 
-/** Column sizes of `sellers.name/city/state` (prisma-v2/schema.prisma). The
+/** Column sizes of `sellers.name/city/state` (prisma/schema.prisma). The
  * schema must never accept more than the column holds — Prisma's P2000 would
  * otherwise surface as a 500 instead of a field-level 400. */
 const SELLER_NAME_MAX = 120;

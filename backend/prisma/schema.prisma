@@ -1,40 +1,55 @@
 // =============================================================================
-// AdiOne — PostgreSQL schema
+// AdiOne V2 — PostgreSQL schema (multi-seller marketplace)
 // =============================================================================
 //
-// Conventions applied throughout (see docs/01-PRD-and-Architecture.md §8):
+// This is the V2 redesign of the V1 single-store schema, and the only active
+// schema: every Prisma command uses this file and prisma/migrations (see
+// prisma/README.md). The V1 schema and history are archived, read-only, in
+// prisma-v1-archive/ — never generated, migrated or deployed. The
+// fundamental shift: AdiOne is now a MARKETPLACE. AdiOne's own Grocery is one
+// Seller among many (`isPlatformOwned = true`), not a special case baked into
+// the schema.
+//
+// Conventions carried over from V1 (see docs/01-PRD-and-Architecture.md §8):
 //
 //  1. MONEY is an integer number of paise, stored as Int.
-//     ₹290.00 -> 29000. Int caps at ₹21,474,836 per column, which is far above
-//     any single grocery order or price. Int (not BigInt) is deliberate: BigInt
-//     would force BigInt handling through every DTO and JSON serialiser for no
-//     practical range benefit. Aggregate revenue is computed with SUM(), which
-//     Postgres widens to bigint on its own.
+//  2. COORDINATES are Float (double precision).
+//  3. ORDERS ARE IMMUTABLE SNAPSHOTS — with ONE deliberate exception in V2:
+//     `Order.currentPayablePaise` (see its own doc comment). Every other
+//     money/detail field on Order/SellerOrder/OrderItem is written once at
+//     creation and never rewritten.
+//  4. EVERYTHING IS SELLER-SCOPED from V2 day one — the same reasoning V1
+//     applied to "store-scoped," generalized: a category, a listing, a
+//     sub-order all know which seller they belong to.
+//  5. SOFT DELETE (deleted_at) for anything an order can reference; hard
+//     delete for the rest. Partial indexes exclude deleted rows.
+//  6. TIMESTAMPS are timestamptz, stored UTC.
 //
-//  2. COORDINATES are Float (double precision). A double carries ~15
-//     significant digits; latitude/longitude need 9 for sub-metre accuracy.
-//     Decimal would drag Prisma's Decimal.js type into distance maths for no gain.
+// NEW V2 architectural rules:
 //
-//  3. ORDERS ARE IMMUTABLE SNAPSHOTS. order_items copies product name, variant
-//     name, brand, image, SKU, prices, tax rate and the resolved COD flag.
-//     Renaming a product must never alter a six-month-old receipt.
-//
-//  4. EVERYTHING IS STORE-SCOPED from day one, even with a single store, so
-//     multi-store (V6) costs a store picker rather than a migration.
-//
-//  5. SOFT DELETE (deleted_at) for anything an order can reference; hard delete
-//     for the rest. Partial indexes exclude deleted rows.
-//
-//  6. TIMESTAMPS are timestamptz, stored UTC. Presentation converts to
-//     stores.timezone.
+//  7. MASTER PRODUCT + SELLER LISTING. `Product`/`ProductVariant` are the
+//     shared, seller-agnostic catalog. `SellerListing` (V1: StoreVariant) is
+//     where a specific seller's price/stock for a variant lives — the same
+//     master variant can have many SellerListing rows, one per seller.
+//  8. PARENT ORDER + SELLER ORDER. `Order` is the customer-facing envelope
+//     (one payment, one address, one delivery run, aggregate totals).
+//     `SellerOrder` is where V1's `Order` semantics (items, status
+//     lifecycle, cancellation) actually live now — one per seller involved
+//     in that checkout. A customer's single mixed cart can therefore split
+//     into several SellerOrders under one Order.
+//  9. COMMISSION resolves most-specific-wins, the same shape as the existing
+//     CodPolicy INHERIT chain: product > category > seller default.
+//     Resolved once at order creation and snapshotted onto SellerOrder —
+//     never recomputed later from a possibly-changed rule.
 //
 // Indexes carry a comment naming the query they serve. An index without a
 // query is write cost for nothing.
 //
 // Constructs Prisma cannot express in this file — partial indexes, CHECK
-// constraints, the full-text search column, trigram indexes — are applied by
-// prisma/migrations/*_hardening/migration.sql, which is part of the migration
-// history and therefore runs everywhere.
+// constraints, the full-text search trigger, the pg_trgm extension — are
+// applied by hand-written V2 migrations (prisma/migrations/*_v2_hardening
+// and *_v2_product_search), which are part of the migration history and
+// therefore run everywhere.
 // =============================================================================
 
 generator client {
@@ -53,9 +68,9 @@ datasource db {
 enum UserRole {
   CUSTOMER
   ADMIN
-  STORE_OWNER
+  SELLER_OWNER
   SUPER_ADMIN
-  STORE_MANAGER
+  SELLER_MANAGER
   DELIVERY_AGENT
   STAFF
   PHARMACIST
@@ -82,11 +97,93 @@ enum CatalogVertical {
   OTHER
 }
 
+/// A broad business classification of a Seller — nothing more. It does NOT
+/// decide the seller's categories: every seller creates its own categories
+/// and subcategories in the Seller Panel. RESTAURANT is the one type with
+/// its own behaviour (menu sections, /restaurants). Distinct from
+/// `CatalogVertical` (which describes a category's vertical).
+enum SellerType {
+  GROCERY
+  FASHION
+  ELECTRONICS
+  BEAUTY
+  HOME
+  PHARMACY
+  RESTAURANT
+  /// A cafe — a FOOD seller like RESTAURANT: menu sections + food items,
+  /// no MRP and no stock count (see SellerListing.tracksStock).
+  CAFE
+  SPORTS
+  BOOKS
+  KIDS
+  AUTOMOTIVE
+  PETS
+  SERVICES
+  OTHER
+}
+
+/// The two-gate seller lifecycle (see Seller.lifecycleStatus). Gate 1 is the
+/// admin decision on a seller's APPLICATION; Gate 2 the admin verification of
+/// the completed ONBOARDING. Only ACTIVE sellers get the operational Seller
+/// Panel — enforced server-side by middleware/sellerLifecycle.ts.
+enum SellerLifecycleStatus {
+  /// Self-signup received; waiting for admin Gate 1.
+  APPLICATION_PENDING
+  /// Gate 1 refused. Terminal: no onboarding access.
+  APPLICATION_REJECTED
+  /// Gate 1 approved (or created by admin): the seller fills in onboarding.
+  ONBOARDING_PENDING
+  /// Submitted for verification; locked for edits while admin reviews.
+  ONBOARDING_PENDING_REVIEW
+  /// Admin asked for corrections; the seller edits and resubmits.
+  ONBOARDING_CHANGES_REQUIRED
+  /// Gate 2 approved — full Seller Panel. Mirrors onboardingStatus APPROVED.
+  ACTIVE
+  /// Gate 2 refused. Terminal.
+  ONBOARDING_REJECTED
+}
+
 enum ProductStatus {
   DRAFT
   ACTIVE
   INACTIVE
   ARCHIVED
+}
+
+/// Shared by Seller onboarding, Product catalog submissions and
+/// ProductApprovalBatch(Item) — the same three-state admin review outcome
+/// used everywhere admin has to approve something a seller submitted.
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// SellerDocument's own verification outcome — kept as a separate enum from
+/// ApprovalStatus (rather than reused) so admin-UI copy for "verify a
+/// document" and "approve a product" can diverge without becoming
+/// confusable in code (`DocumentStatus.VERIFIED` vs `ApprovalStatus.APPROVED`
+/// read very differently even though the shape is identical).
+enum DocumentStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum SellerDocumentType {
+  GST_CERTIFICATE
+  FSSAI_LICENSE
+  PAN_CARD
+  AADHAAR_CARD
+  BUSINESS_LICENSE
+  BANK_PROOF
+  OTHER
+}
+
+enum SellerStaffRole {
+  OWNER
+  MANAGER
+  STAFF
 }
 
 enum UnitType {
@@ -101,27 +198,48 @@ enum UnitType {
 }
 
 /// Three-state COD policy. INHERIT defers to the next level outward:
-/// storeVariant -> productVariant -> product -> category(leaf..root) -> store
-/// -> DEFAULT_COD_POLICY config. Most restrictive wins at order level.
+/// sellerListing -> productVariant -> product -> category(leaf..root) ->
+/// seller -> DEFAULT_COD_POLICY config. Most restrictive wins at order level.
 enum CodPolicy {
   ALLOW
   DENY
   INHERIT
 }
 
+/// Parent-order (customer-facing) lifecycle. Deliberately coarser than
+/// SellerOrderStatus below — the customer sees "Processing" while any
+/// SellerOrder is still NEW/ACCEPTED/PREPARING, and the delivery-leg states
+/// (PICKED_UP onward) only start once every REQUIRED SellerOrder has reached
+/// READY_FOR_PICKUP.
 enum OrderStatus {
   PENDING_PAYMENT
   PAYMENT_CONFIRMED
-  ORDER_PLACED
-  STORE_ACCEPTED
-  PREPARING
+  PROCESSING
   READY_FOR_PICKUP
+  PICKED_UP
   OUT_FOR_DELIVERY
   DELIVERED
+  /// Some, but not all, SellerOrders were cancelled/rejected — the rest of
+  /// the order is still proceeding. See Order.currentPayablePaise.
+  PARTIALLY_CANCELLED
+  /// Every SellerOrder was cancelled/rejected, or the customer cancelled
+  /// before any seller accepted.
   CANCELLED
   PAYMENT_FAILED
-  REJECTED
   REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+/// Seller-order (per-seller) lifecycle — exactly the states one seller's
+/// portion of an order moves through, independent of every other seller's
+/// portion of the same parent Order.
+enum SellerOrderStatus {
+  NEW
+  ACCEPTED
+  PREPARING
+  READY_FOR_PICKUP
+  REJECTED
+  CANCELLED
 }
 
 enum PaymentMethod {
@@ -159,6 +277,7 @@ enum RefundStatus {
 enum ActorType {
   CUSTOMER
   ADMIN
+  SELLER
   DELIVERY_AGENT
   SYSTEM
   PAYMENT_WEBHOOK
@@ -167,6 +286,7 @@ enum ActorType {
 enum CancelledBy {
   CUSTOMER
   ADMIN
+  SELLER
   SYSTEM
 }
 
@@ -182,12 +302,21 @@ enum StockLedgerReason {
   RETURN
 }
 
-enum DeliveryAssignmentStatus {
+/// V1: DeliveryAssignmentStatus. Renamed alongside DeliveryAssignment ->
+/// DeliveryTask for naming consistency; values unchanged.
+enum DeliveryTaskStatus {
   ASSIGNED
   ACCEPTED
   PICKED_UP
   DELIVERED
   CANCELLED
+}
+
+enum SettlementStatus {
+  PENDING
+  PROCESSING
+  PAID
+  FAILED
 }
 
 enum NotificationType {
@@ -204,6 +333,37 @@ enum NotificationType {
   REFUND_INITIATED
   REFUND_COMPLETED
   BACK_IN_STOCK
+  // --- seller-facing (audience SELLER) ---
+  SELLER_NEW_ORDER
+  SELLER_ORDER_CANCELLED
+  SELLER_ORDER_UPDATE
+  SELLER_REFUND_ISSUED
+  SELLER_ONBOARDING_APPROVED
+  SELLER_ONBOARDING_REJECTED
+  SELLER_PRODUCT_APPROVED
+  SELLER_PRODUCT_REJECTED
+  SELLER_SETTLEMENT_CREATED
+  SELLER_SETTLEMENT_PROCESSING
+  SELLER_SETTLEMENT_PAID
+  SELLER_SETTLEMENT_FAILED
+  SELLER_APPLICATION_APPROVED
+  SELLER_APPLICATION_REJECTED
+  SELLER_ONBOARDING_CHANGES_REQUESTED
+  // --- admin-facing (audience ADMIN) ---
+  ADMIN_ONBOARDING_SUBMITTED
+  ADMIN_SELLER_APPLICATION_SUBMITTED
+  ADMIN_PRODUCTS_SUBMITTED
+  ADMIN_REFUND_FAILED
+  ADMIN_SETTLEMENT_FAILED
+}
+
+/// Which feed a notification belongs to. A seller's staff user is also a
+/// shopper (same login), so the customer app and the seller panel must never
+/// show each other's notifications.
+enum NotificationAudience {
+  CUSTOMER
+  SELLER
+  ADMIN
 }
 
 enum NotificationChannel {
@@ -244,6 +404,18 @@ enum IdempotencyStatus {
   COMPLETED
 }
 
+enum ReferralStatus {
+  REGISTERED
+  FIRST_ORDER_PENDING
+  COMPLETED
+  REWARD_ISSUED
+}
+
+enum CouponOrigin {
+  PROMO
+  REFERRAL_REWARD
+}
+
 // =============================================================================
 // Users & access
 // =============================================================================
@@ -255,7 +427,8 @@ model User {
   mobile       String     @unique @db.VarChar(15)
   fullName     String?    @map("full_name") @db.VarChar(120)
   email        String?    @db.VarChar(160)
-  /// Admin login only. Customers authenticate by OTP and have no password.
+  /// Admin/seller login only. Customers authenticate by OTP and have no
+  /// password.
   passwordHash String?    @map("password_hash") @db.VarChar(120)
   role         UserRole   @default(CUSTOMER)
   status       UserStatus @default(ACTIVE)
@@ -264,12 +437,6 @@ model User {
   codBlocked Boolean @default(false) @map("cod_blocked")
 
   /// When the mobile number was last proven by a successful OTP verification.
-  ///
-  /// OTP signup sets this immediately. Email+password signup does NOT: anyone
-  /// can type someone else's number. That matters because the rider phones
-  /// this number and COD settlement depends on reaching a real person, so an
-  /// unverified number is a delivery and fraud risk rather than a cosmetic
-  /// detail. Verification is completed by logging in once with OTP.
   mobileVerifiedAt DateTime? @map("mobile_verified_at") @db.Timestamptz(3)
 
   referralCode     String? @unique @map("referral_code") @db.VarChar(16)
@@ -285,19 +452,13 @@ model User {
   referredBy    User?  @relation("UserReferral", fields: [referredByUserId], references: [id], onDelete: SetNull)
   referredUsers User[] @relation("UserReferral")
 
-  /// Refer & Earn lifecycle rows — see the `Referral` model. `referredBy`
-  /// above is the fast "who referred me" pointer set once at signup;
-  /// `referralsReceived`/`referralsMade` are the fuller lifecycle/reward
-  /// audit trail (status, reward coupon, timestamps) built on top of it.
   referralsMade     Referral[] @relation("ReferralsMade")
   referralsReceived Referral?  @relation("ReferralsReceived")
-  /// Coupons minted FOR this user specifically (e.g. a ₹50 referral reward)
-  /// — distinct from `couponRedemptions` above, which is "coupons this user
-  /// has SPENT" (any global promo code, not just ones issued to them).
   issuedCoupons     Coupon[]   @relation("IssuedCoupons")
 
   addresses          Address[]
   refreshTokens      RefreshToken[]
+  passwordResets     PasswordResetToken[]
   carts              Cart[]
   orders             Order[]
   notifications      Notification[]
@@ -309,8 +470,17 @@ model User {
   backInStockSubs    BackInStockSubscription[]
   auditLogs          AuditLog[]
   deliveryAgent      DeliveryAgent?
-  assignmentsMade    DeliveryAssignment[]      @relation("AssignedBy")
   configUpdates      Configuration[]
+
+  /// Not a single `sellerId` on User — deliberately a join table (see
+  /// SellerStaff's own doc comment) so a user can staff more than one seller
+  /// and every seller-scoped authorization check has one place to start.
+  sellerStaff              SellerStaff[]
+  sellerOrderStatusChanges SellerOrderStatusHistory[] @relation("SellerOrderStatusActor")
+  approvalBatchesSubmitted ProductApprovalBatch[]     @relation("ApprovalBatchSubmitted")
+  approvalBatchesReviewed  ProductApprovalBatch[]     @relation("ApprovalBatchReviewed")
+  verifiedSellerDocuments  SellerDocument[]
+  deliveryTasksAssigned    DeliveryTask[]             @relation("DeliveryTaskAssignedBy")
 
   // Indexes for this table are partial and live in the hardening migration:
   //   users_email_unique   UNIQUE (lower(email)) WHERE email IS NOT NULL
@@ -345,6 +515,26 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
+/// A seller "Forgot Password?" request (auth/password-reset.service.ts).
+/// Only the SHA-256 of the emailed token is stored. Single-use (`usedAt`,
+/// claimed atomically) and short-lived (`expiresAt`); a newer request
+/// invalidates the older unused ones.
+model PasswordResetToken {
+  id        String @id @default(uuid()) @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+  tokenHash String @unique @map("token_hash") @db.Char(64)
+
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz(3)
+  usedAt      DateTime? @map("used_at") @db.Timestamptz(3)
+  requestedIp String?   @map("requested_ip") @db.VarChar(64)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("password_reset_tokens")
+}
+
 model Address {
   id     String @id @default(uuid()) @db.Uuid
   userId String @map("user_id") @db.Uuid
@@ -369,9 +559,9 @@ model Address {
 
   isDefault Boolean @default(false) @map("is_default")
 
-  /// Cached serviceability, refreshed on save and whenever the store location
-  /// or radius changes. The server always re-checks at checkout regardless —
-  /// this exists to render the address list without N distance calculations.
+  /// Cached serviceability, refreshed on save. The server always re-checks
+  /// at checkout regardless — this exists to render the address list without
+  /// N distance calculations.
   isServiceable Boolean @default(true) @map("is_serviceable")
   distanceKm    Float?  @map("distance_km")
 
@@ -386,19 +576,24 @@ model Address {
   //   addresses_user_active         (user_id) WHERE deleted_at IS NULL
   //   addresses_one_default_per_user UNIQUE (user_id)
   //                                  WHERE is_default AND deleted_at IS NULL
-  // The second one enforces "exactly one default address" in the DATABASE,
-  // rather than in application logic that two concurrent requests could race.
   @@map("addresses")
 }
 
 // =============================================================================
-// Store
+// Seller (V1: Store) — a marketplace partner. AdiOne's own Grocery is one row
+// here (`isPlatformOwned = true`), not a special case.
 // =============================================================================
 
-model Store {
+model Seller {
   id   String @id @default(uuid()) @db.Uuid
   name String @db.VarChar(120)
   code String @unique @db.VarChar(40)
+
+  sellerType      SellerType @default(OTHER) @map("seller_type")
+  /// AdiOne's own Grocery seller. Flips business rules that only apply to
+  /// the platform's own store (e.g. always active regardless of onboarding
+  /// state) rather than the schema special-casing "the" store by id.
+  isPlatformOwned Boolean    @default(false) @map("is_platform_owned")
 
   addressLine String  @map("address_line") @db.VarChar(300)
   city        String  @db.VarChar(80)
@@ -412,31 +607,89 @@ model Store {
   timezone String @default("Asia/Kolkata") @db.VarChar(60)
 
   isActive Boolean   @default(true) @map("is_active")
-  /// Store-level COD policy — the outermost level of the resolution chain.
+  /// The SELLER's own "Store Open / Store Closed" switch — distinct from
+  /// `isActive` (admin-controlled) and from onboarding approval. OFF closes
+  /// the seller to customers immediately and indefinitely, overriding its
+  /// weekly hours; nothing ever turns it back ON automatically — only the
+  /// seller (or admin acting for them) does. ON hands control back to
+  /// SellerHours/SellerClosure. See seller.service.ts's
+  /// `evaluateSellerAvailability` for the full priority order.
+  isAcceptingOrders Boolean @default(true) @map("is_accepting_orders")
+  /// Seller-level COD policy — the outermost level of the resolution chain.
   allowCod CodPolicy @default(ALLOW) @map("allow_cod")
 
-  /// Optional per-store override of MAX_SERVICE_RADIUS_KM. Null = use config.
+  /// Admin onboarding review gate (see SellerProfile/SellerBankDetail/
+  /// SellerDocument for the underlying submitted details). A seller cannot
+  /// go live while this is not APPROVED, even if `isActive` is set.
+  /// Platform-owned sellers are seeded as APPROVED — they never went through
+  /// the external onboarding flow.
+  onboardingStatus ApprovalStatus @default(PENDING) @map("onboarding_status")
+
+  /// Where the seller is in the two-gate lifecycle (see SellerLifecycleStatus).
+  /// `onboardingStatus` is kept in step with it — APPROVED exactly when this
+  /// is ACTIVE, REJECTED when ONBOARDING_REJECTED, else PENDING (CHECK
+  /// `sellers_lifecycle_matches_onboarding`) — so every existing "is this
+  /// seller live" rule keeps reading `onboardingStatus` unchanged. Defaults
+  /// to APPLICATION_PENDING so a row created without a decision is never
+  /// operational.
+  lifecycleStatus        SellerLifecycleStatus @default(APPLICATION_PENDING) @map("lifecycle_status")
+  /// The seller-facing reason for the latest Gate 1 rejection, request for
+  /// changes or final rejection. Cleared when the seller moves on.
+  lifecycleReason        String?               @map("lifecycle_reason") @db.VarChar(500)
+  lifecycleUpdatedAt     DateTime?             @map("lifecycle_updated_at") @db.Timestamptz(3)
+  /// Self-signup time; null for sellers created by admin.
+  applicationSubmittedAt DateTime?             @map("application_submitted_at") @db.Timestamptz(3)
+  /// Latest submission for Gate 2 verification.
+  onboardingSubmittedAt  DateTime?             @map("onboarding_submitted_at") @db.Timestamptz(3)
+  /// Gate 2 approval — when the seller became ACTIVE.
+  activatedAt            DateTime?             @map("activated_at") @db.Timestamptz(3)
+
+  /// Fallback commission rate (basis points) when no CommissionRule matches
+  /// more specifically — see CommissionRule's own doc comment for the full
+  /// precedence chain (product > category > this default).
+  defaultCommissionBp Int @default(0) @map("default_commission_bp")
+
+  /// How often this seller is paid out, in plain hours rather than an enum —
+  /// "daily" (24), "weekly" (168), "every 15 days" (360) and any future
+  /// cadence are all just a number here, no schema change needed to add one.
+  settlementCycleHours Int @default(24) @map("settlement_cycle_hours")
+
+  /// Optional per-seller override of MAX_SERVICE_RADIUS_KM. Null = use config.
   maxServiceRadiusKm Float? @map("max_service_radius_km")
 
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  hours           StoreHours[]
-  closures        StoreClosure[]
-  storeVariants   StoreVariant[]
-  carts           Cart[]
-  orders          Order[]
-  deliveryAgents  DeliveryAgent[]
-  configurations  Configuration[]
+  profile           SellerProfile?
+  bankDetail        SellerBankDetail?
+  documents         SellerDocument[]
+  staff             SellerStaff[]
+  restaurantProfile RestaurantProfile?
+
+  hours           SellerHours[]
+  closures        SellerClosure[]
+  listings        SellerListing[]
   categories      Category[]
+  /// Master categories admin has assigned to this seller (see SellerCategory).
+  assignedCategories SellerCategory[]
+  products        Product[]                 @relation("ProductSubmittedBySeller")
+  approvalBatches ProductApprovalBatch[]
+  commissionRules CommissionRule[]
+  sellerOrders    SellerOrder[]
+  settlements     SellerSettlement[]
+  notifications   Notification[]
+  configurations  Configuration[]
   backInStockSubs BackInStockSubscription[]
 
-  @@map("stores")
+  /// Admin seller list / applications queue filtered by lifecycle stage.
+  @@index([lifecycleStatus, createdAt])
+  @@map("sellers")
 }
 
-model StoreHours {
+model SellerHours {
   id        String  @id @default(uuid()) @db.Uuid
-  storeId   String  @map("store_id") @db.Uuid
+  sellerId  String  @map("seller_id") @db.Uuid
   /// 0 = Sunday … 6 = Saturday.
   dayOfWeek Int     @map("day_of_week") @db.SmallInt
   /// "HH:mm" local time. Stored as text so a window crossing midnight
@@ -445,29 +698,185 @@ model StoreHours {
   closesAt  String  @map("closes_at") @db.VarChar(5)
   isClosed  Boolean @default(false) @map("is_closed")
 
-  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  seller Seller @relation(fields: [sellerId], references: [id], onDelete: Cascade)
 
-  @@unique([storeId, dayOfWeek])
-  @@map("store_hours")
+  @@unique([sellerId, dayOfWeek])
+  @@map("seller_hours")
 }
 
-/// Holiday / ad-hoc closure. Table exists in V1; admin UI arrives in V2.
-model StoreClosure {
+/// Holiday / ad-hoc closure (V1: StoreClosure).
+model SellerClosure {
   id       String   @id @default(uuid()) @db.Uuid
-  storeId  String   @map("store_id") @db.Uuid
+  sellerId String   @map("seller_id") @db.Uuid
   closedOn DateTime @map("closed_on") @db.Date
   reason   String?  @db.VarChar(200)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  seller Seller @relation(fields: [sellerId], references: [id], onDelete: Cascade)
 
-  @@unique([storeId, closedOn])
-  @@map("store_closures")
+  @@unique([sellerId, closedOn])
+  @@map("seller_closures")
 }
 
 // =============================================================================
-// Catalog
+// Seller onboarding — business/legal details a seller fills in after admin
+// approves its application (Gate 1), and admin verifies before the seller
+// goes ACTIVE (Gate 2). See Seller.lifecycleStatus.
+// =============================================================================
+
+/// Business/legal identity. PAN/Aadhaar/GST/FSSAI numbers are sensitive PII —
+/// application-layer encryption-at-rest is expected on these columns; the
+/// schema only fixes their shape and nullability (GST/FSSAI are optional —
+/// not every seller needs them; FSSAI in particular is food-only).
+model SellerProfile {
+  id       String @id @default(uuid()) @db.Uuid
+  sellerId String @unique @map("seller_id") @db.Uuid
+
+  businessName String  @map("business_name") @db.VarChar(160)
+  businessType String? @map("business_type") @db.VarChar(80)
+
+  ownerFullName String  @map("owner_full_name") @db.VarChar(120)
+  ownerMobile   String  @map("owner_mobile") @db.VarChar(15)
+  ownerEmail    String? @map("owner_email") @db.VarChar(160)
+
+  panNumber     String? @map("pan_number") @db.VarChar(20)
+  aadhaarNumber String? @map("aadhaar_number") @db.VarChar(20)
+  /// Required for a registered business above the GST threshold; optional
+  /// otherwise (small/unregistered sellers).
+  gstNumber     String? @map("gst_number") @db.VarChar(20)
+  /// Food sellers/restaurants only.
+  fssaiNumber   String? @map("fssai_number") @db.VarChar(20)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  seller Seller @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+
+  @@map("seller_profiles")
+}
+
+/// One current payout account per seller. `isVerified` gates settlement —
+/// see SellerSettlement.
+model SellerBankDetail {
+  id       String @id @default(uuid()) @db.Uuid
+  sellerId String @unique @map("seller_id") @db.Uuid
+
+  accountHolderName String  @map("account_holder_name") @db.VarChar(120)
+  accountNumber     String  @map("account_number") @db.VarChar(40)
+  ifscCode          String  @map("ifsc_code") @db.VarChar(11)
+  bankName          String? @map("bank_name") @db.VarChar(120)
+
+  isVerified Boolean @default(false) @map("is_verified")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  seller Seller @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+
+  @@map("seller_bank_details")
+}
+
+/// License/registration documents a seller must provide — GST certificate,
+/// FSSAI license (food), PAN/Aadhaar, business license, bank proof, etc.
+/// Many per seller (one row per document, re-uploadable on expiry/rejection).
+model SellerDocument {
+  id       String @id @default(uuid()) @db.Uuid
+  sellerId String @map("seller_id") @db.Uuid
+
+  type    SellerDocumentType
+  /// The number printed on the document (PAN, Aadhaar, GSTIN, FSSAI…),
+  /// normalised. Verification data, not a secret: masked in every read
+  /// except an audited admin reveal; never written to logs or audit rows.
+  documentNumber String? @map("document_number") @db.VarChar(40)
+  /// Private storage key of the uploaded PDF (never a public URL) —
+  /// read only through the authorised document endpoints.
+  fileKey     String? @map("file_key") @db.VarChar(300)
+  /// The uploader's file name, sanitised, for display/download only.
+  fileName    String? @map("file_name") @db.VarChar(160)
+  fileSize    Int?    @map("file_size")
+  contentType String? @map("content_type") @db.VarChar(80)
+  /// LEGACY: an external link from before direct uploads. Kept on old rows;
+  /// never written by new uploads. Every row has a file_key or a file_url
+  /// (CHECK constraint in the v2_seller_document_uploads migration).
+  fileUrl     String? @map("file_url") @db.VarChar(500)
+
+  status           DocumentStatus @default(PENDING)
+  verifiedByUserId String?        @map("verified_by_user_id") @db.Uuid
+  verifiedAt       DateTime?      @map("verified_at") @db.Timestamptz(3)
+  rejectionReason  String?        @map("rejection_reason") @db.VarChar(300)
+
+  /// Null for documents with no expiry (e.g. PAN). Set for licenses that
+  /// need periodic renewal (GST/FSSAI) — the admin panel's expiry-alert
+  /// query filters on this.
+  expiresAt DateTime? @map("expires_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  seller     Seller @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  verifiedBy User?  @relation(fields: [verifiedByUserId], references: [id], onDelete: SetNull)
+
+  /// Seller's own document checklist.
+  @@index([sellerId, type])
+  /// Expiry-alert sweep and the admin review queue.
+  @@index([status, expiresAt])
+  @@map("seller_documents")
+}
+
+/// Food/restaurant-only extension of Seller. Everything else a restaurant
+/// needs (location, hours, closures, menu categories/items) reuses the
+/// generic Seller/Category/Product/SellerListing architecture as-is — this
+/// table only holds what's genuinely restaurant-specific.
+model RestaurantProfile {
+  id       String @id @default(uuid()) @db.Uuid
+  sellerId String @unique @map("seller_id") @db.Uuid
+
+  cuisine     String[] @map("cuisine")
+  isVegOnly   Boolean  @default(false) @map("is_veg_only")
+  avgPrepMins Int?     @map("avg_prep_mins")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  seller Seller @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+
+  @@map("restaurant_profiles")
+}
+
+/// Which user(s) can act as which seller, and with what role. Deliberately a
+/// join table rather than a single `sellerId` column on User — a user can
+/// staff more than one seller over time (reassignment, or a multi-store
+/// owner later) without a User row migration, and EVERY seller-scoped
+/// authorization check in the app starts by looking a user up here (#27:
+/// "seller only accesses its own data" is enforced by joining through this
+/// table, not by trusting a client-supplied sellerId).
+model SellerStaff {
+  id       String @id @default(uuid()) @db.Uuid
+  sellerId String @map("seller_id") @db.Uuid
+  userId   String @map("user_id") @db.Uuid
+
+  role SellerStaffRole @default(STAFF)
+
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
+
+  seller Seller @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([sellerId, userId])
+  /// "Which seller(s) can this logged-in user act as" — the auth middleware's
+  /// own query, run on every seller-panel request.
+  @@index([userId])
+  @@map("seller_staff")
+}
+
+// =============================================================================
+// Catalog — Product/ProductVariant/ProductImage stay the shared, seller-
+// agnostic master catalog (deviation D3, PRD §8.4). SellerListing (V1:
+// StoreVariant) is where a specific seller's price/stock lives.
 // =============================================================================
 
 /// Self-referencing category tree (deviation D2, PRD §8.3).
@@ -476,12 +885,14 @@ model StoreClosure {
 /// depth 1  = "Subcategory" (Atta Rice & Dal, Oil & Ghee — the sidebar)
 /// depth 2+ = available free of charge when Café or Pharmacy needs it.
 ///
-/// Two fixed tables could not express Café -> Beverages -> Cold Coffee without
-/// a migration. This costs nothing today.
+/// A restaurant's "menu categories" (starters, mains, desserts) are just
+/// Category rows scoped to that seller — no separate menu-category model.
 model Category {
   id       String  @id @default(uuid()) @db.Uuid
-  /// Null = catalogue shared by all stores (the V1 case).
-  storeId  String? @map("store_id") @db.Uuid
+  /// Null = shared taxonomy (grocery-wide categories every grocery seller's
+  /// products can attach under). Non-null = scoped to one seller — the
+  /// normal case for a restaurant's own menu sections.
+  sellerId String? @map("seller_id") @db.Uuid
   parentId String? @map("parent_id") @db.Uuid
 
   name     String  @db.VarChar(120)
@@ -505,25 +916,47 @@ model Category {
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  store    Store?     @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
-  children Category[] @relation("CategoryTree")
-  products Product[]
+  seller          Seller?          @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  parent          Category?        @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children        Category[]       @relation("CategoryTree")
+  products        Product[]
+  commissionRules CommissionRule[]
+  sellerAssignments SellerCategory[]
 
-  // Overridden by a partial index scoped to live rows in the
-  // category_slug_partial_unique migration (parent_id IS NOT NULL AND
-  // deleted_at IS NULL) — Prisma can't express partial indexes here, so this
-  // declaration still exists for typegen, but the index actually enforced in
-  // the database excludes soft-deleted categories, letting a deleted
-  // category's name/slug be reused. Root categories (parent_id NULL) are a
-  // separate case, see categories_root_slug_unique in null_scope_unique.
-  @@unique([parentId, slug])
+  // Slug uniqueness lives ONLY in partial unique indexes (v2_hardening
+  // migration) — Prisma can't express them, and a plain @@unique([parentId,
+  // slug]) here would count soft-deleted rows (so a deleted subcategory's name
+  // could never be reused) and would be recreated by Prisma over the partial
+  // one (docs/02-decisions.md D10):
+  //   categories_parent_id_slug_key          (parent_id, slug) live, non-root
+  //   categories_root_slug_unique_shared     (slug) live roots, shared taxonomy
+  //   categories_root_slug_unique_per_seller (seller_id, slug) live roots per seller
   /// "All products under Grocery" prefix query.
   @@index([path])
   // categories_active_tree (parent_id, display_order) WHERE is_active AND
-  // deleted_at IS NULL — the Home category row and the sidebar, i.e. the two
-  // highest-frequency catalogue reads. Partial, in the hardening migration.
+  // deleted_at IS NULL — hardening migration, partial.
   @@map("categories")
+}
+
+/// A MASTER category (shared taxonomy root: `sellerId` null, `parentId` null)
+/// that admin has assigned to a seller. The seller may create products and
+/// its own subcategories only under its assigned master categories (see
+/// catalog/seller-category.service.ts). Restaurants don't use this — their
+/// menu sections are their own root categories.
+model SellerCategory {
+  id               String   @id @default(uuid()) @db.Uuid
+  sellerId         String   @map("seller_id") @db.Uuid
+  categoryId       String   @map("category_id") @db.Uuid
+  /// The admin who assigned it; null for rows the migration backfilled.
+  assignedByUserId String?  @map("assigned_by_user_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  seller   Seller   @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@unique([sellerId, categoryId])
+  @@index([categoryId])
+  @@map("seller_categories")
 }
 
 model Brand {
@@ -538,6 +971,8 @@ model Brand {
 
   products Product[]
 
+  /// Product search: typo-tolerant brand match (`term <% brand`, pg_trgm).
+  @@index([name(ops: raw("gin_trgm_ops"))], map: "brands_name_trgm_idx", type: Gin)
   @@map("brands")
 }
 
@@ -554,8 +989,7 @@ model Product {
   descriptionHi String? @map("description_hi") @db.Text
 
   /// Local and colloquial names so search finds "cheeni" -> Sugar,
-  /// "namak" -> Salt, "doodh" -> Milk. Materially more useful in this market
-  /// than fuzzy matching on the English name alone.
+  /// "namak" -> Salt, "doodh" -> Milk.
   searchKeywords String[] @map("search_keywords")
 
   /// GST rate in basis points (5% = 500). Prices are tax-INCLUSIVE, so this is
@@ -566,10 +1000,36 @@ model Product {
   allowCod CodPolicy     @default(INHERIT) @map("allow_cod")
   status   ProductStatus @default(DRAFT)
 
+  /// Admin catalog-approval outcome (#9) — see ProductApprovalBatch/Item for
+  /// the full audit trail. This is a denormalized "current decision" cache
+  /// (same pattern as Address.isServiceable), kept in sync whenever a batch
+  /// item is decided; the batch/item rows remain the source of truth.
+  /// Products admin creates directly (notably for the platform-owned
+  /// grocery seller) are seeded APPROVED with no batch at all.
+  approvalStatus      ApprovalStatus @default(PENDING) @map("approval_status")
+  /// The seller who submitted this product for the shared catalog. Null for
+  /// products admin created directly.
+  submittedBySellerId String?        @map("submitted_by_seller_id") @db.Uuid
+
   /// Vertical-specific display attributes: shelf life, storage, country of
-  /// origin (grocery); prescription_required (pharmacy); crust/toppings (café).
-  /// The core order pipeline never reads this.
+  /// origin (grocery); prescription_required (pharmacy); crust/toppings
+  /// (café); spice_level (a restaurant menu item). The core order pipeline
+  /// never reads this.
   attributes Json @default("{}")
+
+  /// Optional OPTION GROUPS (generic — Size, Portion, Color, Storage, Pack
+  /// Size…), in display order: [{ "name": "Size", "values": ["Half", "Full"] }].
+  /// Empty = a simple item with one variant. Each sellable combination is a
+  /// ProductVariant whose `optionValues` picks one value per group.
+  optionGroups Json @default("[]") @map("option_groups")
+
+  /// Full-text search document: name + Hindi name (weight A), search_keywords
+  /// (B), description (D), 'simple' config. Maintained ONLY by the
+  /// `products_search_vector_trigger` DB trigger (v2_product_search
+  /// migration) — never written by the application, and not readable through
+  /// Prisma Client. Declared here so the schema describes the real table and
+  /// no future migration ever drops it.
+  searchVector Unsupported("tsvector")? @map("search_vector")
 
   /// Merchandising ranks for the Home rails. Maintained by admin/report jobs,
   /// not computed per request.
@@ -580,10 +1040,13 @@ model Product {
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  category Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  brand    Brand?           @relation(fields: [brandId], references: [id], onDelete: SetNull)
-  variants ProductVariant[]
-  images   ProductImage[]
+  category           Category                   @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  brand              Brand?                     @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  submittedBySeller  Seller?                    @relation("ProductSubmittedBySeller", fields: [submittedBySellerId], references: [id], onDelete: SetNull)
+  variants           ProductVariant[]
+  images             ProductImage[]
+  approvalBatchItems ProductApprovalBatchItem[]
+  commissionRules    CommissionRule[]
 
   /// Category listing, in filter order.
   @@index([categoryId, status])
@@ -591,6 +1054,15 @@ model Product {
   @@index([createdAt])
   /// "Popular Products" / "Best Sellers" rails.
   @@index([popularityScore])
+  /// Admin catalog-approval queue.
+  @@index([approvalStatus, createdAt])
+  /// Seller Panel product list / admin "products of this seller" — without it
+  /// every seller's own-catalogue query scans every seller's products.
+  @@index([submittedBySellerId])
+  /// Product search: full-text match (`search_vector @@ tsquery`).
+  @@index([searchVector], map: "products_search_vector_idx", type: Gin)
+  /// Product search: typo-tolerant name match (`term <% name`, pg_trgm).
+  @@index([name(ops: raw("gin_trgm_ops"))], map: "products_name_trgm_idx", type: Gin)
   @@map("products")
 }
 
@@ -612,18 +1084,29 @@ model ProductVariant {
   allowCod CodPolicy     @default(INHERIT) @map("allow_cod")
   status   ProductStatus @default(ACTIVE)
 
+  /// This variant's values for the product's option groups, e.g.
+  /// { "Size": "Large", "Color": "Black" }; {} for a simple item.
+  optionValues   Json           @default("{}") @map("option_values")
+  /// Per-variant review. A variant added to an ALREADY-APPROVED product
+  /// starts PENDING (and status DRAFT, so every existing "variant ACTIVE"
+  /// gate keeps it hidden) and goes through the normal approval batch; the
+  /// product and its approved variants stay live meanwhile. Variants of a
+  /// not-yet-approved product are reviewed with the product itself.
+  approvalStatus ApprovalStatus @default(APPROVED) @map("approval_status")
+
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  product         Product                   @relation(fields: [productId], references: [id], onDelete: Cascade)
-  storeVariants   StoreVariant[]
-  cartItems       CartItem[]
-  orderItems      OrderItem[]
-  images          ProductImage[]
-  backInStockSubs BackInStockSubscription[]
+  product        Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sellerListings SellerListing[]
+  orderItems     OrderItem[]
+  images         ProductImage[]
 
-  @@unique([productId, variantName])
+  // Variant names are unique among a product's LIVE variants only (partial
+  // unique index "product_variants_live_name_unique", migration
+  // v2_product_option_variants — Prisma can't express it), so a removed
+  // variant's name can be used again.
   @@index([productId])
   @@map("product_variants")
 }
@@ -650,92 +1133,199 @@ model ProductImage {
   @@map("product_images")
 }
 
-/// Deviation D3 (PRD §8.4) — the sellable unit.
+/// V1: StoreVariant. The sellable unit — one row answers "can THIS SELLER's
+/// customer buy this variant right now, and for how much?" Price and stock
+/// are seller-scoped, change together and are always read together.
 ///
-/// One row answers the question every hot query asks: "can this customer buy
-/// this variant right now, and for how much?" Price and stock are both
-/// store-scoped, change together and are always read together, so splitting
-/// them into two tables would add a join to the busiest query in the app and
-/// give multi-store two places to get wrong.
-model StoreVariant {
+/// The same ProductVariant can have many SellerListing rows — one per seller
+/// who chooses to sell it, each with its own price/stock — this is what
+/// makes "the same product sold by multiple sellers" (#10) real.
+model SellerListing {
   id        String @id @default(uuid()) @db.Uuid
-  storeId   String @map("store_id") @db.Uuid
+  sellerId  String @map("seller_id") @db.Uuid
   variantId String @map("variant_id") @db.Uuid
 
   /// Paise. CHECK (price_paise <= mrp_paise) in the hardening migration.
   mrpPaise   Int @map("mrp_paise")
+  /// Seller-controlled. Admin does not normally edit this (#11).
   pricePaise Int @map("price_paise")
 
   /// Physical stock on the shelf.
   stockQty    Int @default(0) @map("stock_qty")
   /// Held for orders awaiting payment. available = stockQty - reservedQty.
-  /// This is what makes the online-payment window safe without overselling.
   reservedQty Int @default(0) @map("reserved_qty")
 
   lowStockThreshold Int     @default(5) @map("low_stock_threshold")
   maxQtyPerOrder    Int     @default(10) @map("max_qty_per_order")
   isAvailable       Boolean @default(true) @map("is_available")
+  /// false = a made-to-order FOOD menu item (restaurant/cafe): no stock count.
+  /// Availability is `isAvailable` alone; stockQty holds a fixed capacity that
+  /// orders reserve against but never use up (inventory.service skips the
+  /// commit/restock arithmetic for these rows).
+  tracksStock       Boolean @default(true) @map("tracks_stock")
 
   allowCod CodPolicy @default(INHERIT) @map("allow_cod")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  store   Store          @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
-  ledger  StockLedger[]
+  seller          Seller                    @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  variant         ProductVariant            @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  ledger          StockLedger[]
+  cartItems       CartItem[]
+  orderItems      OrderItem[]
+  backInStockSubs BackInStockSubscription[]
 
   /// THE order-creation lock query:
-  ///   SELECT … WHERE (store_id, variant_id) IN (…) ORDER BY variant_id FOR UPDATE
+  ///   SELECT … WHERE (seller_id, variant_id) IN (…) ORDER BY variant_id FOR UPDATE
   /// Deterministic ordering on this key is what prevents deadlocks between
   /// concurrent checkouts. Also the natural key.
-  @@unique([storeId, variantId])
+  @@unique([sellerId, variantId])
+  /// Product hydration (catalog.repository.ts PRODUCT_INCLUDE): every product
+  /// card loads its variants' offers by `variant_id IN (…)` with no seller id,
+  /// which the (seller_id, variant_id) key above cannot serve.
+  @@index([variantId])
   // Partial indexes in the hardening migration — out-of-stock rows are absent
-  // from the in-stock index entirely, so the common query touches a much
-  // smaller index:
-  //   store_variants_in_stock  (store_id)
+  // from the in-stock index entirely:
+  //   seller_listings_in_stock  (seller_id)
   //     WHERE is_available AND (stock_qty - reserved_qty) > 0
-  //   store_variants_low_stock (store_id, stock_qty)
+  //   seller_listings_low_stock (seller_id, stock_qty)
   //     WHERE (stock_qty - reserved_qty) <= low_stock_threshold
-  @@map("store_variants")
+  @@map("seller_listings")
 }
 
 /// Append-only audit of every stock movement. Without this, a discrepancy
 /// between the shelf and the system is unexplainable (PRD §20 R8).
 model StockLedger {
-  id             String            @id @default(uuid()) @db.Uuid
-  storeVariantId String            @map("store_variant_id") @db.Uuid
+  id              String            @id @default(uuid()) @db.Uuid
+  sellerListingId String            @map("seller_listing_id") @db.Uuid
   /// Signed. Negative for reservations and sales, positive for restocks.
-  delta          Int
-  reason         StockLedgerReason
+  delta           Int
+  reason          StockLedgerReason
   /// stock_qty after applying this movement — makes the ledger self-checking.
-  balanceAfter   Int               @map("balance_after")
+  balanceAfter    Int               @map("balance_after")
 
-  orderId     String? @map("order_id") @db.Uuid
-  actorUserId String? @map("actor_user_id") @db.Uuid
-  note        String? @db.VarChar(300)
+  /// The seller-order that caused this movement — precise enough that a
+  /// single seller's cancellation restocks only that seller's committed
+  /// items, never the whole parent order's.
+  sellerOrderId String? @map("seller_order_id") @db.Uuid
+  actorUserId   String? @map("actor_user_id") @db.Uuid
+  note          String? @db.VarChar(300)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  storeVariant StoreVariant @relation(fields: [storeVariantId], references: [id], onDelete: Cascade)
-  order        Order?       @relation(fields: [orderId], references: [id], onDelete: SetNull)
-  actor        User?        @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  sellerListing SellerListing @relation(fields: [sellerListingId], references: [id], onDelete: Cascade)
+  sellerOrder   SellerOrder?  @relation(fields: [sellerOrderId], references: [id], onDelete: SetNull)
+  actor         User?         @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
-  /// Per-item stock history in the admin panel.
-  @@index([storeVariantId, createdAt])
-  @@index([orderId])
+  /// Per-item stock history in the seller/admin panel.
+  @@index([sellerListingId, createdAt])
+  @@index([sellerOrderId])
   @@map("stock_ledger")
 }
 
 // =============================================================================
-// Cart
+// Commission — resolved most-specific-wins, same shape as the CodPolicy
+// INHERIT chain: product > category > seller default.
+// =============================================================================
+
+/// Commission owed to AdiOne on a sale. `Seller.defaultCommissionBp` is the
+/// fallback; a row here overrides it at the category or product level.
+/// "Category" and "subcategory" both use `categoryId` — the existing
+/// Category tree already distinguishes them by depth, so no separate
+/// Subcategory FK is needed; the most specific matching category (walking
+/// leaf towards root) wins over a less specific one.
+///
+/// Resolved once at order creation and snapshotted onto SellerOrder
+/// (`commissionBp`/`commissionPaise`) — never recomputed later even if this
+/// rule subsequently changes, so a past order's payout math stays
+/// explainable (same principle as OrderItem's own price snapshot).
+model CommissionRule {
+  id         String  @id @default(uuid()) @db.Uuid
+  sellerId   String  @map("seller_id") @db.Uuid
+  /// Null = this rule is not category-scoped.
+  categoryId String? @map("category_id") @db.Uuid
+  /// Null = this rule is not product-scoped. The most specific level.
+  productId  String? @map("product_id") @db.Uuid
+
+  rateBp Int @map("rate_bp")
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  seller   Seller    @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  product  Product?  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  /// Resolution precedence: product > category > seller default (handled by
+  /// `Seller.defaultCommissionBp`, not a row here). Partial unique indexes
+  /// (hardening migration, mirroring addresses_one_default_per_user) enforce
+  /// at most one ACTIVE rule per (seller, product) and per (seller,
+  /// category) — Prisma can't express a NULLS-aware partial unique here.
+  @@index([sellerId, categoryId, productId])
+  @@map("commission_rules")
+}
+
+// =============================================================================
+// Catalog approval — a seller's submitted products are reviewed by admin in
+// batches (#9), with full audit history of who submitted/reviewed what.
+// =============================================================================
+
+model ProductApprovalBatch {
+  id       String @id @default(uuid()) @db.Uuid
+  sellerId String @map("seller_id") @db.Uuid
+
+  status ApprovalStatus @default(PENDING)
+
+  submittedByUserId String   @map("submitted_by_user_id") @db.Uuid
+  submittedAt       DateTime @default(now()) @map("submitted_at") @db.Timestamptz(3)
+
+  reviewedByUserId String?   @map("reviewed_by_user_id") @db.Uuid
+  reviewedAt       DateTime? @map("reviewed_at") @db.Timestamptz(3)
+  reviewNote       String?   @map("review_note") @db.VarChar(400)
+
+  seller      Seller                     @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  submittedBy User                       @relation("ApprovalBatchSubmitted", fields: [submittedByUserId], references: [id], onDelete: Restrict)
+  reviewedBy  User?                      @relation("ApprovalBatchReviewed", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  items       ProductApprovalBatchItem[]
+
+  /// Seller's own "my submissions" list.
+  @@index([sellerId, status])
+  /// Admin's review queue, oldest-first.
+  @@index([status, submittedAt])
+  @@map("product_approval_batches")
+}
+
+model ProductApprovalBatchItem {
+  id        String @id @default(uuid()) @db.Uuid
+  batchId   String @map("batch_id") @db.Uuid
+  productId String @map("product_id") @db.Uuid
+
+  /// Independent per product — admin can approve most of a batch while
+  /// rejecting one item, rather than an all-or-nothing decision.
+  status     ApprovalStatus @default(PENDING)
+  reviewNote String?        @map("review_note") @db.VarChar(400)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  batch   ProductApprovalBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  product Product              @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, productId])
+  @@index([productId])
+  @@map("product_approval_batch_items")
+}
+
+// =============================================================================
+// Cart — seller-agnostic. One cart per user can mix listings from any number
+// of sellers; each line knows its own seller through its SellerListing.
 // =============================================================================
 
 model Cart {
-  id      String     @id @default(uuid()) @db.Uuid
-  userId  String     @map("user_id") @db.Uuid
-  storeId String     @map("store_id") @db.Uuid
-  status  CartStatus @default(ACTIVE)
+  id     String     @id @default(uuid()) @db.Uuid
+  userId String     @map("user_id") @db.Uuid
+  status CartStatus @default(ACTIVE)
 
   /// Applied coupon code. Re-validated inside the order transaction; never
   /// trusted from here at checkout time.
@@ -745,34 +1335,36 @@ model Cart {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  store Store      @relation(fields: [storeId], references: [id], onDelete: Cascade)
   items CartItem[]
 
-  /// One ACTIVE cart per user per store — enforced by a partial unique index
-  /// in the hardening migration.
-  @@index([userId, storeId, status])
+  /// One ACTIVE cart per user — no longer per seller/store, since a single
+  /// cart now mixes products from any number of sellers (#13). Enforced by a
+  /// partial unique index in the hardening migration.
+  @@index([userId, status])
   @@map("carts")
 }
 
 model CartItem {
-  id        String @id @default(uuid()) @db.Uuid
-  cartId    String @map("cart_id") @db.Uuid
-  variantId String @map("variant_id") @db.Uuid
-  qty       Int
+  id              String @id @default(uuid()) @db.Uuid
+  cartId          String @map("cart_id") @db.Uuid
+  /// The specific seller's listing, not just the master variant — this is
+  /// what makes the seller for each line derivable per-item instead of
+  /// per-cart (#5), and lets two different sellers' listings of the same
+  /// master variant coexist as separate lines if the customer somehow has
+  /// both.
+  sellerListingId String @map("seller_listing_id") @db.Uuid
+  qty             Int
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  cart    Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
-  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  cart          Cart          @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  sellerListing SellerListing @relation(fields: [sellerListingId], references: [id], onDelete: Cascade)
 
-  /// NOTE: there is deliberately NO price column here.
-  /// Price is always resolved live from store_variants. This is the
-  /// "never trust client totals" rule expressed as schema — there is nowhere
-  /// for a stale or tampered price to be stored in the first place.
-  ///
-  /// Makes add-to-cart a single ON CONFLICT upsert ("increment if present").
-  @@unique([cartId, variantId])
+  /// NOTE: there is deliberately NO price column here. Price is always
+  /// resolved live from seller_listings — the "never trust client totals"
+  /// rule expressed as schema.
+  @@unique([cartId, sellerListingId])
   @@map("cart_items")
 }
 
@@ -801,16 +1393,10 @@ model Coupon {
 
   isActive Boolean @default(true) @map("is_active")
 
-  /// Null for today's global promo codes (SAVE50, FREESHIP, ...), anyone may
-  /// redeem those subject to the usage limits above. Set for a coupon minted
-  /// FOR one specific user (e.g. a ₹50 Refer & Earn reward) — `resolveCoupon`
-  /// rejects it for any other user, on top of the usage-limit checks that
-  /// already apply to every coupon.
+  /// Null for global promo codes; set for a coupon minted FOR one specific
+  /// user (e.g. a ₹50 Refer & Earn reward).
   issuedToUserId      String?      @map("issued_to_user_id") @db.Uuid
-  /// Back-link to the Referral that earned this coupon. `@unique` is what
-  /// makes "a referral can mint at most one reward coupon" a DB guarantee,
-  /// not just application logic — a concurrent duplicate reward attempt
-  /// fails on this constraint even if the app-level check races.
+  /// Back-link to the Referral that earned this coupon.
   issuedForReferralId String?      @unique @map("issued_for_referral_id") @db.Uuid
   origin              CouponOrigin @default(PROMO)
 
@@ -832,31 +1418,16 @@ model Coupon {
 // Referrals (Refer & Earn)
 // =============================================================================
 
-enum ReferralStatus {
-  REGISTERED
-  FIRST_ORDER_PENDING
-  COMPLETED
-  REWARD_ISSUED
-}
-
-enum CouponOrigin {
-  PROMO
-  REFERRAL_REWARD
-}
-
 model Referral {
   id             String @id @default(uuid()) @db.Uuid
   referrerUserId String @map("referrer_user_id") @db.Uuid
   /// `@unique` — a user can be referred exactly once, enforced at the DB
   /// level, not just checked in application code.
   referredUserId String @unique @map("referred_user_id") @db.Uuid
-  /// The code as typed at signup — denormalized for audit even though it's
-  /// derivable from `referrer.referralCode` today (codes are immutable).
   referralCode   String @map("referral_code") @db.VarChar(16)
 
   status ReferralStatus @default(REGISTERED)
 
-  /// The referred user's first order that satisfied the reward conditions.
   firstEligibleOrderId String?   @map("first_eligible_order_id") @db.Uuid
   completedAt          DateTime? @map("completed_at") @db.Timestamptz(3)
   rewardIssuedAt       DateTime? @map("reward_issued_at") @db.Timestamptz(3)
@@ -884,33 +1455,31 @@ model CouponRedemption {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
-  /// Written inside the order transaction, so the per-user usage limit cannot
-  /// be raced by two simultaneous checkouts.
   @@unique([couponId, orderId])
   @@index([couponId, userId])
   @@map("coupon_redemptions")
 }
 
 // =============================================================================
-// Orders
+// Orders — Parent Order (customer-facing) + SellerOrder (per-seller). See the
+// file header's point 8 for the reasoning.
 // =============================================================================
 
 model Order {
   id          String @id @default(uuid()) @db.Uuid
-  /// Customer-facing id: "AD" + YYMMDD + 6 unambiguous chars. Random rather
-  /// than sequential so daily volume is not inferable, short enough to read
-  /// aloud to support.
+  /// Customer-facing id: "AD" + YYMMDD + 6 unambiguous chars.
   orderNumber String @unique @map("order_number") @db.VarChar(24)
 
   userId    String  @map("user_id") @db.Uuid
-  storeId   String  @map("store_id") @db.Uuid
   addressId String? @map("address_id") @db.Uuid
 
   status        OrderStatus        @default(PENDING_PAYMENT)
   paymentMethod PaymentMethod
   paymentStatus OrderPaymentStatus @default(PENDING) @map("payment_status")
 
-  // --- money, all paise, all computed server-side at creation --------------
+  // --- money — the ORIGINAL checkout snapshot, immutable ------------------
+  // Every field in this block is written once at creation and never
+  // rewritten, matching this schema's "orders are immutable snapshots" rule.
   itemsSubtotalPaise  Int     @map("items_subtotal_paise")
   itemDiscountPaise   Int     @default(0) @map("item_discount_paise")
   couponId            String? @map("coupon_id") @db.Uuid
@@ -920,11 +1489,18 @@ model Order {
   platformFeePaise    Int     @default(0) @map("platform_fee_paise")
   /// Tax contained WITHIN the item prices, extracted for the receipt.
   taxPaise            Int     @default(0) @map("tax_paise")
+  /// The amount the customer agreed to pay at checkout. Frozen forever —
+  /// this is the receipt figure, not what's still owed.
   totalPaise          Int     @map("total_paise")
 
+  /// THE ONE MUTABLE MONEY FIELD ON ORDER. Starts equal to `totalPaise`;
+  /// decreases whenever a SellerOrder is cancelled/rejected (#18/#20), by
+  /// that seller order's own tax-inclusive subtotalPaise, so COD collection
+  /// at the door and any partial-refund calculation always reflect what's
+  /// actually still being delivered — never the original snapshot above.
+  currentPayablePaise Int @map("current_payable_paise")
+
   // --- immutable delivery address snapshot --------------------------------
-  // Copied at placement so editing or deleting the saved address later cannot
-  // rewrite where an order was actually sent.
   deliveryFullName    String  @map("delivery_full_name") @db.VarChar(120)
   deliveryMobile      String  @map("delivery_mobile") @db.VarChar(15)
   deliveryAddressLine String  @map("delivery_address_line") @db.VarChar(500)
@@ -937,7 +1513,6 @@ model Order {
 
   distanceKm Float     @map("distance_km")
   etaMinutes Int?      @map("eta_minutes")
-  /// The promise made to the customer, stored so it is auditable afterwards.
   promisedAt DateTime? @map("promised_at") @db.Timestamptz(3)
 
   /// Hashed 4-digit OTP the customer reads out at the door on COD orders.
@@ -945,11 +1520,12 @@ model Order {
 
   notes String? @db.VarChar(500)
 
-  // --- lifecycle timestamps ------------------------------------------------
+  // --- parent-level lifecycle timestamps -----------------------------------
+  // Per-seller timestamps (accepted/preparing) live on SellerOrder — these
+  // are only the stages that happen once, for the whole order.
   placedAt             DateTime? @map("placed_at") @db.Timestamptz(3)
-  acceptedAt           DateTime? @map("accepted_at") @db.Timestamptz(3)
-  preparingAt          DateTime? @map("preparing_at") @db.Timestamptz(3)
   readyAt              DateTime? @map("ready_at") @db.Timestamptz(3)
+  pickedUpAt           DateTime? @map("picked_up_at") @db.Timestamptz(3)
   outForDeliveryAt     DateTime? @map("out_for_delivery_at") @db.Timestamptz(3)
   deliveredAt          DateTime? @map("delivered_at") @db.Timestamptz(3)
   cancelledAt          DateTime? @map("cancelled_at") @db.Timestamptz(3)
@@ -959,45 +1535,97 @@ model Order {
   cancellationReason String?      @map("cancellation_reason") @db.VarChar(300)
   cancelledBy        CancelledBy? @map("cancelled_by")
 
-  /// Duplicate-order guard. Unique per (user, key) — the DATABASE is the
-  /// arbiter of "already placed", not an in-memory mutex.
+  /// Duplicate-order guard. Unique per (user, key).
   idempotencyKey String? @map("idempotency_key") @db.VarChar(120)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   user          User                 @relation(fields: [userId], references: [id], onDelete: Restrict)
-  store         Store                @relation(fields: [storeId], references: [id], onDelete: Restrict)
   address       Address?             @relation(fields: [addressId], references: [id], onDelete: SetNull)
   coupon        Coupon?              @relation(fields: [couponId], references: [id], onDelete: SetNull)
-  items         OrderItem[]
+  sellerOrders  SellerOrder[]
   statusHistory OrderStatusHistory[]
   payments      Payment[]
   refunds       Refund[]
-  assignments   DeliveryAssignment[]
+  deliveryTasks DeliveryTask[]
   notifications Notification[]
-  stockLedger   StockLedger[]
   redemptions   CouponRedemption[]
 
   @@unique([userId, idempotencyKey])
-  /// THE admin panel query: order tabs, newest first. Column order matches the
-  /// filter -> sort shape exactly.
-  @@index([storeId, status, createdAt])
   /// "My Orders", paginated newest first.
   @@index([userId, createdAt])
+  /// Admin's cross-seller order view, tabbed by aggregate status.
+  @@index([status, createdAt])
   // orders_pending_payment_expiry (reservation_expires_at)
-  //   WHERE status = 'PENDING_PAYMENT'  — hardening migration.
-  // Partial, so the reservation-release job stays O(pending) forever rather
-  // than scanning an ever-growing orders table.
+  //   WHERE status = 'PENDING_PAYMENT'  — hardening migration, partial.
   @@map("orders")
 }
 
+/// One seller's portion of a parent Order. Owns everything that must move
+/// independently of every other seller involved in the same checkout: its
+/// own items, its own status lifecycle, its own cancellation/rejection, its
+/// own subtotal and its own commission snapshot (#6/#14/#15/#16/#18).
+model SellerOrder {
+  id       String @id @default(uuid()) @db.Uuid
+  orderId  String @map("order_id") @db.Uuid
+  sellerId String @map("seller_id") @db.Uuid
+
+  status SellerOrderStatus @default(NEW)
+
+  itemsSubtotalPaise Int @default(0) @map("items_subtotal_paise")
+  itemDiscountPaise  Int @default(0) @map("item_discount_paise")
+  /// This seller's share of the order's tax — extracted so a partial refund
+  /// (#19) or COD adjustment (#20) for just this portion is exact.
+  taxPaise           Int @default(0) @map("tax_paise")
+  /// Sum of this seller's tax-INCLUSIVE line totals (= itemsSubtotalPaise;
+  /// taxPaise is extracted from it, never added on top, and itemDiscountPaise
+  /// is MRP savings already reflected in the price). What this seller's
+  /// portion is worth — the amount `Order.currentPayablePaise` drops by, and
+  /// the partial-refund amount, if this SellerOrder is cancelled/rejected.
+  subtotalPaise      Int @map("subtotal_paise")
+
+  /// `commissionPaise` is the EXACT sum of this SellerOrder's own
+  /// OrderItem.commissionPaise values (the real source of truth — see that
+  /// model's own doc comment) — never independently recomputed, so the two
+  /// can never drift. `commissionBp` is a DERIVED weighted-average
+  /// (commissionPaise / itemsSubtotalPaise) kept only for display; it is
+  /// never used in any money calculation.
+  commissionBp    Int @map("commission_bp")
+  commissionPaise Int @map("commission_paise")
+
+  acceptedAt  DateTime? @map("accepted_at") @db.Timestamptz(3)
+  preparingAt DateTime? @map("preparing_at") @db.Timestamptz(3)
+  readyAt     DateTime? @map("ready_at") @db.Timestamptz(3)
+  rejectedAt  DateTime? @map("rejected_at") @db.Timestamptz(3)
+  cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(3)
+
+  rejectionReason    String? @map("rejection_reason") @db.VarChar(300)
+  cancellationReason String? @map("cancellation_reason") @db.VarChar(300)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  order         Order                      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  seller        Seller                     @relation(fields: [sellerId], references: [id], onDelete: Restrict)
+  items         OrderItem[]
+  statusHistory SellerOrderStatusHistory[]
+  refunds       Refund[]
+  stockLedger   StockLedger[]
+
+  /// THE seller panel query: order tabs, newest first.
+  @@index([sellerId, status, createdAt])
+  /// Aggregating a parent order's seller portions.
+  @@index([orderId])
+  @@map("seller_orders")
+}
+
 model OrderItem {
-  id        String  @id @default(uuid()) @db.Uuid
-  orderId   String  @map("order_id") @db.Uuid
+  id            String  @id @default(uuid()) @db.Uuid
+  sellerOrderId String  @map("seller_order_id") @db.Uuid
   /// Kept for reporting; every displayed field below is a snapshot, so the
-  /// order still renders correctly if the variant is later renamed or removed.
-  variantId String? @map("variant_id") @db.Uuid
+  /// order still renders correctly if the variant is later renamed/removed.
+  variantId     String? @map("variant_id") @db.Uuid
 
   productName String  @map("product_name") @db.VarChar(200)
   variantName String  @map("variant_name") @db.VarChar(80)
@@ -1005,6 +1633,10 @@ model OrderItem {
   imageUrl    String? @map("image_url") @db.VarChar(500)
   sku         String  @db.VarChar(60)
   unitDisplay String  @map("unit_display") @db.VarChar(40)
+  /// The variant's option picks when ordered ({ "Size": "M", "Color": "Black" };
+  /// {} for a simple item) — snapshot, like the name and image above, so a
+  /// later edit to the product's variants never changes an old order.
+  optionValues Json @default("{}") @map("option_values")
 
   qty               Int
   mrpPaise          Int @map("mrp_paise")
@@ -1014,19 +1646,37 @@ model OrderItem {
   taxPaise          Int @default(0) @map("tax_paise")
   lineTotalPaise    Int @map("line_total_paise")
 
-  /// How COD resolved for THIS line at THIS moment. Snapshotted so a later
-  /// policy change cannot make a past decision unexplainable.
+  /// The exact commission rate/amount resolved for THIS line at order
+  /// creation (product > category > seller default — see CommissionRule).
+  /// THIS is the source of truth for commission, never
+  /// `SellerOrder.commissionBp`/`commissionPaise` — those are only a
+  /// snapshot SUM/derived-average of these line values, computed once at
+  /// creation and never recomputed independently, so the two can never
+  /// drift apart.
+  commissionBp    Int @default(0) @map("commission_bp")
+  commissionPaise Int @default(0) @map("commission_paise")
+
+  /// How COD resolved for THIS line at THIS moment.
   allowCodResolved Boolean @default(true) @map("allow_cod_resolved")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  order   Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  sellerOrder     SellerOrder     @relation(fields: [sellerOrderId], references: [id], onDelete: Cascade)
+  variant         ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  /// The exact listing this line was sold from — set at creation, used to
+  /// resolve stock-ledger items precisely on a later cancellation/rejection
+  /// (see order-state.service.ts's `loadStockItems`) instead of re-deriving
+  /// it from (sellerId, variantId) every time.
+  sellerListing   SellerListing?  @relation(fields: [sellerListingId], references: [id], onDelete: SetNull)
+  sellerListingId String?         @map("seller_listing_id") @db.Uuid
 
-  @@index([orderId])
+  @@index([sellerOrderId])
+  @@index([sellerListingId])
   @@map("order_items")
 }
 
+/// Parent-order-level lifecycle transitions (PENDING_PAYMENT -> ... ->
+/// DELIVERED, and the aggregate CANCELLED/PARTIALLY_CANCELLED states).
 model OrderStatusHistory {
   id         String       @id @default(uuid()) @db.Uuid
   orderId    String       @map("order_id") @db.Uuid
@@ -1048,6 +1698,32 @@ model OrderStatusHistory {
   @@map("order_status_history")
 }
 
+/// Seller-order-level lifecycle transitions (NEW -> ACCEPTED -> PREPARING ->
+/// READY_FOR_PICKUP, or -> REJECTED/CANCELLED). Kept as its own table rather
+/// than folded into OrderStatusHistory since the two lifecycles use
+/// different enums and a seller's own dashboard should only ever query this
+/// one, never the parent's.
+model SellerOrderStatusHistory {
+  id            String             @id @default(uuid()) @db.Uuid
+  sellerOrderId String             @map("seller_order_id") @db.Uuid
+  fromStatus    SellerOrderStatus?
+  toStatus      SellerOrderStatus  @map("to_status")
+
+  actorType   ActorType @map("actor_type")
+  actorUserId String?   @map("actor_user_id") @db.Uuid
+  reason      String?   @db.VarChar(300)
+  metadata    Json?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  sellerOrder SellerOrder @relation(fields: [sellerOrderId], references: [id], onDelete: Cascade)
+  actor       User?       @relation("SellerOrderStatusActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  /// Seller-facing tracking timeline.
+  @@index([sellerOrderId, createdAt])
+  @@map("seller_order_status_history")
+}
+
 // =============================================================================
 // Payments
 // =============================================================================
@@ -1058,8 +1734,6 @@ model Payment {
 
   provider          String  @db.VarChar(40)
   providerOrderId   String? @map("provider_order_id") @db.VarChar(120)
-  /// Unique with provider — makes a double capture impossible at the storage
-  /// layer rather than relying on application checks.
   providerPaymentId String? @map("provider_payment_id") @db.VarChar(120)
 
   method      String? @db.VarChar(40)
@@ -1070,7 +1744,6 @@ model Payment {
   failureCode   String?       @map("failure_code") @db.VarChar(80)
   failureReason String?       @map("failure_reason") @db.VarChar(300)
 
-  /// Raw provider payload, for reconciliation and disputes.
   rawPayload Json?
 
   capturedAt DateTime? @map("captured_at") @db.Timestamptz(3)
@@ -1087,8 +1760,7 @@ model Payment {
   @@map("payments")
 }
 
-/// Webhook log and replay guard. Providers retry aggressively; a unique
-/// event id makes every retry a cheap no-op.
+/// Webhook log and replay guard.
 model PaymentEvent {
   id       String @id @default(uuid()) @db.Uuid
   provider String @db.VarChar(40)
@@ -1108,9 +1780,12 @@ model PaymentEvent {
 }
 
 model Refund {
-  id        String @id @default(uuid()) @db.Uuid
-  paymentId String @map("payment_id") @db.Uuid
-  orderId   String @map("order_id") @db.Uuid
+  id            String  @id @default(uuid()) @db.Uuid
+  paymentId     String  @map("payment_id") @db.Uuid
+  orderId       String  @map("order_id") @db.Uuid
+  /// Set when this refund is for one cancelled seller portion rather than
+  /// the whole order (#19/#8) — null means a full-order refund.
+  sellerOrderId String? @map("seller_order_id") @db.Uuid
 
   providerRefundId String?      @unique @map("provider_refund_id") @db.VarChar(120)
   amountPaise      Int          @map("amount_paise")
@@ -1122,24 +1797,24 @@ model Refund {
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  order   Order   @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  payment     Payment      @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  order       Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  sellerOrder SellerOrder? @relation(fields: [sellerOrderId], references: [id], onDelete: SetNull)
 
   @@index([orderId])
+  @@index([sellerOrderId])
   @@index([status])
   @@map("refunds")
 }
 
 // =============================================================================
-// Delivery
+// Delivery — AdiOne runs its own fleet (#21), decoupled from any one seller.
 // =============================================================================
 
 model DeliveryAgent {
-  id      String  @id @default(uuid()) @db.Uuid
-  storeId String  @map("store_id") @db.Uuid
-  /// Set when a rider gets their own login (V2 delivery app). The backend
-  /// contract is designed now so this needs no schema change later.
-  userId  String? @unique @map("user_id") @db.Uuid
+  id     String  @id @default(uuid()) @db.Uuid
+  /// Set when a rider gets their own login (delivery app).
+  userId String? @unique @map("user_id") @db.Uuid
 
   name          String  @db.VarChar(120)
   mobile        String  @unique @db.VarChar(15)
@@ -1152,24 +1827,32 @@ model DeliveryAgent {
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  store       Store                @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  user        User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
-  assignments DeliveryAssignment[]
+  user  User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+  tasks DeliveryTask[]
 
-  @@index([storeId, isActive, isAvailable])
+  /// Platform-wide fleet lookup — NOT scoped to a seller, deliberately (#11:
+  /// "delivery agents must not be permanently tied to one seller").
+  @@index([isActive, isAvailable])
   @@map("delivery_agents")
 }
 
-model DeliveryAssignment {
+/// V1: DeliveryAssignment. One delivery run for a parent Order — today a
+/// single pickup+drop-off (the whole order, since delivery only starts once
+/// every required SellerOrder is ready), deliberately kept as its own model,
+/// decoupled from Order/SellerOrder, so a future multi-stop version (one
+/// stop per seller pickup) only ever needs a new child table here — it never
+/// has to touch order or seller-order modeling (#11).
+model DeliveryTask {
   id      String @id @default(uuid()) @db.Uuid
   orderId String @map("order_id") @db.Uuid
   agentId String @map("agent_id") @db.Uuid
 
-  assignedByUserId String?                  @map("assigned_by_user_id") @db.Uuid
-  status           DeliveryAssignmentStatus @default(ASSIGNED)
+  assignedByUserId String?            @map("assigned_by_user_id") @db.Uuid
+  status           DeliveryTaskStatus @default(ASSIGNED)
 
-  /// COD cash actually handed over, recorded at delivery. Without this, money
-  /// given to a rider is unauditable (PRD §2.2 M2).
+  /// COD cash actually handed over, recorded at delivery. Must reconcile
+  /// against `Order.currentPayablePaise`, not the original `totalPaise`, if
+  /// a seller portion was cancelled before delivery (#20).
   cashCollectedPaise Int?    @map("cash_collected_paise")
   notes              String? @db.VarChar(300)
 
@@ -1182,13 +1865,48 @@ model DeliveryAssignment {
 
   order      Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
   agent      DeliveryAgent @relation(fields: [agentId], references: [id], onDelete: Restrict)
-  assignedBy User?         @relation("AssignedBy", fields: [assignedByUserId], references: [id], onDelete: SetNull)
+  assignedBy User?         @relation("DeliveryTaskAssignedBy", fields: [assignedByUserId], references: [id], onDelete: SetNull)
 
   /// "One active rider per order" is a partial unique index (status <>
   /// 'CANCELLED') in the hardening migration.
   @@index([orderId])
   @@index([agentId, status])
-  @@map("delivery_assignments")
+  @@map("delivery_tasks")
+}
+
+// =============================================================================
+// Settlement — seller payouts, on a configurable cycle (Seller.
+// settlementCycleHours, default 24h — see that field's own doc comment).
+// =============================================================================
+
+model SellerSettlement {
+  id       String @id @default(uuid()) @db.Uuid
+  sellerId String @map("seller_id") @db.Uuid
+
+  periodStart DateTime @map("period_start") @db.Timestamptz(3)
+  periodEnd   DateTime @map("period_end") @db.Timestamptz(3)
+
+  /// Sum of settled SellerOrders' subtotalPaise for this period.
+  grossSalesPaise Int @map("gross_sales_paise")
+  /// Sum of their commissionPaise snapshots.
+  commissionPaise Int @map("commission_paise")
+  /// grossSalesPaise - commissionPaise (before any other deduction).
+  netPayablePaise Int @map("net_payable_paise")
+
+  status SettlementStatus @default(PENDING)
+  paidAt DateTime?        @map("paid_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  seller Seller @relation(fields: [sellerId], references: [id], onDelete: Restrict)
+
+  /// Makes a duplicate settlement run for the same period a constraint
+  /// violation, not an application-logic bug.
+  @@unique([sellerId, periodStart, periodEnd])
+  /// Seller's own payout history; admin's pending-payout queue.
+  @@index([sellerId, status])
+  @@map("seller_settlements")
 }
 
 // =============================================================================
@@ -1217,13 +1935,25 @@ model Notification {
   readAt    DateTime? @map("read_at") @db.Timestamptz(3)
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  /// Feed this row belongs to; SELLER rows also carry the seller they are
+  /// about, so a user staffing several sellers sees each seller's feed apart.
+  audience NotificationAudience @default(CUSTOMER)
+  sellerId String?              @map("seller_id") @db.Uuid
+  /// Deterministic identity of the business event this row announces
+  /// (e.g. "so:<id>:ACCEPTED", "refund:<id>:COMPLETED"). Unique per user, so
+  /// a retried or repeated operation cannot notify the same person twice.
+  /// Null only for legacy rows written before it existed.
+  dedupeKey String? @map("dedupe_key") @db.VarChar(160)
 
-  /// In-app feed.
-  @@index([userId, createdAt])
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order  Order?  @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  seller Seller? @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupeKey])
+  /// In-app feeds (per audience) and unread counts.
+  @@index([userId, audience, createdAt])
   // notifications_queued (created_at) WHERE status = 'QUEUED' — hardening
-  // migration. Partial: the outbox drain reads a handful of rows, never a scan.
+  // migration, partial.
   @@map("notifications")
 }
 
@@ -1245,23 +1975,23 @@ model DeviceToken {
   @@map("device_tokens")
 }
 
-/// Mockup's "Notify me" on an out-of-stock product.
+/// Mockup's "Notify me" on an out-of-stock listing.
 model BackInStockSubscription {
-  id        String @id @default(uuid()) @db.Uuid
-  userId    String @map("user_id") @db.Uuid
-  variantId String @map("variant_id") @db.Uuid
-  storeId   String @map("store_id") @db.Uuid
+  id              String @id @default(uuid()) @db.Uuid
+  userId          String @map("user_id") @db.Uuid
+  sellerListingId String @map("seller_listing_id") @db.Uuid
+  sellerId        String @map("seller_id") @db.Uuid
 
   notifiedAt DateTime? @map("notified_at") @db.Timestamptz(3)
   createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  user    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
-  store   Store          @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sellerListing SellerListing @relation(fields: [sellerListingId], references: [id], onDelete: Cascade)
+  seller        Seller        @relation(fields: [sellerId], references: [id], onDelete: Cascade)
 
-  /// One open subscription per (user, variant) — partial unique
+  /// One open subscription per (user, listing) — partial unique
   /// (notified_at IS NULL) in the hardening migration.
-  @@index([variantId, notifiedAt])
+  @@index([sellerListingId, notifiedAt])
   @@index([userId])
   @@map("back_in_stock_subscriptions")
 }
@@ -1270,16 +2000,16 @@ model BackInStockSubscription {
 // Configuration, idempotency, audit
 // =============================================================================
 
-/// Business configuration. Every rule a store owner might want to change lives
+/// Business configuration. Every rule an admin might want to change lives
 /// here — nothing in the codebase hardcodes any of these values.
 model Configuration {
-  id      String  @id @default(uuid()) @db.Uuid
-  key     String  @db.VarChar(80)
-  /// Null = global. Non-null = per-store override (multi-store ready).
-  storeId String? @map("store_id") @db.Uuid
+  id       String  @id @default(uuid()) @db.Uuid
+  key      String  @db.VarChar(80)
+  /// Null = global. Non-null = per-seller override.
+  sellerId String? @map("seller_id") @db.Uuid
 
-  /// JSON so a value can be a number, a boolean, a string or a structure such
-  /// as DELIVERY_FEE_SLABS, without a column per type.
+  /// JSON so a value can be a number, a boolean, a string or a structure
+  /// such as DELIVERY_FEE_SLABS, without a column per type.
   value       Json
   description String? @db.VarChar(400)
   /// Safe to expose via GET /config/public to the unauthenticated app.
@@ -1289,25 +2019,21 @@ model Configuration {
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  store     Store? @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  updatedBy User?  @relation(fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  seller    Seller? @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  updatedBy User?   @relation(fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
-  @@unique([key, storeId])
+  @@unique([key, sellerId])
   @@index([isPublic])
   @@map("configurations")
 }
 
 /// Idempotency records for POST /orders and POST /payments/create.
-/// Stores the response so a retry replays the original answer with no side
-/// effects, rather than creating a second order.
 model IdempotencyKey {
   id     String @id @default(uuid()) @db.Uuid
   userId String @map("user_id") @db.Uuid
   key    String @db.VarChar(120)
 
   endpoint    String @db.VarChar(120)
-  /// SHA-256 of the request body. A reused key with different content is a bug
-  /// on the client and is rejected rather than silently replayed.
   requestHash String @map("request_hash") @db.Char(64)
 
   status         IdempotencyStatus @default(IN_PROGRESS)
@@ -1326,8 +2052,8 @@ model IdempotencyKey {
   @@map("idempotency_keys")
 }
 
-/// Who changed what, and what it looked like before. Every admin mutation of
-/// price, stock, config or order status writes one row.
+/// Who changed what, and what it looked like before. Every admin/seller
+/// mutation of price, stock, config, approval or order status writes one row.
 model AuditLog {
   id          String  @id @default(uuid()) @db.Uuid
   actorUserId String? @map("actor_user_id") @db.Uuid

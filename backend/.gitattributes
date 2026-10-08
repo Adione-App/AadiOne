@@ -1,0 +1,11 @@
+# Prisma records a SHA-256 of every applied migration.sql and treats a changed
+# file as a modified migration. Pin each file's line endings to the bytes that
+# were applied, so every checkout — Windows (core.autocrlf=true) or Linux
+# (Docker) — reproduces them exactly. New migrations are LF.
+prisma/migrations/**/migration.sql text eol=lf
+
+# These four were applied to the V2 test database from CRLF files.
+prisma/migrations/20261004120000_v2_password_reset_tokens/migration.sql text eol=crlf
+prisma/migrations/20261005120000_v2_food_sellers_menu_items/migration.sql text eol=crlf
+prisma/migrations/20261005130000_v2_food_menus/migration.sql text eol=crlf
+prisma/migrations/20261006120000_v2_product_option_variants/migration.sql text eol=crlf

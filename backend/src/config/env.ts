@@ -434,6 +434,10 @@ const envSchema = z
      */
 
     if (env.STORAGE_PROVIDER === "s3") {
+      if (!env.S3_ENDPOINT) {
+        fail("S3_ENDPOINT", "required when STORAGE_PROVIDER=s3");
+      }
+
       if (!env.S3_BUCKET) {
         fail("S3_BUCKET", "required when STORAGE_PROVIDER=s3");
       }
@@ -494,6 +498,23 @@ const envSchema = z
         fail(
           "STORAGE_PROVIDER",
           "local disk storage is not durable; use s3 in production",
+        );
+      }
+
+      // Seller documents (KYC PDFs) must never land in the public bucket.
+      if (env.STORAGE_PROVIDER === "s3" && (!env.S3_PRIVATE_BUCKET || env.S3_PRIVATE_BUCKET === env.S3_BUCKET)) {
+        fail(
+          "S3_PRIVATE_BUCKET",
+          "production needs a separate, non-public bucket for seller documents",
+        );
+      }
+
+      // Every stored image URL is built from this; a localhost value would be
+      // saved into product rows and break every image for every client.
+      if (!/^https:\/\//.test(env.STORAGE_PUBLIC_BASE_URL) || /\/\/(localhost|127\.0\.0\.1)\b/.test(env.STORAGE_PUBLIC_BASE_URL)) {
+        fail(
+          "STORAGE_PUBLIC_BASE_URL",
+          "must be the public https URL of the image bucket (or its CDN) in production",
         );
       }
 

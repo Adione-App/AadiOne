@@ -2,7 +2,7 @@
  * Request schemas for seller onboarding data — the seller's own routes
  * (seller-onboarding.routes.ts). Admin has no write route for this data: it
  * is read-only for admin, who only reviews it. Every max length matches its
- * column in prisma-v2/schema.prisma. Unknown keys are stripped.
+ * column in prisma/schema.prisma. Unknown keys are stripped.
  */
 
 import { z } from 'zod';

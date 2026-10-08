@@ -81,7 +81,7 @@ SMS provider. Both are blocked in production.
 | `npm run typecheck` | Type check without emitting |
 | `npm test` | Vitest — unit, integration and e2e |
 | `npm run test:watch` | Vitest in watch mode |
-| `npm run db:migrate` | `prisma migrate dev` on the **V2** schema (`prisma-v2/`) — create/apply a migration |
+| `npm run db:migrate` | `prisma migrate dev` on the V2 schema (`prisma/`) — create/apply a migration |
 | `npm run db:migrate:deploy` | `prisma migrate deploy` on the **V2** schema — apply migrations in CI/production |
 | `npm run db:seed` | Seed reference data, admin user and demo catalogue |
 | `npm run db:reset` | Drop, re-migrate and re-seed (destructive) |
@@ -89,17 +89,19 @@ SMS provider. Both are blocked in production.
 | `npm run sync:shared` | Copy `src/shared/` into `web/` and `mobile/` |
 | `npm run sync:shared -- --check` | Fail if either copy is stale (CI guard) |
 
-**V2 schema and migrations.** Every Prisma command on this branch uses
-`prisma-v2/schema.prisma` and `prisma-v2/migrations/` (`package.json` →
-`"prisma": { "schema": … }`, plus an explicit `--schema` on every script).
-`prisma/schema.prisma` + `prisma/migrations/` are the frozen **V1** history,
-identical to `main`, and are never applied here (see `prisma/README.md`).
+**Schema and migrations.** `prisma/schema.prisma` and `prisma/migrations/` are
+the V2 schema and its migration history — the only active ones (`package.json`
+→ `"prisma": { "schema": … }`, plus an explicit `--schema` on every script).
+The V1 schema and history are archived, read-only, in `prisma-v1-archive/` and
+are never generated or applied (see `prisma/README.md`).
 The `:v2` variants (`db:migrate:v2`, `db:migrate:deploy:v2`, `db:push:v2`,
 `db:generate:v2`, `db:studio:v2`, `db:seed:v2`, `dev:v2`) read only
 `backend/.env.v2`. Every schema-changing script — and the test setup and the
 production container — first runs `scripts/assert-v2-database.mjs`, which
-refuses a database that carries V1 migration history. The test database
-(`.env.test`, must end in `_test`) is migrated from `prisma-v2/migrations/`.
+refuses a database that carries V1 migration history; the seed and report
+scripts run it too, and the API itself refuses to start against a V1 or
+unmigrated database (`src/infra/db/database-identity.ts`). The test database
+(`.env.test`, must end in `_test`) is migrated from `prisma/migrations/`.
 
 ---
 

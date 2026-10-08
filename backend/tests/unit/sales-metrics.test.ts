@@ -47,7 +47,7 @@ describe('sale definition', () => {
     const reachable = new Set<OrderStatus>([OrderStatus.PENDING_PAYMENT]);
     for (const targets of Object.values(ALLOWED_TRANSITIONS)) for (const t of targets) reachable.add(t);
     for (const status of reachable) {
-      expect(PLACED_ORDER_STATUSES.includes(status) || NEVER_A_SALE.includes(status)).toBe(true);
+      expect(PLACED_ORDER_STATUSES.includes(status) || (NEVER_A_SALE as readonly OrderStatus[]).includes(status)).toBe(true);
     }
   });
 

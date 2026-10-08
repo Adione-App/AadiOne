@@ -2,8 +2,8 @@
 /**
  * Refuses to let a V2 Prisma command touch a V1 database.
  *
- * This branch runs ONLY the V2 schema and migrations (prisma-v2/). The V1
- * history in prisma/migrations is kept for reference and must never be
+ * This codebase runs ONLY the V2 schema and migrations (prisma/). The V1
+ * history, archived in prisma-v1-archive/migrations, must never be
  * applied here — and, just as important, the V2 migrations must never be
  * applied to a database that V1 created. `prisma migrate dev` against a V1
  * database offers to RESET it; `migrate deploy` half-applies the V2 baseline
@@ -13,8 +13,8 @@
  * reset, db push), the test global setup and the production container run
  * this first. It exits non-zero when the target database:
  *
- *   - has any V1 migration (a folder name in prisma/migrations that is not in
- *     prisma-v2/migrations) recorded in `_prisma_migrations`, or
+ *   - has any V1 migration (a folder name in prisma-v1-archive/migrations that
+ *     is not in prisma/migrations) recorded in `_prisma_migrations`, or
  *   - has the V1-only `stores` table and no V2 `sellers` table.
  *
  * A database that does not exist yet, or is empty, passes — migrate dev /
@@ -55,7 +55,7 @@ function migrationNames(dir) {
 
 /**
  * The V1 history as of the V2 fork (origin/main 2a83477). Built in because the
- * production image deliberately does not contain prisma/migrations; the
+ * production image deliberately does not contain prisma-v1-archive/; the
  * directory, when present, adds anything V1 gained since.
  */
 const KNOWN_V1_MIGRATIONS = [
@@ -68,8 +68,8 @@ const KNOWN_V1_MIGRATIONS = [
   "20260923120000_add_referrals_and_reward_coupons",
 ];
 
-const v2Migrations = migrationNames("prisma-v2/migrations");
-const v1Only = [...new Set([...KNOWN_V1_MIGRATIONS, ...migrationNames("prisma/migrations")])].filter(
+const v2Migrations = migrationNames("prisma/migrations");
+const v1Only = [...new Set([...KNOWN_V1_MIGRATIONS, ...migrationNames("prisma-v1-archive/migrations")])].filter(
   (name) => !v2Migrations.has(name),
 );
 
@@ -85,8 +85,8 @@ function describeTarget(url) {
 function refuse(reason) {
   console.error(
     `\n[assert-v2-database] REFUSING: ${describeTarget(databaseUrl)} is a V1 database (${reason}).\n` +
-      "V2 commands only run the prisma-v2/ schema and migrations, and must not be pointed at a\n" +
-      "database created from the V1 history in prisma/migrations. Point DATABASE_URL (backend/.env,\n" +
+      "V2 commands only run the prisma/ schema and migrations, and must not be pointed at a\n" +
+      "database created from the V1 history (prisma-v1-archive/). Point DATABASE_URL (backend/.env,\n" +
       "backend/.env.v2 or backend/.env.test) at a separate V2 database.\n",
   );
   process.exit(1);

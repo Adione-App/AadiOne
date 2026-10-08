@@ -14,6 +14,7 @@ import { logger } from './common/logger';
 import { cache } from './infra/cache';
 import { disconnectDatabase, checkDatabaseConnection } from './infra/db/prisma';
 import { checkPrismaClientMatchesSchema } from './infra/db/prisma-client-check';
+import { checkDatabaseIsV2 } from './infra/db/database-identity';
 import { initRealtime, shutdownRealtime } from './realtime/socket';
 import { startJobs, stopJobs } from './jobs';
 
@@ -42,6 +43,13 @@ async function start(): Promise<void> {
     logger.error(
       'database unreachable at startup — check DATABASE_URL and that PostgreSQL is running',
     );
+    process.exit(1);
+  }
+
+  // Before anything can write: never run against a V1 or unmigrated database.
+  const database = await checkDatabaseIsV2();
+  if (!database.ok) {
+    logger.error({ reason: database.reason }, database.message);
     process.exit(1);
   }
 

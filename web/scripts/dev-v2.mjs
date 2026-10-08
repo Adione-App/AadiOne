@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 /**
- * Runs the admin panel against the LOCAL V2 backend — what `npm run dev:v2`
- * runs.
+ * Runs the admin panel against the LOCAL V2 backend — what `npm run dev` (and
+ * its alias `npm run dev:v2`) runs.
  *
  * Why this exists: `web/.env` sets VITE_API_URL / VITE_SOCKET_URL to the
- * production API (https://api.adione.in), so a plain `npm run dev` points the
- * panel at production — where V2-only routes such as /admin/notifications
- * don't exist, and where V2 orders never appear. Vite gives variables already
- * present in the process environment priority over .env files, so this sets
- * them on the spawned Vite process instead of editing .env.
+ * production API (https://api.adione.in) for production builds — which until
+ * the V1-to-V2 cutover is still the V1 API. A bare Vite dev server would point
+ * the V2 panel at it, where V2-only routes don't exist and V2 orders never
+ * appear. Vite gives variables already present in the process environment
+ * priority over .env files, so this sets them on the spawned Vite process
+ * instead of editing .env. `npm run dev:prod-api` is the explicit opt-in to
+ * the .env API.
  *
  * The V2 backend must list this origin (http://localhost:5173) in its
  * CORS_ORIGINS for both the REST API and the socket.

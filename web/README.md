@@ -15,12 +15,14 @@ React 18 · Vite 5 · TypeScript · Tailwind CSS · TanStack Query · Zustand ·
 
 ```bash
 npm install
-npm run dev                   # http://localhost:5173
+npm run dev                   # http://localhost:5173 -> V2 API on http://localhost:4100
 ```
 
-With no `.env`, the dev server proxies `/api`, `/socket.io` and `/static` to a
-backend on `http://localhost:4000`, so the browser sees a same-origin API and
-CORS never enters the picture during development.
+`npm run dev` points the panel at the local V2 backend (`V2_API_ORIGIN` picks
+another host), whatever `.env` says — `.env`'s `VITE_API_URL` is for production
+builds. `npm run dev:prod-api` is a plain Vite dev server that uses `.env` (or,
+with no `.env`, proxies `/api`, `/socket.io` and `/static` to
+`http://localhost:4000`).
 
 Sign in with the store-owner account created by the backend seed
 (`ADMIN_EMAIL` / `ADMIN_PASSWORD` in `backend/.env`). The login endpoint is
@@ -33,7 +35,8 @@ with correct credentials cannot get in.
 
 | Script | What it does |
 |---|---|
-| `npm run dev` | Vite dev server on :5173 with the API proxy |
+| `npm run dev` (= `dev:v2`) | Vite dev server on :5173 against the local V2 API |
+| `npm run dev:prod-api` | Vite dev server using `.env`'s API (production) — opt-in only |
 | `npm run build` | `tsc -b` then `vite build` → `dist/` |
 | `npm run preview` | Serve the production build locally |
 | `npm run typecheck` | Type check without emitting |

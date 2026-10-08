@@ -126,15 +126,36 @@ export type HydratedProduct = Prisma.ProductGetPayload<{
   include: typeof PRODUCT_INCLUDE;
 }>;
 
+/**
+ * PRODUCT_INCLUDE limited to ONE seller's offers — a seller's store page must
+ * show (and add to cart) that seller's own price, not the cheapest offer of
+ * whoever else lists the same product.
+ */
+function sellerScopedInclude(sellerId: string): typeof PRODUCT_INCLUDE {
+  return {
+    ...PRODUCT_INCLUDE,
+    variants: {
+      ...PRODUCT_INCLUDE.variants,
+      include: {
+        sellerListings: {
+          ...PRODUCT_INCLUDE.variants.include.sellerListings,
+          where: { sellerId, seller: MARKETPLACE_SELLER_WHERE },
+        },
+      },
+    },
+  } as unknown as typeof PRODUCT_INCLUDE;
+}
+
 export async function hydrateProducts(
   productIds: string[],
   client: DbClient = prisma,
+  options: { sellerId?: string | null } = {},
 ): Promise<HydratedProduct[]> {
   if (productIds.length === 0) return [];
 
   const products = await client.product.findMany({
     where: { id: { in: productIds } },
-    include: PRODUCT_INCLUDE,
+    include: options.sellerId ? sellerScopedInclude(options.sellerId) : PRODUCT_INCLUDE,
   });
 
   // Preserve the ordering the SQL query decided (relevance, popularity, price).
@@ -168,6 +189,8 @@ export interface ListProductIdsInput {
   /** Matches the category and everything beneath it, via the materialised path — across sellers. */
   categoryPath?: string | null;
   brandId?: string | null;
+  /** Only this seller's listings (a store page). */
+  sellerId?: string | null;
   inStockOnly?: boolean;
   sort: ProductSort;
   limit: number;
@@ -206,6 +229,10 @@ export async function listProductIds(
     ? Prisma.sql`AND p.brand_id = ${input.brandId}::uuid`
     : Prisma.empty;
 
+  const sellerFilter = input.sellerId
+    ? Prisma.sql`AND sl.seller_id = ${input.sellerId}::uuid`
+    : Prisma.empty;
+
   // The value each sort orders by, exposed so the cursor can resume from it.
   const sortValue = {
     PRICE_ASC: Prisma.sql`MIN(sl.price_paise)`,
@@ -232,6 +259,7 @@ export async function listProductIds(
     WHERE ${PUBLIC_PRODUCT_SQL}
       ${categoryFilter}
       ${brandFilter}
+      ${sellerFilter}
       ${stockFilter}
     GROUP BY p.id, p.popularity_score, p.created_at
     ${cursorFilter}
@@ -355,6 +383,75 @@ export async function listRailProductIds(
   `;
 
   return rows.map((row) => row.id);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Store directory — what each marketplace seller shows a customer           */
+/* -------------------------------------------------------------------------- */
+
+export interface SellerCatalogueStats {
+  productCount: number;
+  /** Top categories with visible products, in the seller's own order. */
+  categoryNames: string[];
+  previewImageUrls: string[];
+}
+
+/**
+ * Per marketplace seller: how many customer-visible products it lists, under
+ * which of its top categories, and a few real product images — the same
+ * visibility joins as every other customer listing, so a seller whose whole
+ * catalogue is hidden simply has no entry.
+ */
+export async function sellerCatalogueStats(
+  sellerIds?: readonly string[],
+  client: DbClient = prisma,
+): Promise<Map<string, SellerCatalogueStats>> {
+  const scope =
+    sellerIds && sellerIds.length > 0
+      ? Prisma.sql`AND s.id = ANY(${[...sellerIds]}::uuid[])`
+      : Prisma.empty;
+
+  const [categoryRows, imageRows] = await Promise.all([
+    client.$queryRaw<{ seller_id: string; name: string; count: bigint }[]>`
+      SELECT s.id AS seller_id, top.name, COUNT(DISTINCT p.id) AS count
+      FROM products p
+      ${LISTED_JOINS}
+      WHERE ${PUBLIC_PRODUCT_SQL} ${scope}
+      GROUP BY s.id, top.id, top.name, top.display_order
+      ORDER BY top.display_order ASC, top.name ASC`,
+    client.$queryRaw<{ seller_id: string; url: string }[]>`
+      WITH seller_products AS (
+        SELECT DISTINCT s.id AS seller_id, p.id AS product_id, p.popularity_score
+        FROM products p
+        ${LISTED_JOINS}
+        WHERE ${PUBLIC_PRODUCT_SQL} ${scope}
+          AND sl.is_available AND (sl.stock_qty - sl.reserved_qty) > 0
+      )
+      SELECT seller_id, url FROM (
+        SELECT sp.seller_id, COALESCE(pi.thumb_url, pi.url) AS url,
+               ROW_NUMBER() OVER (PARTITION BY sp.seller_id ORDER BY sp.popularity_score DESC, sp.product_id) AS rn
+        FROM seller_products sp
+        JOIN LATERAL (
+          SELECT url, thumb_url FROM product_images
+          WHERE product_id = sp.product_id
+          ORDER BY display_order ASC
+          LIMIT 1
+        ) pi ON TRUE
+      ) ranked
+      WHERE rn <= 3`,
+  ]);
+
+  // A product sits in exactly one top category, so the per-category counts
+  // of one seller add up to its distinct product count.
+  const stats = new Map<string, SellerCatalogueStats>();
+  for (const row of categoryRows) {
+    const entry = stats.get(row.seller_id) ?? { productCount: 0, categoryNames: [], previewImageUrls: [] };
+    entry.productCount += Number(row.count);
+    if (!entry.categoryNames.includes(row.name)) entry.categoryNames.push(row.name);
+    stats.set(row.seller_id, entry);
+  }
+  for (const row of imageRows) stats.get(row.seller_id)?.previewImageUrls.push(row.url);
+  return stats;
 }
 
 /** "You may also like" — same category path (any seller), in stock, excluding the current item. */

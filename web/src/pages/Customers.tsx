@@ -1,22 +1,22 @@
 /**
- * Customers.
+ * Customers — GET /admin/customers.
  *
- * There is no /admin/customers endpoint yet, and inventing one on the client
- * would be worse than being honest about where this comes from: the list is
- * derived from orders, so it shows people who have ordered, not everyone who
- * has registered. That is also the list the shop actually cares about.
- *
- * Replace this with a real endpoint when customer records need addresses,
- * blocking, or lifetime value across a longer window than the order tabs hold.
+ * Every figure here is aggregated by the backend with the single sale
+ * definition (shared PLACED_ORDER_STATUSES / COMPLETED_SALE_STATUSES):
+ *   - Orders       placed orders that still stand (in progress or delivered)
+ *   - Total Spent  delivered orders only, net of any cancelled seller portion
+ *   - Cancelled    cancelled / payment-failed / refunded orders — shown for
+ *                  context, never counted as orders or spend
+ * Nothing is summed in the browser, so the page can't disagree with the
+ * dashboard or count a cancelled order as a sale.
  */
 
-import { useMemo, useState } from 'react';
-import { useQueries } from '@tanstack/react-query';
-import type { AdminOrderSummaryDto, CursorPage } from '@shared';
+import { useEffect, useState } from 'react';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import type { AdminCustomersDto } from '@shared';
 import { formatPaise } from '@shared/money';
 import { formatIndianMobile } from '@shared/phone';
 import { api } from '@/lib/api';
-import { V2_ADMIN_ORDER_TABS } from '@/lib/v2Orders';
 import {
   EmptyState,
   Icon,
@@ -27,71 +27,29 @@ import {
   Td,
   Th,
 } from '@/components/ui';
+import { Pager } from '@/components/MarketplaceUi';
+import { useDebouncedValue } from '@/seller/sellerQueries';
 
-// V2's tabs — the only values GET /admin/orders accepts.
-const TABS = V2_ADMIN_ORDER_TABS.map((tab) => tab.key);
-
-interface CustomerRow {
-  mobile: string;
-  name: string | null;
-  orderCount: number;
-  totalPaise: number;
-  lastOrderAt: string;
-}
+const PAGE_SIZE = 25;
 
 export default function CustomersPage() {
   const [search, setSearch] = useState('');
+  const q = useDebouncedValue(search.trim(), 350);
+  const [page, setPage] = useState(1);
+  useEffect(() => setPage(1), [q]);
 
-  // One query per tab: the admin order list is tab-scoped, so a full picture
-  // means asking for each bucket and merging.
-  const results = useQueries({
-    queries: TABS.map((tab) => ({
-      queryKey: ['admin-orders', tab, ''],
-      queryFn: () =>
-        api.get<CursorPage<AdminOrderSummaryDto>>(`/admin/orders?tab=${tab}&limit=50`),
-      staleTime: 60_000,
-    })),
+  const customers = useQuery({
+    queryKey: ['admin-customers', q, page],
+    queryFn: () =>
+      api.get<AdminCustomersDto>(
+        `/admin/customers?${new URLSearchParams({ ...(q ? { q } : {}), page: String(page), pageSize: String(PAGE_SIZE) })}`,
+      ),
+    placeholderData: keepPreviousData,
+    staleTime: 60_000,
   });
 
-  const isLoading = results.some((result) => result.isLoading);
-
-  const customers = useMemo(() => {
-    const byMobile = new Map<string, CustomerRow>();
-
-    for (const result of results) {
-      for (const order of result.data?.items ?? []) {
-        const existing = byMobile.get(order.customerMobile);
-        if (existing) {
-          existing.orderCount += 1;
-          existing.totalPaise += order.totalPaise;
-          existing.name ??= order.customerName;
-          if (order.placedAt > existing.lastOrderAt) existing.lastOrderAt = order.placedAt;
-        } else {
-          byMobile.set(order.customerMobile, {
-            mobile: order.customerMobile,
-            name: order.customerName,
-            orderCount: 1,
-            totalPaise: order.totalPaise,
-            lastOrderAt: order.placedAt,
-          });
-        }
-      }
-    }
-
-    return [...byMobile.values()].sort((a, b) => b.totalPaise - a.totalPaise);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [results.map((result) => result.dataUpdatedAt).join(',')]);
-
-  const term = search.trim().toLowerCase();
-  const visible = customers.filter(
-    (customer) =>
-      !term ||
-      customer.mobile.includes(term) ||
-      (customer.name ?? '').toLowerCase().includes(term),
-  );
-
-  const totalRevenue = customers.reduce((sum, customer) => sum + customer.totalPaise, 0);
-  const repeat = customers.filter((customer) => customer.orderCount > 1).length;
+  const summary = customers.data?.summary;
+  const rows = customers.data?.items ?? [];
 
   return (
     <div className="space-y-5">
@@ -105,74 +63,83 @@ export default function CustomersPage() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <StatCard icon="customers" label="Customers" value={customers.length} tone="brand" />
-        <StatCard icon="orders" label="Repeat Customers" value={repeat} tone="purple" />
+        <StatCard icon="customers" label="Customers" value={summary?.customerCount ?? '—'} tone="brand" />
+        <StatCard icon="orders" label="Repeat Customers" value={summary?.repeatCustomerCount ?? '—'} tone="purple" />
         <StatCard
           icon="rupee"
-          label="Revenue (visible orders)"
-          value={formatPaise(totalRevenue)}
+          label="Revenue (delivered orders)"
+          value={summary ? formatPaise(summary.revenuePaise) : '—'}
           tone="blue"
         />
       </div>
 
-      {isLoading ? (
+      {customers.isPending ? (
         <Spinner label="Loading customers…" />
-      ) : visible.length === 0 ? (
+      ) : customers.isError ? (
+        <EmptyState title="Could not load customers" hint="Please refresh the page and try again." />
+      ) : rows.length === 0 ? (
         <EmptyState
-          title={customers.length === 0 ? 'No customers yet' : 'Nothing matches that search'}
-          hint={
-            customers.length === 0
-              ? 'Customers appear here once they place their first order.'
-              : undefined
-          }
+          title={q ? 'Nothing matches that search' : 'No customers yet'}
+          hint={q ? undefined : 'Customers appear here once they place their first order.'}
         />
       ) : (
-        <TableWrap>
-          <table className="w-full min-w-[720px] text-sm">
-            <thead className="border-b border-gray-200 bg-gray-50">
-              <tr>
-                <Th>Customer</Th>
-                <Th>Mobile</Th>
-                <Th>Orders</Th>
-                <Th>Total Spent</Th>
-                <Th>Last Order</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {visible.map((customer) => (
-                <tr key={customer.mobile} className="transition hover:bg-gray-50/60">
-                  <Td>
-                    <div className="flex items-center gap-3">
-                      <span className="flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 text-gray-500">
-                        <Icon name="user" className="h-5 w-5" />
-                      </span>
-                      <span className="font-medium text-gray-900">
-                        {customer.name ?? 'Unnamed customer'}
-                      </span>
-                    </div>
-                  </Td>
-                  <Td className="text-gray-600">{formatIndianMobile(customer.mobile)}</Td>
-                  <Td className="text-gray-600">{customer.orderCount}</Td>
-                  <Td className="font-semibold text-gray-900">
-                    {formatPaise(customer.totalPaise)}
-                  </Td>
-                  <Td className="text-gray-600">
-                    {new Date(customer.lastOrderAt).toLocaleDateString('en-IN', {
-                      day: 'numeric',
-                      month: 'short',
-                      year: 'numeric',
-                    })}
-                  </Td>
+        <>
+          <TableWrap>
+            <table className="w-full min-w-[760px] text-sm">
+              <thead className="border-b border-gray-200 bg-gray-50">
+                <tr>
+                  <Th>Customer</Th>
+                  <Th>Mobile</Th>
+                  <Th>Orders</Th>
+                  <Th>Total Spent</Th>
+                  <Th>Last Order</Th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </TableWrap>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {rows.map((customer) => (
+                  <tr key={customer.userId} className="transition hover:bg-gray-50/60">
+                    <Td>
+                      <div className="flex items-center gap-3">
+                        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 text-gray-500">
+                          <Icon name="user" className="h-5 w-5" />
+                        </span>
+                        <span className="font-medium text-gray-900">
+                          {customer.name ?? 'Unnamed customer'}
+                        </span>
+                      </div>
+                    </Td>
+                    <Td className="text-gray-600">{formatIndianMobile(customer.mobile)}</Td>
+                    <Td>
+                      <span className="font-medium text-gray-900">{customer.orderCount}</span>
+                      {customer.activeOrderCount > 0 && (
+                        <span className="block text-xs text-gray-500">{customer.activeOrderCount} in progress</span>
+                      )}
+                      {customer.cancelledOrderCount > 0 && (
+                        <span className="block text-xs font-medium text-danger-600">
+                          {customer.cancelledOrderCount} cancelled / failed
+                        </span>
+                      )}
+                    </Td>
+                    <Td className="font-semibold text-gray-900">{formatPaise(customer.totalSpentPaise)}</Td>
+                    <Td className="text-gray-600">
+                      {new Date(customer.lastOrderAt).toLocaleDateString('en-IN', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric',
+                      })}
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableWrap>
+          <Pager page={page} pageSize={PAGE_SIZE} total={customers.data?.total ?? 0} onPage={setPage} />
+        </>
       )}
 
       <p className="text-sm text-gray-500">
-        Built from the most recent orders in each status tab, so long-dormant customers may not
-        appear.
+        Orders count only placed orders that weren't cancelled or failed. Total Spent and Revenue count delivered
+        orders only; cancelled, payment-failed and unpaid orders are never included.
       </p>
     </div>
   );

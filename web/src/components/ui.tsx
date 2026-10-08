@@ -7,7 +7,7 @@
  */
 
 import type { ReactNode } from 'react';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { imageSrc } from '@/lib/image';
 import { orderStatusLabel, orderStatusStyle } from '@/lib/v2Orders';
 
@@ -541,14 +541,21 @@ export function Td({ children, className = '' }: { children?: ReactNode; classNa
   return <td className={`px-5 py-3.5 align-middle ${className}`}>{children}</td>;
 }
 
-/** Square product thumbnail with a graceful fallback when there is no image. */
-export function Thumb({ src, alt }: { src?: string | null; alt: string }) {
+/**
+ * Square product thumbnail with a graceful fallback when there is no image —
+ * or when the image fails to load (a deleted file), so a broken-image icon
+ * never shows. `size="lg"` is the larger tile for order lines, where the
+ * picture is how the item is recognised at a glance.
+ */
+export function Thumb({ src, alt, size = 'md' }: { src?: string | null; alt: string; size?: 'md' | 'lg' }) {
   // Rewritten to a same-origin path — see lib/image.ts for why that matters.
   const resolved = imageSrc(src);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const box = size === 'lg' ? 'h-16 w-16 rounded-xl' : 'h-11 w-11 rounded-lg';
 
-  if (!resolved) {
+  if (!resolved || failedSrc === resolved) {
     return (
-      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-400">
+      <span className={`flex shrink-0 items-center justify-center bg-gray-100 text-gray-400 ${box}`}>
         <Icon name="image" className="h-5 w-5" />
       </span>
     );
@@ -558,7 +565,8 @@ export function Thumb({ src, alt }: { src?: string | null; alt: string }) {
       src={resolved}
       alt={alt}
       loading="lazy"
-      className="h-11 w-11 shrink-0 rounded-lg border border-gray-200 bg-white object-cover"
+      onError={() => setFailedSrc(resolved)}
+      className={`shrink-0 border border-gray-200 bg-white object-cover ${box}`}
     />
   );
 }

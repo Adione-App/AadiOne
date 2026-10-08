@@ -46,6 +46,42 @@ export function refundSummary(
   return { state: refundedPaise >= paymentAmountPaise ? 'REFUNDED' : 'PARTIAL', refundedPaise };
 }
 
+/**
+ * What happened to a payment, for people reading the payment history — one
+ * answer that combines the gateway's status with its order's status:
+ *
+ *   PAID                captured (even if the order was cancelled later — the
+ *                       refund column then shows where that money went)
+ *   PENDING             not finished, and its order is still waiting for it
+ *   FAILED              the gateway failed it, or the order's payment failed
+ *                       or expired while this attempt was still open
+ *   CANCELLED           never completed, and the order was cancelled — or
+ *                       paid through another attempt — so it never will be
+ *   REFUNDED / PARTIALLY_REFUNDED   as the gateway reports
+ *
+ * Only PAID is ever money received. The payment row itself is never changed
+ * to say this: an attempt left CREATED/PENDING stays that way for the
+ * reconciliation sweep, which still checks it for a late capture.
+ */
+export type PaymentOutcome = 'PAID' | 'PENDING' | 'FAILED' | 'CANCELLED' | 'REFUNDED' | 'PARTIALLY_REFUNDED';
+
+export function paymentOutcome(paymentStatus: string, orderStatus: string): PaymentOutcome {
+  switch (paymentStatus) {
+    case 'CAPTURED':
+      return 'PAID';
+    case 'REFUNDED':
+      return 'REFUNDED';
+    case 'PARTIALLY_REFUNDED':
+      return 'PARTIALLY_REFUNDED';
+    case 'FAILED':
+      return 'FAILED';
+  }
+  // CREATED / PENDING / AUTHORIZED — an attempt that never completed.
+  if (orderStatus === 'PENDING_PAYMENT') return 'PENDING';
+  if (orderStatus === 'PAYMENT_FAILED') return 'FAILED';
+  return 'CANCELLED';
+}
+
 /** "9876543210" -> "••••••3210" — enough to tell customers apart, no more. */
 export function maskMobile(mobile: string | null | undefined): string | null {
   if (!mobile) return null;

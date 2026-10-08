@@ -8,7 +8,7 @@
 
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../infra/db/prisma';
-import { storage } from '../../infra/storage';
+import { processUploadedImage, removeStoredImageIfUnused } from './uploaded-image.service';
 
 async function audit(input: {
   actorUserId: string;
@@ -33,7 +33,7 @@ export async function attachProductImage(
   input: { productId: string; variantId?: string | null; key: string; altText?: string | null },
   actorUserId: string,
 ): Promise<{ id: string }> {
-  const url = storage.publicUrl(input.key);
+  const { url, thumbUrl } = await processUploadedImage(input.key, 'product');
   // After the current last image (not the count: once one was removed the
   // count can equal an existing position, and the first image — the primary
   // one — would become ambiguous).
@@ -47,8 +47,8 @@ export async function attachProductImage(
       productId: input.productId,
       variantId: input.variantId ?? null,
       url,
-      thumbUrl: url,
-      cardUrl: url,
+      thumbUrl,
+      cardUrl: thumbUrl,
       altText: input.altText ?? null,
       displayOrder: (last._max.displayOrder ?? -1) + 1,
     },
@@ -68,13 +68,11 @@ export async function removeProductImage(id: string, actorUserId: string): Promi
   if (!image) return;
 
   await prisma.productImage.delete({ where: { id } });
-  // Best effort: a stale object costs a fraction of a paisa, a failed request
-  // costs the seller their time. Never delete a file another image row still
-  // points at (the same upload can be attached more than once).
-  const stillUsed = await prisma.productImage.count({ where: { url: image.url } });
-  if (stillUsed === 0) {
-    await storage.remove(image.url.split('/static/').pop() ?? image.url).catch(() => undefined);
-  }
+  // Never deletes a file another row still points at (the same upload can be
+  // attached more than once; order items keep a snapshot of the URL).
+  await removeStoredImageIfUnused(image.url);
+  if (image.thumbUrl !== image.url) await removeStoredImageIfUnused(image.thumbUrl);
+  if (image.cardUrl !== image.url && image.cardUrl !== image.thumbUrl) await removeStoredImageIfUnused(image.cardUrl);
 
   await audit({
     actorUserId,

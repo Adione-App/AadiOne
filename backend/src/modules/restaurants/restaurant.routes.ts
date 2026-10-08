@@ -20,7 +20,7 @@ import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { Permission } from '../../shared';
 import { asyncHandler, created, ok } from '../../common/response';
-import { validate } from '../../middleware/validate';
+import { validate, validatedQuery } from '../../middleware/validate';
 import { requirePermission, requireUser } from '../../middleware/auth';
 import { attachSellerContext, requireSellerId } from '../../middleware/sellerAuth';
 import * as service from './restaurant.service';
@@ -34,8 +34,17 @@ export const restaurantRouter: Router = Router();
 
 restaurantRouter.get(
   '/',
-  asyncHandler(async (_req: Request, res: Response) => {
-    ok(res, await service.listRestaurants());
+  validate({
+    query: z
+      .object({
+        lat: z.coerce.number().min(-90).max(90).optional(),
+        lng: z.coerce.number().min(-180).max(180).optional(),
+      })
+      .refine((q) => (q.lat === undefined) === (q.lng === undefined), { message: 'Send both lat and lng, or neither.' }),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { lat, lng } = validatedQuery<{ lat?: number; lng?: number }>(req);
+    ok(res, await service.listRestaurants(lat !== undefined && lng !== undefined ? { lat, lng } : null));
   }),
 );
 

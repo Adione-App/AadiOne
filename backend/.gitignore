@@ -169,3 +169,5 @@ generated/
 # ---------------------------------------------------------
 secrets/
 *.secret
+# Image migration rollback manifests (scripts/optimize-images.ts) — per environment
+/image-migrations/

@@ -25,6 +25,7 @@ import { env } from '../../config/env';
 import { prisma } from '../../infra/db/prisma';
 import { assertUploadable, storage, type PresignedUpload } from '../../infra/storage';
 import { attachProductImage, removeProductImage } from './product-image.service';
+import { processUploadedImage, removeStoredImageIfUnused } from './uploaded-image.service';
 import { loadEditableOwnProduct } from './product-approval.service';
 import { getOwnProduct } from './seller-product.service';
 
@@ -117,14 +118,17 @@ export async function replaceSellerImage(
 ): Promise<SellerProductDto> {
   await loadEditableOwnProduct(sellerId, productId);
   assertOwnKey(sellerId, input.key);
-  const image = await prisma.productImage.findFirst({ where: { id: imageId, productId }, select: { id: true, url: true } });
+  const image = await prisma.productImage.findFirst({
+    where: { id: imageId, productId },
+    select: { id: true, url: true, thumbUrl: true },
+  });
   // Another product's image id is indistinguishable from a missing one.
   if (!image) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Image not found.' });
 
-  const url = storage.publicUrl(input.key);
+  const { url, thumbUrl } = await processUploadedImage(input.key, 'product');
   await prisma.productImage.update({
     where: { id: imageId },
-    data: { url, thumbUrl: url, cardUrl: url, ...(input.altText !== undefined ? { altText: input.altText } : {}) },
+    data: { url, thumbUrl, cardUrl: thumbUrl, ...(input.altText !== undefined ? { altText: input.altText } : {}) },
   });
   await prisma.auditLog.create({
     data: {
@@ -136,10 +140,8 @@ export async function replaceSellerImage(
       after: { productId, key: input.key },
     },
   });
-  const stillUsed = await prisma.productImage.count({ where: { url: image.url } });
-  if (stillUsed === 0) {
-    await storage.remove(image.url.split('/static/').pop() ?? image.url).catch(() => undefined);
-  }
+  await removeStoredImageIfUnused(image.url);
+  if (image.thumbUrl !== image.url) await removeStoredImageIfUnused(image.thumbUrl);
   return getOwnProduct(sellerId, productId);
 }
 

@@ -85,14 +85,18 @@ export async function resolveCommissionBpBatch(
   const productIds = [...new Set(requests.map((r) => r.productId))];
   const categoryIds = [...new Set(requests.map((r) => r.categoryId))];
 
-  const productRules = await client.commissionRule.findMany({
-    where: { sellerId: { in: sellerIds }, productId: { in: productIds }, isActive: true },
-    select: { sellerId: true, productId: true, rateBp: true },
-  });
-  const categoryRules = await client.commissionRule.findMany({
-    where: { sellerId: { in: sellerIds }, categoryId: { in: categoryIds }, isActive: true },
-    select: { sellerId: true, categoryId: true, rateBp: true },
-  });
+  // Independent reads — together (inside a transaction Prisma still runs
+  // them one at a time on its single connection, so this is safe there too).
+  const [productRules, categoryRules] = await Promise.all([
+    client.commissionRule.findMany({
+      where: { sellerId: { in: sellerIds }, productId: { in: productIds }, isActive: true },
+      select: { sellerId: true, productId: true, rateBp: true },
+    }),
+    client.commissionRule.findMany({
+      where: { sellerId: { in: sellerIds }, categoryId: { in: categoryIds }, isActive: true },
+      select: { sellerId: true, categoryId: true, rateBp: true },
+    }),
+  ]);
 
   // Safe to key on (sellerId, productId)/(sellerId, categoryId) alone: the
   // schema's own partial unique indexes guarantee at most one ACTIVE rule

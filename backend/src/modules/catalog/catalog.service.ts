@@ -432,6 +432,8 @@ export interface ListProductsInput {
   categoryId?: string | undefined;
   subcategoryId?: string | undefined;
   brandId?: string | undefined;
+  /** A seller's store page: only its listings, priced by its own offers. */
+  sellerId?: string | undefined;
   inStock?: boolean | undefined;
   sort?: ProductSort | undefined;
   cursor?: string | null;
@@ -457,6 +459,7 @@ export async function listProducts(
   const rows = await repository.listProductIds({
     categoryPath,
     brandId: input.brandId ?? null,
+    sellerId: input.sellerId ?? null,
     inStockOnly: input.inStock ?? false,
     sort: input.sort ?? "POPULAR",
     // One extra row tells us whether another page exists without a COUNT.
@@ -467,7 +470,9 @@ export async function listProducts(
   const hasMore = rows.length > input.limit;
   const page = hasMore ? rows.slice(0, input.limit) : rows;
 
-  const products = await repository.hydrateProducts(page.map((row) => row.id));
+  const products = await repository.hydrateProducts(page.map((row) => row.id), undefined, {
+    sellerId: input.sellerId ?? null,
+  });
   const items = await mapProducts(products);
   const last = page[page.length - 1];
 

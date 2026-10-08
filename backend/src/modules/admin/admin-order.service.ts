@@ -18,6 +18,7 @@ import {
   OrderStatus,
   PaymentMethod,
   toOrderBucket,
+  type AdminCustomersDto,
   type AdminDashboardDto,
   type AdminOrderSummaryDto,
   type CursorPage,
@@ -33,6 +34,14 @@ import * as paymentService from "../payments/payment.service";
 import { verifyDeliveryOtp } from "../orders/order.service";
 import { SellerOrderStatus } from "../../shared";
 import { transitionOrder, transitionSellerOrder } from "../orders/order-state.service";
+import {
+  COLLECTED_PAYMENT_STATUS_LIST,
+  COMPLETED_SALE_STATUS_LIST,
+  PLACED_ORDER_STATUS_LIST,
+  completedSaleWhere,
+  placedOrderWhere,
+} from "../orders/sales-metrics";
+import { Prisma } from "@prisma/client";
 
 const log = moduleLogger("admin:orders");
 
@@ -69,8 +78,11 @@ export async function getDashboard(date?: string): Promise<AdminDashboardDto> {
   const dayEnd = endOfZonedDay(referenceDate, timezone);
   const todayStart = startOfZonedDay(new Date(), timezone);
 
-  const paidStatuses = [OrderStatus.DELIVERED, OrderStatus.OUT_FOR_DELIVERY];
-
+  // One definition of a sale (sales-metrics.ts): orders count only once
+  // placed and still standing; revenue only once delivered and collected, at
+  // what is still payable after any cancelled seller portion. Cancelled,
+  // payment-failed and unpaid orders never count, by status — nothing here
+  // filters on amounts or particular orders.
   const [
     todayOrders,
     todayRevenue,
@@ -83,16 +95,16 @@ export async function getDashboard(date?: string): Promise<AdminDashboardDto> {
     lowStock,
   ] = await Promise.all([
     prisma.order.count({
-      where: { createdAt: { gte: dayStart, lte: dayEnd } },
+      where: { ...placedOrderWhere, placedAt: { gte: dayStart, lte: dayEnd } },
     }),
     prisma.order.aggregate({
-      _sum: { totalPaise: true },
-      where: { createdAt: { gte: dayStart, lte: dayEnd }, status: { in: paidStatuses } },
+      _sum: { currentPayablePaise: true },
+      where: { ...completedSaleWhere, deliveredAt: { gte: dayStart, lte: dayEnd } },
     }),
-    prisma.order.count(),
+    prisma.order.count({ where: placedOrderWhere }),
     prisma.order.aggregate({
-      _sum: { totalPaise: true },
-      where: { status: OrderStatus.DELIVERED },
+      _sum: { currentPayablePaise: true },
+      where: completedSaleWhere,
     }),
     prisma.order.groupBy({
       by: ["status"],
@@ -115,9 +127,9 @@ export async function getDashboard(date?: string): Promise<AdminDashboardDto> {
     date: date ?? formatZonedDateOnly(new Date(), timezone),
     isToday: dayStart.getTime() === todayStart.getTime(),
     todayOrderCount: todayOrders,
-    todayRevenuePaise: todayRevenue._sum.totalPaise ?? 0,
+    todayRevenuePaise: todayRevenue._sum.currentPayablePaise ?? 0,
     totalOrderCount: totalOrders,
-    totalRevenuePaise: totalRevenue._sum.totalPaise ?? 0,
+    totalRevenuePaise: totalRevenue._sum.currentPayablePaise ?? 0,
     ordersByStatus: byStatus.map((row) => ({
       status: row.status,
       count: row._count._all,
@@ -422,4 +434,100 @@ export async function updateOrderStatus(input: UpdateStatusInput): Promise<void>
   if (input.toStatus === OrderStatus.CANCELLED) {
     await paymentService.refundIfPaid(order.id, input.reason ?? "Order cancelled by admin");
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Customers                                                                  */
+/* -------------------------------------------------------------------------- */
+
+const CANCELLED_ORDER_STATUS_LIST: string[] = [
+  OrderStatus.CANCELLED,
+  OrderStatus.PAYMENT_FAILED,
+  OrderStatus.REFUNDED,
+];
+
+/**
+ * GET /admin/customers — every customer who has ever checked out, with
+ * order counts and spend aggregated IN THE DATABASE by the single sale
+ * definition (sales-metrics.ts): placed orders that still stand are counted,
+ * only delivered-and-collected orders are spent (at `currentPayablePaise`),
+ * and cancelled / payment-failed / refunded orders are reported separately,
+ * never as sales. Replaces the old client-side merge of the order tabs, which
+ * summed every order's total (cancelled ones included) and saw only the most
+ * recent 50 orders per tab.
+ */
+export async function listCustomers(query: {
+  q?: string | undefined;
+  page: number;
+  pageSize: number;
+}): Promise<AdminCustomersDto> {
+  const placed = Prisma.sql`o.status::text = ANY(${PLACED_ORDER_STATUS_LIST})`;
+  const completed = Prisma.sql`o.status::text = ANY(${COMPLETED_SALE_STATUS_LIST}) AND o.payment_status::text = ANY(${COLLECTED_PAYMENT_STATUS_LIST})`;
+  const cancelled = Prisma.sql`o.status::text = ANY(${CANCELLED_ORDER_STATUS_LIST})`;
+  const term = query.q?.trim();
+  const search = term
+    ? Prisma.sql`HAVING (u.full_name ILIKE ${`%${term}%`} OR u.mobile LIKE ${`%${term.replace(/\D/g, "") || term}%`} OR MAX(o.delivery_full_name) ILIKE ${`%${term}%`})`
+    : Prisma.empty;
+
+  const perCustomer = Prisma.sql`
+    SELECT
+      u.id AS user_id,
+      COALESCE(u.full_name, MAX(o.delivery_full_name)) AS name,
+      u.mobile AS mobile,
+      COUNT(*) FILTER (WHERE ${placed}) AS order_count,
+      COUNT(*) FILTER (WHERE ${placed} AND NOT (${completed})) AS active_count,
+      COUNT(*) FILTER (WHERE ${cancelled}) AS cancelled_count,
+      COALESCE(SUM(o.current_payable_paise) FILTER (WHERE ${completed}), 0) AS spent,
+      MAX(COALESCE(o.placed_at, o.created_at)) AS last_order_at
+    FROM orders o
+    JOIN users u ON u.id = o.user_id
+    GROUP BY u.id, u.full_name, u.mobile`;
+
+  const [rows, totals, summary] = await Promise.all([
+    prisma.$queryRaw<
+      {
+        user_id: string;
+        name: string | null;
+        mobile: string;
+        order_count: bigint;
+        active_count: bigint;
+        cancelled_count: bigint;
+        spent: bigint;
+        last_order_at: Date;
+      }[]
+    >`
+      ${perCustomer}
+      ${search}
+      ORDER BY spent DESC, order_count DESC, last_order_at DESC
+      LIMIT ${query.pageSize} OFFSET ${(query.page - 1) * query.pageSize}`,
+    prisma.$queryRaw<{ total: bigint }[]>`
+      SELECT COUNT(*) AS total FROM (${perCustomer} ${search}) AS customers`,
+    prisma.$queryRaw<{ customers: bigint; repeat: bigint; revenue: bigint | null }[]>`
+      SELECT
+        COUNT(*) FILTER (WHERE order_count > 0) AS customers,
+        COUNT(*) FILTER (WHERE order_count > 1) AS repeat,
+        SUM(spent) AS revenue
+      FROM (${perCustomer}) AS customers`,
+  ]);
+
+  return {
+    summary: {
+      customerCount: Number(summary[0]?.customers ?? 0),
+      repeatCustomerCount: Number(summary[0]?.repeat ?? 0),
+      revenuePaise: Number(summary[0]?.revenue ?? 0),
+    },
+    items: rows.map((row) => ({
+      userId: row.user_id,
+      name: row.name,
+      mobile: row.mobile,
+      orderCount: Number(row.order_count),
+      activeOrderCount: Number(row.active_count),
+      cancelledOrderCount: Number(row.cancelled_count),
+      totalSpentPaise: Number(row.spent),
+      lastOrderAt: row.last_order_at.toISOString(),
+    })),
+    total: Number(totals[0]?.total ?? 0),
+    page: query.page,
+    pageSize: query.pageSize,
+  };
 }

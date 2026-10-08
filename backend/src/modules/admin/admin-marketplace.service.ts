@@ -25,7 +25,7 @@ import { ErrorCode, ProductStatus } from '../../shared';
 import { prisma } from '../../infra/db/prisma';
 import { listingVisibility, type ListingVisibility, type ListingVisibilityReason } from '../catalog/listing-visibility';
 import * as settlementService from '../sellers/seller-settlement.service';
-import { maskMobile, paginate, redactAuditValue, refundSummary, stockState, type Paged, type StockState } from './admin-marketplace-views';
+import { maskMobile, paginate, paymentOutcome, redactAuditValue, refundSummary, stockState, type Paged, type StockState } from './admin-marketplace-views';
 
 /** Upper bound on rows a monitoring view loads before filtering. */
 const ROW_CAP = 5000;
@@ -450,7 +450,7 @@ export async function listPayments(query: { q?: string; status?: string; page: n
         failureReason: true,
         capturedAt: true,
         createdAt: true,
-        order: { select: { id: true, orderNumber: true, status: true, paymentMethod: true, deliveryFullName: true, deliveryMobile: true } },
+        order: { select: { id: true, orderNumber: true, status: true, paymentMethod: true, deliveryFullName: true, deliveryMobile: true, cancellationReason: true } },
         refunds: { select: { status: true, amountPaise: true } },
       },
     }),
@@ -465,10 +465,17 @@ export async function listPayments(query: { q?: string; status?: string; page: n
       amountPaise: p.amountPaise,
       currency: p.currency,
       status: p.status,
+      outcome: paymentOutcome(p.status, p.order.status),
       failureReason: p.failureReason,
       capturedAt: p.capturedAt?.toISOString() ?? null,
       createdAt: p.createdAt.toISOString(),
-      order: { id: p.order.id, orderNumber: p.order.orderNumber, status: p.order.status, paymentMethod: p.order.paymentMethod },
+      order: {
+        id: p.order.id,
+        orderNumber: p.order.orderNumber,
+        status: p.order.status,
+        paymentMethod: p.order.paymentMethod,
+        cancellationReason: p.order.cancellationReason,
+      },
       customer: { name: p.order.deliveryFullName, mobile: maskMobile(p.order.deliveryMobile) },
       refund: refundSummary(p.amountPaise, p.refunds),
     })),

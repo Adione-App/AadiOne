@@ -324,7 +324,16 @@ export async function assertSellersServe(
   longitude: number,
   sellerIds: readonly string[],
 ): Promise<CartDelivery> {
-  const sellers = await repository.findSellersByIds(sellerIds);
+  return assertLoadedSellersServe(latitude, longitude, await repository.findSellersByIds(sellerIds));
+}
+
+/** `assertSellersServe` for sellers the caller already loaded (with hours), e.g. with the cart. */
+export async function assertLoadedSellersServe(
+  latitude: number,
+  longitude: number,
+  loaded: readonly SellerWithHours[],
+): Promise<CartDelivery> {
+  const sellers = [...new Map(loaded.map((seller) => [seller.id, seller])).values()];
   if (sellers.length === 0) throw new AppError(ErrorCode.CART_EMPTY);
 
   let farthest: { seller: SellerWithHours; check: ServiceabilityCheckResult } | null = null;
@@ -431,11 +440,21 @@ export async function getServiceability(latitude: number, longitude: number): Pr
   };
 }
 
+/** A cart's serviceability: always serviceable, so the ETA is always known. */
+export type CartServiceabilityResult = ServiceabilityResult & {
+  etaMinutes: number;
+  etaMinMinutes: number;
+  etaMaxMinutes: number;
+};
+
 /**
  * The same answer for ONE cart: priced on the farthest cart seller, "open"
  * only when every cart seller is open right now.
  */
-export async function cartServiceability(delivery: CartDelivery, itemCount: number): Promise<ServiceabilityResult> {
+export async function cartServiceability(
+  delivery: CartDelivery,
+  itemCount: number,
+): Promise<CartServiceabilityResult> {
   const [eta, openStates] = await Promise.all([
     estimateEta({ distanceKm: delivery.check.distanceKm, itemCount, sellerId: delivery.farthest.id }),
     Promise.all(delivery.sellers.map((seller) => getSellerOpenState(seller))),

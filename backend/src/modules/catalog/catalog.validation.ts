@@ -28,6 +28,7 @@ export const listProductsQuerySchema = z.object({
   categoryId: uuid.optional(),
   subcategoryId: uuid.optional(),
   brandId: uuid.optional(),
+  sellerId: uuid.optional(),
   inStock: booleanish,
   sort: z
     .enum(['RELEVANCE', 'PRICE_ASC', 'PRICE_DESC', 'NEWEST', 'POPULAR', 'DISCOUNT'])
@@ -46,6 +47,20 @@ export const railQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(PAGINATION_MAX_LIMIT).default(60),
 });
 
+/** Optional customer location — both or neither. */
+const optionalLocation = {
+  lat: z.coerce.number().min(-90).max(90).optional(),
+  lng: z.coerce.number().min(-180).max(180).optional(),
+};
+
+export const listStoresQuerySchema = z
+  .object(optionalLocation)
+  .refine((query) => (query.lat === undefined) === (query.lng === undefined), {
+    message: 'Send both lat and lng, or neither.',
+  });
+
+export const storeParamsSchema = z.object({ sellerId: uuid });
+
 export const variantParamsSchema = z.object({ variantId: uuid });
 
 export const searchQuerySchema = z.object({
@@ -62,3 +77,4 @@ export type SearchQuery = z.infer<typeof searchQuerySchema>;
 export type ListCategoriesQuery = z.infer<typeof listCategoriesQuerySchema>;
 export type RailParams = z.infer<typeof railParamsSchema>;
 export type RailQuery = z.infer<typeof railQuerySchema>;
+export type ListStoresQuery = z.infer<typeof listStoresQuerySchema>;

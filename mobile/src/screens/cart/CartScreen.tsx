@@ -38,7 +38,7 @@ import {
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   ErrorCode,
@@ -286,6 +286,14 @@ export default function CartScreen({
     queryKey: ["checkout-quote", addressId, confirmedCartKey],
     queryFn: () => api.post<CheckoutQuoteResponse>("/checkout/quote", { addressId }),
     enabled: addressId !== null && confirmedCartKey !== "",
+    // A quantity change re-keys this query. Without this the previous quote
+    // vanished until the new one arrived, so BOTH pay buttons went disabled
+    // for a full quote round trip after every tap. The previous quote stays
+    // usable meanwhile: the items on screen come from the cart itself (see
+    // `bill` below), and the server re-prices everything at placement —
+    // a fee that changed in between comes back as PRICE_CHANGED and is
+    // resynced on the spot (see `placeOrder`).
+    placeholderData: keepPreviousData,
   });
 
   /**
@@ -358,8 +366,14 @@ export default function CartScreen({
       // for why `clearCartAfterOrder` alone was never enough.
       clearCartAfterOrder(queryClient);
       resetPendingCartAfterOrder();
+      // The response already IS the placed order's full detail: seed it so
+      // the next screen (tracking or payment) shows the order at once
+      // instead of fetching it again, and refresh the orders list in the
+      // background — awaiting that refetch here used to hold the customer on
+      // this screen for a whole extra round trip after the order existed.
+      queryClient.setQueryData(keys.order(result.order.id), result.order);
       void queryClient.invalidateQueries({ queryKey: keys.cart });
-      await queryClient.invalidateQueries({ queryKey: keys.orders });
+      void queryClient.invalidateQueries({ queryKey: keys.orders });
 
       onPlaced(result.order, result.requiresPayment);
     } catch (err) {
@@ -514,8 +528,13 @@ export default function CartScreen({
   const selectedAddress = addresses.data?.find((item) => item.id === addressId) ?? null;
   const displayBill = bill ?? cart.bill;
 
+  // Usable as soon as there is a quote — including the previous one while a
+  // fresh quote is on its way (see `quote`). The one thing genuinely worth
+  // waiting for is a cart change the server hasn't saved yet: the order is
+  // placed from the SERVER's cart, so tapping Pay mid-save could order the
+  // old quantity.
   const canPlaceOrderBase =
-    canCheckout && !placing && Boolean(addressId) && Boolean(quote.data);
+    canCheckout && !placing && !actions.busy && Boolean(addressId) && Boolean(quote.data);
   const canPlaceOrderCod = canPlaceOrderBase && quote.data?.codAllowed === true;
   const canPlaceOrderOnline = canPlaceOrderBase;
 
@@ -728,6 +747,13 @@ export default function CartScreen({
             <AppText variant="h2" color={colors.textPrimary} style={styles.paymentBarAmount}>
               {formatPaise(displayBill.totalPaise)}
             </AppText>
+            {quote.isFetching && quote.data && (
+              <ActivityIndicator
+                size="small"
+                color={colors.textMuted}
+                accessibilityLabel="Updating delivery fee and total"
+              />
+            )}
           </View>
 
           <View style={styles.paymentBarButtons}>
@@ -2093,6 +2119,11 @@ const styles = StyleSheet.create({
 
   paymentBarTotal: {
     flexShrink: 0,
+    // Row, so the small "updating" spinner sits beside the amount instead of
+    // growing the bar's height while a fresh quote loads.
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
   },
 
   paymentBarAmount: {

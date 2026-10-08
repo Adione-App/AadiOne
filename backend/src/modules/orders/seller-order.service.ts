@@ -159,7 +159,11 @@ export interface SellerOrderSummary {
   /** The seller's calendar day the "today" figures cover. */
   today: string;
   timezone: string;
-  /** Orders placed with this seller today. */
+  /**
+   * Orders placed with this seller today that still stand — a portion the
+   * seller rejected or that was cancelled is not an order "had" (the same
+   * rule as today's sales on the Earnings page).
+   */
   todayOrders: number;
   counts: { NEW: number; ACCEPTED: number; PREPARING: number; READY: number };
 }
@@ -191,7 +195,13 @@ export async function getSellerOrderSummary(sellerId: string): Promise<SellerOrd
         order: { AND: [sellerVisibleOrderWhere, { status: ready.orderStatus! }] },
       },
     }),
-    prisma.sellerOrder.count({ where: { ...visible, createdAt: { gte: start, lt: end } } }),
+    prisma.sellerOrder.count({
+      where: {
+        ...visible,
+        status: { notIn: [SellerOrderStatus.CANCELLED, SellerOrderStatus.REJECTED] },
+        createdAt: { gte: start, lt: end },
+      },
+    }),
   ]);
   const count = (status: SellerOrderStatus) => byStatus.find((row) => row.status === status)?._count._all ?? 0;
 

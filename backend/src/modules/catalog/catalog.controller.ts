@@ -3,9 +3,11 @@ import { noContent, ok, okCursorPage } from '../../common/response';
 import { validatedQuery } from '../../middleware/validate';
 import { requireUser } from '../../middleware/auth';
 import * as catalogService from './catalog.service';
+import * as storeDirectory from './store-directory.service';
 import type {
   ListCategoriesQuery,
   ListProductsQuery,
+  ListStoresQuery,
   RailParams,
   RailQuery,
   SearchQuery,
@@ -38,6 +40,7 @@ export async function listProducts(req: Request, res: Response): Promise<void> {
       categoryId: query.categoryId,
       subcategoryId: query.subcategoryId,
       brandId: query.brandId,
+      sellerId: query.sellerId,
       inStock: query.inStock,
       sort: query.sort,
       cursor: query.cursor ?? null,
@@ -80,6 +83,23 @@ export async function getRelated(req: Request, res: Response): Promise<void> {
 /** GET /home */
 export async function getHomeFeed(_req: Request, res: Response): Promise<void> {
   ok(res, await catalogService.getHomeFeed());
+}
+
+function locationOf(query: ListStoresQuery): storeDirectory.CustomerLocation | null {
+  return query.lat !== undefined && query.lng !== undefined ? { lat: query.lat, lng: query.lng } : null;
+}
+
+/** GET /stores?lat=&lng= — live marketplace stores (that deliver here, nearest first). */
+export async function listStores(req: Request, res: Response): Promise<void> {
+  ok(res, await storeDirectory.listStores(locationOf(validatedQuery<ListStoresQuery>(req))));
+}
+
+/** GET /stores/:sellerId — a store page's header. */
+export async function getStore(req: Request, res: Response): Promise<void> {
+  ok(
+    res,
+    await storeDirectory.getStore(req.params['sellerId'] as string, locationOf(validatedQuery<ListStoresQuery>(req))),
+  );
 }
 
 /** POST /products/:variantId/notify-me */

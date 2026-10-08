@@ -7,6 +7,7 @@
 
 import {
   keepPreviousData,
+  queryOptions,
   useInfiniteQuery,
   useMutation,
   useQuery,
@@ -19,12 +20,16 @@ import type {
   CategoryDto,
   CursorPage,
   HomeFeedDto,
+  OfferDto,
   OrderDetailDto,
   OrderSummaryDto,
   ProductDetailDto,
   ProductSummaryDto,
   ReferralSummaryDto,
+  RestaurantMenuDto,
+  RestaurantSummaryDto,
   RewardCouponDto,
+  StoreSummaryDto,
 } from "@shared";
 import { api, ApiRequestError } from "./api";
 import { useAuth } from "./store";
@@ -62,6 +67,14 @@ export const keys = {
   product: (id: string) => ["product", id] as const,
   search: (term: string) => ["search", term] as const,
   rail: (key: string) => ["rail", key] as const,
+  homeSection: (categoryId: string) =>
+    ["home-section", CATALOG_CACHE_VERSION, categoryId] as const,
+  stores: (near: string) => ["stores", near] as const,
+  store: (sellerId: string, near: string) => ["store", sellerId, near] as const,
+  storeProducts: (sellerId: string) => ["store-products", sellerId] as const,
+  restaurants: (near: string) => ["restaurants", near] as const,
+  restaurantMenu: (sellerId: string) => ["restaurant-menu", sellerId] as const,
+  offers: ["offers"] as const,
   cart: ["cart"] as const,
   orders: ["orders"] as const,
   order: (id: string) => ["order", id] as const,
@@ -135,6 +148,115 @@ export function useProduct(id: string) {
     // from a blank loading screen.
     gcTime: 30 * 60_000,
   });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Discovery — stores, restaurants, offers, Home's lazy shelves              */
+/* -------------------------------------------------------------------------- */
+
+/** Customer coordinates, as the location store keeps them. */
+export type NearLocation = { latitude: number; longitude: number } | null;
+
+/**
+ * `?lat=&lng=` for the discovery endpoints, rounded to ~100 m so tiny GPS
+ * jitter doesn't mint a new cache entry (and a refetch) every few metres.
+ * The server applies each seller's delivery radius to these — the app never
+ * decides who delivers where.
+ */
+function nearQuery(location: NearLocation): string {
+  if (!location) return "";
+  return `lat=${location.latitude.toFixed(3)}&lng=${location.longitude.toFixed(3)}`;
+}
+
+/** Live marketplace stores — only those that deliver to `location` when given, nearest first. */
+export function useStores(location: NearLocation) {
+  const near = nearQuery(location);
+  return useQuery({
+    queryKey: keys.stores(near),
+    queryFn: () => api.get<StoreSummaryDto[]>(`/stores${near ? `?${near}` : ""}`),
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
+  });
+}
+
+export function useStore(sellerId: string, location: NearLocation) {
+  const near = nearQuery(location);
+  return useQuery({
+    queryKey: keys.store(sellerId, near),
+    queryFn: () => api.get<StoreSummaryDto>(`/stores/${sellerId}${near ? `?${near}` : ""}`),
+    gcTime: 30 * 60_000,
+  });
+}
+
+/** A store's own products, priced by its own offers, a page at a time. */
+export function useStoreProducts(sellerId: string, pageSize = 20) {
+  return useInfiniteQuery({
+    queryKey: keys.storeProducts(sellerId),
+    queryFn: ({ pageParam, signal }) => {
+      const query = new URLSearchParams({ sellerId, limit: String(pageSize) });
+      if (pageParam) query.set("cursor", pageParam);
+      return api.get<CursorPage<ProductSummaryDto>>(`/products?${query.toString()}`, { signal });
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => (last.hasMore && last.nextCursor ? last.nextCursor : undefined),
+    gcTime: 30 * 60_000,
+  });
+}
+
+/** Live restaurants and cafes — only those that deliver to `location` when given. */
+export function useRestaurants(location: NearLocation) {
+  const near = nearQuery(location);
+  return useQuery({
+    queryKey: keys.restaurants(near),
+    queryFn: () => api.get<RestaurantSummaryDto[]>(`/restaurants${near ? `?${near}` : ""}`),
+    staleTime: 2 * 60_000,
+    gcTime: 30 * 60_000,
+  });
+}
+
+export function useRestaurantMenu(sellerId: string) {
+  return useQuery({
+    queryKey: keys.restaurantMenu(sellerId),
+    queryFn: () => api.get<RestaurantMenuDto>(`/restaurants/${sellerId}`),
+    gcTime: 30 * 60_000,
+  });
+}
+
+/** Promo codes any customer can apply right now (expired/used-up ones drop out server-side). */
+export function useOffers() {
+  return useQuery({
+    queryKey: keys.offers,
+    queryFn: () => api.get<OfferDto[]>("/offers"),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * Products for one of Home's lazily loaded category shelves. More than a
+ * shelf shows, because Home drops any product an earlier shelf already
+ * showed. In-stock only: Home is for things that can be bought right now.
+ */
+const HOME_SECTION_LIMIT = 20;
+
+export function homeSectionQuery(categoryId: string) {
+  return queryOptions({
+    queryKey: keys.homeSection(categoryId),
+    queryFn: ({ signal }) =>
+      api.get<CursorPage<ProductSummaryDto>>(
+        `/products?categoryId=${categoryId}&inStock=true&limit=${HOME_SECTION_LIMIT}`,
+        { signal },
+      ),
+    staleTime: 2 * 60_000,
+    gcTime: 30 * 60_000,
+  });
+}
+
+/**
+ * Fetched only once its section scrolls near the screen (`enabled`), so a
+ * catalogue with hundreds of subcategories never loads them all up front.
+ */
+export function useHomeSectionProducts(categoryId: string, enabled: boolean) {
+  return useQuery({ ...homeSectionQuery(categoryId), enabled });
 }
 
 /** The full rail a Home "See All" opens — same ranking as the preview, no cap. */

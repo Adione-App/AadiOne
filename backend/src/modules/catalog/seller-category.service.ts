@@ -32,7 +32,7 @@ import type { CatalogVertical } from '@prisma/client';
 import { ErrorCode, SellerType, isFoodSellerType } from '../../shared';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
-import { storage } from '../../infra/storage';
+import { processUploadedImage, removeStoredImageIfUnused } from './uploaded-image.service';
 import { slugify } from '../../shared/text';
 import { assertOwnSellerKey } from './seller-image.service';
 import { invalidateCategoryCache } from './catalog.service';
@@ -434,9 +434,10 @@ export async function setOwnTopCategoryImage(
 ): Promise<SellerCatalogCategoriesDto> {
   const current = await loadOwnTopOrThrow(sellerId, id);
   assertOwnSellerKey(sellerId, key);
-  const imageUrl = storage.publicUrl(key);
+  const { url: imageUrl } = await processUploadedImage(key, 'category');
   await prisma.category.update({ where: { id }, data: { imageUrl } });
   await audit(actorUserId, 'category.seller_category.image', id, { imageUrl: current.imageUrl }, { imageUrl });
+  if (current.imageUrl !== imageUrl) await removeStoredImageIfUnused(current.imageUrl);
   invalidateCategoryCache();
   return listSellerCatalogCategories(sellerId);
 }

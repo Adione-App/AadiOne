@@ -105,11 +105,17 @@ export interface PaymentRow {
   method: string | null;
   amountPaise: number;
   currency: string;
+  /** The gateway's own status (CREATED, CAPTURED, FAILED, …), as stored. */
   status: string;
+  /**
+   * What happened, combining that with the order's status (backend
+   * `paymentOutcome`) — only PAID is money received.
+   */
+  outcome: 'PAID' | 'PENDING' | 'FAILED' | 'CANCELLED' | 'REFUNDED' | 'PARTIALLY_REFUNDED';
   failureReason: string | null;
   capturedAt: string | null;
   createdAt: string;
-  order: { id: string; orderNumber: string; status: string; paymentMethod: string };
+  order: { id: string; orderNumber: string; status: string; paymentMethod: string; cancellationReason: string | null };
   customer: { name: string | null; mobile: string | null };
   refund: { state: 'NONE' | 'PENDING' | 'PARTIAL' | 'REFUNDED' | 'FAILED'; refundedPaise: number };
 }

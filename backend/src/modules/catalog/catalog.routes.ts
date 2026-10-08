@@ -7,10 +7,12 @@ import {
   categoryParamsSchema,
   listCategoriesQuerySchema,
   listProductsQuerySchema,
+  listStoresQuerySchema,
   productParamsSchema,
   railParamsSchema,
   railQuerySchema,
   searchQuerySchema,
+  storeParamsSchema,
   variantParamsSchema,
 } from './catalog.validation';
 
@@ -73,6 +75,20 @@ catalogRouter.get(
 );
 
 catalogRouter.get('/home', asyncHandler(controller.getHomeFeed));
+
+// Stores: live marketplace sellers with visible products. A store's own
+// products are `GET /products?sellerId=`.
+catalogRouter.get(
+  '/stores',
+  validate({ query: listStoresQuerySchema }),
+  asyncHandler(controller.listStores),
+);
+
+catalogRouter.get(
+  '/stores/:sellerId',
+  validate({ params: storeParamsSchema, query: listStoresQuerySchema }),
+  asyncHandler(controller.getStore),
+);
 
 /**
  * POST /products/:variantId/notify-me

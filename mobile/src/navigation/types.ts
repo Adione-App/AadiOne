@@ -42,6 +42,16 @@ export type CatalogStackParamList = {
   };
   OrderTracking: { orderId: string };
   Notifications: undefined;
+  /** A restaurant's / cafe's menu, opened from Home's food rail. */
+  RestaurantMenu: { sellerId: string; name?: string };
+  /** A marketplace seller's store page, opened from Home's stores rail. */
+  Store: { sellerId: string };
+};
+
+/** The Food tab's own stack: restaurants & cafes, then a menu. */
+export type FoodStackParamList = {
+  FoodHome: undefined;
+  RestaurantMenu: { sellerId: string; name?: string };
 };
 
 export type CartStackParamList = {

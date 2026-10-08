@@ -51,6 +51,28 @@ adminOrderRouter.get(
   }),
 );
 
+/* customers ---------------------------------------------------------------- */
+
+adminOrderRouter.get(
+  "/customers",
+  requirePermission(Permission.ORDER_READ_ALL),
+  validate({
+    query: z.object({
+      q: z.string().trim().max(60).optional(),
+      page: z.coerce.number().int().min(1).default(1),
+      pageSize: z.coerce.number().int().min(1).max(100).default(25),
+    }),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(
+      res,
+      await service.listCustomers(
+        validatedQuery<{ q?: string; page: number; pageSize: number }>(req),
+      ),
+    );
+  }),
+);
+
 /* orders ------------------------------------------------------------------- */
 
 adminOrderRouter.get(

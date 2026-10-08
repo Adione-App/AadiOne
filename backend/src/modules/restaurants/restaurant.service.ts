@@ -24,13 +24,27 @@
  * restaurant menu sections out of the shared category tree.
  */
 
-import { ApprovalStatus, ErrorCode, FOOD_SELLER_TYPES, ProductStatus, SellerType, foodDietOf, isFoodSellerType, optionGroupsOf, optionValuesOf } from '../../shared';
+import {
+  ApprovalStatus,
+  ErrorCode,
+  FOOD_SELLER_TYPES,
+  ProductStatus,
+  SellerType,
+  foodDietOf,
+  isFoodSellerType,
+  optionGroupsOf,
+  optionValuesOf,
+  type RestaurantDto,
+  type RestaurantMenuDto,
+  type RestaurantMenuItemDto,
+  type RestaurantSummaryDto,
+} from '../../shared';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import { invalidateCategoryCache } from '../catalog/catalog.service';
 import { createOwnTopCategory } from '../catalog/seller-category.service';
 import { createOwnSubcategory } from '../catalog/seller-subcategory.service';
-import { getSellerOpenState } from '../sellers/seller.service';
+import { checkServiceability, getSellerOpenState } from '../sellers/seller.service';
 
 /* -------------------------------------------------------------------------- */
 /* Seller — own menu sections                                                */
@@ -180,7 +194,7 @@ function findRestaurant(sellerId: string) {
   });
 }
 
-async function toRestaurantDto(seller: RestaurantRow) {
+async function toRestaurantDto(seller: RestaurantRow): Promise<RestaurantDto> {
   const open = await getSellerOpenState(seller);
   return {
     sellerId: seller.id,
@@ -237,7 +251,20 @@ async function loadMenu(sellerId: string, publicOnly: boolean) {
       include: {
         variant: {
           include: {
-            product: { select: { id: true, name: true, description: true, categoryId: true, approvalStatus: true, attributes: true, optionGroups: true } },
+            product: {
+              select: {
+                id: true,
+                name: true,
+                description: true,
+                categoryId: true,
+                approvalStatus: true,
+                attributes: true,
+                optionGroups: true,
+                // A food item's photos are product images (the Food Item
+                // form uploads them there); the variant image is usually empty.
+                images: { orderBy: { displayOrder: 'asc' }, take: 1, select: { url: true, thumbUrl: true } },
+              },
+            },
           },
         },
       },
@@ -250,7 +277,7 @@ async function loadMenu(sellerId: string, publicOnly: boolean) {
 function toMenuItemDto(
   restaurant: { id: string; name: string },
   listing: Awaited<ReturnType<typeof loadMenu>>['listings'][number],
-) {
+): RestaurantMenuItemDto {
   const available = Math.max(0, listing.stockQty - listing.reservedQty);
   return {
     sellerListingId: listing.id,
@@ -265,7 +292,11 @@ function toMenuItemDto(
     // dish's option groups say how to present them together, e.g. Size: Half / Full.
     optionValues: optionValuesOf(listing.variant.optionValues),
     optionGroups: optionGroupsOf(listing.variant.product.optionGroups),
-    imageUrl: listing.variant.imageUrl,
+    imageUrl:
+      listing.variant.imageUrl ??
+      listing.variant.product.images[0]?.thumbUrl ??
+      listing.variant.product.images[0]?.url ??
+      null,
     mrpPaise: listing.mrpPaise,
     pricePaise: listing.pricePaise,
     // A made-to-order food item (tracksStock = false) is "in stock" whenever
@@ -299,8 +330,30 @@ function groupByMenu<T extends { menuId: string | null; menuName: string | null 
   return menus;
 }
 
-/** Customer: every live restaurant, each identified as its own seller. */
-export async function listRestaurants() {
+/**
+ * One real photo per restaurant: the first image of its most popular live
+ * menu item. Restaurants have no logo field, so this is the only uploaded
+ * imagery there is to show.
+ */
+async function coverImages(sellerIds: string[]): Promise<Map<string, string>> {
+  if (sellerIds.length === 0) return new Map();
+  const rows = await prisma.$queryRaw<{ seller_id: string; url: string }[]>`
+    SELECT DISTINCT ON (c.seller_id) c.seller_id, COALESCE(pi.card_url, pi.thumb_url, pi.url) AS url
+    FROM product_images pi
+    JOIN products p ON p.id = pi.product_id
+      AND p.status = 'ACTIVE' AND p.approval_status = 'APPROVED' AND p.deleted_at IS NULL
+    JOIN categories c ON c.id = p.category_id AND c.is_active AND c.deleted_at IS NULL
+    WHERE c.seller_id = ANY(${sellerIds}::uuid[])
+    ORDER BY c.seller_id, p.popularity_score DESC, p.created_at ASC, pi.display_order ASC`;
+  return new Map(rows.map((row) => [row.seller_id, row.url]));
+}
+
+/**
+ * Customer: every live restaurant and cafe, each identified as its own
+ * seller. With a location, only those that deliver there (each seller's own
+ * radius — the rule checkout enforces), nearest first.
+ */
+export async function listRestaurants(location: { lat: number; lng: number } | null = null): Promise<RestaurantSummaryDto[]> {
   const sellers = await prisma.seller.findMany({
     where: LIVE_RESTAURANT_WHERE,
     include: RESTAURANT_INCLUDE,
@@ -320,14 +373,34 @@ export async function listRestaurants() {
     _count: { _all: true },
   });
   const countBy = new Map(counts.map((c) => [c.sellerId, c._count._all]));
+  const covers = await coverImages(sellers.map((s) => s.id));
+
+  const distances = new Map<string, number>();
+  let visible = sellers;
+  if (location) {
+    const checks = await Promise.all(
+      sellers.map(async (seller) => ({ seller, check: await checkServiceability(location.lat, location.lng, seller) })),
+    );
+    for (const { seller, check } of checks) distances.set(seller.id, check.distanceKm);
+    visible = checks
+      .filter((entry) => entry.check.serviceable)
+      .sort((a, b) => a.check.distanceKm - b.check.distanceKm)
+      .map((entry) => entry.seller);
+  }
+
   return Promise.all(
-    sellers.map(async (seller) => ({ ...(await toRestaurantDto(seller)), menuItemCount: countBy.get(seller.id) ?? 0 })),
+    visible.map(async (seller) => ({
+      ...(await toRestaurantDto(seller)),
+      menuItemCount: countBy.get(seller.id) ?? 0,
+      coverImageUrl: covers.get(seller.id) ?? null,
+      distanceKm: distances.get(seller.id) ?? null,
+    })),
   );
 }
 
 /** Customer: one live restaurant and its public menu. A restaurant that is
  * not live is reported as not found, never as "exists but hidden". */
-export async function getRestaurantMenu(sellerId: string) {
+export async function getRestaurantMenu(sellerId: string): Promise<RestaurantMenuDto> {
   const seller = await prisma.seller.findFirst({
     where: { id: sellerId, ...LIVE_RESTAURANT_WHERE },
     include: RESTAURANT_INCLUDE,

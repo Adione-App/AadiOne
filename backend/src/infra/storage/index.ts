@@ -11,7 +11,7 @@
  */
 
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { mkdir, writeFile, unlink } from "node:fs/promises";
+import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import { env, isProduction } from "../../config/env";
@@ -66,7 +66,43 @@ export interface StorageProvider {
 
   remove(key: string): Promise<void>;
 
+  /**
+   * The stored bytes, or null when no object has this key. Refuses (413)
+   * anything over `maxBytes` — a presigned PUT cannot enforce a size, so the
+   * server never buffers more than it would have accepted itself.
+   */
+  get(key: string, maxBytes: number): Promise<Buffer | null>;
+
   publicUrl(key: string): string;
+}
+
+function storedObjectTooLarge(sizeBytes: number): AppError {
+  return new AppError(ErrorCode.FILE_TOO_LARGE, {
+    message: "Images must be 5 MB or smaller.",
+    internalMessage: `stored object of ${sizeBytes} bytes`,
+  });
+}
+
+/**
+ * The storage key behind one of our own public image URLs, or null for a URL
+ * that is not ours (an external link, another environment's bucket) — so
+ * callers can never delete or rewrite a file they did not store. Local URLs
+ * saved under another host (localhost vs a tunnel) still resolve through
+ * their `/static/` segment.
+ */
+export function storageKeyFromUrl(url: string): string | null {
+  const base = `${env.STORAGE_PUBLIC_BASE_URL.replace(/\/$/, "")}/`;
+  const marker = "/static/";
+
+  let key: string | null = null;
+  if (url.startsWith(base)) {
+    key = url.slice(base.length);
+  } else if (env.STORAGE_PROVIDER === "local" && url.includes(marker)) {
+    key = url.slice(url.indexOf(marker) + marker.length);
+  }
+
+  if (!key || key.includes("..") || !/^[A-Za-z0-9/_.-]+$/.test(key)) return null;
+  return key;
 }
 
 const ALLOWED_CONTENT_TYPES = new Set([
@@ -176,6 +212,22 @@ class LocalStorageProvider implements StorageProvider {
 
   async remove(key: string): Promise<void> {
     await unlink(path.join(this.root, key)).catch(() => undefined);
+  }
+
+  async get(key: string, maxBytes: number): Promise<Buffer | null> {
+    const target = path.join(this.root, key);
+
+    // Keys come from our own folders, but never read outside the root.
+    if (!target.startsWith(this.root + path.sep)) return null;
+
+    try {
+      const body = await readFile(target);
+      if (body.byteLength > maxBytes) throw storedObjectTooLarge(body.byteLength);
+      return body;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
   }
 }
 
@@ -516,6 +568,59 @@ class S3StorageProvider implements StorageProvider {
 
       expiresInSeconds: 900,
     };
+  }
+
+  /* ------------------------------------------------------------------------ */
+  /* Read (server-side image processing)                                      */
+  /* ------------------------------------------------------------------------ */
+
+  async get(key: string, maxBytes: number): Promise<Buffer | null> {
+    const response = await fetch(this.sign("GET", key, undefined, 300));
+
+    // Supabase answers a missing object with 400 or 404.
+    if (response.status === 404 || response.status === 400) {
+      await response.body?.cancel().catch(() => undefined);
+      return null;
+    }
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => "");
+
+      throw new AppError(ErrorCode.INTERNAL_ERROR, {
+        internalMessage: `s3 get failed: ${response.status} ${errorBody}`,
+      });
+    }
+
+    const declared = Number(response.headers.get("content-length") ?? NaN);
+
+    if (declared > maxBytes) {
+      await response.body?.cancel().catch(() => undefined);
+      throw storedObjectTooLarge(declared);
+    }
+
+    // Count the bytes as well: Content-Length may be absent.
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+
+    if (response.body) {
+      const reader = response.body.getReader();
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        received += value.byteLength;
+
+        if (received > maxBytes) {
+          await reader.cancel().catch(() => undefined);
+          throw storedObjectTooLarge(received);
+        }
+
+        chunks.push(value);
+      }
+    }
+
+    return Buffer.concat(chunks);
   }
 
   /* ------------------------------------------------------------------------ */

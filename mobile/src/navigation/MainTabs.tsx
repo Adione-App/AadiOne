@@ -5,7 +5,7 @@
  * Search is still fully available — from Home's own search bar and the Cart
  * screen's search icon — it's just reached by pushing onto the current
  * stack (see HomeStack's "SearchHome" screen) instead of living in the tab
- * bar; the center slot there is Food (a placeholder for now).
+ * bar; the center slot there is Food (restaurants & cafes — see FoodStack).
  *
  * Cart is ALSO registered here (`navigation.navigate("Cart")` works from
  * anywhere), but has no button of its own in the bar (see its own
@@ -42,11 +42,10 @@ import {
   AccountStack,
   CartStack,
   CategoriesStack,
+  FoodStack,
   HomeStack,
   WishlistStack,
 } from "./stacks";
-
-import FoodScreen from "@/screens/food/FoodScreen";
 
 import {
   AccountIcon,
@@ -270,6 +269,13 @@ function AnimatedTabBar(props: BottomTabBarProps) {
   const isCategoriesRoute =
     focusedRoute.name === "Categories" &&
     (focusedRouteName === undefined || focusedRouteName === "CategoriesHome");
+  // Screens where something can be added to the cart while the tab bar stays
+  // put — the Food tab, a menu, a store page — get MiniCartBar resting
+  // above the bar, exactly like Categories.
+  const isShoppingRoute =
+    focusedRoute.name === "Food" ||
+    focusedRouteName === "RestaurantMenu" ||
+    focusedRouteName === "Store";
 
   const barHeight = layout.tabBarHeight + insets.bottom;
 
@@ -283,7 +289,7 @@ function AnimatedTabBar(props: BottomTabBarProps) {
     ? "productDetail"
     : isHomeRoute
       ? "home"
-      : isCategoriesRoute
+      : isCategoriesRoute || isShoppingRoute
         ? "categories"
         : "none";
   const setMiniCartScreen = useMiniCartScreen((state) => state.setScreen);
@@ -426,7 +432,7 @@ export function MainTabs() {
         {/* FOOD */}
         <Tab.Screen
           name="Food"
-          component={FoodScreen}
+          component={FoodStack}
           options={{
             tabBarLabel: "Food",
 

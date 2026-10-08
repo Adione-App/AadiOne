@@ -12,7 +12,7 @@ import { useQuery } from '@tanstack/react-query';
 import { formatPaise } from '@shared/money';
 import { api } from '@/lib/api';
 import { adminErrorMessage, marketplaceKeys, shortDateTime, toQuery, type Paged, type PaymentRow } from '@/lib/marketplace';
-import { Button, Pill, Surface, type Tone } from '@/components/ui';
+import { Button, Icon, Pill, Surface, type IconName, type Tone } from '@/components/ui';
 import { Pager } from '@/components/MarketplaceUi';
 import { EmptyPanel, FilterSelect, LoadError, SearchBox, SkeletonList } from '@/seller/sellerUi';
 import { useDebouncedValue } from '@/seller/sellerQueries';
@@ -28,15 +28,31 @@ const STATUSES = [
   { value: 'PARTIALLY_REFUNDED', label: 'Partially refunded' },
 ] as const;
 
-const PAYMENT_TONE: Record<string, Tone> = {
-  CAPTURED: 'brand',
-  AUTHORIZED: 'blue',
-  PENDING: 'amber',
-  CREATED: 'gray',
-  FAILED: 'red',
-  REFUNDED: 'purple',
-  PARTIALLY_REFUNDED: 'purple',
+/**
+ * The outcome badge — success, pending, failed/cancelled (red) and refunded
+ * each look different, so a cancelled payment can never read as a paid one.
+ * Only PAID is money received.
+ */
+const OUTCOME_LOOK: Record<PaymentRow['outcome'], { label: string; tone: Tone; icon: IconName }> = {
+  PAID: { label: 'Paid', tone: 'brand', icon: 'check' },
+  PENDING: { label: 'Pending', tone: 'amber', icon: 'clock' },
+  FAILED: { label: 'Failed', tone: 'red', icon: 'close' },
+  CANCELLED: { label: 'Cancelled', tone: 'red', icon: 'close' },
+  REFUNDED: { label: 'Refunded', tone: 'purple', icon: 'rupee' },
+  PARTIALLY_REFUNDED: { label: 'Partly refunded', tone: 'purple', icon: 'rupee' },
 };
+const FAILED_ORDER_STATUSES = new Set(['CANCELLED', 'PAYMENT_FAILED', 'REFUNDED']);
+
+/** Why a failed / cancelled payment didn't complete, in plain words. */
+function outcomeReason(p: PaymentRow): string | null {
+  if (p.outcome !== 'FAILED' && p.outcome !== 'CANCELLED') return null;
+  if (p.failureReason) return p.failureReason;
+  if (p.order.status === 'PAYMENT_FAILED') return 'Payment not completed — order not placed';
+  if (p.order.status === 'CANCELLED' || p.order.status === 'REFUNDED') {
+    return p.order.cancellationReason ? `Order cancelled — ${p.order.cancellationReason}` : 'Order cancelled';
+  }
+  return 'Payment attempt not completed';
+}
 const REFUND_LOOK: Record<PaymentRow['refund']['state'], { label: string; tone: Tone }> = {
   NONE: { label: 'None', tone: 'gray' },
   PENDING: { label: 'Refund pending', tone: 'amber' },
@@ -135,24 +151,44 @@ export default function PaymentsPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {payments.data.items.map((p) => (
-                    <tr key={p.id} className="hover:bg-gray-50/60">
+                    <tr
+                      key={p.id}
+                      className={OUTCOME_LOOK[p.outcome].tone === 'red' ? 'bg-danger-50/40 hover:bg-danger-50/70' : 'hover:bg-gray-50/60'}
+                    >
                       <td className="whitespace-nowrap px-4 py-3 text-gray-600">{shortDateTime.format(new Date(p.createdAt))}</td>
                       <td className="px-3 py-3">
                         <span className="font-mono font-semibold text-gray-900">#{p.order.orderNumber}</span>
-                        <span className="block text-xs text-gray-500">{humanize(p.order.status)}</span>
+                        <span
+                          className={`block text-xs ${FAILED_ORDER_STATUSES.has(p.order.status) ? 'font-semibold text-danger-600' : 'text-gray-500'}`}
+                        >
+                          {humanize(p.order.status)}
+                        </span>
                       </td>
                       <td className="px-3 py-3">
                         <span className="text-gray-900">{p.customer.name ?? '—'}</span>
                         {p.customer.mobile && <span className="block font-mono text-xs text-gray-500">{p.customer.mobile}</span>}
                       </td>
-                      <td className="whitespace-nowrap px-3 py-3 text-right font-semibold tabular-nums">{formatPaise(p.amountPaise)}</td>
+                      <td
+                        className={`whitespace-nowrap px-3 py-3 text-right font-semibold tabular-nums ${
+                          OUTCOME_LOOK[p.outcome].tone === 'red' ? 'text-gray-400 line-through' : ''
+                        }`}
+                      >
+                        {formatPaise(p.amountPaise)}
+                      </td>
                       <td className="px-3 py-3">
-                        <Pill tone={PAYMENT_TONE[p.status] ?? 'gray'}>{humanize(p.status)}</Pill>
+                        <Pill tone={OUTCOME_LOOK[p.outcome].tone}>
+                          <span className="inline-flex items-center gap-1 uppercase tracking-wide">
+                            <Icon name={OUTCOME_LOOK[p.outcome].icon} className="h-3.5 w-3.5" />
+                            {OUTCOME_LOOK[p.outcome].label}
+                          </span>
+                        </Pill>
+                        {outcomeReason(p) && (
+                          <span className="mt-1 block text-xs font-medium text-danger-600">{outcomeReason(p)}</span>
+                        )}
                         <span className="mt-1 block text-xs text-gray-500">
                           {p.provider}
-                          {p.method ? ` · ${p.method.toUpperCase()}` : ''}
+                          {p.method ? ` · ${p.method.toUpperCase()}` : ''} · gateway: {humanize(p.status)}
                         </span>
-                        {p.failureReason && <span className="block text-xs text-danger-600">{p.failureReason}</span>}
                       </td>
                       <td className="max-w-[12rem] break-all px-3 py-3 font-mono text-xs text-gray-700">{p.providerOrderId ?? '—'}</td>
                       <td className="max-w-[10rem] break-all px-3 py-3 font-mono text-xs text-gray-700">{p.providerPaymentId ?? '—'}</td>

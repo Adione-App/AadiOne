@@ -1,9 +1,7 @@
 import {
   Animated,
   Easing,
-  FlatList,
   Pressable,
-  ScrollView,
   StyleSheet,
   View,
   useWindowDimensions,
@@ -15,59 +13,61 @@ import ReanimatedAnimated, {
   useAnimatedStyle,
   useSharedValue,
 } from "react-native-reanimated";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
-import {
-  ArrowRight,
-  ChevronRight,
-  Leaf,
-  Package,
-  ShieldCheck,
-  MapPin,
-  Zap,
-} from "lucide-react-native";
+import { ChevronRight, Package } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useIsFocused } from "@react-navigation/native";
+import { useQueries } from "@tanstack/react-query";
+import * as Clipboard from "expo-clipboard";
 
-import type { HomeFeedDto, ProductSummaryDto } from "@shared";
-
-type RailKey = HomeFeedDto["rails"][number]["key"];
-import { colors, radius, shadow, spacing } from "@shared/theme";
+import type { CategoryDto, CursorPage, ProductSummaryDto } from "@shared";
+import { colors, radius, spacing } from "@shared/theme";
 import { formatDistance } from "@shared/distance";
 
-import { useHomeFeed, useNotificationUnreadCount, useOrders } from "@/lib/queries";
+import {
+  homeSectionQuery,
+  useHomeFeed,
+  useNotificationUnreadCount,
+  useOffers,
+  useOrders,
+  useRestaurants,
+  useStores,
+} from "@/lib/queries";
 import { formatUnreadBadge } from "@/lib/notifications";
 import { useCartActions } from "@/lib/useCartActions";
 import { useLocation } from "@/lib/store";
 
-import {
-  AppText,
-  ErrorState,
-  Loading,
-  NoticeStrip,
-  Screen,
-} from "@/components/ui";
+import { AppText, ErrorState, NoticeStrip, Screen } from "@/components/ui";
 
-import { ProductCard } from "@/components/ProductCard";
-import CategoryIcon from "@/components/CategoryIcon";
 import {
   tabBarHiddenByScroll,
   useTabBarClearance,
 } from "@/lib/tabBarVisibility";
 
-import adioneHomeBanner from "../../../assets/adione-homebar.png";
-import bannerDailyEssentials from "../../../assets/home-banner-daily-essentials.png";
-import bannerElectronics from "../../../assets/home-banner-electronics.png";
-import bannerVegFruits from "../../../assets/home-banner-vegetables-fruits.png";
-import promoClothes from "../../../assets/promo-clothes.png";
-import promoElectronics from "../../../assets/promo-electronics.png";
-import promoFreshProduce from "../../../assets/promo-fresh-fruits-veggies.png";
-import promoGrocery from "../../../assets/promo-grocery.png";
+import {
+  buildHomeSections,
+  buildPromoSlides,
+  lazyShelfCategories,
+  type HomeAction,
+  type HomeSection,
+  type RailKey,
+} from "./homeEngine";
+import { BrandFooter } from "./sections/BrandFooter";
+import { CategoryGrid } from "./sections/CategoryGrid";
+import { FoodSection } from "./sections/FoodSection";
+import { HomeSkeleton } from "./sections/HomeSkeleton";
+import { OfferSection } from "./sections/OfferSection";
+import { ProductShelf, SHELF_CARD_WIDTH } from "./sections/ProductShelf";
+import { PromoCarousel } from "./sections/PromoCarousel";
+import { HOME_BACKGROUND } from "./sections/SectionShell";
+import { StoreSection } from "./sections/StoreSection";
 
-/** Fixed count of the promotional carousel below — see the `banners` array. */
-const HOME_BANNER_COUNT = 4;
+/** Subcategory shelves added to the page per "near the end" scroll. */
+const LAZY_BATCH = 4;
+
+const NO_RESULTS: never[] = [];
 
 /* =====================================================================
    ANIMATED SEARCH PLACEHOLDER
@@ -76,25 +76,37 @@ const HOME_BANNER_COUNT = 4;
    ProductCard's AnimatedQuantity) instead of sitting on one static line —
    the quick-commerce apps this design follows use the same "rotating
    placeholder" cue to hint at what's searchable without the customer
-   having to tap in first.
+   having to tap in first. The phrases are built from the live category
+   tree (see `searchPhrases`), so they only ever suggest things the
+   catalogue actually has.
 ===================================================================== */
 
-const SEARCH_PLACEHOLDERS = [
-  "Search for atta, rice, dal…",
-  "Search for milk, bread, eggs…",
-  "Search for chips, biscuits…",
-  "Search for soap, shampoo…",
-  "Search for fruits, vegetables…",
-];
+const DEFAULT_SEARCH_PHRASE = "Search products, brands & more…";
+const MAX_SEARCH_PHRASES = 8;
+
+function searchPhrases(categories: readonly CategoryDto[] | undefined): string[] {
+  const names = (categories ?? []).flatMap((category) => [
+    category.name,
+    ...(category.children ?? []).map((child) => child.name),
+  ]);
+  return [
+    DEFAULT_SEARCH_PHRASE,
+    ...[...new Set(names)]
+      .slice(0, MAX_SEARCH_PHRASES)
+      .map((name) => `Search for ${name.toLowerCase()}…`),
+  ];
+}
 
 const PLACEHOLDER_HOLD_MS = 2200;
 const PLACEHOLDER_ANIM_MS = 280;
 
-function AnimatedSearchPlaceholder() {
+function AnimatedSearchPlaceholder({ phrases }: { phrases: string[] }) {
   const [index, setIndex] = useState(0);
   const anim = useRef(new Animated.Value(1)).current;
+  const count = phrases.length;
 
   useEffect(() => {
+    if (count <= 1) return;
     const timer = setInterval(() => {
       Animated.timing(anim, {
         toValue: 0,
@@ -102,7 +114,7 @@ function AnimatedSearchPlaceholder() {
         easing: Easing.in(Easing.cubic),
         useNativeDriver: true,
       }).start(() => {
-        setIndex((current) => (current + 1) % SEARCH_PLACEHOLDERS.length);
+        setIndex((current) => (current + 1) % count);
         anim.setValue(0);
         Animated.timing(anim, {
           toValue: 1,
@@ -114,7 +126,7 @@ function AnimatedSearchPlaceholder() {
     }, PLACEHOLDER_HOLD_MS);
 
     return () => clearInterval(timer);
-  }, [anim]);
+  }, [anim, count]);
 
   const translateY = anim.interpolate({
     inputRange: [0, 1],
@@ -134,7 +146,7 @@ function AnimatedSearchPlaceholder() {
           },
         ]}
       >
-        {SEARCH_PLACEHOLDERS[index]}
+        {phrases[index % Math.max(1, count)] ?? DEFAULT_SEARCH_PHRASE}
       </Animated.Text>
     </View>
   );
@@ -142,6 +154,13 @@ function AnimatedSearchPlaceholder() {
 
 /* =====================================================================
    HOME SCREEN
+
+   A long, virtualized discovery feed. This component only orchestrates:
+   it fetches (one Home feed call, plus stores / restaurants / offers, plus
+   each subcategory shelf lazily as the customer scrolls toward it), hands
+   everything to the section engine (homeEngine.ts — section order, cross-
+   section de-duplication, banner slides), and renders whatever sections
+   come back. Nothing about the catalogue is written here.
 ===================================================================== */
 
 export default function HomeScreen({
@@ -154,6 +173,9 @@ export default function HomeScreen({
   onOpenProfile,
   onOpenNotifications,
   onOpenOrderTracking,
+  onOpenRestaurant,
+  onOpenStore,
+  onOpenFood,
 }: {
   onOpenProduct: (productId: string) => void;
   onOpenCategory: (categoryId: string) => void;
@@ -164,6 +186,9 @@ export default function HomeScreen({
   onOpenProfile: () => void;
   onOpenNotifications: () => void;
   onOpenOrderTracking: (orderId: string) => void;
+  onOpenRestaurant: (sellerId: string) => void;
+  onOpenStore: (sellerId: string) => void;
+  onOpenFood: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
@@ -191,12 +216,9 @@ export default function HomeScreen({
 
   const { location, serviceability, refresh } = useLocation();
 
-  const { width: windowWidth } = useWindowDimensions();
-  const [activeBanner, setActiveBanner] = useState(0);
-  const bannerScrollRef = useRef<ScrollView>(null);
-  const bannerAutoplayTimerRef = useRef<ReturnType<typeof setInterval> | null>(
-    null,
-  );
+  const { height: windowHeight } = useWindowDimensions();
+
+
 
   // Collapses the address/profile row as the page scrolls, leaving the
   // search bar as the only thing left looking pinned at the top.
@@ -415,243 +437,193 @@ export default function HomeScreen({
     return () => clearInterval(interval);
   }, [refresh]);
 
-  // Advances the banner carousel every 2s. A manual swipe (see
-  // `onMomentumScrollEnd` below) calls this again to restart the countdown,
-  // so autoplay doesn't fight a swipe the customer just made.
-  const startBannerAutoplay = () => {
-    if (bannerAutoplayTimerRef.current)
-      clearInterval(bannerAutoplayTimerRef.current);
-    if (HOME_BANNER_COUNT <= 1) return;
+  // Stores and restaurants are filtered to the customer's location by the
+  // SERVER (each seller's own delivery radius — the rule checkout enforces).
+  const near = useMemo(
+    () => (location ? { latitude: location.latitude, longitude: location.longitude } : null),
+    [location],
+  );
+  const restaurantsQuery = useRestaurants(near);
+  const storesQuery = useStores(near);
+  const offersQuery = useOffers();
 
-    const slideStep =
-      Math.min(640, windowWidth - spacing.base * 2) + spacing.sm;
+  // A food seller with an empty menu has nothing to order yet.
+  const restaurants = useMemo(
+    () => (restaurantsQuery.data ?? NO_RESULTS).filter((restaurant) => restaurant.menuItemCount > 0),
+    [restaurantsQuery.data],
+  );
+  const stores = storesQuery.data ?? NO_RESULTS;
+  const offers = offersQuery.data ?? NO_RESULTS;
 
-    bannerAutoplayTimerRef.current = setInterval(() => {
-      setActiveBanner((current) => {
-        const next = (current + 1) % HOME_BANNER_COUNT;
-        bannerScrollRef.current?.scrollTo({
-          x: next * slideStep,
-          animated: true,
-        });
-        return next;
-      });
-    }, 2000);
+  /* ----------------------------------------------------------------
+     LAZY SUBCATEGORY SHELVES
+
+     Every subcategory can have its own shelf, but only `lazyCount` of
+     them are on the page at a time — `onEndReached` adds the next batch.
+     Each shelf fetches its own products only once FlatList mounts it
+     (see ProductShelf's LazyShelfLoader). The DISABLED observers below
+     never fetch anything themselves; they just let this screen see each
+     shelf's products the moment they land, so the engine can de-duplicate
+     them against everything above.
+  ---------------------------------------------------------------- */
+
+  const allLazyCategories = useMemo(
+    () => (feed.data ? lazyShelfCategories(feed.data) : NO_RESULTS),
+    [feed.data],
+  );
+  const [lazyCount, setLazyCount] = useState(LAZY_BATCH);
+  const activeLazyCategories = useMemo(
+    () => allLazyCategories.slice(0, lazyCount),
+    [allLazyCategories, lazyCount],
+  );
+  const lazyItems = useQueries({
+    queries: activeLazyCategories.map((category) => ({
+      ...homeSectionQuery(category.id),
+      enabled: false,
+    })),
+    combine: combineLazyItems,
+  });
+  const lazyProducts = useMemo(() => {
+    const byCategory = new Map<string, ProductSummaryDto[]>();
+    activeLazyCategories.forEach((category, index) => {
+      const items = lazyItems[index];
+      if (items) byCategory.set(category.id, items);
+    });
+    return byCategory;
+  }, [activeLazyCategories, lazyItems]);
+
+  const loadMoreShelves = useCallback(() => {
+    setLazyCount((current) =>
+      current < allLazyCategories.length ? current + LAZY_BATCH : current,
+    );
+  }, [allLazyCategories.length]);
+
+  const sections = useMemo(
+    () =>
+      feed.data
+        ? buildHomeSections({
+            feed: feed.data,
+            hasFood: restaurants.length > 0,
+            hasStores: stores.length > 0,
+            hasOffers: offers.length > 0,
+            lazyCount: Math.min(lazyCount, allLazyCategories.length),
+            lazyProducts,
+          })
+        : (NO_RESULTS as HomeSection[]),
+    [feed.data, restaurants.length, stores.length, offers.length, lazyCount, allLazyCategories.length, lazyProducts],
+  );
+
+  const slides = useMemo(
+    () => (feed.data ? buildPromoSlides(feed.data, restaurants) : []),
+    [feed.data, restaurants],
+  );
+
+  const phrases = useMemo(() => searchPhrases(feed.data?.categories), [feed.data?.categories]);
+
+  /* ----------------------------------------------------------------
+     NAVIGATION HANDLERS
+
+     The stack hands this screen fresh inline callbacks whenever it
+     re-renders; routing every section through one ref keeps the
+     handlers below referentially stable, so the memoized sections don't
+     re-render just because the navigator did.
+  ---------------------------------------------------------------- */
+
+  const nav = useRef({
+    onOpenProduct,
+    onOpenCategory,
+    onOpenAllCategories,
+    onOpenRail,
+    onOpenSearch,
+    onOpenRestaurant,
+    onOpenStore,
+    onOpenFood,
+  });
+  nav.current = {
+    onOpenProduct,
+    onOpenCategory,
+    onOpenAllCategories,
+    onOpenRail,
+    onOpenSearch,
+    onOpenRestaurant,
+    onOpenStore,
+    onOpenFood,
   };
 
-  useEffect(() => {
-    startBannerAutoplay();
-    return () => {
-      if (bannerAutoplayTimerRef.current)
-        clearInterval(bannerAutoplayTimerRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [windowWidth]);
-
-  /* ================================================================
-     LOADING
-  ================================================================ */
-
-  if (feed.isLoading) {
-    return <Loading label="Loading store…" />;
-  }
-
-  /* ================================================================
-     ERROR
-  ================================================================ */
-
-  if (feed.isError || !feed.data) {
-    const offline =
-      (feed.error as { isOffline?: boolean } | null)?.isOffline === true;
-
-    return (
-      <ErrorState
-        message="We could not load the store."
-        offline={offline}
-        onRetry={() => void feed.refetch()}
-      />
-    );
-  }
-
-  /* ================================================================
-     PRODUCT CARD
-  ================================================================ */
-
-  // `cart.add`/`increment`/`decrement`/`onOpenProduct` are stable across
-  // renders (see useCartActions), and ProductCard only calls them with a
-  // real variant id once its own `variant &&` guard passes — so they can be
-  // handed to every card directly, instead of a fresh per-item closure on
-  // every render. That's what lets React.memo actually skip re-rendering
-  // product B's card when product A's quantity changes.
-  const renderProduct = ({ item }: { item: ProductSummaryDto }) => (
-    <View style={styles.productWrapper}>
-      <ProductCard
-        product={item}
-        qtyInCart={
-          item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0
+  const handlers = useMemo(
+    () => ({
+      openProduct: (productId: string) => nav.current.onOpenProduct(productId),
+      openCategory: (categoryId: string) => nav.current.onOpenCategory(categoryId),
+      openAllCategories: () => nav.current.onOpenAllCategories(),
+      openSearch: () => nav.current.onOpenSearch(),
+      openRestaurant: (sellerId: string) => nav.current.onOpenRestaurant(sellerId),
+      openStore: (sellerId: string) => nav.current.onOpenStore(sellerId),
+      openFood: () => nav.current.onOpenFood(),
+      action: (action: HomeAction) => {
+        switch (action.type) {
+          case "rail":
+            nav.current.onOpenRail(action.railKey, action.title);
+            break;
+          case "category":
+            nav.current.onOpenCategory(action.categoryId);
+            break;
+          case "product":
+            nav.current.onOpenProduct(action.productId);
+            break;
+          case "food":
+            nav.current.onOpenFood();
+            break;
+          case "coupon":
+            void Clipboard.setStringAsync(action.code);
+            break;
+          case "none":
+            break;
         }
-        busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
-        onPress={onOpenProduct}
-        onAdd={cart.add}
-        onIncrement={cart.increment}
-        onDecrement={cart.decrement}
-      />
-    </View>
+      },
+    }),
+    [],
   );
 
-  /* ================================================================
-     CATEGORY RAIL LOOKUP
-
-     Shared by both the banners (deep-linking "Electronics"/"Fresh
-     Produce" banners to their actual shelf) and the Home section order
-     below. "Grocery" is deliberately excluded — Daily Essentials already
-     covers grocery staples, so its own shelf just duplicated that rail —
-     and Vegetables & Fruits always gets the first featured slot when the
-     store has it, rather than however it happens to rank by
-     `displayOrder`. Everything else still resolves dynamically, so a new
-     category the store adds later shows up without a code change.
-  ================================================================ */
-
-  const allCategoryRails = feed.data.categoryRails ?? [];
-  const isGroceryShelf = (title: string) =>
-    title.trim().toLowerCase() === "grocery";
-  const isProduceShelf = (title: string) => /fruit|vegetable/i.test(title);
-  const isElectronicsShelf = (title: string) => /electronic/i.test(title);
-  const isClothesShelf = (title: string) =>
-    /cloth|fashion|apparel/i.test(title);
-
-  const produceRail = allCategoryRails.find((rail) =>
-    isProduceShelf(rail.title),
+  const renderSection = useCallback(
+    ({ item }: { item: HomeSection }) => {
+      switch (item.kind) {
+        case "banners":
+          return <PromoCarousel slides={slides} onAction={handlers.action} />;
+        case "categories":
+          return (
+            <CategoryGrid
+              categories={feed.data?.categories ?? NO_RESULTS}
+              onOpenCategory={handlers.openCategory}
+              onViewAll={handlers.openAllCategories}
+            />
+          );
+        case "food":
+          return (
+            <FoodSection
+              restaurants={restaurants}
+              onOpenRestaurant={handlers.openRestaurant}
+              onOpenFood={handlers.openFood}
+            />
+          );
+        case "stores":
+          return <StoreSection stores={stores} nearby={near !== null} onOpenStore={handlers.openStore} />;
+        case "offers":
+          return <OfferSection offers={offers} />;
+        case "shelf":
+          return (
+            <ProductShelf
+              section={item}
+              cart={cart}
+              onOpenProduct={handlers.openProduct}
+              onAction={handlers.action}
+            />
+          );
+        case "footer":
+          return <BrandFooter onShop={handlers.openSearch} />;
+      }
+    },
+    [slides, feed.data?.categories, restaurants, stores, offers, near, cart, handlers],
   );
-  const electronicsRail = allCategoryRails.find((rail) =>
-    isElectronicsShelf(rail.title),
-  );
-  const clothesRail = allCategoryRails.find((rail) =>
-    isClothesShelf(rail.title),
-  );
-  const groceryRail = allCategoryRails.find((rail) =>
-    isGroceryShelf(rail.title),
-  );
-  const otherCategoryRails = allCategoryRails.filter(
-    (rail) => rail !== produceRail && !isGroceryShelf(rail.title),
-  );
-
-  const featuredCategoryRails = [produceRail, ...otherCategoryRails]
-    .filter((rail): rail is NonNullable<typeof rail> => rail != null)
-    .slice(0, 2);
-
-  /* ================================================================
-     "SHOP BY CATEGORY" PROMO TILES — bottom-of-Home strip, deliberately a
-     different shape/interaction (horizontal tile strip, entrance
-     animation) from the swipe carousel up top so it doesn't just read as
-     a second copy of the same thing. Each tile deep-links to its matching
-     shelf when the store has one, same resolution as the banners above.
-  ================================================================ */
-
-  const promoTiles = [
-    {
-      id: "clothes",
-      image: promoClothes,
-      onPress: clothesRail
-        ? () => onOpenCategory(clothesRail.categoryId)
-        : onOpenAllCategories,
-    },
-    {
-      id: "electronics",
-      image: promoElectronics,
-      onPress: electronicsRail
-        ? () => onOpenCategory(electronicsRail.categoryId)
-        : onOpenAllCategories,
-    },
-    {
-      id: "fresh-produce",
-      image: promoFreshProduce,
-      onPress: produceRail
-        ? () => onOpenCategory(produceRail.categoryId)
-        : onOpenAllCategories,
-    },
-    {
-      id: "grocery",
-      image: promoGrocery,
-      onPress: groceryRail
-        ? () => onOpenCategory(groceryRail.categoryId)
-        : onOpenAllCategories,
-    },
-  ];
-
-  /* ================================================================
-     PROMOTIONAL BANNERS — auto-rotating carousel
-
-     The first slide is the existing "Free Delivery" banner (unchanged —
-     same image, same text overlay). The other three are full marketing
-     graphics with their own baked-in text/CTA, so they render as plain
-     images with no overlay, the whole slide tappable instead of just a
-     button.
-  ================================================================ */
-
-  const bannerSlideWidth = Math.min(640, windowWidth - spacing.base * 2);
-  const bannerSlideGap = spacing.sm;
-
-  const banners = [
-    {
-      id: "free-delivery",
-      image: adioneHomeBanner,
-      title: "FREE DELIVERY",
-      subtitle: "On orders above ₹299",
-      actionLabel: "Shop Now",
-      onPress: onOpenSearch,
-    },
-    {
-      id: "daily-essentials",
-      image: bannerDailyEssentials,
-      onPress: () => onOpenRail("DAILY_ESSENTIALS", "Daily Essentials"),
-    },
-    {
-      id: "electronics",
-      image: bannerElectronics,
-      onPress: electronicsRail
-        ? () => onOpenCategory(electronicsRail.categoryId)
-        : onOpenAllCategories,
-    },
-    {
-      id: "fresh-produce",
-      image: bannerVegFruits,
-      onPress: produceRail
-        ? () => onOpenCategory(produceRail.categoryId)
-        : onOpenAllCategories,
-    },
-  ];
-
-  /* ================================================================
-     HOME SECTION ORDER
-
-     A fixed, requested layout — Daily Essentials, then the top two
-     category shelves, then Best Sellers, Offers, and Popular (which the
-     backend now randomizes rather than ranks — see catalog.repository.ts)
-     last. This replaces looping over `rails` and `categoryRails`
-     separately in whatever order the API happened to return them, which
-     is what let "Popular" and "Daily Essentials" end up showing the exact
-     same fixed top-10 every time.
-  ================================================================ */
-
-  const railByKey = new Map(feed.data.rails.map((rail) => [rail.key, rail]));
-
-  type HomeSection =
-    | { kind: "rail"; rail: HomeFeedDto["rails"][number] }
-    | { kind: "category"; rail: HomeFeedDto["categoryRails"][number] };
-
-  const homeSections: HomeSection[] = [
-    railByKey.get("DAILY_ESSENTIALS"),
-    ...featuredCategoryRails,
-    railByKey.get("BEST_SELLERS"),
-    railByKey.get("OFFERS"),
-    railByKey.get("POPULAR"),
-  ]
-    .filter((entry): entry is NonNullable<typeof entry> => entry != null)
-    .map((entry) =>
-      "categoryId" in entry
-        ? { kind: "category" as const, rail: entry }
-        : { kind: "rail" as const, rail: entry },
-    );
 
   return (
     <Screen style={styles.screen}>
@@ -877,525 +849,146 @@ export default function HomeScreen({
               style={styles.searchIcon}
             />
 
-            <AnimatedSearchPlaceholder />
+            <AnimatedSearchPlaceholder phrases={phrases} />
           </Pressable>
         </ReanimatedAnimated.View>
       </View>
 
       {/* ============================================================
-          SCROLLABLE HOME
+          SCROLLABLE HOME — a virtualized list of sections. Only the
+          sections near the viewport are mounted, and each product shelf
+          is itself a virtualized horizontal list, so a catalogue of
+          thousands of products never renders more than a screenful of
+          cards at a time.
       ============================================================ */}
 
-      <ReanimatedAnimated.ScrollView
+      <ReanimatedAnimated.FlatList
+        data={sections}
+        keyExtractor={sectionKey}
+        renderItem={renderSection}
         onScroll={scrollHandler}
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
         style={styles.scroll}
+        onEndReached={loadMoreShelves}
+        onEndReachedThreshold={1.5}
+        initialNumToRender={5}
+        maxToRenderPerBatch={4}
+        windowSize={9}
         contentContainerStyle={{
           // Constant reservation matching the overlay's own full natural
           // height (measured once — see `overlayHeight` above), so real
           // content starts exactly where the overlay visually ends at
-          // scrollY=0. This is what lets the overlay float ABOVE the
-          // ScrollView (rather than push it down) without covering the
-          // first row of content while fully expanded.
+          // scrollY=0. This is what lets the overlay float ABOVE the list
+          // (rather than push it down) without covering the first row of
+          // content while fully expanded.
           paddingTop: overlayHeight,
-          // `tabBarClearance` (`layout.tabBarHeight + insets.bottom`, see
-          // tabBarVisibility.ts) — NOT `MiniCartBar`'s own footprint. The tab
-          // bar is now a genuine floating OVERLAY (see MainTabs.tsx's
-          // `AnimatedTabBar`, design #4) with no reserved flex space of its
-          // own, so this ScrollView's real content would otherwise render
-          // underneath its visible plate at rest — this is what keeps the
-          // last product row clear of it, the same job the old flex slot
-          // used to do for free. A flat `+ 5` on top covers MiniCartBar:
-          // its own resting footprint (`BOTTOM_GAP` 12 + 56px card = 68px,
-          // see MiniCartBar.tsx) is ≤ `tabBarClearance` on every device with
-          // `insets.bottom >= 4` (effectively all of them), so only the
-          // theoretical `insets.bottom === 0` shortfall needs covering —
-          // real content should never sit flush against MiniCartBar with
-          // zero breathing room. MiniCartBar itself still floats freely over
-          // the LAST few px of this padding, exactly as designed — this
-          // isn't reserving its full footprint a second time.
-          paddingBottom: tabBarClearance + 5,
+          // `tabBarClearance` keeps the last section clear of the floating
+          // tab bar; the extra `spacing.base` covers MiniCartBar's resting
+          // footprint on devices with no bottom inset (see MainTabs.tsx's
+          // `AnimatedTabBar` and MiniCartBar.tsx).
+          paddingBottom: tabBarClearance + spacing.base,
         }}
-      >
-        {/* ========================================================
-            SERVICEABILITY / CART NOTICES
-        ======================================================== */}
+        ListHeaderComponent={
+          <>
+            {/* ====================================================
+                SERVICEABILITY / CART NOTICES
+            ==================================================== */}
 
-        {cart.error && (
-          <View style={styles.noticeContainer}>
-            <NoticeStrip message={cart.error} />
-          </View>
-        )}
-
-        {serviceability && !serviceability.serviceable && (
-          <View style={styles.noticeContainer}>
-            <NoticeStrip
-              message="We don't deliver to your location yet — you can browse, but ordering is unavailable."
-              tone="info"
-            />
-          </View>
-        )}
-
-        {serviceability?.sellerOpen === false && (
-          <View style={styles.noticeContainer}>
-            <NoticeStrip message="The store is closed right now. You can still add items and order when we open." />
-          </View>
-        )}
-
-        {/* ========================================================
-            ORDER IN PROGRESS — a customer can start a brand new order
-            (the Mini Cart is genuinely empty again the instant the last
-            one was placed — see useCartActions.ts's
-            `resetPendingCartAfterOrder`) while an earlier order is still
-            being prepared/delivered. This is the one place that earlier
-            order stays visible/reachable instead of just disappearing
-            from view the moment its own items stopped showing in the
-            cart.
-        ======================================================== */}
-
-        {ongoingOrder && (
-          <View style={styles.noticeContainer}>
-            <Pressable
-              onPress={() => onOpenOrderTracking(ongoingOrder.id)}
-              style={styles.ongoingOrderCard}
-              accessibilityRole="button"
-              accessibilityLabel={`Order ${ongoingOrder.orderNumber}, ${ongoingOrder.statusLabel}. View order`}
-            >
-              <View style={styles.ongoingOrderIcon}>
-                <Package size={20} color={colors.primary} strokeWidth={2} />
+            {cart.error && (
+              <View style={styles.noticeContainer}>
+                <NoticeStrip message={cart.error} />
               </View>
+            )}
 
-              <View style={styles.ongoingOrderText}>
-                <AppText variant="bodyStrong" numberOfLines={1}>
-                  Order #{ongoingOrder.orderNumber}
-                </AppText>
-                <AppText
-                  variant="caption"
-                  color={colors.primary}
-                  numberOfLines={1}
-                  style={styles.ongoingOrderStatus}
+            {serviceability && !serviceability.serviceable && (
+              <View style={styles.noticeContainer}>
+                <NoticeStrip
+                  message="We don't deliver to your location yet — you can browse, but ordering is unavailable."
+                  tone="info"
+                />
+              </View>
+            )}
+
+            {serviceability?.sellerOpen === false && (
+              <View style={styles.noticeContainer}>
+                <NoticeStrip message="The store is closed right now. You can still add items and order when we open." />
+              </View>
+            )}
+
+            {/* ====================================================
+                ORDER IN PROGRESS — a customer can start a brand new
+                order while an earlier one is still being prepared/
+                delivered; this keeps that earlier order reachable.
+            ==================================================== */}
+
+            {ongoingOrder && (
+              <View style={styles.noticeContainer}>
+                <Pressable
+                  onPress={() => onOpenOrderTracking(ongoingOrder.id)}
+                  style={styles.ongoingOrderCard}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Order ${ongoingOrder.orderNumber}, ${ongoingOrder.statusLabel}. View order`}
                 >
-                  {ongoingOrder.statusLabel}
-                </AppText>
-              </View>
-
-              <View style={styles.ongoingOrderAction}>
-                <AppText variant="bodyStrong" color={colors.primary} style={styles.ongoingOrderActionText}>
-                  Track
-                </AppText>
-                <ChevronRight size={16} color={colors.primary} strokeWidth={2.5} />
-              </View>
-            </Pressable>
-          </View>
-        )}
-
-        {/* ========================================================
-            PROMOTIONAL BANNERS — swipeable, with a dot indicator
-        ======================================================== */}
-
-        <View style={styles.bannerCarousel}>
-          <ScrollView
-            ref={bannerScrollRef}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            decelerationRate="fast"
-            snapToInterval={bannerSlideWidth + bannerSlideGap}
-            snapToAlignment="start"
-            contentContainerStyle={{ paddingHorizontal: spacing.base }}
-            onMomentumScrollEnd={(event) => {
-              const index = Math.round(
-                event.nativeEvent.contentOffset.x /
-                  (bannerSlideWidth + bannerSlideGap),
-              );
-              setActiveBanner(Math.max(0, Math.min(banners.length - 1, index)));
-              // A manual swipe shouldn't be immediately undone by autoplay
-              // jumping to the next slide moments later — restart the timer.
-              startBannerAutoplay();
-            }}
-          >
-            {banners.map((item, index) => {
-              const hasOverlay = "title" in item;
-              const slideStyle = [
-                styles.bannerWrapper,
-                {
-                  width: bannerSlideWidth,
-                  // The "Free Delivery" banner keeps its own image's native
-                  // ratio (1653x569) — forcing it into the marketing
-                  // graphics' taller ratio zoomed the image in via `cover`
-                  // and cut its baked-in title/clock artwork off the edge.
-                  aspectRatio: hasOverlay ? 1653 / 569 : 2000 / 760,
-                  marginRight:
-                    index === banners.length - 1 ? 0 : bannerSlideGap,
-                },
-              ];
-
-              // Only the first slide ("Free Delivery") carries a text
-              // overlay — the other three are full marketing graphics with
-              // their own baked-in title/CTA, so the whole slide is just a
-              // tappable image.
-              if (!("title" in item)) {
-                return (
-                  <Pressable
-                    key={item.id}
-                    onPress={item.onPress}
-                    style={slideStyle}
-                    accessibilityRole="button"
-                    accessibilityLabel={item.id}
-                  >
-                    <Image
-                      source={item.image}
-                      style={styles.banner}
-                      contentFit="cover"
-                      transition={150}
-                      cachePolicy="memory-disk"
-                    />
-                  </Pressable>
-                );
-              }
-
-              return (
-                <View key={item.id} style={slideStyle}>
-                  <Image
-                    source={item.image}
-                    style={styles.banner}
-                    contentFit="cover"
-                    transition={150}
-                    cachePolicy="memory-disk"
-                    accessibilityLabel={item.title}
-                  />
-
-                  {/* Very light overlay only */}
-
-                  <View style={styles.bannerOverlay} />
-
-                  {/* ------------------------------------------------
-                      Banner Content
-                  ------------------------------------------------ */}
-
-                  <View style={styles.bannerContent}>
-                    <AppText style={styles.bannerTitle}>{item.title}</AppText>
-
-                    <AppText style={styles.bannerSubtitle}>
-                      {item.subtitle}
-                    </AppText>
-
-                    <Pressable
-                      onPress={item.onPress}
-                      style={styles.shopNowButton}
-                      hitSlop={8}
-                      accessibilityRole="button"
-                      accessibilityLabel={item.actionLabel}
-                    >
-                      <AppText style={styles.shopNowText}>
-                        {item.actionLabel}
-                      </AppText>
-                      <ArrowRight size={13} color="#FFFFFF" strokeWidth={2.5} />
-                    </Pressable>
+                  <View style={styles.ongoingOrderIcon}>
+                    <Package size={20} color={colors.primary} strokeWidth={2} />
                   </View>
-                </View>
-              );
-            })}
-          </ScrollView>
 
-          {banners.length > 1 && (
-            <View style={styles.bannerDots}>
-              {banners.map((item, index) => (
-                <View
-                  key={item.id}
-                  style={[
-                    styles.bannerDot,
-                    index === activeBanner && styles.bannerDotActive,
-                  ]}
-                />
-              ))}
-            </View>
-          )}
-        </View>
+                  <View style={styles.ongoingOrderText}>
+                    <AppText variant="bodyStrong" numberOfLines={1}>
+                      Order #{ongoingOrder.orderNumber}
+                    </AppText>
+                    <AppText
+                      variant="caption"
+                      color={colors.primary}
+                      numberOfLines={1}
+                      style={styles.ongoingOrderStatus}
+                    >
+                      {ongoingOrder.statusLabel}
+                    </AppText>
+                  </View>
 
-        {/* ========================================================
-            CATEGORIES
-        ======================================================== */}
+                  <View style={styles.ongoingOrderAction}>
+                    <AppText variant="bodyStrong" color={colors.primary} style={styles.ongoingOrderActionText}>
+                      Track
+                    </AppText>
+                    <ChevronRight size={16} color={colors.primary} strokeWidth={2.5} />
+                  </View>
+                </Pressable>
+              </View>
+            )}
 
-        <SectionHeader title="Categories" onSeeAll={onOpenAllCategories} />
+            {/* First load with nothing cached: the page's shape, not a spinner. */}
+            {!feed.data && feed.isLoading && <HomeSkeleton cardWidth={SHELF_CARD_WIDTH} />}
 
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.categoryRow}
-        >
-          {[
-            // PASS 1 — every level-0 top category, unconditionally (Grocery,
-            // Electronics, Clothing, Vegetables & Fruits, ...), in the
-            // server's own order.
-            ...feed.data.categories,
-            // PASS 2 — every subcategory of every top category, flattened,
-            // appended AFTER all of pass 1 — never interleaved per-parent.
-            ...feed.data.categories.flatMap(
-              (category) => category.children ?? [],
-            ),
-          ].map((category) => (
-            <Pressable
-              key={category.id}
-              onPress={() => onOpenCategory(category.id)}
-              style={styles.categoryTile}
-              accessibilityRole="button"
-              accessibilityLabel={`Open ${category.name}`}
-            >
-              <View style={styles.categoryCircle}>
-                <CategoryIcon
-                  name={category.name}
-                  imageUrl={category.imageUrl}
-                  size={56}
+            {!feed.data && feed.isError && (
+              <View style={[styles.errorWrap, { minHeight: windowHeight * 0.6 }]}>
+                <ErrorState
+                  message="We could not load the store."
+                  offline={(feed.error as { isOffline?: boolean } | null)?.isOffline === true}
+                  onRetry={() => void feed.refetch()}
                 />
               </View>
-
-              <AppText
-                variant="caption"
-                numberOfLines={2}
-                style={styles.categoryName}
-              >
-                {category.name}
-              </AppText>
-            </Pressable>
-          ))}
-        </ScrollView>
-
-        {/* ========================================================
-            PRODUCT RAILS — Daily Essentials, the featured category shelf,
-            Offers, Best Sellers, then Popular, in that fixed order.
-        ======================================================== */}
-
-        {homeSections.map((section) => (
-          <View
-            key={
-              section.kind === "rail"
-                ? section.rail.key
-                : section.rail.categoryId
-            }
-            style={styles.rail}
-          >
-            <SectionHeader
-              title={section.rail.title}
-              onSeeAll={() =>
-                section.kind === "rail"
-                  ? onOpenRail(section.rail.key, section.rail.title)
-                  : onOpenCategory(section.rail.categoryId)
-              }
-            />
-
-            <FlatList
-              horizontal
-              data={section.rail.products}
-              keyExtractor={(item) => item.id}
-              renderItem={renderProduct}
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.productRow}
-              getItemLayout={(_data, index) => ({
-                length: 140,
-                offset: 140 * index,
-                index,
-              })}
-            />
-          </View>
-        ))}
-
-        {/* ========================================================
-            SHOP BY CATEGORY — promo tile strip
-        ======================================================== */}
-
-        <SectionHeader
-          title="Shop by Category"
-          onSeeAll={onOpenAllCategories}
-        />
-        <PromoTileStrip tiles={promoTiles} />
-
-        {/* ========================================================
-            TRUST STRIP
-        ======================================================== */}
-
-        <View style={styles.trustStrip}>
-          <TrustBadge
-            icon={Leaf}
-            label="Fresh Products"
-            hint="From local stores"
-          />
-          <TrustBadge icon={Zap} label="Fast Delivery" hint="10–20 mins" />
-          <TrustBadge
-            icon={ShieldCheck}
-            label="Trusted & Safe"
-            hint="Quality you can rely on"
-          />
-          <TrustBadge
-            icon={MapPin}
-            label="Local Business"
-            hint="Supporting our community"
-          />
-        </View>
-      </ReanimatedAnimated.ScrollView>
+            )}
+          </>
+        }
+      />
     </Screen>
   );
 }
 
-/* =====================================================================
-   TRUST BADGE
-===================================================================== */
+const sectionKey = (section: HomeSection) => section.key;
 
-function TrustBadge({
-  icon: Icon,
-  label,
-  hint,
-}: {
-  icon: typeof Leaf;
-  label: string;
-  hint: string;
-}) {
-  return (
-    <View style={styles.trustBadge}>
-      <View style={styles.trustIcon}>
-        <Icon size={18} color={colors.primary} strokeWidth={2} />
-      </View>
-      <AppText variant="caption" style={styles.trustLabel}>
-        {label}
-      </AppText>
-      <AppText
-        variant="overline"
-        color={colors.textSecondary}
-        style={styles.trustHint}
-      >
-        {hint}
-      </AppText>
-    </View>
-  );
-}
-
-/* =====================================================================
-   SECTION HEADER
-===================================================================== */
-
-function SectionHeader({
-  title,
-  onSeeAll,
-}: {
-  title: string;
-  onSeeAll: () => void;
-}) {
-  return (
-    <View style={styles.sectionHeader}>
-      <AppText variant="h2" style={styles.sectionTitle}>
-        {title}
-      </AppText>
-
-      <Pressable
-        onPress={onSeeAll}
-        hitSlop={8}
-        style={styles.seeAllButton}
-        accessibilityRole="button"
-        accessibilityLabel={`See all ${title}`}
-      >
-        <AppText
-          variant="bodyStrong"
-          color={colors.primary}
-          style={styles.seeAll}
-        >
-          See All
-        </AppText>
-        <ChevronRight size={16} color={colors.primary} strokeWidth={2.5} />
-      </Pressable>
-    </View>
-  );
-}
-
-/* =====================================================================
-   PROMO TILE STRIP — "Shop by Category" at the bottom of Home
-
-   Deliberately a different shape from the top carousel: several square
-   tiles visible at once in a free-scrolling row (no snap, no dots),
-   each popping in with a staggered scale/fade entrance the first time
-   this section mounts, so it reads as its own distinct block rather than
-   a second copy of the swipe banner.
-===================================================================== */
-
-function PromoTileStrip({
-  tiles,
-}: {
-  tiles: { id: string; image: number; onPress: () => void }[];
-}) {
-  const entrance = useRef(tiles.map(() => new Animated.Value(0))).current;
-
-  useEffect(() => {
-    Animated.stagger(
-      90,
-      entrance.map((value) =>
-        Animated.spring(value, {
-          toValue: 1,
-          useNativeDriver: true,
-          friction: 7,
-          tension: 60,
-        }),
-      ),
-    ).start();
-    // Runs once, when the strip first mounts — `entrance` is a stable ref.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      contentContainerStyle={styles.promoRow}
-    >
-      {tiles.map((tile, index) => {
-        const value = entrance[index]!;
-        return (
-          <Animated.View
-            key={tile.id}
-            style={{
-              opacity: value,
-              transform: [
-                {
-                  scale: value.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0.85, 1],
-                  }),
-                },
-                {
-                  translateY: value.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [16, 0],
-                  }),
-                },
-              ],
-            }}
-          >
-            <Pressable
-              onPress={tile.onPress}
-              style={({ pressed }) => [
-                styles.promoTile,
-                pressed && styles.promoTilePressed,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel={`Shop ${tile.id}`}
-            >
-              <Image
-                source={tile.image}
-                style={styles.promoTileImage}
-                contentFit="cover"
-                transition={150}
-                cachePolicy="memory-disk"
-              />
-            </Pressable>
-          </Animated.View>
-        );
-      })}
-    </ScrollView>
-  );
+/** Stable `combine` for the lazy-shelf observers: each shelf's items, or undefined until loaded. */
+function combineLazyItems(
+  results: { data?: CursorPage<ProductSummaryDto> | undefined }[],
+): (ProductSummaryDto[] | undefined)[] {
+  return results.map((result) => result.data?.items);
 }
 
 /* =====================================================================
    STYLES
 ===================================================================== */
-
 const styles = StyleSheet.create({
   /* ================================================================
      SCREEN
@@ -1405,7 +998,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 0,
     paddingTop: 0,
     paddingBottom: 0,
-    backgroundColor: colors.surface,
+    backgroundColor: HOME_BACKGROUND,
   },
 
   /* ================================================================
@@ -1741,350 +1334,10 @@ searchBarRow: {
   },
 
   /* ================================================================
-     BANNER
+     ERROR (no cached feed)
   ================================================================ */
 
-  bannerCarousel: {
-    marginTop: spacing.md,
-  },
-
-  bannerWrapper: {
-    // `aspectRatio` is set per-slide (see the render loop) since the "Free
-    // Delivery" banner and the three marketing graphics aren't drawn at the
-    // same proportions — forcing them into one shared ratio zoomed `cover`
-    // in enough to crop baked-in artwork off the image's edge. Width itself
-    // is set per-slide from JS too (see `bannerSlideWidth`), capped the
-    // same way `maxWidth: 640` used to.
-    borderRadius: radius.lg,
-
-    overflow: "hidden",
-
-    backgroundColor: colors.primarySurface,
-
-    position: "relative",
-  },
-
-  bannerDots: {
-    flexDirection: "row",
-
+  errorWrap: {
     justifyContent: "center",
-
-    alignItems: "center",
-
-    gap: 6,
-
-    marginTop: spacing.sm,
-  },
-
-  bannerDot: {
-    width: 6,
-
-    height: 6,
-
-    borderRadius: 3,
-
-    backgroundColor: colors.border,
-  },
-
-  bannerDotActive: {
-    width: 16,
-
-    backgroundColor: colors.primary,
-  },
-
-  banner: {
-    position: "absolute",
-
-    width: "100%",
-
-    height: "100%",
-
-    left: 0,
-
-    top: 0,
-  },
-
-  bannerOverlay: {
-    position: "absolute",
-
-    left: 0,
-
-    top: 0,
-
-    right: 0,
-
-    bottom: 0,
-
-    backgroundColor: "rgba(255,255,255,0.04)",
-  },
-
-  bannerContent: {
-    position: "absolute",
-
-    left: 16,
-
-    top: 17,
-
-    zIndex: 5,
-  },
-
-  bannerTitle: {
-    fontSize: 17,
-
-    lineHeight: 21,
-
-    fontWeight: "800",
-
-    color: colors.primary,
-  },
-
-  bannerSubtitle: {
-    fontSize: 12,
-
-    lineHeight: 17,
-
-    fontWeight: "600",
-
-    color: colors.textPrimary,
-
-    marginTop: 2,
-  },
-
-  /* ================================================================
-     SHOP NOW
-  ================================================================ */
-
-  shopNowButton: {
-    marginTop: 9,
-
-    paddingHorizontal: 13,
-
-    minHeight: 29,
-
-    borderRadius: 7,
-
-    backgroundColor: colors.primary,
-
-    flexDirection: "row",
-
-    alignItems: "center",
-
-    justifyContent: "center",
-
-    gap: 4,
-
-    alignSelf: "flex-start",
-  },
-
-  shopNowText: {
-    color: "#FFFFFF",
-
-    fontSize: 11,
-
-    lineHeight: 14,
-
-    fontWeight: "700",
-  },
-
-  /* ================================================================
-     SECTION HEADER
-  ================================================================ */
-
-  sectionHeader: {
-    flexDirection: "row",
-
-    alignItems: "center",
-
-    justifyContent: "space-between",
-
-    paddingHorizontal: spacing.base,
-
-    marginTop: spacing.lg,
-
-    marginBottom: spacing.sm,
-  },
-
-  sectionTitle: {
-    fontSize: 22,
-
-    lineHeight: 28,
-
-    fontWeight: "800",
-
-    color: colors.textPrimary,
-  },
-
-  seeAllButton: {
-    flexDirection: "row",
-
-    alignItems: "center",
-
-    gap: 1,
-  },
-
-  seeAll: {
-    fontSize: 14,
-
-    lineHeight: 20,
-
-    fontWeight: "700",
-  },
-
-  /* ================================================================
-     CATEGORIES
-  ================================================================ */
-
-  categoryRow: {
-    paddingHorizontal: spacing.base,
-
-    gap: 12,
-
-    paddingBottom: spacing.sm,
-  },
-
-  categoryTile: {
-    width: 76,
-
-    alignItems: "center",
-  },
-
-  categoryCircle: {
-    width: 64,
-
-    height: 64,
-
-    borderRadius: 32,
-
-    backgroundColor: colors.surface,
-
-    borderWidth: 1,
-
-    borderColor: colors.border,
-
-    alignItems: "center",
-
-    justifyContent: "center",
-
-    ...shadow.sm,
-  },
-
-  categoryName: {
-    textAlign: "center",
-
-    marginTop: spacing.xs,
-
-    fontSize: 12,
-
-    lineHeight: 17,
-
-    fontWeight: "600",
-
-    color: colors.textPrimary,
-  },
-
-  /* ================================================================
-     PRODUCT RAILS
-  ================================================================ */
-
-  rail: {
-    marginTop: spacing.xs,
-  },
-
-  productRow: {
-    paddingHorizontal: spacing.base,
-
-    gap: 8,
-  },
-
-  productWrapper: {
-    width: 132,
-  },
-
-  /* ================================================================
-     PROMO TILE STRIP
-  ================================================================ */
-
-  promoRow: {
-    paddingHorizontal: spacing.base,
-    paddingBottom: spacing.sm,
-    gap: spacing.md,
-  },
-
-  promoTile: {
-    width: 176,
-    height: 176,
-    borderRadius: radius.xl,
-    overflow: "hidden",
-    backgroundColor: colors.surfaceMuted,
-    ...shadow.md,
-  },
-
-  promoTilePressed: {
-    opacity: 0.9,
-  },
-
-  promoTileImage: {
-    width: "100%",
-    height: "100%",
-  },
-
-  /* ================================================================
-     TRUST STRIP
-  ================================================================ */
-
-  trustStrip: {
-    flexDirection: "row",
-
-    flexWrap: "wrap",
-
-    marginHorizontal: spacing.base,
-
-    marginTop: spacing.xl,
-
-    marginBottom: spacing.base,
-
-    borderRadius: radius.lg,
-
-    borderWidth: 1,
-
-    borderColor: colors.divider,
-
-    backgroundColor: colors.surfaceMuted,
-
-    padding: spacing.base,
-
-    gap: spacing.md,
-  },
-
-  trustBadge: {
-    width: "47%",
-
-    alignItems: "flex-start",
-  },
-
-  trustIcon: {
-    width: 34,
-
-    height: 34,
-
-    borderRadius: radius.circle,
-
-    backgroundColor: colors.primarySurface,
-
-    alignItems: "center",
-
-    justifyContent: "center",
-
-    marginBottom: spacing.xs,
-  },
-
-  trustLabel: {
-    fontWeight: "700",
-
-    color: colors.textPrimary,
-  },
-
-  trustHint: {
-    marginTop: 1,
   },
 });

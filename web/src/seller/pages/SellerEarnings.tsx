@@ -210,8 +210,8 @@ function OrderEarnings() {
                           <span className={`block text-sm font-semibold ${cancelled ? 'text-gray-400 line-through' : 'text-gray-900'}`}>
                             {inr(order.subtotalPaise)}
                           </span>
-                          <span className="block text-xs text-gray-500">
-                            {cancelled ? 'Cancelled — not paid out' : `Commission ${inr(order.commissionPaise)} (${percent(order.commissionBp)})`}
+                          <span className={`block text-xs ${cancelled ? 'font-semibold text-danger-600' : 'text-gray-500'}`}>
+                            {cancelled ? '✕ Cancelled — not paid out' : `Commission ${inr(order.commissionPaise)} (${percent(order.commissionBp)})`}
                           </span>
                         </span>
                         <Icon name="chevronDown" className={`mt-0.5 h-4 w-4 text-gray-400 transition ${isOpen ? 'rotate-180' : ''}`} />

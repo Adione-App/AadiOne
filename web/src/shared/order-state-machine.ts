@@ -336,6 +336,38 @@ export function toOrderBucket(status: OrderStatus): OrderBucket {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Sales reporting — ONE definition for every count, spend and revenue figure */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * An order that was PLACED and still stands — paid online (or COD), in
+ * progress or delivered. These are the orders a customer "has", and the only
+ * ones any order count may include.
+ *
+ * Never a sale, whatever their totals say: PENDING_PAYMENT (online, not paid
+ * yet), PAYMENT_FAILED (failed or expired), CANCELLED and REFUNDED.
+ * PARTIALLY_REFUNDED is listed in the enum but no transition reaches it.
+ */
+export const PLACED_ORDER_STATUSES: readonly OrderStatus[] = [
+  OrderStatus.PAYMENT_CONFIRMED,
+  OrderStatus.PROCESSING,
+  OrderStatus.PARTIALLY_CANCELLED,
+  OrderStatus.READY_FOR_PICKUP,
+  OrderStatus.PICKED_UP,
+  OrderStatus.OUT_FOR_DELIVERY,
+  OrderStatus.DELIVERED,
+];
+
+/**
+ * A completed (realised) sale: delivered, so the money is in — COD is
+ * collected at the door, an online payment was captured before the order was
+ * placed. Revenue and "total spent" count only these, at
+ * `currentPayablePaise` (the checkout total minus any seller portion
+ * cancelled or rejected since), never the frozen receipt `totalPaise`.
+ */
+export const COMPLETED_SALE_STATUSES: readonly OrderStatus[] = [OrderStatus.DELIVERED];
+
+/* -------------------------------------------------------------------------- */
 /* Admin tabs — cross-seller order list (parent OrderStatus)                  */
 /* -------------------------------------------------------------------------- */
 

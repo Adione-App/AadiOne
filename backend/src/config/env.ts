@@ -271,6 +271,10 @@ const envSchema = z
 
     S3_SECRET_ACCESS_KEY: z.string().optional(),
 
+    /** Convert every uploaded public image to a resized WebP (image-optimizer.ts).
+     * "false" is the rollback switch: uploads are attached exactly as sent. */
+    IMAGE_OPTIMIZE: booleanish.default("true"),
+
     SEARCH_PROVIDER: z.enum(["postgres"]).default("postgres"),
 
     // Admin

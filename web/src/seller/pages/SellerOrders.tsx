@@ -382,12 +382,21 @@ function OrderDetail({ id, paymentMethod }: { id: string; paymentMethod: string 
       <ul className="divide-y divide-gray-100">
         {view.items.map((item) => (
           <li key={item.id} className="flex items-center gap-3 py-2">
-            <Thumb src={item.imageUrl} alt={item.productName} />
+            <Thumb src={item.imageUrl} alt={item.productName} size="lg" />
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium text-gray-900">{item.productName}</p>
+              {/* Option picks with their names (Size: M · Color: Black) when the
+                  item has options, else the variant label (1 kg, Full, …). */}
+              {item.options.length > 0 ? (
+                <p className="text-xs font-medium text-gray-700">
+                  {item.options.map(([name, value]) => `${name}: ${value}`).join(' · ')}
+                </p>
+              ) : (
+                item.variantName && <p className="text-xs text-gray-600">{item.variantName}</p>
+              )}
               <p className="text-xs text-gray-500">
-                {item.variantName && `${item.variantName} · `}
                 Qty {item.qty} × {formatPaise(item.unitPricePaise)}
+                {item.sku && <span className="ml-2 font-mono text-gray-400">SKU {item.sku}</span>}
               </p>
             </div>
             <span className="text-sm font-semibold text-gray-900">{formatPaise(item.lineTotalPaise)}</span>

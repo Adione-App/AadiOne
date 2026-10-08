@@ -813,6 +813,106 @@ export interface HomeFeedDto {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Customer discovery — stores, restaurants, offers                           */
+/* -------------------------------------------------------------------------- */
+
+/** A live marketplace (non-food) seller as a customer browses it — GET /stores. */
+export interface StoreSummaryDto {
+  id: string;
+  name: string;
+  sellerType: SellerType;
+  city: string;
+  /** Customer-visible products this seller lists right now. */
+  productCount: number;
+  /** The seller's own top categories that have visible products, in its order (max 3). */
+  categoryNames: string[];
+  /** Real images of up to 3 of its products, for the store card. */
+  previewImageUrls: string[];
+  isOpen: boolean;
+  nextOpenText: string | null;
+  /** Straight-line km from the customer; null when no location was given. */
+  distanceKm: number | null;
+}
+
+/** A live restaurant or cafe (the food seller types). */
+export interface RestaurantDto {
+  sellerId: string;
+  sellerType: SellerType;
+  name: string;
+  addressLine: string;
+  city: string;
+  pincode: string;
+  latitude: number;
+  longitude: number;
+  phone: string | null;
+  cuisine: string[];
+  isVegOnly: boolean;
+  avgPrepMins: number | null;
+  isOpen: boolean;
+  nextOpenText: string | null;
+}
+
+/** One row of GET /restaurants. */
+export interface RestaurantSummaryDto extends RestaurantDto {
+  menuItemCount: number;
+  /** A real photo of one of its menu items; null when none has a photo. */
+  coverImageUrl: string | null;
+  /** Straight-line km from the customer; null when no location was given. */
+  distanceKm: number | null;
+}
+
+/** One orderable entry on a restaurant menu (one per sellable variant). */
+export interface RestaurantMenuItemDto {
+  sellerListingId: string;
+  sellerId: string;
+  restaurantName: string;
+  productId: string;
+  variantId: string;
+  name: string;
+  description: string | null;
+  variantName: string;
+  optionValues: ProductOptionValuesDto;
+  optionGroups: ProductOptionGroupDto[];
+  imageUrl: string | null;
+  mrpPaise: number;
+  pricePaise: number;
+  inStock: boolean;
+  diet: FoodDiet | null;
+  maxQtyPerOrder: number;
+}
+
+export interface RestaurantMenuSectionDto {
+  id: string;
+  name: string;
+  slug: string;
+  displayOrder: number;
+  isActive: boolean;
+  menuId: string | null;
+  menuName: string | null;
+  items: RestaurantMenuItemDto[];
+}
+
+/** GET /restaurants/:sellerId — Menu → Menu Section → Food Item. */
+export interface RestaurantMenuDto {
+  restaurant: RestaurantDto;
+  menus: { id: string; name: string; sections: RestaurantMenuSectionDto[] }[];
+  sections: RestaurantMenuSectionDto[];
+}
+
+/** A promo code any customer may apply right now — GET /offers. */
+export interface OfferDto {
+  code: string;
+  description: string | null;
+  type: CouponType;
+  /** PERCENT: whole percent. FLAT: paise. FREE_DELIVERY: unused. */
+  discountValue: number;
+  maxDiscountPaise: number | null;
+  minOrderPaise: number;
+  /** ISO-8601; null = no end date. */
+  validTo: string | null;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Catalog approval — seller submissions reviewed by admin in batches         */
 /* -------------------------------------------------------------------------- */
 
@@ -1217,7 +1317,10 @@ export interface OrderItemDto {
   productName: string;
   variantName: string;
   brandName: string | null;
+  /** The product photo as it was when ordered (snapshot); null = none uploaded. */
   imageUrl: string | null;
+  /** Option picks as ordered, e.g. { Size: "M", Color: "Black" }; {} for a simple item. */
+  optionValues: ProductOptionValuesDto;
   sku: string;
   qty: number;
   mrpPaise: number;
@@ -1476,6 +1579,43 @@ export interface RegisterDeviceRequest {
 /* -------------------------------------------------------------------------- */
 /* Admin                                                                      */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * One customer on the admin Customers page — GET /admin/customers. Counts and
+ * spend follow the single sale definition (PLACED_ORDER_STATUSES /
+ * COMPLETED_SALE_STATUSES): a cancelled, payment-failed or unpaid order is
+ * never an order "had" and never money "spent".
+ */
+export interface AdminCustomerRowDto {
+  userId: string;
+  name: string | null;
+  mobile: string;
+  /** Placed orders that still stand (in progress or delivered). */
+  orderCount: number;
+  /** Of those, still in progress (not delivered yet). */
+  activeOrderCount: number;
+  /** Cancelled, payment-failed or refunded orders — shown, never counted as sales. */
+  cancelledOrderCount: number;
+  /** Delivered orders' value, net of cancelled seller portions. */
+  totalSpentPaise: number;
+  lastOrderAt: string;
+}
+
+export interface AdminCustomersDto {
+  /** Over every customer, not just this page or search. */
+  summary: {
+    /** Customers with at least one placed order. */
+    customerCount: number;
+    /** Customers with two or more placed orders. */
+    repeatCustomerCount: number;
+    /** Sum of every customer's totalSpentPaise. */
+    revenuePaise: number;
+  };
+  items: AdminCustomerRowDto[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
 
 export interface AdminDashboardDto {
   /** The seller-local calendar day ("YYYY-MM-DD") this snapshot reports on. */

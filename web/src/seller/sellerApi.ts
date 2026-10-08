@@ -110,7 +110,11 @@ export interface SellerOrderItemView {
   id: string;
   productName: string;
   variantName: string;
+  /** The product photo as it was when ordered (order item snapshot). */
   imageUrl: string | null;
+  /** Option picks as ordered — [["Size", "M"], ["Color", "Black"]]; [] for a simple item. */
+  options: [string, string][];
+  sku: string | null;
   qty: number;
   unitPricePaise: number;
   lineTotalPaise: number;
@@ -159,6 +163,12 @@ export function toSellerOrderDetailView(raw: unknown): SellerOrderDetailView {
       productName: text(item['productName']) ?? 'Item',
       variantName: text(item['variantName']) ?? '',
       imageUrl: text(item['imageUrl']),
+      options: isRecord(item['optionValues'])
+        ? Object.entries(item['optionValues']).filter(
+            (entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '',
+          )
+        : [],
+      sku: text(item['sku']),
       qty: number(item['qty']),
       unitPricePaise: number(item['unitPricePaise']),
       lineTotalPaise: number(item['lineTotalPaise']),

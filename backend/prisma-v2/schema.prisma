@@ -1056,6 +1056,9 @@ model Product {
   @@index([popularityScore])
   /// Admin catalog-approval queue.
   @@index([approvalStatus, createdAt])
+  /// Seller Panel product list / admin "products of this seller" — without it
+  /// every seller's own-catalogue query scans every seller's products.
+  @@index([submittedBySellerId])
   /// Product search: full-text match (`search_vector @@ tsquery`).
   @@index([searchVector], map: "products_search_vector_idx", type: Gin)
   /// Product search: typo-tolerant name match (`term <% name`, pg_trgm).
@@ -1178,6 +1181,10 @@ model SellerListing {
   /// Deterministic ordering on this key is what prevents deadlocks between
   /// concurrent checkouts. Also the natural key.
   @@unique([sellerId, variantId])
+  /// Product hydration (catalog.repository.ts PRODUCT_INCLUDE): every product
+  /// card loads its variants' offers by `variant_id IN (…)` with no seller id,
+  /// which the (seller_id, variant_id) key above cannot serve.
+  @@index([variantId])
   // Partial indexes in the hardening migration — out-of-stock rows are absent
   // from the in-stock index entirely:
   //   seller_listings_in_stock  (seller_id)
@@ -1626,6 +1633,10 @@ model OrderItem {
   imageUrl    String? @map("image_url") @db.VarChar(500)
   sku         String  @db.VarChar(60)
   unitDisplay String  @map("unit_display") @db.VarChar(40)
+  /// The variant's option picks when ordered ({ "Size": "M", "Color": "Black" };
+  /// {} for a simple item) — snapshot, like the name and image above, so a
+  /// later edit to the product's variants never changes an old order.
+  optionValues Json @default("{}") @map("option_values")
 
   qty               Int
   mrpPaise          Int @map("mrp_paise")

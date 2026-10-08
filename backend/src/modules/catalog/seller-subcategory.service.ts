@@ -15,7 +15,7 @@
 import { ErrorCode, isFoodSellerType } from '../../shared';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
-import { storage } from '../../infra/storage';
+import { processUploadedImage, removeStoredImageIfUnused } from './uploaded-image.service';
 import { slugify } from '../../shared/text';
 import { assertSellerMayCreateSubcategoryUnder, linkedProductsError } from './seller-category.service';
 import { assertOwnSellerKey } from './seller-image.service';
@@ -224,9 +224,10 @@ export async function setOwnSubcategoryImage(
 ): Promise<SellerSubcategoryDto> {
   const current = await loadOwnOrThrow(sellerId, id);
   assertOwnSellerKey(sellerId, key);
-  const imageUrl = storage.publicUrl(key);
+  const { url: imageUrl } = await processUploadedImage(key, 'category');
   await prisma.category.update({ where: { id }, data: { imageUrl } });
   await audit(actorUserId, 'category.seller_subcategory.image', id, { imageUrl: current.imageUrl }, { imageUrl });
+  if (current.imageUrl !== imageUrl) await removeStoredImageIfUnused(current.imageUrl);
   invalidateCategoryCache();
   return toDto(await loadOwnOrThrow(sellerId, id));
 }

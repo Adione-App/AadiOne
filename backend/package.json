@@ -13,6 +13,8 @@
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "sync:shared": "node scripts/sync-shared.mjs",
     "report:missing-images": "tsx scripts/report-missing-images.ts",
+    "images:optimize": "node scripts/assert-v2-database.mjs && tsx scripts/optimize-images.ts",
+    "images:optimize:v2": "node scripts/with-env.mjs .env.v2 node scripts/assert-v2-database.mjs && node scripts/with-env.mjs .env.v2 tsx scripts/optimize-images.ts",
     "db:generate": "prisma generate --schema=prisma-v2/schema.prisma",
     "db:migrate": "node scripts/assert-v2-database.mjs && prisma migrate dev --schema=prisma-v2/schema.prisma",
     "db:migrate:deploy": "node scripts/assert-v2-database.mjs && prisma migrate deploy --schema=prisma-v2/schema.prisma",
@@ -54,6 +56,7 @@
     "pino": "^9.5.0",
     "pino-http": "^10.3.0",
     "prisma": "^5.22.0",
+    "sharp": "^0.34.5",
     "socket.io": "^4.8.1",
     "zod": "^3.23.8"
   },

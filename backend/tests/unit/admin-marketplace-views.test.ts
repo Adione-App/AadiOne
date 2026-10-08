@@ -9,6 +9,7 @@ import {
   REDACTED,
   maskMobile,
   paginate,
+  paymentOutcome,
   redactAuditValue,
   refundSummary,
   stockState,
@@ -130,5 +131,29 @@ describe('permission boundaries the new admin routes rely on', () => {
         expect(roleHasPermission(role, permission)).toBe(false);
       }
     }
+  });
+});
+
+describe('paymentOutcome', () => {
+  it('treats only a captured payment as paid, whatever happened to the order later', () => {
+    expect(paymentOutcome('CAPTURED', 'DELIVERED')).toBe('PAID');
+    expect(paymentOutcome('CAPTURED', 'CANCELLED')).toBe('PAID');
+  });
+
+  it('marks an attempt that never completed by what its order did', () => {
+    expect(paymentOutcome('CREATED', 'PENDING_PAYMENT')).toBe('PENDING');
+    expect(paymentOutcome('PENDING', 'PENDING_PAYMENT')).toBe('PENDING');
+    // Hold expired / payment failed: the row is left open for reconciliation,
+    // but the history must not read "pending".
+    expect(paymentOutcome('CREATED', 'PAYMENT_FAILED')).toBe('FAILED');
+    expect(paymentOutcome('PENDING', 'CANCELLED')).toBe('CANCELLED');
+    // Paid through a different attempt: this one will never complete.
+    expect(paymentOutcome('CREATED', 'PROCESSING')).toBe('CANCELLED');
+  });
+
+  it('keeps the gateway outcome for failed and refunded payments', () => {
+    expect(paymentOutcome('FAILED', 'PENDING_PAYMENT')).toBe('FAILED');
+    expect(paymentOutcome('REFUNDED', 'REFUNDED')).toBe('REFUNDED');
+    expect(paymentOutcome('PARTIALLY_REFUNDED', 'DELIVERED')).toBe('PARTIALLY_REFUNDED');
   });
 });

@@ -12,6 +12,7 @@ import type {
   AccountStackParamList,
   CartStackParamList,
   CatalogStackParamList,
+  FoodStackParamList,
   WishlistStackParamList,
 } from "./types";
 
@@ -22,6 +23,9 @@ import CategoriesScreen from "@/screens/catalog/CategoriesScreen";
 import SearchScreen from "@/screens/catalog/SearchScreen";
 import ProductDetailScreen from "@/screens/catalog/ProductDetailScreen";
 import RailProductsScreen from "@/screens/catalog/RailProductsScreen";
+import StoreScreen from "@/screens/catalog/StoreScreen";
+import FoodScreen from "@/screens/food/FoodScreen";
+import RestaurantMenuScreen from "@/screens/food/RestaurantMenuScreen";
 
 import CartScreen from "@/screens/cart/CartScreen";
 import OrderTrackingScreen from "@/screens/orders/OrderTrackingScreen";
@@ -47,6 +51,7 @@ const CatalogStack = createNativeStackNavigator<CatalogStackParamList>();
 const CartNav = createNativeStackNavigator<CartStackParamList>();
 const AccountNav = createNativeStackNavigator<AccountStackParamList>();
 const WishlistNav = createNativeStackNavigator<WishlistStackParamList>();
+const FoodNav = createNativeStackNavigator<FoodStackParamList>();
 
 const noHeader = {
   headerShown: false,
@@ -101,6 +106,44 @@ export function HomeStack() {
             onOpenNotifications={() => navigation.navigate("Notifications")}
             onOpenOrderTracking={(orderId) =>
               navigation.navigate("OrderTracking", { orderId })
+            }
+            onOpenRestaurant={(sellerId) =>
+              navigation.navigate("RestaurantMenu", { sellerId })
+            }
+            onOpenStore={(sellerId) => navigation.navigate("Store", { sellerId })}
+            onOpenFood={() =>
+              navigation.getParent()?.navigate("Food", { screen: "FoodHome" })
+            }
+          />
+        )}
+      </CatalogStack.Screen>
+
+      {/* ---------------------------------------------------------------
+          RESTAURANT / CAFE MENU — from Home's food rail. Pushed onto
+          Home's own stack so "back" returns to Home, not the Food tab.
+      --------------------------------------------------------------- */}
+
+      <CatalogStack.Screen name="RestaurantMenu">
+        {({ navigation, route }) => (
+          <RestaurantMenuScreen
+            sellerId={route.params.sellerId}
+            fallbackName={route.params.name}
+            onBack={() => navigation.goBack()}
+          />
+        )}
+      </CatalogStack.Screen>
+
+      {/* ---------------------------------------------------------------
+          STORE PAGE — from Home's stores rail.
+      --------------------------------------------------------------- */}
+
+      <CatalogStack.Screen name="Store">
+        {({ navigation, route }) => (
+          <StoreScreen
+            sellerId={route.params.sellerId}
+            onBack={() => navigation.goBack()}
+            onOpenProduct={(productId) =>
+              navigation.navigate("ProductDetail", { productId })
             }
           />
         )}
@@ -257,6 +300,36 @@ export function CategoriesStack() {
         )}
       </CatalogStack.Screen>
     </CatalogStack.Navigator>
+  );
+}
+
+/* =====================================================================
+   FOOD STACK
+===================================================================== */
+
+export function FoodStack() {
+  return (
+    <FoodNav.Navigator screenOptions={noHeader}>
+      <FoodNav.Screen name="FoodHome">
+        {({ navigation }) => (
+          <FoodScreen
+            onOpenRestaurant={(sellerId) =>
+              navigation.navigate("RestaurantMenu", { sellerId })
+            }
+          />
+        )}
+      </FoodNav.Screen>
+
+      <FoodNav.Screen name="RestaurantMenu">
+        {({ navigation, route }) => (
+          <RestaurantMenuScreen
+            sellerId={route.params.sellerId}
+            fallbackName={route.params.name}
+            onBack={() => navigation.goBack()}
+          />
+        )}
+      </FoodNav.Screen>
+    </FoodNav.Navigator>
   );
 }
 

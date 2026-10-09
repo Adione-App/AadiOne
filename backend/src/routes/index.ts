@@ -21,7 +21,6 @@ import { addressRouter } from '../modules/addresses/address.routes';
 import { checkoutRouter, orderRouter } from '../modules/orders/order.routes';
 import { sellerOrderRouter } from '../modules/orders/seller-order.routes';
 import { sellerCatalogRouter } from '../modules/catalog/seller-catalog.routes';
-import { sellerProductImportRouter } from '../modules/product-import/import.routes';
 import { sellerOnboardingRouter } from '../modules/sellers/seller-onboarding.routes';
 import { sellerSettlementRouter } from '../modules/sellers/seller-settlement.routes';
 import { restaurantRouter, sellerRestaurantRouter } from '../modules/restaurants/restaurant.routes';
@@ -77,7 +76,6 @@ apiRouter.use(
   sellerLifecycleRouter,
   sellerOrderRouter,
   sellerCatalogRouter,
-  sellerProductImportRouter,
   sellerOnboardingRouter,
   sellerSettlementRouter,
   sellerRestaurantRouter,

@@ -21,7 +21,7 @@
  */
 
 import { useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { formatPaise } from '@shared/money';
 import { isFoodSellerType } from '@shared';
@@ -39,7 +39,6 @@ import { ProductFormModal, StartSellingModal } from '../productForms';
 import { FoodItemModal } from '../foodItemForm';
 import { isHiddenBySeller, isOutOfStock, rowsOf, type ProductRow } from '../productRows';
 import { ChipTabs, EmptyPanel, FilterSelect, LoadError, SearchBox, SkeletonList, linkClass, toast } from '../sellerUi';
-import { downloadTemplate } from '../importApi';
 
 const PAGE = 20;
 
@@ -188,7 +187,6 @@ export default function SellerProductsPage() {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   // Restaurant / cafe: food items — price + availability, no stock (made to order).
   const isFood = isFoodSellerType(useSellerAvailability().data?.sellerType);
-  const navigate = useNavigate();
 
   const products = useSellerProducts();
   const listings = useSellerListings();
@@ -301,19 +299,6 @@ export default function SellerProductsPage() {
             <Icon name="plus" className="h-4 w-4" /> {isFood ? 'Add Food Item' : 'Add Product'}
           </Button>
         </div>
-        {!isFood && (
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="soft" onClick={() => navigate('/seller/products/import')}>
-              <Icon name="upload" className="h-4 w-4" /> Bulk Import
-            </Button>
-            <Button variant="ghost" onClick={() => void downloadTemplate().catch((e) => toast(sellerErrorMessage(e), false))}>
-              <Icon name="clipboard" className="h-4 w-4" /> Download CSV Template
-            </Button>
-            <Link to="/seller/products/imports" className={linkClass}>
-              Import History
-            </Link>
-          </div>
-        )}
         <div className="space-y-3 rounded-xl border border-brand-500/30 bg-brand-50 px-3.5 py-3">
           <p className="text-sm text-gray-800">Add as many products as you need, then submit them together for approval.</p>
           <div className="flex flex-wrap items-center justify-between gap-3">

@@ -45,8 +45,6 @@ import SellerNotificationsPage from './pages/SellerNotifications';
 import SellerCategoriesPage from './pages/SellerCategories';
 import SellerProductDetailPage from './pages/SellerProductDetail';
 import SellerListingDetailPage from './pages/SellerListingDetail';
-import SellerBulkImportPage from './pages/SellerBulkImport';
-import SellerImportHistoryPage from './pages/SellerImportHistory';
 
 type Badge = 'orders' | 'notifications';
 
@@ -193,9 +191,6 @@ function AuthenticatedSellerApp() {
         <Route path="/seller" element={<SellerDashboardPage />} />
         <Route path="/seller/orders" element={<SellerOrdersPage />} />
         <Route path="/seller/products" element={<SellerProductsPage />} />
-        <Route path="/seller/products/import" element={<SellerBulkImportPage />} />
-        <Route path="/seller/products/import/:id" element={<SellerBulkImportPage />} />
-        <Route path="/seller/products/imports" element={<SellerImportHistoryPage />} />
         <Route path="/seller/products/:id" element={<SellerProductDetailPage />} />
         <Route path="/seller/listings/:id" element={<SellerListingDetailPage />} />
         <Route path="/seller/inventory" element={<SellerInventoryPage />} />

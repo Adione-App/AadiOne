@@ -2,7 +2,8 @@
  * Seller authentication — EMAIL + PASSWORD only.
  *
  *   - Sellers sign in at POST /auth/seller/login with their email and password.
- *     A mobile OTP never opens a seller session (customers keep OTP).
+ *     A mobile OTP opens only a CUSTOMER-app session — for a seller owner too
+ *     (sellers may shop) — never a Seller Panel session.
  *   - "Forgot Password?" emails a single-use, expiring link; the seller sets a
  *     new password; every old session ends; the old password stops working.
  *   - Admin sees a seller's login EMAIL only. No admin route issues, resets,
@@ -121,29 +122,43 @@ describe('seller sign-in — email + password only', () => {
     expect(new Set(attempts.map((res) => JSON.stringify(expectError(res.body).message))).size).toBe(1);
   });
 
-  it('a seller cannot sign in with a mobile OTP — no session is issued; customers still can', async () => {
+  it("a seller owner's mobile OTP opens the CUSTOMER app only — never the Seller Panel; customers unchanged", async () => {
     const sellerId = await signupSeller('9400000103', 'shop103@example.test');
     const owner = await prisma.sellerStaff.findFirstOrThrow({ where: { sellerId } });
-    const sessionsBefore = await prisma.refreshToken.count({ where: { userId: owner.userId } });
+    const usersBefore = await prisma.user.count();
 
     const sent = await api().post('/api/v1/auth/send-otp').send({ mobile: '9400000103' }).expect(200);
     const otp = expectSuccess<{ devOtp: string }>(sent.body).data.devOtp;
     const verified = await api().post('/api/v1/auth/verify-otp').send({ mobile: '9400000103', otp });
-    expect(verified.status).toBe(403);
-    expect(expectError(verified.body).code).toBe(ErrorCode.FORBIDDEN);
-    expect(expectError(verified.body).message).toMatch(/email and password/);
-    expect(JSON.stringify(verified.body)).not.toContain('accessToken');
-    expect(await prisma.refreshToken.count({ where: { userId: owner.userId } })).toBe(sessionsBefore);
+    expect(verified.status).toBe(200);
+    const session = expectSuccess<{ user: { id: string; role: string }; tokens: { accessToken: string } }>(verified.body).data;
+    // The SAME account — no customer duplicate is created for the seller.
+    expect(session.user.id).toBe(owner.userId);
+    expect(await prisma.user.count()).toBe(usersBefore);
+    // Stored as a customer-app session.
+    expect(await prisma.refreshToken.findFirstOrThrow({ where: { userId: owner.userId }, orderBy: { createdAt: 'desc' } })).toMatchObject({ scope: 'CUSTOMER' });
+
+    // It shops like a customer…
+    await api().get('/api/v1/cart').set('Authorization', bearer(session.tokens.accessToken)).expect(200);
+    // …and can never open the Seller Panel or Admin Panel.
+    for (const path of ['/api/v1/seller/lifecycle', '/api/v1/seller/orders', '/api/v1/admin/orders']) {
+      const res = await api().get(path).set('Authorization', bearer(session.tokens.accessToken));
+      expect(res.status).toBe(403);
+      expect(expectError(res.body).code).toBe(ErrorCode.FORBIDDEN);
+    }
+    // The Seller Panel login (email + password) is unchanged.
+    const panel = expectSuccess<{ tokens: { accessToken: string } }>((await sellerLogin('shop103@example.test', SELLER_PASSWORD).expect(200)).body).data;
+    await api().get('/api/v1/seller/lifecycle').set('Authorization', bearer(panel.tokens.accessToken)).expect(200);
 
     // Customer OTP login is unchanged: a new number signs up, an existing customer signs in.
     for (const expectNew of [true, false]) {
+      await cache.clear(); // OTP resend cooldown, not under test here
       const customerOtp = expectSuccess<{ devOtp: string }>((await api().post('/api/v1/auth/send-otp').send({ mobile: '9400000198' }).expect(200)).body).data.devOtp;
       const customer = await api().post('/api/v1/auth/verify-otp').send({ mobile: '9400000198', otp: customerOtp });
       expect(customer.status).toBe(expectNew ? 201 : 200); // a first OTP login creates the account
       const data = expectSuccess<{ user: { role: string; isNewUser?: boolean }; tokens: { accessToken: string } }>(customer.body).data;
       expect(data.user.role).toBe(UserRole.CUSTOMER);
       expect(Boolean(data.user.isNewUser)).toBe(expectNew);
-      await cache.clear(); // OTP resend cooldown, not under test here
     }
   });
 

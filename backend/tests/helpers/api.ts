@@ -48,7 +48,8 @@ let testSellerPasswordHash: Promise<string> | undefined;
  *
  *   customer (or a new number)  the full OTP login (send + verify)
  *   seller-role account         the Seller Panel login, EMAIL + PASSWORD
- *                               (sellers can no longer sign in with an OTP);
+ *                               (a seller's OTP login is a customer-app
+ *                               session, which no seller route accepts);
  *                               a seeded seller with no email/password gets
  *                               test ones first.
  */

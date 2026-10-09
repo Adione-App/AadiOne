@@ -20,7 +20,7 @@
  * status/onboarding screens until Gate 2 (middleware/sellerLifecycle.ts).
  */
 
-import { Prisma, type User } from '@prisma/client';
+import { Prisma, SessionScope, type User } from '@prisma/client';
 import {
   ErrorCode,
   NotificationType,
@@ -287,6 +287,8 @@ export async function signupSeller(
     userId: created.user.id,
     role: created.user.role,
     mobile: created.user.mobile,
+    // Seller self-signup with email + password: a Seller Panel session.
+    scope: SessionScope.FULL,
     userAgent: context.userAgent ?? null,
     ip: context.ip ?? null,
   });

@@ -13,6 +13,8 @@ export interface AuthUser {
   mobile: string;
   /** Refresh-token family id — lets us revoke this exact session. */
   sessionId: string;
+  /** 'customer' = a customer-app (OTP) session; `role` is then always CUSTOMER. */
+  sessionScope: 'customer' | 'full';
 }
 
 declare global {

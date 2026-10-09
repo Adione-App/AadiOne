@@ -2,7 +2,7 @@
  * Auth data access. No decisions here — the service owns policy.
  */
 
-import type { User } from '@prisma/client';
+import type { SessionScope, User } from '@prisma/client';
 import { UserRole, UserStatus } from '../../shared';
 import { prisma, type DbClient } from '../../infra/db/prisma';
 
@@ -143,6 +143,8 @@ export interface StoredRefreshToken {
   id: string;
   userId: string;
   familyId: string;
+  /** CUSTOMER for customer-app (OTP) sessions, FULL for panel logins. */
+  scope: SessionScope;
   expiresAt: Date;
   revokedAt: Date | null;
 }
@@ -152,6 +154,7 @@ export async function createRefreshToken(
     userId: string;
     tokenHash: string;
     familyId: string;
+    scope: SessionScope;
     expiresAt: Date;
     userAgent?: string | null;
     ip?: string | null;
@@ -163,11 +166,12 @@ export async function createRefreshToken(
       userId: input.userId,
       tokenHash: input.tokenHash,
       familyId: input.familyId,
+      scope: input.scope,
       expiresAt: input.expiresAt,
       userAgent: input.userAgent ?? null,
       ip: input.ip ?? null,
     },
-    select: { id: true, userId: true, familyId: true, expiresAt: true, revokedAt: true },
+    select: { id: true, userId: true, familyId: true, scope: true, expiresAt: true, revokedAt: true },
   });
 }
 
@@ -177,7 +181,7 @@ export async function findRefreshTokenByHash(
 ): Promise<StoredRefreshToken | null> {
   return client.refreshToken.findUnique({
     where: { tokenHash },
-    select: { id: true, userId: true, familyId: true, expiresAt: true, revokedAt: true },
+    select: { id: true, userId: true, familyId: true, scope: true, expiresAt: true, revokedAt: true },
   });
 }
 

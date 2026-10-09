@@ -7,7 +7,7 @@
  * SMS credit).
  */
 
-import type { User } from '@prisma/client';
+import { SessionScope, type User } from '@prisma/client';
 import {
   ACTIVE_ORDER_STATUSES,
   ErrorCode,
@@ -122,16 +122,10 @@ export async function verifyOtpAndAuthenticate(
 
   if (user) {
     assertUsable(user);
-    // OTP is the CUSTOMER sign-in. A seller account signs in only with its
-    // email and password (POST /auth/seller/login) — never with a mobile OTP,
-    // so an SMS code can never open the Seller Panel. Checked after the code
-    // is verified, so only the phone's owner learns why.
-    if (isSellerRole(user.role)) {
-      throw new AppError(ErrorCode.FORBIDDEN, {
-        message: 'This number belongs to a seller account. Sign in to the Seller Panel with your email and password.',
-        internalMessage: `OTP login refused for seller-role user ${user.id} (${user.role})`,
-      });
-    }
+    // OTP is the CUSTOMER-APP sign-in, for every account — a seller owner or
+    // an admin may shop for themselves with their own number. The session is
+    // CUSTOMER-scoped (below), so an SMS code still never opens the Seller or
+    // Admin Panel: those need the email + password login.
     await repository.touchLastLogin(user.id);
     // A password-signup account proves its number here, on the first OTP login.
     if (!user.mobileVerifiedAt) {
@@ -152,6 +146,8 @@ export async function verifyOtpAndAuthenticate(
     userId: user.id,
     role: user.role,
     mobile: user.mobile,
+    // Customer app: a shopper session, whatever the account role.
+    scope: SessionScope.CUSTOMER,
     userAgent: context.userAgent ?? null,
     ip: context.ip ?? null,
   });
@@ -225,6 +221,8 @@ export async function signup(
     userId: user.id,
     role: user.role,
     mobile: user.mobile,
+    // Customer sign-up with a password — a CUSTOMER account either way.
+    scope: SessionScope.FULL,
     userAgent: context.userAgent ?? null,
     ip: context.ip ?? null,
   });
@@ -301,6 +299,8 @@ export async function loginWithPassword(
     userId: user.id,
     role: user.role,
     mobile: user.mobile,
+    // Panel login (admin / seller / customer password): the account's own role.
+    scope: SessionScope.FULL,
     userAgent: context.userAgent ?? null,
     ip: context.ip ?? null,
   });
@@ -381,6 +381,8 @@ export async function changePassword(
   userId: string,
   currentPassword: string,
   newPassword: string,
+  /** The scope of the session making the change (req.user.sessionScope). */
+  scope: SessionScope,
   context: RequestContextInput = {},
 ): Promise<AuthResponse> {
   const user = await repository.findUserById(userId);
@@ -424,6 +426,9 @@ export async function changePassword(
     userId,
     role: user.role,
     mobile: user.mobile,
+    // The new session keeps the scope of the one that changed the password —
+    // a customer-app session can never trade itself up to a panel session.
+    scope,
     userAgent: context.userAgent ?? null,
     ip: context.ip ?? null,
   });

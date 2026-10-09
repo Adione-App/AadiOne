@@ -399,6 +399,15 @@ enum CartStatus {
   ABANDONED
 }
 
+/// What a login session may do — decided by HOW it was opened, not by the
+/// account's role. A customer-app (mobile OTP) session is CUSTOMER even for a
+/// seller-owner or admin account, so an SMS code can never open a management
+/// API; panel logins (email + password) are FULL and carry the account's role.
+enum SessionScope {
+  FULL
+  CUSTOMER
+}
+
 enum IdempotencyStatus {
   IN_PROGRESS
   COMPLETED
@@ -498,6 +507,10 @@ model RefreshToken {
   /// Rotation family. Presenting an already-rotated token revokes the whole
   /// family — the standard defence against a stolen refresh token.
   familyId  String @map("family_id") @db.Uuid
+  /// Kept for the whole family: refresh re-reads the account's role, so the
+  /// scope must travel with the session or a customer session would come back
+  /// FULL. Least privilege by default; panel logins pass FULL explicitly.
+  scope     SessionScope @default(CUSTOMER)
 
   userAgent String? @map("user_agent") @db.VarChar(400)
   ip        String? @db.VarChar(64)

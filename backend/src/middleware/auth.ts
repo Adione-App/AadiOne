@@ -39,9 +39,12 @@ function attach(req: Request, token: string): void {
   const claims = verifyAccessToken(token);
   req.user = {
     id: claims.sub,
+    // For a customer-app session this is CUSTOMER whatever the account's
+    // role (token.service.ts), so every check below treats it as a shopper.
     role: claims.role,
     mobile: claims.mobile,
     sessionId: claims.sid,
+    sessionScope: claims.scp === 'customer' ? 'customer' : 'full',
   };
   // Every subsequent log line in this request carries the user id.
   setRequestContextValues({ userId: claims.sub, role: claims.role });

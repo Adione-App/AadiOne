@@ -14,6 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { SessionScope } from '@prisma/client';
 import jwt, { type SignOptions } from 'jsonwebtoken';
 import { ErrorCode, UserRole, type AuthTokens } from '../../shared';
 import { AppError } from '../../common/errors';
@@ -31,6 +32,13 @@ export interface AccessTokenClaims {
   mobile: string;
   /** Session (refresh-token family) id, so a token maps to a revocable session. */
   sid: string;
+  /**
+   * Session scope. "customer" = a customer-app (OTP) session: `role` is then
+   * CUSTOMER whatever the account's role, so every role/permission check
+   * treats it as a shopper. Absent on tokens issued before scopes existed
+   * (those carry the account's role, i.e. full).
+   */
+  scp?: 'customer' | 'full';
 }
 
 interface DecodedAccessToken extends AccessTokenClaims {
@@ -91,8 +99,14 @@ function accessTtlSeconds(): number {
 
 export interface IssueTokensInput {
   userId: string;
+  /** The ACCOUNT's role. A CUSTOMER-scope session never puts it in the token. */
   role: UserRole;
   mobile: string;
+  /**
+   * Required, never defaulted: CUSTOMER for the customer app (mobile OTP),
+   * FULL only for a panel login (email + password).
+   */
+  scope: SessionScope;
   /** Continues an existing session on refresh; omit to start a new one. */
   familyId?: string;
   userAgent?: string | null;
@@ -108,16 +122,21 @@ export async function issueTokens(input: IssueTokensInput): Promise<AuthTokens> 
     // Only the hash is stored: a database dump must not hand over live sessions.
     tokenHash: sha256(refreshToken),
     familyId,
+    scope: input.scope,
     expiresAt: refreshExpiryDate(),
     userAgent: input.userAgent ?? null,
     ip: input.ip ?? null,
   });
 
+  const customerSession = input.scope === SessionScope.CUSTOMER;
   const accessToken = signAccessToken({
     sub: input.userId,
-    role: input.role,
+    // The ONLY place a session's role is decided: a customer-app session of a
+    // seller or admin account is a shopper — it can never open a management API.
+    role: customerSession ? UserRole.CUSTOMER : input.role,
     mobile: input.mobile,
     sid: familyId,
+    scp: customerSession ? 'customer' : 'full',
   });
 
   return { accessToken, refreshToken, expiresInSeconds: accessTtlSeconds() };
@@ -190,6 +209,9 @@ export async function rotateRefreshToken(
     userId: user.id,
     role: user.role,
     mobile: user.mobile,
+    // The session keeps the scope it was opened with — a customer-app session
+    // never comes back FULL just because the account is a seller or admin.
+    scope: stored.scope,
     familyId: stored.familyId,
     userAgent: context.userAgent ?? null,
     ip: context.ip ?? null,

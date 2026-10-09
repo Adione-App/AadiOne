@@ -2,6 +2,7 @@
  * Auth HTTP layer. Shape in, shape out — every decision lives in the service.
  */
 
+import { SessionScope } from '@prisma/client';
 import type { Request, Response } from 'express';
 import type { SendOtpResponse } from '../../shared';
 import { created, ok, noContent } from '../../common/response';
@@ -128,7 +129,8 @@ export async function sellerResetPassword(req: Request, res: Response): Promise<
 export async function changePassword(req: Request, res: Response): Promise<void> {
   const user = requireUser(req);
   const { currentPassword, newPassword } = req.body as ChangePasswordInput;
-  ok(res, await authService.changePassword(user.id, currentPassword, newPassword, contextOf(req)));
+  const scope = user.sessionScope === 'customer' ? SessionScope.CUSTOMER : SessionScope.FULL;
+  ok(res, await authService.changePassword(user.id, currentPassword, newPassword, scope, contextOf(req)));
 }
 
 /** GET /auth/password-status — has a password, and is it a temporary one? */

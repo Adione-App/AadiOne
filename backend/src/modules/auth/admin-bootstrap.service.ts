@@ -22,7 +22,7 @@
  * nor the email is ever logged in full.
  */
 
-import { UserRole, UserStatus } from '@prisma/client';
+import { Prisma, UserRole, UserStatus } from '@prisma/client';
 
 import { hashPassword } from '../../common/crypto';
 import { moduleLogger } from '../../common/logger';
@@ -138,6 +138,109 @@ export interface AdminBootstrapResult {
   changed?: string[];
 }
 
+export interface AdminBootstrapConfig {
+  /** Lower-cased. */
+  email: string;
+  name: string | null;
+  password: string;
+}
+
+interface AppliedBootstrap {
+  plan: AdminBootstrapPlan;
+  userId?: string;
+  changed: string[];
+}
+
+/** Which step a failure happened in — logged with the error. */
+export type BootstrapStage = 'lock' | 'load' | 'create' | 'update' | 'audit';
+
+/**
+ * The database part of the bootstrap, inside the caller's transaction.
+ *
+ * The advisory lock uses `$executeRaw`: `pg_advisory_xact_lock()` returns
+ * PostgreSQL `void`, and `$queryRaw` must deserialize every returned column —
+ * it fails on `void` with P2010 ("Failed to deserialize column of type
+ * 'void'") AFTER the lock was taken, aborting the transaction. `$executeRaw`
+ * runs the same statement and only reports a row count.
+ */
+export async function applyAdminBootstrap(
+  tx: Prisma.TransactionClient,
+  config: AdminBootstrapConfig,
+  stage: { current: BootstrapStage } = { current: 'lock' },
+): Promise<AppliedBootstrap> {
+  // One booting instance at a time; released when the transaction ends.
+  stage.current = 'lock';
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('aadione:admin-bootstrap'))`;
+
+  stage.current = 'load';
+  const byEmail = await tx.user.findFirst({ where: { email: { equals: config.email, mode: 'insensitive' } }, select: USER_SELECT });
+  const admins = await tx.user.findMany({ where: { role: { in: [...ADMIN_ACCOUNT_ROLES] } }, select: USER_SELECT, orderBy: { createdAt: 'asc' } });
+  const plan = planAdminBootstrap({ name: config.name }, { byEmail: byEmail ? toBootstrapUser(byEmail) : null, admins: admins.map(toBootstrapUser) });
+
+  if (plan.kind === 'refuse') return { plan, changed: [] };
+
+  if (plan.kind === 'create') {
+    const mobileTaken = await tx.user.count({ where: { mobile: ADMIN_RESERVED_MOBILE } });
+    if (mobileTaken) {
+      return { plan: { kind: 'refuse', reason: `reserved admin mobile ${ADMIN_RESERVED_MOBILE} is already used by another account` }, changed: [] };
+    }
+    stage.current = 'create';
+    const created = await tx.user.create({
+      data: {
+        mobile: ADMIN_RESERVED_MOBILE,
+        email: config.email,
+        fullName: config.name ?? 'Admin',
+        passwordHash: await hashPassword(config.password),
+        role: UserRole.ADMIN,
+      },
+      select: { id: true },
+    });
+    stage.current = 'audit';
+    await tx.auditLog.create({
+      data: { action: 'admin.bootstrap.create', entityType: 'User', entityId: created.id, after: { fields: ['email', 'fullName', 'passwordHash', 'role'] } },
+    });
+    return { plan, userId: created.id, changed: ['created'] };
+  }
+
+  const data: { email?: string; fullName?: string; passwordHash?: string } = {};
+  if (plan.kind === 'relink') {
+    data.email = config.email;
+    data.passwordHash = await hashPassword(config.password);
+  }
+  if (plan.kind === 'sync' && plan.setPassword) data.passwordHash = await hashPassword(config.password);
+  if (plan.setName && config.name) data.fullName = config.name;
+
+  const changed = Object.keys(data);
+  if (changed.length > 0) {
+    stage.current = 'update';
+    await tx.user.update({ where: { id: plan.userId }, data });
+    stage.current = 'audit';
+    await tx.auditLog.create({
+      data: { action: `admin.bootstrap.${plan.kind}`, entityType: 'User', entityId: plan.userId, after: { fields: changed } },
+    });
+  }
+  return { plan, userId: plan.userId, changed };
+}
+
+/**
+ * A database error, safe to log: Prisma's code, PostgreSQL's SQLSTATE (when
+ * there is one) and the message with anything identifying redacted —
+ * emails, bcrypt hashes, connection strings. Never the input values.
+ */
+export function describeDbError(error: unknown): { prismaCode?: string; sqlState?: string; message: string } {
+  const e = error as { code?: unknown; meta?: { code?: unknown; message?: unknown }; message?: unknown };
+  const raw = typeof e?.meta?.message === 'string' ? e.meta.message : typeof e?.message === 'string' ? e.message : String(error);
+  // Prisma's own message ends with the driver's text; the invocation preamble adds nothing.
+  const lastLine = raw.trim().split('\n').filter((line) => line.trim()).pop() ?? raw;
+  const message = lastLine
+    .replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, '[url]')
+    .replace(/\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}/g, '[hash]')
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[email]')
+    .slice(0, 300);
+  const sqlState = typeof e?.meta?.code === 'string' && e.meta.code !== 'N/A' ? e.meta.code : undefined;
+  return { prismaCode: typeof e?.code === 'string' ? e.code : undefined, sqlState, message };
+}
+
 /**
  * Brings the admin account in line with ADMIN_* (see the file comment).
  * Never throws: a failure is logged and the server starts with the database
@@ -159,77 +262,38 @@ export async function syncBootstrapAdmin(): Promise<AdminBootstrapResult> {
     return { ran: false, reason: gate.reason };
   }
 
-  const email = env.ADMIN_EMAIL!.toLowerCase();
-  const name = env.ADMIN_NAME ?? null;
+  const config: AdminBootstrapConfig = { email: env.ADMIN_EMAIL!.toLowerCase(), name: env.ADMIN_NAME ?? null, password: env.ADMIN_PASSWORD! };
+  const stage: { current: BootstrapStage } = { current: 'lock' };
+  let result: AppliedBootstrap;
   try {
-    const result = await prisma.$transaction(
-      async (tx): Promise<{ plan: AdminBootstrapPlan; userId?: string; changed: string[] }> => {
-        // One booting instance at a time.
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext('aadione:admin-bootstrap'))`;
-
-        const byEmail = await tx.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: USER_SELECT });
-        const admins = await tx.user.findMany({ where: { role: { in: [...ADMIN_ACCOUNT_ROLES] } }, select: USER_SELECT, orderBy: { createdAt: 'asc' } });
-        const plan = planAdminBootstrap({ name }, { byEmail: byEmail ? toBootstrapUser(byEmail) : null, admins: admins.map(toBootstrapUser) });
-
-        if (plan.kind === 'refuse') return { plan, changed: [] };
-
-        if (plan.kind === 'create') {
-          const mobileTaken = await tx.user.count({ where: { mobile: ADMIN_RESERVED_MOBILE } });
-          if (mobileTaken) {
-            return { plan: { kind: 'refuse', reason: `reserved admin mobile ${ADMIN_RESERVED_MOBILE} is already used by another account` }, changed: [] };
-          }
-          const created = await tx.user.create({
-            data: {
-              mobile: ADMIN_RESERVED_MOBILE,
-              email,
-              fullName: name ?? 'Admin',
-              passwordHash: await hashPassword(env.ADMIN_PASSWORD!),
-              role: UserRole.ADMIN,
-            },
-            select: { id: true },
-          });
-          await tx.auditLog.create({
-            data: { action: 'admin.bootstrap.create', entityType: 'User', entityId: created.id, after: { fields: ['email', 'fullName', 'passwordHash', 'role'] } },
-          });
-          return { plan, userId: created.id, changed: ['created'] };
-        }
-
-        const data: { email?: string; fullName?: string; passwordHash?: string } = {};
-        if (plan.kind === 'relink') {
-          data.email = email;
-          data.passwordHash = await hashPassword(env.ADMIN_PASSWORD!);
-        }
-        if (plan.kind === 'sync' && plan.setPassword) data.passwordHash = await hashPassword(env.ADMIN_PASSWORD!);
-        if (plan.setName && name) data.fullName = name;
-
-        const changed = Object.keys(data);
-        if (changed.length > 0) {
-          await tx.user.update({ where: { id: plan.userId }, data });
-          await tx.auditLog.create({
-            data: { action: `admin.bootstrap.${plan.kind}`, entityType: 'User', entityId: plan.userId, after: { fields: changed } },
-          });
-        }
-        return { plan, userId: plan.userId, changed };
-      },
-      { timeout: 30_000, maxWait: 15_000 },
-    );
-
-    if (result.plan.kind === 'refuse') {
-      log.error({ reason: result.plan.reason, email: maskEmail(email) }, 'admin bootstrap refused — nothing changed');
-      return { ran: true, reason: gate.reason, plan: result.plan, changed: [] };
-    }
-    // New credentials: sessions issued under the old ones must not survive.
-    if (result.changed.includes('passwordHash') || result.changed.includes('email')) {
-      const revoked = await tokenService.revokeAllSessions(result.userId!);
-      log.info({ userId: result.userId, revokedSessions: revoked }, 'admin sessions revoked after credential change');
-    }
-    log.info(
-      { action: result.plan.kind, userId: result.userId, email: maskEmail(email), changed: result.changed },
-      result.changed.length ? 'admin account provisioned from configuration' : 'admin account already in sync',
-    );
-    return { ran: true, reason: gate.reason, plan: result.plan, userId: result.userId, changed: result.changed };
+    result = await prisma.$transaction((tx) => applyAdminBootstrap(tx, config, stage), { timeout: 30_000, maxWait: 15_000 });
   } catch (error) {
-    log.error({ err: { message: (error as Error).message, code: (error as { code?: string }).code } }, 'admin bootstrap failed — database left unchanged');
-    return { ran: true, reason: `failed: ${(error as Error).message}` };
+    const db = describeDbError(error);
+    log.error({ stage: stage.current, ...db }, 'admin bootstrap failed — transaction rolled back, database left unchanged');
+    return { ran: true, reason: `failed at ${stage.current}: ${db.message}` };
   }
+
+  if (result.plan.kind === 'refuse') {
+    log.error({ reason: result.plan.reason, email: maskEmail(config.email) }, 'admin bootstrap refused — nothing changed');
+    return { ran: true, reason: gate.reason, plan: result.plan, changed: [] };
+  }
+  log.info(
+    { action: result.plan.kind, userId: result.userId, email: maskEmail(config.email), changed: result.changed },
+    result.changed.length ? 'admin account provisioned from configuration' : 'admin account already in sync',
+  );
+
+  // New credentials: sessions issued under the old ones must not survive.
+  // Runs after the commit — a failure here does NOT undo the account change.
+  if (result.userId && (result.changed.includes('passwordHash') || result.changed.includes('email'))) {
+    try {
+      const revoked = await tokenService.revokeAllSessions(result.userId);
+      log.info({ userId: result.userId, revokedSessions: revoked }, 'admin sessions revoked after credential change');
+    } catch (error) {
+      log.error(
+        { userId: result.userId, ...describeDbError(error) },
+        'admin account WAS updated, but revoking its old sessions failed — revoke them manually',
+      );
+    }
+  }
+  return { ran: true, reason: gate.reason, plan: result.plan, userId: result.userId, changed: result.changed };
 }

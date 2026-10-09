@@ -20,6 +20,7 @@ import { moduleLogger } from '../common/logger';
 import { confirmPaymentAndPlace, transitionOrder } from '../modules/orders/order-state.service';
 import * as notificationService from '../modules/notifications/notification.service';
 import { reconcileCheckoutPayments } from '../modules/payments/payment.service';
+import { cleanupProductImports, runProductImportWorker } from '../modules/product-import/import-worker';
 
 const log = moduleLogger('jobs');
 
@@ -196,6 +197,9 @@ export function startJobs(): void {
   schedule('retry-notifications', 2 * 60_000, () => notificationService.retryPending());
   schedule('back-in-stock', 5 * 60_000, notifyBackInStock);
   schedule('cleanup', 60 * 60_000, cleanupExpired);
+  // Seller bulk imports: resume orphaned imports / fail dead analyses, and retention.
+  schedule('product-imports', 30_000, runProductImportWorker);
+  schedule('product-import-retention', 60 * 60_000, cleanupProductImports);
 
   log.info({ jobs: timers.length }, 'background jobs started');
 }

@@ -20,6 +20,7 @@ import { adminCommissionRouter } from '../commission/commission.routes';
 import { adminNotificationRouter } from '../notifications/notification.routes';
 import { adminMarketplaceRouter } from './admin-marketplace.routes';
 import { adminContentRouter } from './admin-content.routes';
+import { adminProductImportRouter } from '../product-import/import.routes';
 
 export const adminRouter: Router = Router();
 
@@ -36,3 +37,4 @@ adminRouter.use('/', adminProductApprovalRouter);
 adminRouter.use('/', adminRestaurantRouter);
 adminRouter.use('/', adminMarketplaceRouter);
 adminRouter.use('/', adminContentRouter);
+adminRouter.use('/', adminProductImportRouter);

@@ -15,6 +15,7 @@ import { cache } from './infra/cache';
 import { disconnectDatabase, checkDatabaseConnection } from './infra/db/prisma';
 import { checkPrismaClientMatchesSchema } from './infra/db/prisma-client-check';
 import { checkDatabaseIsV2 } from './infra/db/database-identity';
+import { syncBootstrapAdmin } from './modules/auth/admin-bootstrap.service';
 import { initRealtime, shutdownRealtime } from './realtime/socket';
 import { startJobs, stopJobs } from './jobs';
 
@@ -52,6 +53,10 @@ async function start(): Promise<void> {
     logger.error({ reason: database.reason }, database.message);
     process.exit(1);
   }
+
+  // Deployments only: bring the admin account in line with ADMIN_* (never
+  // throws; the database stays the source of truth for login).
+  await syncBootstrapAdmin();
 
   server = app.listen(env.PORT, () => {
     logger.info(

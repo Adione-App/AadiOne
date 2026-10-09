@@ -25,7 +25,7 @@ status. It owns:
 | Pricing | The only place a bill is computed — subtotal, discounts, delivery fee, platform fee, tax, total |
 | Serviceability | Distance from the store, delivery radius, ETA, delivery fee band |
 | Orders | Order placement in a transaction, the order state machine, cancellation |
-| Payments | UPI intent / Razorpay / mock behind one port, webhooks, manual verification, refunds |
+| Payments | Cashfree / UPI intent / mock behind one port, webhooks, manual verification, refunds |
 | Inventory | Stock ledger, reservations, low-stock reporting |
 | Delivery | Agents, assignment, delivery OTP, cash settlement |
 | Notifications | Push + in-app, one row per notification |
@@ -122,7 +122,7 @@ The essentials:
 | `REDIS` / `REDIS_URL` | `false` uses the in-process cache; `true` requires a URL |
 | `CORS_ORIGINS` | Comma-separated allow-list. The mobile app sends no `Origin`, so it is unaffected |
 | `OTP_PROVIDER` | `console` (dev) \| `msg91` |
-| `PAYMENT_PROVIDER` | `mock` (dev) \| `upi_intent` \| `razorpay` |
+| `PAYMENT_PROVIDER` | `mock` (dev) \| `upi_intent` \| `cashfree` |
 | `STORAGE_PROVIDER` | `local` (dev) \| `s3` |
 | `NOTIFICATION_PROVIDER` | `console` (dev) \| `fcm` |
 

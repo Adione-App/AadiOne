@@ -193,7 +193,7 @@ server does not send, or to switch on a status string the server never emits.
               │               │           │           │                │
         ┌─────▼─────┐   ┌─────▼────┐ ┌────▼─────┐ ┌───▼────┐  ┌────────▼──────┐
         │ PostgreSQL│   │  Redis   │ │ Object   │ │  SMS   │  │ Payments      │
-        │           │   │(optional)│ │ storage  │ │ (MSG91)│  │ (UPI/Razorpay)│
+        │           │   │(optional)│ │ storage  │ │ (MSG91)│  │ (Cashfree)    │
         └───────────┘   └──────────┘ └──────────┘ └────────┘  └───────────────┘
 ```
 

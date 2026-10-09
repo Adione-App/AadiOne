@@ -92,7 +92,7 @@ export interface WebhookEvent {
   providerPaymentId: string | null;
   amountPaise: number | null;
   /**
-   * FAILED         the ORDER's payment failed for good (mock / Razorpay).
+   * FAILED         the ORDER's payment failed for good (mock).
    * ATTEMPT_FAILED one attempt failed or was abandoned; the customer may
    *                retry until the AdiOne hold expires (Cashfree).
    * REFUND_UPDATE  a refund changed status — see `refund`.
@@ -142,9 +142,9 @@ export interface PaymentProvider {
 const MOCK_SECRET = 'adione-mock-secret';
 
 /**
- * Deterministic fake gateway. Signatures are real HMACs over the same fields
- * Razorpay uses, so the verification CODE PATH is genuinely exercised in tests
- * rather than stubbed out — which is the point of having a mock at all.
+ * Deterministic fake gateway. Signatures are real HMACs (order id | payment
+ * id), so the verification CODE PATH is genuinely exercised in tests rather
+ * than stubbed out — which is the point of having a mock at all.
  *
  * Blocked in production by the env validator.
  */
@@ -218,166 +218,6 @@ class MockPaymentProvider implements PaymentProvider {
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* Razorpay                                                                   */
-/* -------------------------------------------------------------------------- */
-
-const RAZORPAY_API = 'https://api.razorpay.com/v1';
-
-class RazorpayProvider implements PaymentProvider {
-  readonly name = 'razorpay';
-
-  publicKey(): string {
-    return env.RAZORPAY_KEY_ID ?? '';
-  }
-
-  private authHeader(): string {
-    const token = Buffer.from(
-      `${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`,
-    ).toString('base64');
-    return `Basic ${token}`;
-  }
-
-  private async call<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(`${RAZORPAY_API}${path}`, {
-      ...init,
-      headers: {
-        Authorization: this.authHeader(),
-        'Content-Type': 'application/json',
-        ...(init?.headers ?? {}),
-      },
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!response.ok) {
-      const description =
-        (body['error'] as { description?: string } | undefined)?.description ?? 'unknown';
-      throw new AppError(ErrorCode.PAYMENT_FAILED, {
-        internalMessage: `razorpay ${path} ${response.status}: ${description}`,
-      });
-    }
-    return body as T;
-  }
-
-  async createIntent(input: CreateIntentInput): Promise<CreateIntentResult> {
-    const order = await this.call<{ id: string }>('/orders', {
-      method: 'POST',
-      body: JSON.stringify({
-        amount: input.amountPaise, // Razorpay works in paise natively.
-        currency: input.currency,
-        receipt: input.orderNumber,
-        notes: { orderId: input.orderId },
-      }),
-    });
-    return { providerOrderId: order.id, publicKey: env.RAZORPAY_KEY_ID ?? '' };
-  }
-
-  /**
-   * Two independent checks:
-   *   1. the HMAC the client returned matches our own secret, and
-   *   2. the provider's API confirms the payment is actually captured.
-   *
-   * The second is what makes a forged client response useless — a signature
-   * alone proves the client talked to Razorpay, not that money moved.
-   */
-  async verify(input: VerifyInput): Promise<VerifyResult> {
-    const expected = createHmac('sha256', env.RAZORPAY_KEY_SECRET ?? '')
-      .update(`${input.providerOrderId}|${input.providerPaymentId}`)
-      .digest('hex');
-
-    const signatureValid =
-      expected.length === input.signature.length &&
-      timingSafeEqual(Buffer.from(expected), Buffer.from(input.signature));
-
-    if (!signatureValid) {
-      return { verified: false, amountPaise: 0, status: 'FAILED', method: null,
-        failureReason: 'signature mismatch' };
-    }
-
-    const payment = await this.call<{
-      status: string;
-      amount: number;
-      method: string;
-      error_description?: string;
-    }>(`/payments/${input.providerPaymentId}`);
-
-    const captured = payment.status === 'captured';
-    return {
-      verified: captured,
-      amountPaise: payment.amount,
-      status: captured ? 'CAPTURED' : payment.status === 'authorized' ? 'AUTHORIZED' : 'FAILED',
-      method: payment.method ?? null,
-      failureReason: payment.error_description ?? null,
-    };
-  }
-
-  parseWebhook(rawBody: Buffer, headers: Record<string, string | undefined>): WebhookEvent {
-    const signature = headers['x-razorpay-signature'] ?? '';
-    const expected = createHmac('sha256', env.RAZORPAY_WEBHOOK_SECRET ?? '')
-      .update(rawBody)
-      .digest('hex');
-
-    const signatureValid =
-      expected.length === signature.length &&
-      timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
-
-    const payload = JSON.parse(rawBody.toString('utf8')) as {
-      event?: string;
-      payload?: { payment?: { entity?: Record<string, unknown> } };
-    };
-    const entity = payload.payload?.payment?.entity ?? {};
-
-    return {
-      eventId: headers['x-razorpay-event-id'] ?? String(entity['id'] ?? randomUUID()),
-      type: payload.event ?? 'unknown',
-      signatureValid,
-      providerOrderId: (entity['order_id'] as string) ?? null,
-      providerPaymentId: (entity['id'] as string) ?? null,
-      amountPaise: (entity['amount'] as number) ?? null,
-      status:
-        payload.event === 'payment.captured'
-          ? 'CAPTURED'
-          : payload.event === 'payment.failed'
-            ? 'FAILED'
-            : payload.event === 'refund.processed'
-              ? 'REFUNDED'
-              : 'OTHER',
-      payload,
-    };
-  }
-
-  async refund(input: {
-    providerPaymentId: string;
-    amountPaise: number;
-    reason: string;
-  }): Promise<RefundResult> {
-    const refund = await this.call<{ id: string; status: string }>(
-      `/payments/${input.providerPaymentId}/refund`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ amount: input.amountPaise, notes: { reason: input.reason } }),
-      },
-    );
-    return {
-      providerRefundId: refund.id,
-      status: refund.status === 'processed' ? 'COMPLETED' : 'PROCESSING',
-    };
-  }
-
-  async getStatus(providerPaymentId: string): Promise<VerifyResult> {
-    const payment = await this.call<{ status: string; amount: number; method: string }>(
-      `/payments/${providerPaymentId}`,
-    );
-    return {
-      verified: payment.status === 'captured',
-      amountPaise: payment.amount,
-      status: payment.status === 'captured' ? 'CAPTURED' : 'FAILED',
-      method: payment.method ?? null,
-    };
-  }
-}
-
 function createCashfreeProvider(): CashfreeProvider {
   return new CashfreeProvider({
     // Presence is enforced by the env validator when PAYMENT_PROVIDER=cashfree.
@@ -390,13 +230,11 @@ function createCashfreeProvider(): CashfreeProvider {
 
 function createProvider(): PaymentProvider {
   const provider =
-    env.PAYMENT_PROVIDER === 'razorpay'
-      ? new RazorpayProvider()
-      : env.PAYMENT_PROVIDER === 'upi_intent'
-        ? new UpiIntentProvider()
-        : env.PAYMENT_PROVIDER === 'cashfree'
-          ? createCashfreeProvider()
-          : new MockPaymentProvider();
+    env.PAYMENT_PROVIDER === 'upi_intent'
+      ? new UpiIntentProvider()
+      : env.PAYMENT_PROVIDER === 'cashfree'
+        ? createCashfreeProvider()
+        : new MockPaymentProvider();
 
   if (provider.name === 'upi_intent') {
     log.warn(

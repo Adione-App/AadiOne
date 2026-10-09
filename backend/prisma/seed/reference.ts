@@ -91,12 +91,21 @@ export async function seedAdminUser(
   prisma: PrismaClient,
   input: { email: string; password: string; name: string },
 ): Promise<void> {
+  // Any existing admin counts — the seed only ever creates the FIRST one.
+  // Deployments re-link or update the admin from ADMIN_* at startup
+  // (src/modules/auth/admin-bootstrap.service.ts), never the seed.
   const existing = await prisma.user.findFirst({
-    where: { email: input.email.toLowerCase() },
+    where: {
+      OR: [
+        { email: { equals: input.email.toLowerCase(), mode: 'insensitive' } },
+        { role: { in: [UserRole.ADMIN, UserRole.SUPER_ADMIN] }, deletedAt: null },
+      ],
+    },
+    select: { id: true },
   });
 
   if (existing) {
-    console.log(`  ✓ admin user already present: ${input.email}`);
+    console.log('  ✓ admin user already present — not creating another');
     return;
   }
 

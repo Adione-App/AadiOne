@@ -178,10 +178,9 @@ const envSchema = z
     //
     // mock       = dev stub
     // upi_intent = pay directly to shop VPA
-    // razorpay   = full gateway
     // cashfree   = full gateway (V2 production path)
     PAYMENT_PROVIDER: z
-      .enum(["mock", "upi_intent", "razorpay", "cashfree"])
+      .enum(["mock", "upi_intent", "cashfree"])
       .default("mock"),
 
     /**
@@ -215,12 +214,6 @@ const envSchema = z
 
     /** Shown in the customer's UPI app as the payee. */
     UPI_PAYEE_NAME: z.string().default("AdiOne"),
-
-    RAZORPAY_KEY_ID: z.string().optional(),
-
-    RAZORPAY_KEY_SECRET: z.string().optional(),
-
-    RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
 
     // Transactional email (seller password reset). `console` is the only
     // provider wired so far: outside production it logs the message (with
@@ -277,12 +270,20 @@ const envSchema = z
 
     SEARCH_PROVIDER: z.enum(["postgres"]).default("postgres"),
 
-    // Admin
-    ADMIN_EMAIL: z.string().email().default("owner@adione.in"),
+    // Admin account provisioning (src/modules/auth/admin-bootstrap.service.ts).
+    // Deployment configuration only: the account itself lives in PostgreSQL,
+    // which is what login checks. No defaults — a missing value provisions
+    // nothing rather than a well-known example password.
+    ADMIN_EMAIL: z.string().trim().email().optional(),
 
-    ADMIN_PASSWORD: z.string().min(8).default("ChangeMe@123"),
+    ADMIN_PASSWORD: z.string().min(8).optional(),
 
-    ADMIN_NAME: z.string().default("Store Owner"),
+    ADMIN_NAME: z.string().trim().min(1).max(120).optional(),
+
+    /** When to sync ADMIN_* into the database at startup. `auto` = only on
+     * Railway or with NODE_ENV=production — never from a developer machine,
+     * whose .env.v2 may point at the same database. */
+    ADMIN_BOOTSTRAP: z.enum(["auto", "true", "false"]).default("auto"),
   })
   .superRefine((env, ctx) => {
     const fail = (path: string, message: string) =>
@@ -354,23 +355,6 @@ const envSchema = z
 
     if (env.PAYMENT_PROVIDER === "upi_intent" && !env.UPI_VPA) {
       fail("UPI_VPA", "UPI_VPA is required when PAYMENT_PROVIDER=upi_intent");
-    }
-
-    if (env.PAYMENT_PROVIDER === "razorpay") {
-      if (!env.RAZORPAY_KEY_ID) {
-        fail("RAZORPAY_KEY_ID", "required when PAYMENT_PROVIDER=razorpay");
-      }
-
-      if (!env.RAZORPAY_KEY_SECRET) {
-        fail("RAZORPAY_KEY_SECRET", "required when PAYMENT_PROVIDER=razorpay");
-      }
-
-      if (!env.RAZORPAY_WEBHOOK_SECRET) {
-        fail(
-          "RAZORPAY_WEBHOOK_SECRET",
-          "required when PAYMENT_PROVIDER=razorpay",
-        );
-      }
     }
 
     if (env.PAYMENT_PROVIDER === "cashfree") {

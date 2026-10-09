@@ -4,16 +4,15 @@
  * Android 11 (API 30) and iOS 9 both restrict which other apps a package can
  * see, and BOTH FAIL SILENTLY: without the declarations below,
  * `Linking.canOpenURL('phonepe://')` returns false — or throws on iOS — on a
- * phone with PhonePe installed. The checkout grid would be empty for every
- * customer and every probe in `src/lib/upi-apps.ts` would report "not
- * installed".
+ * phone with PhonePe installed, and a payment checkout (Cashfree's UPI app
+ * list included) cannot find the installed UPI apps.
  *
  *   Android  <queries><package> for each app in the catalogue, plus a generic
  *            upi:// intent so the system chooser fallback resolves.
  *   iOS      LSApplicationQueriesSchemes for the same schemes.
  *
- * Both lists are derived from `src/lib/upi-apps.json`, the same catalogue the
- * app reads, so adding an app there wires up both platforms at once.
+ * Both lists are derived from `src/lib/upi-apps.json`, so adding an app there
+ * wires up both platforms at once.
  *
  * This lives in a config plugin rather than in android/ and ios/ directly
  * because `expo prebuild` regenerates those folders and would drop the edits.

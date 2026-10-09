@@ -24,6 +24,7 @@ import SellersPage from '@/pages/Sellers';
 import SellerDetailPage from '@/pages/SellerDetail';
 import { usePendingApprovalCount } from '@/lib/productApprovals';
 import CategoriesPage from '@/pages/Categories';
+import BannersPage from '@/pages/Banners';
 import InventoryPage from '@/pages/Inventory';
 import CustomersPage from '@/pages/Customers';
 import DeliveryPage from '@/pages/Delivery';
@@ -118,6 +119,15 @@ const NAV: NavItem[] = [
     section: 'MARKETPLACE',
     title: 'Marketplace Catalogue',
     subtitle: 'Browse categories, subcategories and products across all sellers.',
+  },
+  {
+    to: '/banners',
+    label: 'Banners',
+    icon: 'image',
+    section: 'MARKETPLACE',
+    title: 'Banners',
+    subtitle: 'Promotional images shown in the customer app, by placement.',
+    permission: Permission.CATALOG_READ,
   },
   { to: '/inventory', label: 'Inventory', icon: 'inventory', section: 'MARKETPLACE', title: 'Inventory', subtitle: 'Stock across every seller' },
   { to: '/customers', label: 'Customers', icon: 'customers', section: 'USERS', title: 'Customers', subtitle: 'People who order on Aadione' },
@@ -413,6 +423,7 @@ function AdminApp() {
         <Route path="/sellers" element={<SellersPage />} />
         <Route path="/sellers/:id" element={<SellerDetailPage />} />
         <Route path="/categories" element={<CategoriesPage />} />
+        <Route path="/banners" element={<BannersPage />} />
         <Route path="/inventory" element={<InventoryPage />} />
         <Route path="/customers" element={<CustomersPage />} />
         <Route path="/delivery" element={<DeliveryPage />} />

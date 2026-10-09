@@ -252,19 +252,41 @@ export interface PromoSlide {
   visual: SlideVisual | null;
   /** A full designed banner image from the backend (drawn edge to edge). */
   artworkUrl: string | null;
+  /** A full designed banner bundled with the app (`require(...)`), drawn edge to edge. */
+  artworkAsset: number | null;
+  /** Width / height of the designed artwork, so the slide shows all of it, uncropped. */
+  artworkAspectRatio: number | null;
   ctaLabel: string;
   action: HomeAction;
 }
 
-const MAX_SLIDES = 5;
-/** Below this a discount is not worth headlining. */
-const MIN_HEADLINE_DISCOUNT = 5;
+/** The designed Home banners bundled with the app (1983 × 793 px each). */
+const HOME_BANNER_ASPECT_RATIO = 1983 / 793;
+const HOME_BANNERS: ReadonlyArray<{ key: string; title: string; asset: number; categoryKeywords: readonly string[] }> = [
+  {
+    key: "daily-essentials",
+    title: "Daily essentials",
+    asset: require("../../../assets/home-banner-daily-essentials.png") as number,
+    categoryKeywords: ["essential", "grocery", "kirana", "staple"],
+  },
+  {
+    key: "electronics",
+    title: "Electronics",
+    asset: require("../../../assets/home-banner-electronics.png") as number,
+    categoryKeywords: ["electronic", "gadget", "appliance"],
+  },
+  {
+    key: "vegetables-fruits",
+    title: "Vegetables & fruits",
+    asset: require("../../../assets/home-banner-vegetables-fruits.png") as number,
+    categoryKeywords: ["vegetable", "fruit", "veggie"],
+  },
+];
 
-/** Deepest current discount among buyable products — a number, never a product. */
-function maxDiscount(products: readonly ProductSummaryDto[]): number {
-  return products
-    .filter(isBuyable)
-    .reduce((max, product) => Math.max(max, product.defaultVariant?.discountPercent ?? 0), 0);
+/** A banner opens the first top category whose name matches it; with none, it only shows. */
+function bannerCategoryAction(categories: HomeFeedDto["categories"], keywords: readonly string[]): HomeAction {
+  const match = categories.find((category) => keywords.some((word) => category.name.toLowerCase().includes(word)));
+  return match ? { type: "category", categoryId: match.id } : { type: "none" };
 }
 
 function bannerAction(banner: HomeFeedDto["banners"][number]): HomeAction {
@@ -284,17 +306,10 @@ function bannerAction(banner: HomeFeedDto["banners"][number]): HomeAction {
 
 /**
  * The carousel's slides. Banners configured on the backend (`feed.banners`)
- * always win — that is where admin-managed banners belong. Until any exist,
- * slides are composed from live data: the deepest real discount, each top
- * category with buyable products (its subcategories as the subtitle, its
- * category image or icon as the visual), and the restaurants that deliver
- * here — so the carousel only ever advertises what the catalogue has, and
- * never shows a product photo that a shelf below also shows.
+ * win — that is where admin-managed banners belong. Until any exist, the
+ * three designed banners bundled with the app are shown.
  */
-export function buildPromoSlides(
-  feed: HomeFeedDto,
-  restaurants: readonly RestaurantSummaryDto[],
-): PromoSlide[] {
+export function buildPromoSlides(feed: HomeFeedDto): PromoSlide[] {
   if (feed.banners.length > 0) {
     return feed.banners.map((banner) => ({
       key: `banner:${banner.id}`,
@@ -303,64 +318,26 @@ export function buildPromoSlides(
       badge: null,
       visual: null,
       artworkUrl: banner.imageUrl,
+      artworkAsset: null,
+      // Admin banners carry their size, so the carousel shows them whole, uncropped.
+      artworkAspectRatio: banner.imageWidth > 0 && banner.imageHeight > 0 ? banner.imageWidth / banner.imageHeight : null,
       ctaLabel: "Shop Now",
       action: bannerAction(banner),
     }));
   }
 
-  const slides: PromoSlide[] = [];
-
-  const deals = feed.rails.find((rail) => rail.key === "OFFERS");
-  if (deals) {
-    const best = maxDiscount(deals.products);
-    if (best >= MIN_HEADLINE_DISCOUNT) {
-      slides.push({
-        key: "deals",
-        title: deals.title,
-        subtitle: "Big savings on everyday picks",
-        badge: `Up to ${best}% off`,
-        visual: { kind: "deals" },
-        artworkUrl: null,
-        ctaLabel: "Shop Now",
-        action: { type: "rail", railKey: deals.key, title: deals.title },
-      });
-    }
-  }
-
-  const categoryById = new Map(feed.categories.map((category) => [category.id, category]));
-  for (const rail of feed.categoryRails) {
-    if (slides.length >= MAX_SLIDES - 1) break;
-    if (!rail.products.some(isBuyable)) continue;
-    const category = categoryById.get(rail.categoryId);
-    const children = category?.children ?? [];
-    const best = maxDiscount(rail.products);
-    slides.push({
-      key: `category:${rail.categoryId}`,
-      title: rail.title,
-      subtitle: children.length > 0 ? children.slice(0, 3).map((child) => child.name).join(" · ") : null,
-      badge: best >= MIN_HEADLINE_DISCOUNT ? `Up to ${best}% off` : null,
-      visual: { kind: "category", name: rail.title, imageUrl: category?.imageUrl ?? null },
-      artworkUrl: null,
-      ctaLabel: "Shop Now",
-      action: { type: "category", categoryId: rail.categoryId },
-    });
-  }
-
-  const withMenu = restaurants.filter((restaurant) => restaurant.menuItemCount > 0);
-  if (withMenu.length > 0 && slides.length < MAX_SLIDES) {
-    slides.push({
-      key: "food",
-      title: "Order delicious food",
-      subtitle: withMenu.slice(0, 3).map((restaurant) => restaurant.name).join(" · "),
-      badge: `${withMenu.length} ${withMenu.length === 1 ? "place" : "places"} to order from`,
-      visual: { kind: "food" },
-      artworkUrl: null,
-      ctaLabel: "Explore Food",
-      action: { type: "food" },
-    });
-  }
-
-  return slides.slice(0, MAX_SLIDES);
+  return HOME_BANNERS.map((banner) => ({
+    key: `home-banner:${banner.key}`,
+    title: banner.title,
+    subtitle: null,
+    badge: null,
+    visual: null,
+    artworkUrl: null,
+    artworkAsset: banner.asset,
+    artworkAspectRatio: HOME_BANNER_ASPECT_RATIO,
+    ctaLabel: "Shop Now",
+    action: bannerCategoryAction(feed.categories, banner.categoryKeywords),
+  }));
 }
 
 /* -------------------------------------------------------------------------- */

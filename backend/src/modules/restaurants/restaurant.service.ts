@@ -70,6 +70,7 @@ type SectionRow = {
   slug: string;
   displayOrder: number;
   isActive: boolean;
+  imageUrl: string | null;
   parent?: { id: string; name: string } | null;
 };
 
@@ -80,6 +81,7 @@ function toMenuSectionDto(category: SectionRow) {
     slug: category.slug,
     displayOrder: category.displayOrder,
     isActive: category.isActive,
+    imageUrl: category.imageUrl,
     menuId: category.parent?.id ?? null,
     menuName: category.parent?.name ?? null,
   };

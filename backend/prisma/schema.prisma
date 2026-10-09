@@ -490,6 +490,7 @@ model User {
   approvalBatchesReviewed  ProductApprovalBatch[]     @relation("ApprovalBatchReviewed")
   verifiedSellerDocuments  SellerDocument[]
   deliveryTasksAssigned    DeliveryTask[]             @relation("DeliveryTaskAssignedBy")
+  productImports           ProductImport[]
 
   // Indexes for this table are partial and live in the hardening migration:
   //   users_email_unique   UNIQUE (lower(email)) WHERE email IS NOT NULL
@@ -503,10 +504,10 @@ model RefreshToken {
 
   /// SHA-256 of the token. The raw token is never stored, so a database dump
   /// does not hand over live sessions.
-  tokenHash String @unique @map("token_hash") @db.Char(64)
+  tokenHash String       @unique @map("token_hash") @db.Char(64)
   /// Rotation family. Presenting an already-rotated token revokes the whole
   /// family — the standard defence against a stolen refresh token.
-  familyId  String @map("family_id") @db.Uuid
+  familyId  String       @map("family_id") @db.Uuid
   /// Kept for the whole family: refresh re-reads the account's role, so the
   /// scope must travel with the session or a customer session would come back
   /// FULL. Least privilege by default; panel logins pass FULL explicitly.
@@ -619,7 +620,7 @@ model Seller {
   /// Opening hours are evaluated in THIS timezone, never server UTC.
   timezone String @default("Asia/Kolkata") @db.VarChar(60)
 
-  isActive Boolean   @default(true) @map("is_active")
+  isActive          Boolean   @default(true) @map("is_active")
   /// The SELLER's own "Store Open / Store Closed" switch — distinct from
   /// `isActive` (admin-controlled) and from onboarding approval. OFF closes
   /// the seller to customers immediately and indefinitely, overriding its
@@ -627,9 +628,9 @@ model Seller {
   /// seller (or admin acting for them) does. ON hands control back to
   /// SellerHours/SellerClosure. See seller.service.ts's
   /// `evaluateSellerAvailability` for the full priority order.
-  isAcceptingOrders Boolean @default(true) @map("is_accepting_orders")
+  isAcceptingOrders Boolean   @default(true) @map("is_accepting_orders")
   /// Seller-level COD policy — the outermost level of the resolution chain.
-  allowCod CodPolicy @default(ALLOW) @map("allow_cod")
+  allowCod          CodPolicy @default(ALLOW) @map("allow_cod")
 
   /// Admin onboarding review gate (see SellerProfile/SellerBankDetail/
   /// SellerDocument for the underlying submitted details). A seller cannot
@@ -680,20 +681,21 @@ model Seller {
   staff             SellerStaff[]
   restaurantProfile RestaurantProfile?
 
-  hours           SellerHours[]
-  closures        SellerClosure[]
-  listings        SellerListing[]
-  categories      Category[]
+  hours              SellerHours[]
+  closures           SellerClosure[]
+  listings           SellerListing[]
+  categories         Category[]
   /// Master categories admin has assigned to this seller (see SellerCategory).
   assignedCategories SellerCategory[]
-  products        Product[]                 @relation("ProductSubmittedBySeller")
-  approvalBatches ProductApprovalBatch[]
-  commissionRules CommissionRule[]
-  sellerOrders    SellerOrder[]
-  settlements     SellerSettlement[]
-  notifications   Notification[]
-  configurations  Configuration[]
-  backInStockSubs BackInStockSubscription[]
+  products           Product[]                 @relation("ProductSubmittedBySeller")
+  approvalBatches    ProductApprovalBatch[]
+  commissionRules    CommissionRule[]
+  sellerOrders       SellerOrder[]
+  settlements        SellerSettlement[]
+  notifications      Notification[]
+  configurations     Configuration[]
+  productImports     ProductImport[]
+  backInStockSubs    BackInStockSubscription[]
 
   /// Admin seller list / applications queue filtered by lifecycle stage.
   @@index([lifecycleStatus, createdAt])
@@ -797,22 +799,22 @@ model SellerDocument {
   id       String @id @default(uuid()) @db.Uuid
   sellerId String @map("seller_id") @db.Uuid
 
-  type    SellerDocumentType
+  type           SellerDocumentType
   /// The number printed on the document (PAN, Aadhaar, GSTIN, FSSAI…),
   /// normalised. Verification data, not a secret: masked in every read
   /// except an audited admin reveal; never written to logs or audit rows.
-  documentNumber String? @map("document_number") @db.VarChar(40)
+  documentNumber String?            @map("document_number") @db.VarChar(40)
   /// Private storage key of the uploaded PDF (never a public URL) —
   /// read only through the authorised document endpoints.
-  fileKey     String? @map("file_key") @db.VarChar(300)
+  fileKey        String?            @map("file_key") @db.VarChar(300)
   /// The uploader's file name, sanitised, for display/download only.
-  fileName    String? @map("file_name") @db.VarChar(160)
-  fileSize    Int?    @map("file_size")
-  contentType String? @map("content_type") @db.VarChar(80)
+  fileName       String?            @map("file_name") @db.VarChar(160)
+  fileSize       Int?               @map("file_size")
+  contentType    String?            @map("content_type") @db.VarChar(80)
   /// LEGACY: an external link from before direct uploads. Kept on old rows;
   /// never written by new uploads. Every row has a file_key or a file_url
   /// (CHECK constraint in the v2_seller_document_uploads migration).
-  fileUrl     String? @map("file_url") @db.VarChar(500)
+  fileUrl        String?            @map("file_url") @db.VarChar(500)
 
   status           DocumentStatus @default(PENDING)
   verifiedByUserId String?        @map("verified_by_user_id") @db.Uuid
@@ -929,11 +931,11 @@ model Category {
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  seller          Seller?          @relation(fields: [sellerId], references: [id], onDelete: Cascade)
-  parent          Category?        @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
-  children        Category[]       @relation("CategoryTree")
-  products        Product[]
-  commissionRules CommissionRule[]
+  seller            Seller?          @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  parent            Category?        @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children          Category[]       @relation("CategoryTree")
+  products          Product[]
+  commissionRules   CommissionRule[]
   sellerAssignments SellerCategory[]
 
   // Slug uniqueness lives ONLY in partial unique indexes (v2_hardening
@@ -1640,16 +1642,16 @@ model OrderItem {
   /// order still renders correctly if the variant is later renamed/removed.
   variantId     String? @map("variant_id") @db.Uuid
 
-  productName String  @map("product_name") @db.VarChar(200)
-  variantName String  @map("variant_name") @db.VarChar(80)
-  brandName   String? @map("brand_name") @db.VarChar(120)
-  imageUrl    String? @map("image_url") @db.VarChar(500)
-  sku         String  @db.VarChar(60)
-  unitDisplay String  @map("unit_display") @db.VarChar(40)
+  productName  String  @map("product_name") @db.VarChar(200)
+  variantName  String  @map("variant_name") @db.VarChar(80)
+  brandName    String? @map("brand_name") @db.VarChar(120)
+  imageUrl     String? @map("image_url") @db.VarChar(500)
+  sku          String  @db.VarChar(60)
+  unitDisplay  String  @map("unit_display") @db.VarChar(40)
   /// The variant's option picks when ordered ({ "Size": "M", "Color": "Black" };
   /// {} for a simple item) — snapshot, like the name and image above, so a
   /// later edit to the product's variants never changes an old order.
-  optionValues Json @default("{}") @map("option_values")
+  optionValues Json    @default("{}") @map("option_values")
 
   qty               Int
   mrpPaise          Int @map("mrp_paise")
@@ -1950,13 +1952,13 @@ model Notification {
 
   /// Feed this row belongs to; SELLER rows also carry the seller they are
   /// about, so a user staffing several sellers sees each seller's feed apart.
-  audience NotificationAudience @default(CUSTOMER)
-  sellerId String?              @map("seller_id") @db.Uuid
+  audience  NotificationAudience @default(CUSTOMER)
+  sellerId  String?              @map("seller_id") @db.Uuid
   /// Deterministic identity of the business event this row announces
   /// (e.g. "so:<id>:ACCEPTED", "refund:<id>:COMPLETED"). Unique per user, so
   /// a retried or repeated operation cannot notify the same person twice.
   /// Null only for legacy rows written before it existed.
-  dedupeKey String? @map("dedupe_key") @db.VarChar(160)
+  dedupeKey String?              @map("dedupe_key") @db.VarChar(160)
 
   user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   order  Order?  @relation(fields: [orderId], references: [id], onDelete: SetNull)
@@ -2013,8 +2015,221 @@ model BackInStockSubscription {
 // Configuration, idempotency, audit
 // =============================================================================
 
+/// What tapping a banner does. Mirrors HomeFeedDto.banners[].actionType.
+enum BannerActionType {
+  NONE
+  CATEGORY
+  PRODUCT
+  COUPON
+}
+
+/// Admin-managed banner. `placement` is a free-form slug, not an enum, so a
+/// new place to show banners ("home_top", "home_middle", "food",
+/// "category:<id>", …) needs no schema change. The image is stored like every
+/// other content image: optimised to WebP in public storage (image_url).
+model Banner {
+  id        String  @id @default(uuid()) @db.Uuid
+  placement String  @db.VarChar(60)
+  title     String? @db.VarChar(120)
+  subtitle  String? @db.VarChar(200)
+
+  imageUrl    String @map("image_url") @db.VarChar(500)
+  /// Pixel size of the stored image, so a client can show the whole banner
+  /// at its own aspect ratio instead of cropping it.
+  imageWidth  Int    @map("image_width")
+  imageHeight Int    @map("image_height")
+
+  actionType  BannerActionType @default(NONE) @map("action_type")
+  /// Category id, product id or coupon code, by actionType; null for NONE.
+  actionValue String?          @map("action_value") @db.VarChar(120)
+
+  displayOrder Int     @default(0) @map("display_order")
+  isActive     Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  /// GET /banners?placement=… — active banners of one placement, in order.
+  @@index([placement, isActive, displayOrder])
+  @@map("banners")
+}
+
 /// Business configuration. Every rule an admin might want to change lives
 /// here — nothing in the codebase hardcodes any of these values.
+/// What a bulk import brings in: product rows (CSV/XLSX, optional image ZIP)
+/// or images only, matched to existing products by SKU / barcode.
+enum ProductImportKind {
+  PRODUCTS
+  IMAGES
+}
+
+/// CREATE never touches an existing product (an existing SKU is a conflict);
+/// UPDATE changes only the non-empty cells of products matched by own SKU.
+enum ProductImportMode {
+  CREATE
+  UPDATE
+}
+
+enum ProductImportStatus {
+  /// Files received; parsing, validation and image processing run in the background.
+  ANALYZING
+  /// Preview ready, waiting for the seller to confirm.
+  READY
+  /// Confirmed; waiting for (or between) processing runs.
+  QUEUED
+  PROCESSING
+  COMPLETED
+  /// The file itself could not be used (or analysis was interrupted).
+  FAILED
+  CANCELLED
+  /// A preview nobody confirmed in time.
+  EXPIRED
+}
+
+enum ProductImportRowStatus {
+  /// Valid, imported on confirm.
+  READY
+  /// Has errors: fix and upload again.
+  INVALID
+  /// Same SKU / barcode / image as an earlier row of the same file.
+  DUPLICATE
+  /// Matches an existing product the chosen mode will not touch.
+  CONFLICT
+  /// Left out by the seller.
+  EXCLUDED
+  DONE
+  /// Valid, but writing it failed; can be retried.
+  FAILED
+}
+
+enum ProductImportRowAction {
+  NONE
+  CREATE
+  UPDATE
+  ATTACH_IMAGES
+}
+
+/// One bulk import job (Seller Panel, Products, Bulk Import). Rows and images
+/// live in their own tables; this row holds the summary only.
+model ProductImport {
+  id              String              @id @default(uuid()) @db.Uuid
+  sellerId        String              @map("seller_id") @db.Uuid
+  createdByUserId String?             @map("created_by_user_id") @db.Uuid
+  kind            ProductImportKind
+  mode            ProductImportMode   @default(CREATE)
+  status          ProductImportStatus @default(ANALYZING)
+
+  fileName       String? @map("file_name") @db.VarChar(255)
+  archiveName    String? @map("archive_name") @db.VarChar(255)
+  /// The file's own header row, in order; the error report repeats it.
+  columns        Json    @default("[]")
+  /// Header cells that matched no known column, for the preview.
+  ignoredColumns Json    @default("[]") @map("ignored_columns")
+
+  totalRows      Int @default(0) @map("total_rows")
+  readyRows      Int @default(0) @map("ready_rows")
+  invalidRows    Int @default(0) @map("invalid_rows")
+  duplicateRows  Int @default(0) @map("duplicate_rows")
+  conflictRows   Int @default(0) @map("conflict_rows")
+  warningRows    Int @default(0) @map("warning_rows")
+  processedRows  Int @default(0) @map("processed_rows")
+  createdCount   Int @default(0) @map("created_count")
+  updatedCount   Int @default(0) @map("updated_count")
+  failedCount    Int @default(0) @map("failed_count")
+  skippedCount   Int @default(0) @map("skipped_count")
+  imageCount     Int @default(0) @map("image_count")
+  /// Archive entries examined so far, for the ANALYZING progress bar.
+  analyzedImages Int @default(0) @map("analyzed_images")
+
+  /// Short, seller-safe reason when the whole job failed.
+  errorSummary String?   @map("error_summary") @db.VarChar(500)
+  /// Liveness of the worker holding the job: a stale one is resumed or failed.
+  heartbeatAt  DateTime? @map("heartbeat_at") @db.Timestamptz(3)
+  startedAt    DateTime? @map("started_at") @db.Timestamptz(3)
+  completedAt  DateTime? @map("completed_at") @db.Timestamptz(3)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  seller    Seller               @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  createdBy User?                @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  rows      ProductImportRow[]
+  images    ProductImportImage[]
+
+  /// Import history, newest first.
+  @@index([sellerId, createdAt])
+  /// Worker pick-up and retention sweeps.
+  @@index([status, heartbeatAt])
+  @@map("product_imports")
+}
+
+/// One row of an import file (or one image of an images-only import).
+model ProductImportRow {
+  id        String                 @id @default(uuid()) @db.Uuid
+  importId  String                 @map("import_id") @db.Uuid
+  /// Spreadsheet row number as the seller sees it (header = row 1, data from row 2).
+  rowNumber Int                    @map("row_number")
+  status    ProductImportRowStatus
+  action    ProductImportRowAction @default(NONE)
+
+  sku        String? @db.VarChar(60)
+  /// The cells as uploaded (header -> text), for the preview and the error report.
+  rawValues  Json    @map("raw_values")
+  /// Normalised, validated fields (prices in paise): what processing writes.
+  parsed     Json    @default("{}")
+  /// [{ field, message }]
+  errors     Json    @default("[]")
+  warnings   Json    @default("[]")
+  /// Image file names, primary first.
+  imageNames Json    @default("[]") @map("image_names")
+  /// The seller's choices on the preview: { excluded, primaryImage, sku, makePrimary }.
+  decisions  Json    @default("{}")
+
+  /// The product created, updated or matched.
+  productId   String?   @map("product_id") @db.Uuid
+  processedAt DateTime? @map("processed_at") @db.Timestamptz(3)
+
+  import ProductImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, rowNumber])
+  @@index([importId, status])
+  @@map("product_import_rows")
+}
+
+enum ProductImportImageStatus {
+  /// Validated and stored as an optimised WebP, ready to attach.
+  READY
+  /// Not a usable image (unsupported, corrupt, too large).
+  INVALID
+  /// Two archive entries share this file name: ambiguous, never attached.
+  DUPLICATE_NAME
+  /// In the archive but no row refers to it.
+  UNUSED
+}
+
+/// One image file of an import's archive, already through the image pipeline.
+model ProductImportImage {
+  id        String                   @id @default(uuid()) @db.Uuid
+  importId  String                   @map("import_id") @db.Uuid
+  /// Base name as in the archive.
+  fileName  String                   @map("file_name") @db.VarChar(255)
+  /// Lower-cased base name: what rows are matched on.
+  nameKey   String                   @map("name_key") @db.VarChar(255)
+  status    ProductImportImageStatus
+  error     String?                  @db.VarChar(300)
+  sha256    String?                  @db.VarChar(64)
+  bytes     Int                      @default(0)
+  url       String?                  @db.VarChar(500)
+  thumbUrl  String?                  @map("thumb_url") @db.VarChar(500)
+  width     Int?
+  height    Int?
+  createdAt DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  import ProductImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@index([importId, nameKey])
+  @@map("product_import_images")
+}
+
 model Configuration {
   id       String  @id @default(uuid()) @db.Uuid
   key      String  @db.VarChar(80)

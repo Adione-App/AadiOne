@@ -39,6 +39,7 @@ import * as configService from "../configuration/configuration.service";
 import { ConfigKey, optionGroupsOf, optionValuesOf } from "../../shared";
 import * as repository from "./catalog.repository";
 import { MARKETPLACE_SELLER_WHERE, type HydratedProduct, type ProductSort } from "./catalog.repository";
+import { HOME_TOP_PLACEMENT, listActiveBanners } from "../banners/banner.service";
 
 /* -------------------------------------------------------------------------- */
 /* Category tree                                                              */
@@ -716,7 +717,7 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
   }
 
   return {
-    banners: [],
+    banners: await listActiveBanners(HOME_TOP_PLACEMENT),
     categories,
     rails: rails.filter((rail) => rail.products.length > 0),
     categoryRails,

@@ -29,12 +29,24 @@ import { ErrorCode } from '../../shared';
 
 const log = moduleLogger('uploaded-image');
 
-export type UploadedImageKind = 'product' | 'category';
+export type UploadedImageKind = 'product' | 'category' | 'banner';
+
+/** A banner narrower than this would look blurry on a phone held normally. */
+export const BANNER_MIN_WIDTH = 600;
+
+const PROFILE_FOR: Record<UploadedImageKind, (typeof IMAGE_PROFILES)[keyof typeof IMAGE_PROFILES]> = {
+  product: IMAGE_PROFILES.product,
+  category: IMAGE_PROFILES.category,
+  banner: IMAGE_PROFILES.banner,
+};
 
 export interface ProcessedImage {
   url: string;
   /** Product card rendition; equals `url` for categories, small images, and with IMAGE_OPTIMIZE=false. */
   thumbUrl: string;
+  /** Pixel size of the stored image; null when it was not (re)encoded here (reused upload, IMAGE_OPTIMIZE=false). */
+  width: number | null;
+  height: number | null;
 }
 
 /** `a/b/<uuid>.jpg` -> `a/b/<uuid>` */
@@ -63,6 +75,7 @@ export async function isStorageKeyReferenced(key: string): Promise<boolean> {
     prisma.orderItem.findFirst({ where: { imageUrl: suffix }, select: { id: true } }),
     prisma.productVariant.findFirst({ where: { imageUrl: suffix }, select: { id: true } }),
     prisma.brand.findFirst({ where: { logoUrl: suffix }, select: { id: true } }),
+    prisma.banner.findFirst({ where: { imageUrl: suffix }, select: { id: true } }),
   ]);
   return hits.some(Boolean);
 }
@@ -91,7 +104,7 @@ export async function removeStoredImageIfUnused(url: string | null | undefined):
 export async function processUploadedImage(key: string, kind: UploadedImageKind): Promise<ProcessedImage> {
   if (!env.IMAGE_OPTIMIZE) {
     const url = storage.publicUrl(key);
-    return { url, thumbUrl: url };
+    return { url, thumbUrl: url, width: null, height: null };
   }
 
   const { imageKey, thumbKey } = optimizedKeysFor(key);
@@ -102,7 +115,7 @@ export async function processUploadedImage(key: string, kind: UploadedImageKind)
   // use — reuse them rather than re-encoding (and degrading) them.
   if (await isStorageKeyReferenced(imageKey)) {
     const thumbInUse = kind === 'product' && (await isStorageKeyReferenced(thumbKey));
-    return { url: imageUrl, thumbUrl: thumbInUse ? thumbUrl : imageUrl };
+    return { url: imageUrl, thumbUrl: thumbInUse ? thumbUrl : imageUrl, width: null, height: null };
   }
 
   const source = await storage.get(key, MAX_IMAGE_BYTES);
@@ -115,12 +128,59 @@ export async function processUploadedImage(key: string, kind: UploadedImageKind)
 
   let image;
   try {
-    image = await optimizeImage(source, kind === 'product' ? IMAGE_PROFILES.product : IMAGE_PROFILES.category);
+    image = await optimizeFor(source, kind);
   } catch (error) {
     // Not a usable image: the raw upload is garbage nobody can attach.
     await removeStoredImageIfUnused(storage.publicUrl(key));
     throw error;
   }
+
+  const stored = await storeOptimized(source, image, key, kind);
+  if (key !== imageKey) await removeStoredImageIfUnused(storage.publicUrl(key));
+  return stored;
+}
+
+/**
+ * The same pipeline for bytes already in hand (a bulk-import ZIP entry):
+ * validated by decoding, resized, stored as `<key without extension>.webp`
+ * (+ the card thumbnail for products). Nothing raw is ever stored. `key` is
+ * only a name — e.g. buildImageKey(sellerImageFolder(id), 'RB-250.jpg').
+ */
+export async function storeImageBuffer(source: Buffer, key: string, kind: UploadedImageKind): Promise<ProcessedImage> {
+  if (source.byteLength > MAX_IMAGE_BYTES) {
+    throw new AppError(ErrorCode.FILE_TOO_LARGE, { message: 'Images must be 5 MB or smaller.' });
+  }
+  if (!env.IMAGE_OPTIMIZE) {
+    // Optimisation switched off: still decode-checked, stored as uploaded.
+    const image = await optimizeFor(source, kind);
+    const contentType = `image/${image.inputFormat}`;
+    await storage.put(key, source, contentType);
+    const url = storage.publicUrl(key);
+    return { url, thumbUrl: url, width: image.width, height: image.height };
+  }
+  return storeOptimized(source, await optimizeFor(source, kind), key, kind);
+}
+
+async function optimizeFor(source: Buffer, kind: UploadedImageKind) {
+  const image = await optimizeImage(source, PROFILE_FOR[kind]);
+  if (kind === 'banner' && image.width < BANNER_MIN_WIDTH) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message: `Banner images must be at least ${BANNER_MIN_WIDTH} pixels wide.`,
+      internalMessage: `banner too narrow: ${image.width}x${image.height}`,
+    });
+  }
+  return image;
+}
+
+async function storeOptimized(
+  source: Buffer,
+  image: Awaited<ReturnType<typeof optimizeImage>>,
+  key: string,
+  kind: UploadedImageKind,
+): Promise<ProcessedImage> {
+  const { imageKey, thumbKey } = optimizedKeysFor(key);
+  const imageUrl = storage.publicUrl(imageKey);
+  const thumbUrl = storage.publicUrl(thumbKey);
 
   if (!(image.keptOriginal && key === imageKey)) {
     await storage.put(imageKey, image.data, image.contentType);
@@ -133,8 +193,6 @@ export async function processUploadedImage(key: string, kind: UploadedImageKind)
     await storage.put(thumbKey, thumb.data, thumb.contentType);
     thumbBytes = thumb.data.byteLength;
   }
-
-  if (key !== imageKey) await removeStoredImageIfUnused(storage.publicUrl(key));
 
   log.info(
     {
@@ -150,5 +208,5 @@ export async function processUploadedImage(key: string, kind: UploadedImageKind)
     'uploaded image optimised',
   );
 
-  return { url: imageUrl, thumbUrl: needsThumb ? thumbUrl : imageUrl };
+  return { url: imageUrl, thumbUrl: needsThumb ? thumbUrl : imageUrl, width: image.width, height: image.height };
 }

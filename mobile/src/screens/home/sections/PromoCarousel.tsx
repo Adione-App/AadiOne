@@ -3,11 +3,11 @@
  * autoplay that restarts after a manual swipe.
  *
  * Slides come from `buildPromoSlides` (homeEngine.ts): designed banners from
- * the backend when any are configured, otherwise slides composed from live
- * data. A composed slide's graphic is AdiOne branding plus a category image
- * or icon, a discount badge or a food mark — never a catalogue product photo,
- * since every product may appear only once on Home (as its ProductCard).
- * This component only draws slides; it has no idea what any slide is about.
+ * the backend when any are configured, otherwise the designed banners bundled
+ * with the app (assets/home-banner-*.png), drawn edge to edge at their own
+ * aspect ratio. Composed slides (a themed graphic plus text) are still drawn
+ * when given. This component only draws slides; it has no idea what any slide
+ * is about.
  */
 
 import { memo, useCallback, useEffect, useRef, useState } from "react";
@@ -57,6 +57,11 @@ function SlideArt({ visual, accent }: { visual: SlideVisual; accent: string }) {
 function SlideContent({ slide, index }: { slide: PromoSlide; index: number }) {
   const theme = THEMES[index % THEMES.length]!;
   const artwork = resolveImageUrl(slide.artworkUrl);
+
+  // A designed banner bundled with the app carries its own text and button.
+  if (slide.artworkAsset) {
+    return <Image source={slide.artworkAsset} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} />;
+  }
 
   if (artwork) {
     return (
@@ -127,6 +132,13 @@ function PromoCarouselImpl({
   const { width: windowWidth } = useWindowDimensions();
   const slideWidth = Math.min(MAX_SLIDE_WIDTH, windowWidth - spacing.base * 2);
   const step = slideWidth + spacing.sm;
+  // Designed banners keep their own shape, so text near their edges is never
+  // cropped by `cover`; composed slides keep the fixed height.
+  const artworkRatio =
+    slides.length > 0 && slides.every((slide) => slide.artworkAspectRatio)
+      ? Math.max(...slides.map((slide) => slide.artworkAspectRatio!))
+      : null;
+  const slideHeight = artworkRatio ? Math.round(slideWidth / artworkRatio) : SLIDE_HEIGHT;
 
   const [active, setActive] = useState(0);
   const scrollRef = useRef<ScrollView>(null);
@@ -181,7 +193,7 @@ function PromoCarouselImpl({
             onPress={() => onAction(slide.action)}
             style={[
               styles.slide,
-              { width: slideWidth, marginRight: index === slides.length - 1 ? 0 : spacing.sm },
+              { width: slideWidth, height: slideHeight, marginRight: index === slides.length - 1 ? 0 : spacing.sm },
             ]}
             accessibilityRole="button"
             accessibilityLabel={[slide.title, slide.badge, slide.ctaLabel].filter(Boolean).join(", ")}

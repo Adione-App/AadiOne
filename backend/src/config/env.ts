@@ -268,6 +268,11 @@ const envSchema = z
      * "false" is the rollback switch: uploads are attached exactly as sent. */
     IMAGE_OPTIMIZE: booleanish.default("true"),
 
+    /** Seller bulk import (modules/product-import): product rows per file and
+     * the image ZIP size. Optional — the defaults are the tested limits. */
+    PRODUCT_IMPORT_MAX_ROWS: z.coerce.number().int().min(1).max(20_000).default(5000),
+    PRODUCT_IMPORT_MAX_ARCHIVE_MB: z.coerce.number().int().min(1).max(1024).default(200),
+
     SEARCH_PROVIDER: z.enum(["postgres"]).default("postgres"),
 
     // Admin account provisioning (src/modules/auth/admin-bootstrap.service.ts).

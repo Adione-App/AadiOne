@@ -382,7 +382,7 @@ const attachImageSchema = z
 
 /** The image body, same limit as the admin route; over it is a clean 413. */
 const rawImage = express.raw({ type: 'image/*', limit: MAX_IMAGE_BYTES });
-function imageBody(req: Request, res: Response, next: NextFunction): void {
+export function imageBody(req: Request, res: Response, next: NextFunction): void {
   rawImage(req, res, (error?: unknown) => {
     if (error && (error as { type?: string }).type === 'entity.too.large') {
       next(new AppError(ErrorCode.FILE_TOO_LARGE, { message: 'Images must be 5 MB or smaller.' }));

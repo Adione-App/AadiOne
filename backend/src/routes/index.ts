@@ -25,6 +25,7 @@ import { sellerOnboardingRouter } from '../modules/sellers/seller-onboarding.rou
 import { sellerSettlementRouter } from '../modules/sellers/seller-settlement.routes';
 import { restaurantRouter, sellerRestaurantRouter } from '../modules/restaurants/restaurant.routes';
 import { offerRouter } from '../modules/pricing/offer.routes';
+import { bannerRouter } from '../modules/banners/banner.routes';
 import { sellerAvailabilityRouter } from '../modules/sellers/seller-availability.routes';
 import { sellerCommissionRouter } from '../modules/commission/commission.routes';
 import { sellerNotificationRouter } from '../modules/notifications/notification.routes';
@@ -53,6 +54,7 @@ apiRouter.use('/store', sellerRouter);
 apiRouter.use('/', catalogRouter);
 apiRouter.use('/restaurants', restaurantRouter);
 apiRouter.use('/offers', offerRouter);
+apiRouter.use('/banners', bannerRouter);
 apiRouter.use('/cart', cartRouter);
 apiRouter.use('/addresses', addressRouter);
 apiRouter.use('/checkout', checkoutRouter);

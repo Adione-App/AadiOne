@@ -513,10 +513,7 @@ export default function HomeScreen({
     [feed.data, restaurants.length, stores.length, offers.length, lazyCount, allLazyCategories.length, lazyProducts],
   );
 
-  const slides = useMemo(
-    () => (feed.data ? buildPromoSlides(feed.data, restaurants) : []),
-    [feed.data, restaurants],
-  );
+  const slides = useMemo(() => (feed.data ? buildPromoSlides(feed.data) : []), [feed.data]);
 
   const phrases = useMemo(() => searchPhrases(feed.data?.categories), [feed.data?.categories]);
 

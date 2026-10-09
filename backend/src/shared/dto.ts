@@ -778,15 +778,33 @@ export interface ProductListQuery {
 }
 
 /** One call that fills the whole Home screen — see PRD §9.4. */
+/** A banner as customers receive it (GET /banners?placement=…, HomeFeedDto.banners). */
+export interface BannerDto {
+  id: string;
+  imageUrl: string;
+  /** Pixel size of the stored image — show it at this aspect ratio, uncropped. */
+  imageWidth: number;
+  imageHeight: number;
+  title: string | null;
+  subtitle: string | null;
+  actionType: 'CATEGORY' | 'PRODUCT' | 'COUPON' | 'NONE';
+  /** Category id, product id or coupon code, by actionType; null for NONE. */
+  actionValue: string | null;
+}
+
+/** GET/POST/PATCH /admin/banners — a banner with its management fields. */
+export interface AdminBannerDto extends BannerDto {
+  /** Where it shows: a slug such as "home_top", "home_middle", "food" or "category:<id>". */
+  placement: string;
+  displayOrder: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface HomeFeedDto {
-  banners: {
-    id: string;
-    imageUrl: string;
-    title: string | null;
-    subtitle: string | null;
-    actionType: 'CATEGORY' | 'PRODUCT' | 'COUPON' | 'NONE';
-    actionValue: string | null;
-  }[];
+  /** The "home_top" placement's active banners, in order. */
+  banners: BannerDto[];
   categories: CategoryDto[];
   rails: {
     key: 'POPULAR' | 'DAILY_ESSENTIALS' | 'BEST_SELLERS' | 'RECENTLY_ADDED' | 'OFFERS';
@@ -880,6 +898,8 @@ export interface RestaurantMenuSectionDto {
   slug: string;
   displayOrder: number;
   isActive: boolean;
+  /** The section's image (set from the Admin Panel's Marketplace Catalogue), if any. */
+  imageUrl: string | null;
   menuId: string | null;
   menuName: string | null;
   items: RestaurantMenuItemDto[];

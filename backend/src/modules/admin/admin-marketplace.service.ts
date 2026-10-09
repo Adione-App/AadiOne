@@ -684,6 +684,8 @@ export interface CatalogueSubcategoryNode {
   /** Merge key: the subcategory's slug under its top category. */
   key: string;
   name: string;
+  /** The image customers see — the first one among the sellers' rows (as the customer catalogue picks it). */
+  imageUrl: string | null;
   sellers: { id: string; name: string; categoryId: string; isActive: boolean }[];
   products: CatalogueProductRow[];
 }
@@ -692,6 +694,8 @@ export interface CatalogueTopNode {
   /** Merge key: the top category's slug. */
   key: string;
   name: string;
+  /** The image customers see — the first one among the sellers' rows (as the customer catalogue picks it). */
+  imageUrl: string | null;
   sellers: { id: string; name: string; categoryId: string; isActive: boolean }[];
   /** Products attached directly to the top category (no subcategory). */
   products: CatalogueProductRow[];
@@ -705,7 +709,7 @@ export interface MarketplaceCatalogue {
 }
 
 /**
- * Admin → Marketplace Catalogue (read-only). Every seller owns its own
+ * Admin → Marketplace Catalogue. Every seller owns its own
  * categories; rows with the same name (slug) at the same level are merged for
  * display, and every product row names the seller that owns it — two sellers'
  * "Grocery › Rice" show as one branch with both sellers' products.
@@ -725,6 +729,7 @@ export async function getMarketplaceCatalogue(query: { sellerId?: string; q?: st
         parentId: true,
         isActive: true,
         displayOrder: true,
+        imageUrl: true,
         seller: { select: { id: true, name: true, sellerType: true, deletedAt: true } },
       },
       orderBy: [{ depth: 'asc' }, { displayOrder: 'asc' }, { name: 'asc' }],
@@ -779,7 +784,8 @@ export async function getMarketplaceCatalogue(query: { sellerId?: string; q?: st
 
   for (const c of live.filter((x) => x.parentId === null)) {
     const key = topKeyOf(c.path);
-    const node = tops.get(key) ?? { key, name: c.name, sellers: [], products: [], subcategories: [], productCount: 0 };
+    const node = tops.get(key) ?? { key, name: c.name, imageUrl: null, sellers: [], products: [], subcategories: [], productCount: 0 };
+    node.imageUrl ??= c.imageUrl;
     node.sellers.push({ id: c.seller!.id, name: c.seller!.name, categoryId: c.id, isActive: c.isActive });
     tops.set(key, node);
   }
@@ -791,10 +797,11 @@ export async function getMarketplaceCatalogue(query: { sellerId?: string; q?: st
     const key = `${top.key}/${c.slug}`;
     let node = subs.get(key);
     if (!node) {
-      node = { key, name: c.name, sellers: [], products: [] };
+      node = { key, name: c.name, imageUrl: null, sellers: [], products: [] };
       subs.set(key, node);
       top.subcategories.push(node);
     }
+    node.imageUrl ??= c.imageUrl;
     node.sellers.push({ id: c.seller!.id, name: c.seller!.name, categoryId: c.id, isActive: c.isActive });
   }
 

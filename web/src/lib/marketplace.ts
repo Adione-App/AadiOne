@@ -255,6 +255,8 @@ export interface CatalogueSellerRef {
 export interface CatalogueSubcategory {
   key: string;
   name: string;
+  /** The image customers see for this (merged) subcategory. */
+  imageUrl: string | null;
   sellers: CatalogueSellerRef[];
   products: CatalogueProduct[];
 }
@@ -262,6 +264,8 @@ export interface CatalogueSubcategory {
 export interface CatalogueTopCategory {
   key: string;
   name: string;
+  /** The image customers see for this (merged) category. */
+  imageUrl: string | null;
   sellers: CatalogueSellerRef[];
   products: CatalogueProduct[];
   subcategories: CatalogueSubcategory[];

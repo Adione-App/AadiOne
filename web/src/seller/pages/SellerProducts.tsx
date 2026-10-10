@@ -297,14 +297,21 @@ export default function SellerProductsPage() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <SearchBox value={search} onChange={(next) => update({ q: next || null })} placeholder="Search products or categories…" label="Search products" className="min-w-0 flex-1" />
+          {/* Bulk import is for packaged products: food sellers (restaurant/cafe) manage menus item by item. */}
+          {!isFood && (
+            <Button variant="soft" onClick={() => navigate('/seller/products/import')} className="hidden shrink-0 sm:inline-flex">
+              <Icon name="upload" className="h-4 w-4" /> Bulk Product Import
+            </Button>
+          )}
           <Button onClick={() => setAdding(true)} className="hidden shrink-0 sm:inline-flex">
             <Icon name="plus" className="h-4 w-4" /> {isFood ? 'Add Food Item' : 'Add Product'}
           </Button>
         </div>
         {!isFood && (
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="soft" onClick={() => navigate('/seller/products/import')}>
-              <Icon name="upload" className="h-4 w-4" /> Bulk Import
+            {/* Phones: Add Product is the floating button, so the import action leads this row. */}
+            <Button variant="soft" onClick={() => navigate('/seller/products/import')} className="sm:hidden">
+              <Icon name="upload" className="h-4 w-4" /> Bulk Product Import
             </Button>
             <Button variant="ghost" onClick={() => void downloadTemplate().catch((e) => toast(sellerErrorMessage(e), false))}>
               <Icon name="clipboard" className="h-4 w-4" /> Download CSV Template

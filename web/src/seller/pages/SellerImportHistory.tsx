@@ -28,13 +28,13 @@ export default function SellerImportHistoryPage() {
         </Button>
       </div>
       <Surface className="p-4">
-        <h1 className="mb-3 text-lg font-semibold text-gray-900">Import history</h1>
+        <h1 className="mb-3 text-lg font-semibold text-gray-900">Import History</h1>
         {history.isPending ? (
           <SkeletonList rows={4} label="Loading imports…" />
         ) : history.isError ? (
           <LoadError message={sellerErrorMessage(history.error)} onRetry={() => void history.refetch()} />
         ) : history.data.items.length === 0 ? (
-          <EmptyPanel title="No imports yet" hint="Upload a product list or photos from Products → Bulk Import." />
+          <EmptyPanel title="No imports yet" hint="Upload a product list or photos from Products → Bulk Product Import." />
         ) : (
           <ul className="divide-y divide-gray-100">
             {history.data.items.map((job) => (

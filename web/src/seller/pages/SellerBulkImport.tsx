@@ -172,13 +172,13 @@ function ImportUpload() {
           ← Products
         </Link>
         <Link to="/seller/products/imports" className={linkClass}>
-          Import history
+          Import History
         </Link>
       </div>
 
       <Surface className="space-y-4 p-4">
         <div>
-          <h1 className="text-lg font-semibold text-gray-900">Bulk import</h1>
+          <h1 className="text-lg font-semibold text-gray-900">Bulk Product Import</h1>
           <p className="text-sm text-gray-600">
             Add or update many products at once. Nothing is saved until you have checked the preview and pressed Import. New products go to
             Aadione for approval, exactly like products added one by one.
@@ -350,7 +350,7 @@ function ImportDetail({ id }: { id: string }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <Link to="/seller/products/imports" className={linkClass}>
-          ← Import history
+          ← Import History
         </Link>
         <Link to="/seller/products/import" className={linkClass}>
           New import
@@ -445,7 +445,7 @@ function StatusPanel({ job, onChanged }: { job: ProductImportDto; onChanged: () 
     return (
       <div className="space-y-3">
         <Progress value={job.processedRows} max={job.readyRows} label={`${job.processedRows} of ${job.readyRows} ${noun}s processed`} />
-        <p className="text-sm text-gray-600">Importing in the background — you can leave this page and come back from Import history.</p>
+        <p className="text-sm text-gray-600">Importing in the background — you can leave this page and come back from Import History.</p>
       </div>
     );
   }

@@ -135,9 +135,19 @@ export async function processUploadedImage(key: string, kind: UploadedImageKind)
     throw error;
   }
 
-  const stored = await storeOptimized(source, image, key, kind);
+  const stored = await storeOptimized(source, image, key, kind, true);
   if (key !== imageKey) await removeStoredImageIfUnused(storage.publicUrl(key));
   return stored;
+}
+
+/** The URLs storeImageBuffer(…, key, …) will produce — known before anything is stored. */
+export function plannedImageUrls(key: string): { url: string; thumbUrl: string } {
+  if (!env.IMAGE_OPTIMIZE) {
+    const url = storage.publicUrl(key);
+    return { url, thumbUrl: url };
+  }
+  const { imageKey, thumbKey } = optimizedKeysFor(key);
+  return { url: storage.publicUrl(imageKey), thumbUrl: storage.publicUrl(thumbKey) };
 }
 
 /**
@@ -158,7 +168,7 @@ export async function storeImageBuffer(source: Buffer, key: string, kind: Upload
     const url = storage.publicUrl(key);
     return { url, thumbUrl: url, width: image.width, height: image.height };
   }
-  return storeOptimized(source, await optimizeFor(source, kind), key, kind);
+  return storeOptimized(source, await optimizeFor(source, kind), key, kind, false);
 }
 
 async function optimizeFor(source: Buffer, kind: UploadedImageKind) {
@@ -177,12 +187,14 @@ async function storeOptimized(
   image: Awaited<ReturnType<typeof optimizeImage>>,
   key: string,
   kind: UploadedImageKind,
+  /** The raw upload already sits at `key` (presigned flow): an already-optimal WebP there is kept as is. */
+  rawAtKey: boolean,
 ): Promise<ProcessedImage> {
   const { imageKey, thumbKey } = optimizedKeysFor(key);
   const imageUrl = storage.publicUrl(imageKey);
   const thumbUrl = storage.publicUrl(thumbKey);
 
-  if (!(image.keptOriginal && key === imageKey)) {
+  if (!(rawAtKey && image.keptOriginal && key === imageKey)) {
     await storage.put(imageKey, image.data, image.contentType);
   }
 

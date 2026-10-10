@@ -2145,6 +2145,13 @@ model ProductImport {
   errorSummary String?   @map("error_summary") @db.VarChar(500)
   /// Liveness of the worker holding the job: a stale one is resumed or failed.
   heartbeatAt  DateTime? @map("heartbeat_at") @db.Timestamptz(3)
+  /// The worker holding the lease (renewed via heartbeatAt). Every write a
+  /// worker makes for the job is fenced on it, so a worker that lost the
+  /// lease can never commit rows.
+  workerId     String?   @map("worker_id") @db.VarChar(80)
+  /// Processing runs claimed so far; past the limit the import fails for good
+  /// instead of being resumed forever. Reset by "Retry failed rows".
+  attempts     Int       @default(0)
   startedAt    DateTime? @map("started_at") @db.Timestamptz(3)
   completedAt  DateTime? @map("completed_at") @db.Timestamptz(3)
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
@@ -2183,6 +2190,9 @@ model ProductImportRow {
   imageNames Json    @default("[]") @map("image_names")
   /// The seller's choices on the preview: { excluded, primaryImage, sku, makePrimary }.
   decisions  Json    @default("{}")
+  /// UPDATE rows: the steps already applied ({ fields, status, images }), so a
+  /// retry resumes instead of repeating them, and a failure says what was saved.
+  stages     Json    @default("{}")
 
   /// The product created, updated or matched.
   productId   String?   @map("product_id") @db.Uuid
@@ -2196,6 +2206,9 @@ model ProductImportRow {
 }
 
 enum ProductImportImageStatus {
+  /// Recorded before the file is stored, so a crash mid-store leaves a row
+  /// cleanup can find (never an untracked file).
+  PENDING
   /// Validated and stored as an optimised WebP, ready to attach.
   READY
   /// Not a usable image (unsupported, corrupt, too large).

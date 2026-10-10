@@ -37,6 +37,7 @@ export * from './api';
 export * from './permissions';
 export * from './config-keys';
 export * from './dto';
+export * from './product-import';
 
 /* business helpers (pure functions) */
 export * from './money';

@@ -6,7 +6,8 @@
  *
  *   categories   the seller's OWN live tree, matched by name or slug; a file
  *                never creates a category
- *   brands       existing brands only (unknown = warning, left empty)
+ *   brands       matched case-/space-insensitively; an unknown brand is
+ *                reported "will be created" (created on confirm, brand.ts)
  *   SKUs         unique across the marketplace: an own product = CONFLICT in
  *                CREATE mode / the match in UPDATE mode; anyone else's = error
  *                (and in UPDATE mode "not found" — never "it is someone else's")
@@ -25,6 +26,7 @@ import { PRODUCT_IMPORT_LIMITS, type ProductImportIssue, type ProductImportMode 
 import { prisma } from '../../infra/db/prisma';
 import { SheetError } from './csv';
 import { cellsByKey, headerProblems, imageNameKey, mapHeader, parseRow, type ParsedRow } from './row-rules';
+import { brandDisplayName, brandKey, brandProblem, findBrands } from './brand';
 
 /** The seller's choices on the preview, kept on the row across re-validation. */
 export interface RowDecisions {
@@ -47,6 +49,8 @@ export interface ImageRef {
 export interface ResolvedRow extends ParsedRow {
   categoryId?: string;
   brandId?: string;
+  /** How the brand column resolved; a NEW brand is created on processing (brand.ts). */
+  brand?: { status: 'MATCHED' | 'NEW'; name: string };
   /** UPDATE / images-only: the matched product and its variant. */
   productId?: string;
   variantId?: string;
@@ -89,6 +93,7 @@ interface VariantHit {
   variantDeleted: boolean;
   productId: string;
   productName: string;
+  brandId: string | null;
   ownerSellerId: string | null;
   productDeleted: boolean;
   productStatus: ProductStatus;
@@ -100,7 +105,7 @@ const VARIANT_SELECT = {
   sku: true,
   barcode: true,
   deletedAt: true,
-  product: { select: { id: true, name: true, submittedBySellerId: true, deletedAt: true, status: true, approvalStatus: true } },
+  product: { select: { id: true, name: true, brandId: true, submittedBySellerId: true, deletedAt: true, status: true, approvalStatus: true } },
 } as const;
 
 function toHit(v: {
@@ -108,7 +113,7 @@ function toHit(v: {
   sku: string;
   barcode: string | null;
   deletedAt: Date | null;
-  product: { id: string; name: string; submittedBySellerId: string | null; deletedAt: Date | null; status: ProductStatus; approvalStatus: ApprovalStatus };
+  product: { id: string; name: string; brandId: string | null; submittedBySellerId: string | null; deletedAt: Date | null; status: ProductStatus; approvalStatus: ApprovalStatus };
 }): VariantHit {
   return {
     variantId: v.id,
@@ -117,6 +122,7 @@ function toHit(v: {
     variantDeleted: v.deletedAt !== null,
     productId: v.product.id,
     productName: v.product.name,
+    brandId: v.product.brandId,
     ownerSellerId: v.product.submittedBySellerId,
     productDeleted: v.product.deletedAt !== null,
     productStatus: v.product.status,
@@ -213,13 +219,8 @@ export async function validateProductRows(input: {
   }
   const topNames = categories.filter((c) => c.parentId === null).map((c) => c.name);
 
-  const brandNames = [...new Set(rows.map((r) => r.parsed.brandName).filter((b): b is string => Boolean(b)).map(nameKey))];
-  const brands = new Map<string, string>();
-  for (const part of chunk(brandNames)) {
-    const found = await prisma.$queryRaw<{ id: string; key: string }[]>`
-      SELECT id::text AS id, lower(name) AS key FROM brands WHERE lower(name) = ANY(${part}) AND is_active`;
-    for (const b of found) brands.set(b.key, b.id);
-  }
+  // Read-only here: an unknown brand is only reported; it is created on confirm.
+  const brands = await findBrands(prisma, [...new Set(rows.map((r) => r.parsed.brandName).filter((b): b is string => Boolean(b)))]);
 
   /* SKU / barcode lookups ------------------------------------------------- */
   const bySku = await variantsBySku(rows.map((r) => r.parsed.sku).filter((s): s is string => Boolean(s)));
@@ -305,17 +306,31 @@ export async function validateProductRows(input: {
       } else resolved.categoryId = top.id;
     }
 
-    if (parsed.brandName && mode === 'UPDATE') {
-      // Sellers cannot change a product's brand anywhere else (no review step covers it).
-      errors.push({ field: 'brand', message: 'Brand cannot be changed by an import. Leave the brand column empty, or ask Aadione to change it.' });
-    } else if (parsed.brandName) {
-      const brandId = brands.get(nameKey(parsed.brandName));
-      if (brandId) resolved.brandId = brandId;
-      else warnings.push({ field: 'brand', message: `Brand "${parsed.brandName}" is not in Aadione's brand list; the product is saved without a brand.` });
+    // Brand: an existing one is linked, an unknown one is created on confirm.
+    const hit = parsed.sku ? bySku.get(parsed.sku) : undefined;
+    const brandText = parsed.brandName ? brandDisplayName(parsed.brandName) : '';
+    if (brandText) {
+      const issue = brandProblem(brandText);
+      const known = brands.get(brandKey(brandText));
+      if (issue) {
+        errors.push({ field: 'brand', message: issue });
+      } else if (mode === 'UPDATE') {
+        // Sellers cannot change a product's brand anywhere else (no review step covers it);
+        // repeating the brand the product already has is fine.
+        const own = isOwnLive(hit, sellerId) ? hit : undefined;
+        if (own && known && own.brandId === known.id) resolved.brand = { status: 'MATCHED', name: known.name };
+        else if (own) errors.push({ field: 'brand', message: 'Brand cannot be changed by an import. Leave the brand column empty, or ask Aadione to change it.' });
+      } else if (known && !known.isActive) {
+        errors.push({ field: 'brand', message: `Brand "${known.name}" has been disabled by Aadione and cannot be used. Leave the brand empty or use another brand.` });
+      } else if (known) {
+        resolved.brandId = known.id;
+        resolved.brand = { status: 'MATCHED', name: known.name };
+      } else {
+        resolved.brand = { status: 'NEW', name: brandText };
+      }
     }
 
     // Existing products.
-    const hit = parsed.sku ? bySku.get(parsed.sku) : undefined;
     if (mode === 'CREATE') {
       if (isOwnLive(hit, sellerId)) {
         errors.push({ field: 'seller_sku', message: `You already have a product with SKU ${hit.sku} (${hit.productName}). Choose Update mode to change it.` });

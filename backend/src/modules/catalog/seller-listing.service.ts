@@ -118,7 +118,8 @@ async function loadOwnListingOrThrow(sellerId: string, listingId: string): Promi
 
 export async function listOwnListings(sellerId: string) {
   const listings = await prisma.sellerListing.findMany({
-    where: { sellerId },
+    // A removed product's listing stays only for its order history.
+    where: { sellerId, variant: { product: { deletedAt: null } } },
     select: LISTING_SELECT,
     orderBy: { createdAt: 'asc' },
   });

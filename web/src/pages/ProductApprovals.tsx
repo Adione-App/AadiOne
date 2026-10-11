@@ -326,10 +326,11 @@ function BatchModal({ batchId, onClose }: { batchId: string; onClose: () => void
           <ErrorBanner message={errorMessage(products.error, 'Could not load the products in this batch.')} />
         ) : (
           <div className="overflow-x-auto rounded-xl border border-gray-200">
-            <table className="w-full min-w-[940px] text-sm">
+            <table className="w-full min-w-[1060px] text-sm">
               <thead className="border-b border-gray-200 bg-gray-50">
                 <tr>
                   <Th>Product</Th>
+                  <Th>Brand</Th>
                   <Th>SKU</Th>
                   <Th>Category</Th>
                   <Th>Subcategory</Th>
@@ -367,6 +368,20 @@ function BatchModal({ batchId, onClose }: { batchId: string; onClose: () => void
                           )}
                         </div>
                       </div>
+                    </Td>
+                    <Td>
+                      {row.brand ? (
+                        <div className="flex max-w-[11rem] flex-col items-start gap-1">
+                          <span className="break-words font-semibold text-gray-900">{row.brand.name}</span>
+                          {row.brand.isNew && (
+                            <span title="Created by the seller's bulk import and not on any approved product yet: approving this product makes the brand visible to customers.">
+                              <Pill tone="amber">New brand</Pill>
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-400">No brand</span>
+                      )}
                     </Td>
                     <Td className="whitespace-nowrap font-mono text-xs text-gray-600">{row.sku ?? '—'}</Td>
                     <Td className="text-gray-700">{row.category}</Td>

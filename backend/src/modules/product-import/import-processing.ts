@@ -14,7 +14,8 @@
  *              the account that started the import still exists — otherwise
  *              the import stops with a clear reason, nothing more is written.
  *   CREATE     50 rows per transaction: products, variants, the seller's own
- *              listings, opening-stock ledger rows, images and audit rows —
+ *              listings, opening-stock ledger rows, images and audit rows, and
+ *              any brand the file names that does not exist yet (brand.ts) —
  *              and, in the SAME transaction, the rows marked DONE. Category and
  *              barcode facts are re-checked first (the preview may be days
  *              old). A failing batch is retried row by row.
@@ -53,6 +54,7 @@ import { moduleLogger } from '../../common/logger';
 import { prisma, runInTransaction, type Tx } from '../../infra/db/prisma';
 import { loadEditableOwnProduct, setOwnProductStatus, updateSellerProduct } from '../catalog/product-approval.service';
 import { releaseImportImages } from './import-analysis';
+import { brandKey, ensureBrands } from './brand';
 import type { ResolvedRow } from './import-validation';
 import { LEASE_RENEW_MS, MAX_PROCESS_ATTEMPTS, PROCESS_BATCH_SIZE, STALE_PROCESSING_MS } from './import-limits';
 import { imageNameKey } from './row-rules';
@@ -217,6 +219,47 @@ async function recheckCreateRows(job: Job, rows: ProductImportRow[]): Promise<Pr
   return keep;
 }
 
+/**
+ * Brand of each planned product (by product id): existing brands are linked,
+ * missing ones created (brand.ts) — inside the batch transaction, so a batch
+ * that fails leaves no brand behind. A brand Aadione disabled since the
+ * preview fails its row (the batch then retries row by row).
+ */
+async function linkBrands(tx: Tx, job: Job, plan: { p: ResolvedRow; productId: string }[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const named = plan.filter(({ p }) => p.brand);
+  if (named.length > 0) {
+    const { brands, created } = await ensureBrands(tx, named.map(({ p }) => p.brand!.name));
+    for (const { p, productId } of named) {
+      const brand = brands.get(brandKey(p.brand!.name));
+      if (!brand || !brand.isActive) {
+        throw new AppError(ErrorCode.VALIDATION_ERROR, { message: `Brand "${p.brand!.name}" was disabled by Aadione after the preview. Leave the brand empty or use another brand, then upload the row again.` });
+      }
+      out.set(productId, brand.id);
+    }
+    if (created.length > 0) {
+      await tx.auditLog.createMany({
+        data: created.map((brand) => ({
+          actorUserId: job.createdByUserId,
+          action: 'brand.import_create',
+          entityType: 'Brand',
+          entityId: brand.id,
+          after: { name: brand.name, sellerId: job.sellerId, importId: job.id },
+        })),
+      });
+    }
+  }
+  // Rows validated before brands were resolved by name carry only an id.
+  const legacy = plan.filter(({ p }) => !p.brand && p.brandId);
+  if (legacy.length > 0) {
+    const live = new Set(
+      (await tx.brand.findMany({ where: { id: { in: legacy.map(({ p }) => p.brandId!) }, isActive: true }, select: { id: true } })).map((b) => b.id),
+    );
+    for (const { p, productId } of legacy) if (live.has(p.brandId!)) out.set(productId, p.brandId!);
+  }
+  return out;
+}
+
 async function writeCreateBatch(job: Job, rows: ProductImportRow[], images: Map<string, StoredImage>): Promise<void> {
   const plan = rows.map((row) => {
     const p = row.parsed as unknown as ResolvedRow;
@@ -224,6 +267,8 @@ async function writeCreateBatch(job: Job, rows: ProductImportRow[], images: Map<
   });
   await runInTransaction(
     async (tx) => {
+      // Brands first, in THIS transaction: created once per name, rolled back with the batch.
+      const brandIds = await linkBrands(tx, job, plan);
       await tx.product.createMany({
         data: plan.map(({ p, productId }) => ({
           id: productId,
@@ -231,7 +276,7 @@ async function writeCreateBatch(job: Job, rows: ProductImportRow[], images: Map<
           nameHi: p.nameHi ?? null,
           slug: `${slugify(p.name!)}-${Math.random().toString(36).slice(2, 8)}`,
           categoryId: p.categoryId!,
-          brandId: p.brandId ?? null,
+          brandId: brandIds.get(productId) ?? null,
           description: p.description ?? null,
           searchKeywords: [],
           status: p.isActive === false ? ProductStatus.INACTIVE : ProductStatus.ACTIVE,

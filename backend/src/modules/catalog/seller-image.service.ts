@@ -25,7 +25,7 @@ import { env } from '../../config/env';
 import { prisma } from '../../infra/db/prisma';
 import { assertUploadable, storage, type PresignedUpload } from '../../infra/storage';
 import { attachProductImage, removeProductImage } from './product-image.service';
-import { processUploadedImage, removeStoredImageIfUnused } from './uploaded-image.service';
+import { processUploadedImage, removeProductImageFileIfUnused } from './uploaded-image.service';
 import { loadEditableOwnProduct } from './product-approval.service';
 import { getOwnProduct } from './seller-product.service';
 
@@ -140,8 +140,8 @@ export async function replaceSellerImage(
       after: { productId, key: input.key },
     },
   });
-  await removeStoredImageIfUnused(image.url);
-  if (image.thumbUrl !== image.url) await removeStoredImageIfUnused(image.thumbUrl);
+  await removeProductImageFileIfUnused(image.url);
+  if (image.thumbUrl !== image.url) await removeProductImageFileIfUnused(image.thumbUrl);
   return getOwnProduct(sellerId, productId);
 }
 

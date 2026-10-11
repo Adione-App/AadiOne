@@ -92,6 +92,7 @@ function toRowDto(job: ProductImport, row: ProductImportRow, images: Map<string,
     values,
     errors: row.errors as unknown as ProductImportIssue[],
     warnings: row.warnings as unknown as ProductImportIssue[],
+    brand: parsed.brand ?? null,
     images: (row.imageNames as string[]).map((fileName) => {
       const image = images.get(imageNameKey(fileName));
       return image

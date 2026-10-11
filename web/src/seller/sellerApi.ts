@@ -865,3 +865,37 @@ export const WEEK = [
   { dayOfWeek: 6, name: 'Saturday' },
   { dayOfWeek: 0, name: 'Sunday' },
 ] as const;
+
+/* Products: delete and bulk actions (backend: seller-product-removal.service) */
+
+export type BulkProductAction = 'HIDE' | 'SHOW' | 'DELETE';
+export type BulkProductOutcome = 'DELETED' | 'ARCHIVED' | 'HIDDEN' | 'SHOWN' | 'UNCHANGED' | 'SKIPPED' | 'FAILED';
+
+export interface BulkProductReport {
+  action: BulkProductAction;
+  results: { productId: string; name: string | null; outcome: BulkProductOutcome; message: string }[];
+  counts: Record<BulkProductOutcome, number>;
+}
+
+/** The API's per-request limit. */
+export const BULK_PRODUCT_LIMIT = 100;
+
+/** In chunks of BULK_PRODUCT_LIMIT, one after another; the reports are merged. */
+export async function bulkProductAction(action: BulkProductAction, productIds: string[]): Promise<BulkProductReport> {
+  const merged: BulkProductReport = {
+    action,
+    results: [],
+    counts: { DELETED: 0, ARCHIVED: 0, HIDDEN: 0, SHOWN: 0, UNCHANGED: 0, SKIPPED: 0, FAILED: 0 },
+  };
+  for (let i = 0; i < productIds.length; i += BULK_PRODUCT_LIMIT) {
+    const part = await sellerApi.post<BulkProductReport>('/seller/products/bulk', { action, productIds: productIds.slice(i, i + BULK_PRODUCT_LIMIT) });
+    merged.results.push(...part.results);
+    for (const [outcome, n] of Object.entries(part.counts)) merged.counts[outcome as BulkProductOutcome] += n;
+  }
+  return merged;
+}
+
+/** DELETE /seller/products/:id — marketplace products report what happened; food items return only their id. */
+export function deleteSellerProduct(productId: string): Promise<{ id: string; outcome?: 'DELETED' | 'ARCHIVED'; message?: string }> {
+  return sellerApi.delete(`/seller/products/${productId}`);
+}

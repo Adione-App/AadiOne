@@ -40,7 +40,7 @@ import {
 import { ProductFormModal, StartSellingModal } from '../productForms';
 import { FoodItemModal } from '../foodItemForm';
 import { InventoryPanel, PricingPanel, Section, VisibilityPanel } from '../productSections';
-import { SkeletonBlock } from '../sellerUi';
+import { SkeletonBlock, useScrollToHash } from '../sellerUi';
 
 function Detail({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -77,6 +77,7 @@ export default function SellerProductDetailPage() {
   const submit = useMutation({
     mutationFn: () => sellerApi.post('/seller/approval-batches', { productIds: [id] }),
   });
+  useScrollToHash(query.isSuccess);
 
   const back = (
     <Link to="/seller/products" className="inline-flex items-center gap-1 text-sm font-medium text-gray-600 hover:text-gray-900">

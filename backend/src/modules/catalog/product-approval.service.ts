@@ -148,7 +148,7 @@ function foodSku(): string {
   return `FOOD-${randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase()}`;
 }
 
-async function sellerIsFood(sellerId: string): Promise<boolean> {
+export async function sellerIsFood(sellerId: string): Promise<boolean> {
   const seller = await prisma.seller.findUnique({ where: { id: sellerId }, select: { sellerType: true } });
   return isFoodSellerType(seller?.sellerType);
 }
@@ -607,6 +607,17 @@ export async function setOwnProductStatus(
   status: typeof ProductStatus.ACTIVE | typeof ProductStatus.INACTIVE,
   actorUserId: string,
 ) {
+  await changeOwnProductStatus(sellerId, productId, status, actorUserId);
+  return getOwnProduct(sellerId, productId);
+}
+
+/** setOwnProductStatus without reading the product back; true when the status changed. */
+export async function changeOwnProductStatus(
+  sellerId: string,
+  productId: string,
+  status: typeof ProductStatus.ACTIVE | typeof ProductStatus.INACTIVE,
+  actorUserId: string,
+): Promise<boolean> {
   const product = await prisma.product.findFirst({
     where: { id: productId, deletedAt: null },
     select: { id: true, status: true, submittedBySellerId: true },
@@ -621,20 +632,19 @@ export async function setOwnProductStatus(
       internalMessage: `seller ${sellerId} tried to change admin-disabled product ${productId}`,
     });
   }
-  if (product.status !== status) {
-    await prisma.product.update({ where: { id: productId }, data: { status } });
-    await prisma.auditLog.create({
-      data: {
-        actorUserId,
-        action: 'product.seller_status',
-        entityType: 'Product',
-        entityId: productId,
-        before: { status: product.status },
-        after: { status },
-      },
-    });
-  }
-  return getOwnProduct(sellerId, productId);
+  if (product.status === status) return false;
+  await prisma.product.update({ where: { id: productId }, data: { status } });
+  await prisma.auditLog.create({
+    data: {
+      actorUserId,
+      action: 'product.seller_status',
+      entityType: 'Product',
+      entityId: productId,
+      before: { status: product.status },
+      after: { status },
+    },
+  });
+  return true;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -856,6 +866,22 @@ export async function getApprovalBatchSummary(batchId: string, scopeSellerId?: s
 }
 
 /**
+ * Of these brands, the ones a seller's bulk import created (audit log
+ * `brand.import_create`) that no approved, live product uses yet. Only
+ * persisted facts: a brand made any other way is never reported as new.
+ */
+async function brandsNotYetLive(brandIds: string[]): Promise<Set<string>> {
+  const ids = [...new Set(brandIds)];
+  if (ids.length === 0) return new Set();
+  const [created, live] = await Promise.all([
+    prisma.auditLog.findMany({ where: { entityType: 'Brand', entityId: { in: ids }, action: 'brand.import_create' }, select: { entityId: true } }),
+    prisma.product.groupBy({ by: ['brandId'], where: { brandId: { in: ids }, approvalStatus: ApprovalStatus.APPROVED, deletedAt: null } }),
+  ]);
+  const used = new Set(live.map((row) => row.brandId));
+  return new Set(created.map((row) => row.entityId!).filter((id) => !used.has(id)));
+}
+
+/**
  * Admin — one page of a batch's products as a compact table row each:
  * name, category/subcategory, SKU, the seller's MRP/price/stock, thumbnail,
  * status. Built for batches of 1000+ products (offset pages, max 200 rows).
@@ -887,6 +913,7 @@ export async function listBatchProducts(
             status: true,
             deletedAt: true,
             optionGroups: true,
+            brand: { select: { id: true, name: true } },
             category: { select: { name: true, parent: { select: { name: true } } } },
             images: { orderBy: { displayOrder: 'asc' }, take: 1, select: { url: true, thumbUrl: true } },
             variants: {
@@ -910,6 +937,8 @@ export async function listBatchProducts(
     }),
   ]);
 
+  const newBrands = await brandsNotYetLive(items.map((item) => item.product.brand?.id).filter((id): id is string => Boolean(id)));
+
   return {
     total,
     offset: options.offset,
@@ -924,6 +953,7 @@ export async function listBatchProducts(
         itemStatus: item.status,
         reviewNote: item.reviewNote,
         name: product.name,
+        brand: product.brand ? { id: product.brand.id, name: product.brand.name, isNew: newBrands.has(product.brand.id) } : null,
         category: parent ? parent.name : product.category.name,
         subcategory: parent ? product.category.name : null,
         sku: variant?.sku ?? null,

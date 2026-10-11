@@ -6,13 +6,19 @@
  * has no paged product search) and live in the URL. Table from lg up, cards
  * below it.
  *
- *   View / Edit / Images   → product page (/seller/products/:id) or, for a
+ *   Details                → product page (/seller/products/:id: info, images,
+ *                            pricing, stock, visibility, approval) or, for a
  *                            catalogue product, the listing page
  *   Stock −/+              → POST /seller/listings/:id/stock-adjust
  *   Show / Hide            → own product: PATCH /seller/products/:id/status;
  *                            catalogue product: the listing's on-sale switch
- *   Submit Selected for    → POST /seller/approval-batches { productIds }: the
- *   Approval                 ticked "Ready for Submission" products go to
+ *   Delete                 → DELETE /seller/products/:id (confirmed by name):
+ *                            deleted, or removed with its order history kept
+ *   Selection              → ticks own products on the shown page; cleared
+ *                            when the search or a filter changes
+ *     Hide / Show / Delete → POST /seller/products/bulk, every product reported
+ *     Submit Selected for  → POST /seller/approval-batches { productIds }: the
+ *     Approval               ticked "Ready for Submission" products go to
  *                            Aadione as ONE batch. The server refuses pending,
  *                            approved, incomplete or another seller's products,
  *                            so nothing is ever sent twice.
@@ -20,15 +26,19 @@
  * Status always comes from the server; every action re-fetches.
  */
 
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { formatPaise } from '@shared/money';
 import { isFoodSellerType } from '@shared';
 import { Button, ErrorBanner, Icon, Modal, Pill, Surface, Toggle } from '@/components/ui';
 import {
+  bulkProductAction,
+  deleteSellerProduct,
   sellerApi,
   sellerErrorMessage,
+  type BulkProductAction,
+  type BulkProductReport,
   type SellerListingInventory,
   type SellerProductInventory,
   type SubmittedApprovalBatch,
@@ -186,6 +196,8 @@ export default function SellerProductsPage() {
   const [starting, setStarting] = useState<SellerProductInventory | null>(null);
   const [confirmingSubmit, setConfirmingSubmit] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [confirmingDelete, setConfirmingDelete] = useState<ProductRow[] | null>(null);
+  const [report, setReport] = useState<BulkProductReport | null>(null);
   // Restaurant / cafe: food items — price + availability, no stock (made to order).
   const isFood = isFoodSellerType(useSellerAvailability().data?.sellerType);
   const navigate = useNavigate();
@@ -197,6 +209,8 @@ export default function SellerProductsPage() {
 
   const update = (changes: Record<string, string | null>) => {
     setShown(PAGE);
+    // A new search / filter shows other products: never act on ticks the seller can't see.
+    setSelected(new Set());
     setParams(
       (current) => {
         const next = new URLSearchParams(current);
@@ -286,6 +300,75 @@ export default function SellerProductsPage() {
       }
       return next;
     });
+
+  // Bulk selection: the seller's own products on the page as shown (never beyond "Show more").
+  const pageOwn = visible.slice(0, shown).filter((row) => row.own && row.productId);
+  const allPageChosen = pageOwn.length > 0 && pageOwn.every((row) => selected.has(row.productId!));
+  const somePageChosen = pageOwn.some((row) => selected.has(row.productId!));
+  const selectPage = (on: boolean) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const row of pageOwn) {
+        if (on) next.add(row.productId!);
+        else next.delete(row.productId!);
+      }
+      return next;
+    });
+  // Ticked rows that still exist (a refetch drops removed products).
+  const selectedRows = rows.filter((row) => row.own && row.productId && selected.has(row.productId));
+  useEffect(() => {
+    if (rows.length === 0) return;
+    const live = new Set(rows.map((row) => row.productId).filter(Boolean));
+    setSelected((current) => ([...current].every((id) => live.has(id)) ? current : new Set([...current].filter((id) => live.has(id)))));
+  }, [rows]);
+
+  // One bulk request at a time: the ref blocks a second click before React re-renders.
+  const bulkBusy = useRef(false);
+  const bulk = useMutation({
+    mutationFn: (input: { action: BulkProductAction; ids: string[] }) => bulkProductAction(input.action, input.ids),
+    onSuccess: (result) => {
+      setConfirmingDelete(null);
+      setSelected(new Set());
+      const c = result.counts;
+      const problems = c.SKIPPED + c.FAILED;
+      if (result.action === 'DELETE' || problems > 0 || c.ARCHIVED > 0) setReport(result);
+      else toast(result.action === 'HIDE' ? `${c.HIDDEN + c.UNCHANGED} product${c.HIDDEN + c.UNCHANGED === 1 ? '' : 's'} hidden from customers.` : `${c.SHOWN + c.UNCHANGED} product${c.SHOWN + c.UNCHANGED === 1 ? '' : 's'} shown to customers.`);
+    },
+    onError: (error) => toast(sellerErrorMessage(error), false),
+    onSettled: () => refresh(),
+  });
+  const runBulk = (action: BulkProductAction, targets: ProductRow[]) => {
+    if (bulkBusy.current || targets.length === 0) return;
+    bulkBusy.current = true;
+    bulk.mutate({ action, ids: targets.map((row) => row.productId!) }, { onSettled: () => (bulkBusy.current = false) });
+  };
+  // A single product: the same dialog, one name.
+  const removeOne = useMutation({
+    mutationFn: (row: ProductRow) => deleteSellerProduct(row.productId!),
+    onSuccess: (result, row) => {
+      setConfirmingDelete(null);
+      setSelected((current) => {
+        const next = new Set(current);
+        next.delete(row.productId!);
+        return next;
+      });
+      toast(result.message ?? `${row.name} was removed from your menu.`);
+    },
+    onSettled: () => refresh(),
+  });
+  const confirmDelete = (targets: ProductRow[]) => {
+    if (targets.length === 1) {
+      if (bulkBusy.current) return;
+      bulkBusy.current = true;
+      removeOne.mutate(targets[0]!, { onSettled: () => (bulkBusy.current = false) });
+    } else runBulk('DELETE', targets);
+  };
+  const deleting = bulk.isPending || removeOne.isPending;
+  const askDelete = (row: ProductRow) => {
+    removeOne.reset();
+    bulk.reset();
+    setConfirmingDelete([row]);
+  };
 
   const isShown = (row: ProductRow) => (row.own ? row.productShown : row.listing?.isAvailable ?? false);
   const adjusting = (row: ProductRow) => adjust.isPending && adjust.variables?.row.key === row.key;
@@ -415,27 +498,67 @@ export default function SellerProductsPage() {
             <p className="text-sm text-gray-500">
               Showing {Math.min(shown, visible.length)} of {visible.length} product{visible.length === 1 ? '' : 's'}
             </p>
-            {eligibleShown.length > 0 && (
-              <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 text-sm font-medium text-gray-700">
-                <input
-                  type="checkbox"
-                  className={checkboxClass}
-                  checked={allEligibleChosen}
-                  onChange={(event) => selectAllEligible(event.target.checked)}
-                />
-                Select all eligible ({eligibleShown.length})
-              </label>
-            )}
+            <div className="flex flex-wrap items-center gap-x-4">
+              {pageOwn.length > 0 && (
+                <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 text-sm font-medium text-gray-700 lg:hidden">
+                  <PageCheckbox checked={allPageChosen} mixed={somePageChosen && !allPageChosen} onChange={selectPage} label={`Select all ${pageOwn.length} shown`} />
+                  Select all shown ({pageOwn.length})
+                </label>
+              )}
+              {eligibleShown.length > 0 && (
+                <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 text-sm font-medium text-gray-700">
+                  <input
+                    type="checkbox"
+                    className={checkboxClass}
+                    checked={allEligibleChosen}
+                    onChange={(event) => selectAllEligible(event.target.checked)}
+                  />
+                  Select all ready for approval ({eligibleShown.length})
+                </label>
+              )}
+            </div>
           </div>
+          {selectedRows.length > 0 && (
+            <div
+              role="region"
+              aria-label="Actions for the selected products"
+              className="sticky top-2 z-10 flex flex-wrap items-center gap-2 rounded-xl border border-brand-500/40 bg-white px-3 py-2 shadow-md"
+            >
+              <p className="mr-auto text-sm font-semibold text-gray-900" aria-live="polite">
+                {selectedRows.length} selected
+              </p>
+              <Button variant="secondary" className="min-h-9" disabled={deleting || bulk.isPending} onClick={() => runBulk('HIDE', selectedRows)}>
+                Hide
+              </Button>
+              <Button variant="secondary" className="min-h-9" disabled={deleting || bulk.isPending} onClick={() => runBulk('SHOW', selectedRows)}>
+                Show
+              </Button>
+              <Button
+                variant="danger"
+                className="min-h-9"
+                disabled={deleting || bulk.isPending}
+                onClick={() => {
+                  removeOne.reset();
+                  bulk.reset();
+                  setConfirmingDelete(selectedRows);
+                }}
+              >
+                <Icon name="trash" className="h-4 w-4" /> Delete…
+              </Button>
+              <Button variant="ghost" className="min-h-9" disabled={bulk.isPending} onClick={() => setSelected(new Set())}>
+                Clear
+              </Button>
+            </div>
+          )}
           {/* below lg: cards */}
           <ul className="grid gap-3 md:grid-cols-2 lg:hidden" aria-label="Your products">
             {visible.slice(0, shown).map((row) => (
               <li key={row.key}>
                 <Surface className="space-y-3 p-3.5">
-                  {isReady(row) && (
+                  {row.own && row.productId && (
                     <label className="flex min-h-10 cursor-pointer items-center gap-2 text-sm font-medium text-gray-700">
-                      <input type="checkbox" className={checkboxClass} checked={selected.has(row.productId!)} onChange={() => toggleSelected(row.productId!)} />
-                      Select for approval
+                      <input type="checkbox" className={checkboxClass} checked={selected.has(row.productId)} onChange={() => toggleSelected(row.productId!)} />
+                      Select{isReady(row) && <span className="font-normal text-gray-500">· ready for approval</span>}
                     </label>
                   )}
                   <Link to={row.href} className="flex items-start gap-3 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-brand-400">
@@ -474,7 +597,7 @@ export default function SellerProductsPage() {
                       />
                     </div>
                   )}
-                  <RowActions row={row} shown={isShown(row)} toggling={toggling(row)} onToggle={() => onToggle(row)} onStart={() => setStarting(row.product)} />
+                  <RowActions row={row} shown={isShown(row)} toggling={toggling(row)} onToggle={() => onToggle(row)} onStart={() => setStarting(row.product)} onDelete={() => askDelete(row)} />
                 </Surface>
               </li>
             ))}
@@ -490,14 +613,8 @@ export default function SellerProductsPage() {
                   <tr>
                     <th scope="col" className="w-10 py-3 pl-4">
                       <span className="sr-only">Select</span>
-                      {eligibleShown.length > 0 && (
-                        <input
-                          type="checkbox"
-                          className={checkboxClass}
-                          aria-label="Select all eligible products"
-                          checked={allEligibleChosen}
-                          onChange={(event) => selectAllEligible(event.target.checked)}
-                        />
+                      {pageOwn.length > 0 && (
+                        <PageCheckbox checked={allPageChosen} mixed={somePageChosen && !allPageChosen} onChange={selectPage} label={`Select all ${pageOwn.length} products shown`} />
                       )}
                     </th>
                     <th scope="col" className="px-4 py-3">Product</th>
@@ -512,14 +629,14 @@ export default function SellerProductsPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {visible.slice(0, shown).map((row) => (
-                    <tr key={row.key} className="align-middle hover:bg-gray-50/60">
+                    <tr key={row.key} className={`align-middle ${row.productId && selected.has(row.productId) ? 'bg-brand-50/60' : 'hover:bg-gray-50/60'}`}>
                       <td className="py-3 pl-4">
-                        {isReady(row) && (
+                        {row.own && row.productId && (
                           <input
                             type="checkbox"
                             className={checkboxClass}
-                            aria-label={`Select ${row.name} for approval`}
-                            checked={selected.has(row.productId!)}
+                            aria-label={`Select ${row.name}${isReady(row) ? ' (ready for approval)' : ''}`}
+                            checked={selected.has(row.productId)}
                             onChange={() => toggleSelected(row.productId!)}
                           />
                         )}
@@ -600,7 +717,7 @@ export default function SellerProductsPage() {
                       </td>
                       <td className="whitespace-nowrap px-3 py-3 text-xs text-gray-500">{shortDate.format(new Date(row.updatedAt))}</td>
                       <td className="px-4 py-3">
-                        <RowActions row={row} shown={isShown(row)} toggling={toggling(row)} onToggle={() => onToggle(row)} onStart={() => setStarting(row.product)} compact />
+                        <RowActions row={row} shown={isShown(row)} toggling={toggling(row)} onToggle={() => onToggle(row)} onStart={() => setStarting(row.product)} onDelete={() => askDelete(row)} compact />
                       </td>
                     </tr>
                   ))}
@@ -686,8 +803,110 @@ export default function SellerProductsPage() {
           }}
         />
       )}
+      {confirmingDelete && (
+        <Modal
+          title={
+            confirmingDelete.length === 1
+              ? `Delete “${confirmingDelete[0]!.name}”?`
+              : `Delete ${confirmingDelete.length} products?`
+          }
+          subtitle="This cannot be undone."
+          onClose={() => {
+            if (!deleting) setConfirmingDelete(null);
+          }}
+          footer={
+            <div className="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row">
+              <Button variant="secondary" onClick={() => setConfirmingDelete(null)} disabled={deleting} className="w-full sm:w-auto">
+                Cancel
+              </Button>
+              <Button variant="danger" onClick={() => confirmDelete(confirmingDelete)} disabled={deleting} className="w-full sm:w-auto">
+                {deleting ? 'Deleting…' : confirmingDelete.length === 1 ? 'Delete product' : `Delete ${confirmingDelete.length} products`}
+              </Button>
+            </div>
+          }
+        >
+          <div className="space-y-3 text-sm text-gray-700">
+            <ErrorBanner message={removeOne.error ? sellerErrorMessage(removeOne.error) : bulk.error ? sellerErrorMessage(bulk.error) : null} />
+            {confirmingDelete.length > 1 && (
+              <ul className="max-h-40 list-disc space-y-0.5 overflow-y-auto pl-5 text-gray-900">
+                {confirmingDelete.slice(0, 50).map((row) => (
+                  <li key={row.key}>{row.name}</li>
+                ))}
+                {confirmingDelete.length > 50 && <li className="list-none text-gray-500">…and {confirmingDelete.length - 50} more</li>}
+              </ul>
+            )}
+            <p>
+              {isFood
+                ? 'Removed items leave your menu and can no longer be ordered. Past orders keep their details.'
+                : 'Products that were never ordered or sent for review are deleted permanently, with their photos. Products with order or review history are removed from your catalogue and from customers, but their record is kept so your past orders and payments stay intact.'}
+            </p>
+            {!isFood && <p>Products with an order still in progress are not deleted — hide them for now instead.</p>}
+          </div>
+        </Modal>
+      )}
+      {report && <BulkReportModal report={report} onClose={() => setReport(null)} />}
     </div>
   );
+}
+
+const OUTCOME_LABEL: Record<BulkProductReport['results'][number]['outcome'], string> = {
+  DELETED: 'Deleted permanently',
+  ARCHIVED: 'Removed (history kept)',
+  HIDDEN: 'Hidden',
+  SHOWN: 'Shown',
+  UNCHANGED: 'Already so',
+  SKIPPED: 'Skipped',
+  FAILED: 'Failed',
+};
+
+/** What a bulk action did, product by product: deleted / removed / hidden / skipped / failed. */
+function BulkReportModal({ report, onClose }: { report: BulkProductReport; onClose: () => void }) {
+  const c = report.counts;
+  const tiles = (Object.keys(OUTCOME_LABEL) as (keyof typeof OUTCOME_LABEL)[]).filter((outcome) => c[outcome] > 0);
+  const notable = report.results.filter((r) => r.outcome === 'SKIPPED' || r.outcome === 'FAILED' || r.outcome === 'ARCHIVED');
+  return (
+    <Modal
+      title={report.action === 'DELETE' ? 'Delete finished' : report.action === 'HIDE' ? 'Hide finished' : 'Show finished'}
+      onClose={onClose}
+      footer={
+        <Button onClick={onClose} className="w-full sm:w-auto">
+          Done
+        </Button>
+      }
+    >
+      <div className="space-y-3 text-sm text-gray-700">
+        <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {tiles.map((outcome) => (
+            <div key={outcome} className="rounded-xl bg-gray-50 px-3 py-2">
+              <dt className="text-xs text-gray-500">{OUTCOME_LABEL[outcome]}</dt>
+              <dd className={`text-lg font-bold ${outcome === 'FAILED' ? 'text-danger-600' : outcome === 'SKIPPED' ? 'text-amber-600' : 'text-gray-900'}`}>{c[outcome]}</dd>
+            </div>
+          ))}
+        </dl>
+        {notable.length > 0 && (
+          <ul className="max-h-60 space-y-1.5 overflow-y-auto">
+            {notable.map((r) => (
+              <li key={r.productId} className="rounded-lg border border-gray-100 px-3 py-2">
+                <p className="font-semibold text-gray-900">
+                  {r.name ?? 'Product'} <Pill tone={r.outcome === 'FAILED' ? 'red' : r.outcome === 'SKIPPED' ? 'amber' : 'gray'}>{OUTCOME_LABEL[r.outcome]}</Pill>
+                </p>
+                <p className="text-gray-600">{r.message}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/** "Select all" for the page as shown, with the mixed state when only some are ticked. */
+function PageCheckbox({ checked, mixed, onChange, label }: { checked: boolean; mixed: boolean; onChange: (on: boolean) => void; label: string }) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = mixed;
+  }, [mixed]);
+  return <input ref={ref} type="checkbox" className={checkboxClass} aria-label={label} checked={checked} onChange={(event) => onChange(event.target.checked)} />;
 }
 
 const checkboxClass = 'h-4 w-4 cursor-pointer rounded border-gray-300 text-brand-600 focus-visible:ring-2 focus-visible:ring-brand-400';
@@ -707,13 +926,19 @@ function legacyView(filter: string | null): string | null {
   return null;
 }
 
-/** View · Edit · Images · Stock · Show/Hide (+ Add price & stock for an older product without them). */
+/**
+ * Details · Delete, then the Show/Hide switch (or "Add price & stock" for an
+ * older product without them). Details opens the product page, which holds
+ * the information, photos, pricing, stock, visibility and approval sections;
+ * the status pills link straight to the right section.
+ */
 function RowActions({
   row,
   shown,
   toggling,
   onToggle,
   onStart,
+  onDelete,
   compact = false,
 }: {
   row: ProductRow;
@@ -721,18 +946,15 @@ function RowActions({
   toggling: boolean;
   onToggle: () => void;
   onStart: () => void;
+  onDelete: () => void;
   compact?: boolean;
 }) {
   // A catalogue listing can only be shown when there is a listing to switch.
   const canToggle = row.own || row.listing !== null;
-  const actions: { to: string; label: string; icon: 'eye' | 'edit' | 'image' | 'inventory' }[] = [
-    { to: row.href, label: 'View', icon: 'eye' },
-    ...(row.editable ? [{ to: `${row.href}#info`, label: 'Edit', icon: 'edit' as const }] : []),
-    ...(row.own ? [{ to: `${row.href}#images`, label: 'Images', icon: 'image' as const }] : []),
-    ...(row.listing ? [{ to: `${row.href}#inventory`, label: 'Stock', icon: 'inventory' as const }] : []),
-  ];
+  // Own products only; one Aadione disabled stays until Aadione lifts it.
+  const canDelete = row.own && row.productId !== null && row.product?.status !== 'ARCHIVED';
   const toggleEl = canToggle && (
-    <span className={`inline-flex items-center gap-2 text-gray-700 ${compact ? 'text-xs' : 'ml-auto min-h-10 text-sm'}`} title={row.adminLocked ? 'Disabled by Aadione' : undefined}>
+    <span className={`inline-flex items-center gap-2 text-gray-700 ${compact ? 'text-xs' : 'min-h-10 text-sm'}`} title={row.adminLocked ? 'Disabled by Aadione' : undefined}>
       <span aria-hidden="true">{row.adminLocked ? 'Locked' : shown ? 'Shown' : 'Hidden'}</span>
       <Toggle
         checked={shown && !row.adminLocked}
@@ -742,45 +964,51 @@ function RowActions({
       />
     </span>
   );
+  const details = (
+    <Link
+      to={row.href}
+      title="Details: information, photos, price, stock and approval"
+      aria-label={`Details of ${row.name}`}
+      className={`inline-flex items-center gap-1.5 rounded-lg font-semibold text-brand-600 outline-none hover:bg-brand-50 focus-visible:ring-2 focus-visible:ring-brand-400 ${compact ? 'h-8 px-2 text-xs' : 'min-h-10 px-2.5 text-sm'}`}
+    >
+      <Icon name="eye" className="h-4 w-4" /> Details
+    </Link>
+  );
+  const remove = canDelete && (
+    <button
+      type="button"
+      onClick={onDelete}
+      title="Delete product"
+      aria-label={`Delete ${row.name}`}
+      className={`inline-flex items-center justify-center gap-1.5 rounded-lg font-semibold text-danger-600 outline-none hover:bg-danger-50 focus-visible:ring-2 focus-visible:ring-danger-500 ${compact ? 'h-8 w-8' : 'min-h-10 px-2.5 text-sm'}`}
+    >
+      <Icon name="trash" className="h-4 w-4" />
+      {!compact && 'Delete'}
+    </button>
+  );
+  const sell = row.canStartSelling && (
+    <Button onClick={onStart} className={compact ? 'min-h-8 px-2.5 text-xs' : undefined}>
+      Add price &amp; stock
+    </Button>
+  );
 
   if (compact) {
     return (
       <div className="flex flex-col items-end gap-1.5">
-        <div className="flex items-center gap-0.5">
-          {actions.map((action) => (
-            <Link
-              key={action.label}
-              to={action.to}
-              title={action.label}
-              aria-label={`${action.label} ${row.name}`}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-brand-600 outline-none hover:bg-brand-50 focus-visible:ring-2 focus-visible:ring-brand-400"
-            >
-              <Icon name={action.icon} className="h-4 w-4" />
-            </Link>
-          ))}
+        <div className="flex items-center gap-1">
+          {details}
+          {remove}
         </div>
-        {row.canStartSelling ? (
-          <Button onClick={onStart} className="min-h-8 px-2.5 text-xs">
-            Add price &amp; stock
-          </Button>
-        ) : (
-          toggleEl
-        )}
+        {sell || toggleEl}
       </div>
     );
   }
 
-  const link =
-    'inline-flex min-h-10 items-center justify-center rounded-lg px-2.5 text-sm font-semibold text-brand-600 outline-none hover:bg-brand-50 focus-visible:ring-2 focus-visible:ring-brand-400';
   return (
     <div className="flex flex-wrap items-center gap-1">
-      {actions.map((action) => (
-        <Link key={action.label} to={action.to} className={link} aria-label={`${action.label} ${row.name}`}>
-          {action.label}
-        </Link>
-      ))}
-      {row.canStartSelling && <Button onClick={onStart}>Add price &amp; stock</Button>}
-      {toggleEl}
+      {details}
+      {remove}
+      <span className="ml-auto flex items-center gap-2">{sell || toggleEl}</span>
     </div>
   );
 }

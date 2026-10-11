@@ -67,7 +67,7 @@ export const PRODUCT_IMPORT_COLUMNS: readonly ProductImportColumn[] = [
   {
     key: 'brand',
     requiredForCreate: false,
-    help: 'Optional: matched to brands Aadione already has. An unknown brand is left empty (shown as a warning).',
+    help: 'Optional: matched to brands Aadione already has (capitals and extra spaces do not matter). A new brand is created when you confirm the import.',
     aliases: ['brand name', 'company'],
   },
   { key: 'mrp', requiredForCreate: true, help: 'MRP in rupees, e.g. 120 or 119.50 (no ₹ sign or commas).', aliases: ['mrp (rs)', 'mrp rs', 'max retail price'] },
@@ -229,6 +229,8 @@ export interface ProductImportRowDto {
   values: Record<string, string>;
   errors: ProductImportIssue[];
   warnings: ProductImportIssue[];
+  /** How the brand column resolved: an existing brand (its catalogue name) or one created on import. */
+  brand: { status: 'MATCHED' | 'NEW'; name: string } | null;
   images: ProductImportRowImageDto[];
   productId: string | null;
   /** Images-only rows: this image becomes the product's main photo. */

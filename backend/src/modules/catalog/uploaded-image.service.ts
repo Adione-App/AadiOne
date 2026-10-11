@@ -98,6 +98,38 @@ export async function removeStoredImageIfUnused(url: string | null | undefined):
 }
 
 /**
+ * True when a retained bulk import still points at this file (any status,
+ * until import retention cleans the import up): its failed rows can be
+ * retried, and an import still processing may yet attach the same photo.
+ */
+export async function isHeldByProductImport(url: string): Promise<boolean> {
+  const key = storageKeyFromUrl(url);
+  if (!key) return false;
+  const suffix = { endsWith: `/${key}` };
+  const hit = await prisma.productImportImage.findFirst({ where: { OR: [{ url: suffix }, { thumbUrl: suffix }] }, select: { id: true } });
+  return hit !== null;
+}
+
+/**
+ * removeStoredImageIfUnused for a PRODUCT photo leaving a product (photo
+ * removed or replaced, product deleted): additionally keeps a file a retained
+ * bulk import still holds — import retention (releaseImportImages) removes it
+ * once nothing uses it. Not for the import's own cleanup, which must ignore
+ * its own references.
+ */
+export async function removeProductImageFileIfUnused(url: string | null | undefined): Promise<void> {
+  if (!url) return;
+  try {
+    if (await isHeldByProductImport(url)) return;
+  } catch (error) {
+    // Unsure whether an import still needs it: keep the file (a stale object is cheap).
+    log.warn({ err: error, url }, 'product import reference check failed; file kept');
+    return;
+  }
+  await removeStoredImageIfUnused(url);
+}
+
+/**
  * Turns a raw upload into the stored, optimised image and returns the URLs to
  * save. Call BEFORE writing the row; the raw upload is removed here.
  */

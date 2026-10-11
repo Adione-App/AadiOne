@@ -1100,6 +1100,13 @@ export interface ProductApprovalBatchProductRowDto {
   itemStatus: ApprovalStatus;
   reviewNote: string | null;
   name: string;
+  /**
+   * The product's brand (customers see it once the product is approved).
+   * `isNew`: a seller's bulk import created this brand (audit log
+   * `brand.import_create`) and no approved, live product uses it yet — so
+   * approving this product is what makes the brand public.
+   */
+  brand: { id: string; name: string; isNew: boolean } | null;
   category: string;
   subcategory: string | null;
   sku: string | null;

@@ -20,6 +20,7 @@ import * as service from './product-approval.service';
 import * as listingService from './seller-listing.service';
 import * as variantService from './product-variant.service';
 import * as productService from './seller-product.service';
+import * as removalService from './seller-product-removal.service';
 import * as sellerCategoryService from './seller-category.service';
 import * as subcategoryService from './seller-subcategory.service';
 import { createSellerListing } from '../sellers/admin-seller-catalog.service';
@@ -125,6 +126,24 @@ sellerCatalogRouter.patch(
   asyncHandler(async (req: Request, res: Response) => {
     const { status } = req.body as { status: typeof ProductStatus.ACTIVE | typeof ProductStatus.INACTIVE };
     ok(res, await service.setOwnProductStatus(requireSellerId(req), req.params['id'] as string, status, requireUser(req).id));
+  }),
+);
+
+/** Hide / show / delete several own products; every product is reported (see seller-product-removal.service). */
+sellerCatalogRouter.post(
+  '/products/bulk',
+  requirePermission(Permission.SELLER_CATALOG_MANAGE),
+  validate({
+    body: z
+      .object({
+        action: z.enum(['HIDE', 'SHOW', 'DELETE']),
+        productIds: z.array(uuid).min(1).max(removalService.BULK_PRODUCT_LIMIT),
+      })
+      .strict(),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { action, productIds } = req.body as { action: removalService.BulkProductAction; productIds: string[] };
+    ok(res, await removalService.bulkProductAction(requireSellerId(req), action, productIds, requireUser(req).id));
   }),
 );
 
@@ -298,13 +317,20 @@ sellerCatalogRouter.put(
   }),
 );
 
-/** Restaurant / cafe food items only — soft delete (see deleteOwnFoodItem). */
+/**
+ * Restaurant / cafe food items: soft delete (deleteOwnFoodItem). Marketplace
+ * products: deleted permanently when nothing references them, otherwise
+ * removed with their history kept (removeOwnProduct).
+ */
 sellerCatalogRouter.delete(
   '/products/:id',
   requirePermission(Permission.SELLER_CATALOG_MANAGE),
   validate({ params: z.object({ id: uuid }) }),
   asyncHandler(async (req: Request, res: Response) => {
-    ok(res, await service.deleteOwnFoodItem(requireSellerId(req), req.params['id'] as string, requireUser(req).id));
+    const sellerId = requireSellerId(req);
+    const productId = req.params['id'] as string;
+    if (await service.sellerIsFood(sellerId)) ok(res, await service.deleteOwnFoodItem(sellerId, productId, requireUser(req).id));
+    else ok(res, await removalService.removeOwnProduct(sellerId, productId, requireUser(req).id));
   }),
 );
 

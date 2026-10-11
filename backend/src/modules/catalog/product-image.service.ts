@@ -8,7 +8,7 @@
 
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../infra/db/prisma';
-import { processUploadedImage, removeStoredImageIfUnused } from './uploaded-image.service';
+import { processUploadedImage, removeProductImageFileIfUnused } from './uploaded-image.service';
 
 async function audit(input: {
   actorUserId: string;
@@ -69,10 +69,11 @@ export async function removeProductImage(id: string, actorUserId: string): Promi
 
   await prisma.productImage.delete({ where: { id } });
   // Never deletes a file another row still points at (the same upload can be
-  // attached more than once; order items keep a snapshot of the URL).
-  await removeStoredImageIfUnused(image.url);
-  if (image.thumbUrl !== image.url) await removeStoredImageIfUnused(image.thumbUrl);
-  if (image.cardUrl !== image.url && image.cardUrl !== image.thumbUrl) await removeStoredImageIfUnused(image.cardUrl);
+  // attached more than once; order items keep a snapshot of the URL), nor one
+  // a retained bulk import still holds for a retry.
+  await removeProductImageFileIfUnused(image.url);
+  if (image.thumbUrl !== image.url) await removeProductImageFileIfUnused(image.thumbUrl);
+  if (image.cardUrl !== image.url && image.cardUrl !== image.thumbUrl) await removeProductImageFileIfUnused(image.cardUrl);
 
   await audit({
     actorUserId,

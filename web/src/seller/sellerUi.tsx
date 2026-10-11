@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useId, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { create } from 'zustand';
 import { Icon, Surface, type IconName, type Tone } from '@/components/ui';
 
@@ -399,6 +399,24 @@ export function CardHeader({ title, subtitle, action }: { title: string; subtitl
       {action}
     </div>
   );
+}
+
+/**
+ * Scrolls to the section named by the URL hash (/seller/products/:id#images)
+ * once the page has rendered it: client-side navigation does not, and the
+ * section only exists after the data has loaded.
+ */
+export function useScrollToHash(ready: boolean): void {
+  const { hash, key } = useLocation();
+  useEffect(() => {
+    if (!ready || !hash) return;
+    const target = document.getElementById(decodeURIComponent(hash.slice(1)));
+    if (!target) return;
+    target.scrollIntoView({ block: 'start' });
+    // Keyboard and screen-reader users land where the eye does.
+    if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+    target.focus({ preventScroll: true });
+  }, [ready, hash, key]);
 }
 
 export const linkClass =

@@ -14,7 +14,7 @@ import { sellerApi, sellerErrorMessage, type SellerListingInventory } from '../s
 import { sellerKeys } from '../sellerQueries';
 import { ProductImage, VisibilityPill } from '../productUi';
 import { InventoryPanel, PricingPanel, Section, VisibilityPanel } from '../productSections';
-import { SkeletonBlock } from '../sellerUi';
+import { SkeletonBlock, useScrollToHash } from '../sellerUi';
 
 export default function SellerListingDetailPage() {
   const { id = '' } = useParams();
@@ -31,6 +31,7 @@ export default function SellerListingDetailPage() {
       queryClient.invalidateQueries({ queryKey: sellerKeys.listings, exact: true }),
       queryClient.invalidateQueries({ queryKey: sellerKeys.products }),
     ]);
+  useScrollToHash(query.isSuccess);
 
   const back = (
     <Link to="/seller/products" className="inline-flex items-center gap-1 text-sm font-medium text-gray-600 hover:text-gray-900">

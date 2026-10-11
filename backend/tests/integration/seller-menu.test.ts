@@ -350,7 +350,9 @@ describe('marketplace sellers are unchanged: Category → Subcategory → Produc
     // Stock stays editable for marketplace products.
     await as(seller.token).post(`/seller/listings/${created.listingId}/stock-adjust`, { delta: 5 }).expect(200);
     expect((await prisma.sellerListing.findUniqueOrThrow({ where: { id: created.listingId } })).stockQty).toBe(30);
-    // Marketplace products are not deleted through the food-item route.
-    expect((await as(seller.token).delete(`/seller/products/${created.id}`)).status).toBe(400);
+    // Marketplace products are removed through removeOwnProduct (never ordered or reviewed: deleted outright).
+    const removed = expectSuccess<{ outcome: string }>((await as(seller.token).delete(`/seller/products/${created.id}`).expect(200)).body).data;
+    expect(removed.outcome).toBe('DELETED');
+    expect(await prisma.product.findUnique({ where: { id: created.id } })).toBeNull();
   });
 });

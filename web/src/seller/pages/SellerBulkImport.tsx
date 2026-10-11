@@ -665,6 +665,12 @@ function RowItem({ job, row, editable, onChanged }: { job: ProductImportDto; row
           {row.sku && <span className="ml-2 font-mono text-xs font-normal text-gray-500">{row.sku}</span>}
         </p>
         {detail.length > 0 && <p className="text-gray-600">{detail.join(' · ')}</p>}
+        {row.brand && row.status !== 'EXCLUDED' && (
+          <p className="mt-1 flex flex-wrap items-center gap-1.5 text-gray-700">
+            <span>Brand {row.brand.name}</span>
+            {row.brand.status === 'MATCHED' ? <Pill tone="brand">Existing brand matched</Pill> : <Pill tone="blue">New brand will be created</Pill>}
+          </p>
+        )}
         {row.errors.map((e, i) => (
           <p key={`e${i}`} className="text-danger-600">
             Row {row.rowNumber}: {e.message}

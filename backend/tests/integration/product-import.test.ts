@@ -137,14 +137,16 @@ describe('product file + image ZIP (CREATE)', () => {
     ]);
 
     const job = await analysed(seller.token, await uploadProducts(seller.token, csv, { zip }));
-    expect(job).toMatchObject({ status: 'READY', totalRows: 3, readyRows: 3, invalidRows: 0, warningRows: 1, imageCount: 4 });
+    expect(job).toMatchObject({ status: 'READY', totalRows: 3, readyRows: 3, invalidRows: 0, warningRows: 0, imageCount: 4 });
     const preview = await rows(seller.token, job.id);
     expect(preview.map((r) => [r.rowNumber, r.status, r.sku])).toEqual([
       [2, 'READY', 'RB-250'],
       [3, 'READY', 'BIS-100'],
       [4, 'READY', 'OIL-1L'],
     ]);
-    expect(preview[1]!.warnings[0]!.message).toMatch(/Brand "Unknown Co" is not in Aadione's brand list/);
+    expect(preview[0]!.brand).toEqual({ status: 'MATCHED', name: 'Red Bull' });
+    expect(preview[1]!.brand).toEqual({ status: 'NEW', name: 'Unknown Co' });
+    expect(preview[2]!.brand).toBeNull();
     expect(preview[2]!.images.map((i) => [i.fileName, i.status])).toEqual([
       ['OIL-1L-front.webp', 'READY'],
       ['OIL-1L-back.webp', 'READY'],
@@ -171,7 +173,8 @@ describe('product file + image ZIP (CREATE)', () => {
     expect(await isWebp(rb.product.images[0]!.thumbUrl!)).toBe(true); // 2000px -> card thumbnail too
 
     const bis = await prisma.productVariant.findUniqueOrThrow({ where: { sku: 'BIS-100' }, include: { product: true, sellerListings: true } });
-    expect(bis.product.brandId).toBeNull();
+    // An unknown brand is created on confirm and linked.
+    expect((await prisma.brand.findUniqueOrThrow({ where: { id: bis.product.brandId! } })).name).toBe('Unknown Co');
     expect(bis.sellerListings[0]!.stockQty).toBe(0);
     expect(await prisma.stockLedger.count({ where: { sellerListingId: bis.sellerListings[0]!.id } })).toBe(0);
 

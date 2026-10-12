@@ -13,15 +13,17 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import * as Location from 'expo-location';
 import { StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radius, spacing } from '@shared/theme';
-import { formatDistance } from '@shared/distance';
+import { formatStraightLineDistance } from '@shared/distance';
+import { DETECT_MESSAGE, describeAccuracy, suggestionLabel, type DetectResult } from '@shared/location';
+import { detectDeviceLocation, suggestAddressFor } from '@/lib/deviceLocation';
 import { useLocation } from '@/lib/store';
 import { AppText, Button, Card, Loading, Screen } from '@/components/ui';
 
-type Phase = 'asking' | 'locating' | 'denied' | 'done' | 'error';
+type Phase = 'locating' | 'confirm' | 'failed' | 'done';
+type Fix = Extract<DetectResult, { status: 'OK' }> & { label: string };
 
 export default function LocationScreen({
   onReady,
@@ -29,68 +31,37 @@ export default function LocationScreen({
   onReady: () => void;
 }) {
   const insets = useSafeAreaInsets();
-  const [phase, setPhase] = useState<Phase>('asking');
+  const [phase, setPhase] = useState<Phase>('locating');
+  const [failure, setFailure] = useState<string | null>(null);
+  const [fix, setFix] = useState<Fix | null>(null);
   const { setLocation, serviceability, checking, error } = useLocation();
 
+  /**
+   * One FRESH fix (never the cached last-known position, which could be
+   * minutes old and kilometres off), with a timeout and its accuracy — then
+   * shown to the customer to confirm before anything is decided from it.
+   */
   const detect = useCallback(async (): Promise<void> => {
     setPhase('locating');
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        setPhase('denied');
-        return;
-      }
-
-      // A fresh GPS fix can take several seconds — long enough that this
-      // screen was the single biggest "why is this app slow" complaint. A
-      // cached fix is near-instant and, at the kilometre scale serviceability
-      // cares about, just as useful, so show it immediately and let the
-      // accurate fix refine things quietly in the background rather than
-      // leaving the customer staring at a spinner.
-      const cached = await Location.getLastKnownPositionAsync({
-        maxAge: 5 * 60_000,
-      }).catch(() => null);
-
-      if (cached) {
-        await setLocation({
-          latitude: cached.coords.latitude,
-          longitude: cached.coords.longitude,
-          label: 'Current location',
-        });
-        setPhase('done');
-      }
-
-      const position = await Location.getCurrentPositionAsync({
-        // Balanced, not Highest: high accuracy costs seconds and battery for
-        // precision serviceability does not need at kilometre scale.
-        accuracy: Location.Accuracy.Balanced,
-      });
-
-      let label = 'Current location';
-      try {
-        const [place] = await Location.reverseGeocodeAsync({
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-        });
-        if (place) {
-          label = [place.district ?? place.subregion, place.city ?? place.region, place.postalCode]
-            .filter(Boolean)
-            .join(', ');
-        }
-      } catch {
-        // Reverse geocoding is cosmetic; coordinates are what decide.
-      }
-
-      await setLocation({
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-        label,
-      });
-      setPhase('done');
-    } catch {
-      setPhase('error');
+    setFailure(null);
+    setFix(null);
+    const result = await detectDeviceLocation();
+    if (result.status !== 'OK') {
+      setFailure(DETECT_MESSAGE[result.status]);
+      setPhase('failed');
+      return;
     }
-  }, [setLocation]);
+    // The address shown is a suggestion from the OS geocoder; the point is the fix itself.
+    const suggestion = await suggestAddressFor(result.latitude, result.longitude);
+    setFix({ ...result, label: suggestionLabel(suggestion) });
+    setPhase('confirm');
+  }, []);
+
+  const confirm = useCallback(async (): Promise<void> => {
+    if (!fix) return;
+    setPhase('done');
+    await setLocation({ latitude: fix.latitude, longitude: fix.longitude, label: fix.label, source: 'GPS', accuracyM: fix.accuracyM });
+  }, [fix, setLocation]);
 
   useEffect(() => {
     void detect();
@@ -100,25 +71,19 @@ export default function LocationScreen({
     if (phase === 'done' && serviceability?.serviceable) onReady();
   }, [phase, serviceability, onReady]);
 
-  if (phase === 'locating' || checking) {
+  if (phase === 'locating') {
     return <Loading label="Finding your location…" />;
   }
 
-  if (phase === 'denied' || phase === 'error') {
+  if (phase === 'failed') {
     return (
       <Screen style={{ paddingTop: insets.top + spacing.xxl, paddingHorizontal: spacing.base }}>
         <AppText variant="display">Where should we deliver?</AppText>
-        <AppText
-          variant="bodyLarge"
-          color={colors.textSecondary}
-          style={{ marginTop: spacing.sm }}
-        >
-          {phase === 'denied'
-            ? 'We could not access your location. You can allow it, or continue and add your address yourself.'
-            : 'We could not detect your location right now.'}
+        <AppText variant="bodyLarge" color={colors.textSecondary} style={{ marginTop: spacing.sm }}>
+          {failure}
         </AppText>
 
-        <Button label="Allow location" onPress={detect} style={{ marginTop: spacing.xl }} />
+        <Button label="Try again" onPress={detect} style={{ marginTop: spacing.xl }} />
         <Button
           label="Enter address manually"
           variant="secondary"
@@ -127,6 +92,33 @@ export default function LocationScreen({
         />
       </Screen>
     );
+  }
+
+  if (phase === 'confirm' && fix) {
+    return (
+      <Screen style={{ paddingTop: insets.top + spacing.xxl, paddingHorizontal: spacing.base }}>
+        <AppText variant="display">Is this where you are?</AppText>
+        <Card style={{ marginTop: spacing.lg }}>
+          <AppText variant="bodyStrong">{fix.label}</AppText>
+          <AppText variant="caption" color={colors.textSecondary} style={{ marginTop: spacing.xs }}>
+            {describeAccuracy(fix.accuracyM)} · {fix.latitude.toFixed(5)}, {fix.longitude.toFixed(5)}
+          </AppText>
+          {fix.quality === 'POOR' && (
+            <AppText variant="caption" color={colors.danger} style={{ marginTop: spacing.sm }}>
+              Your phone could only find an approximate location. If this is not right, try again outdoors or enter your
+              address instead.
+            </AppText>
+          )}
+        </Card>
+        <Button label="Deliver here" onPress={() => void confirm()} style={{ marginTop: spacing.xl }} />
+        <Button label="Try again" variant="secondary" onPress={detect} style={{ marginTop: spacing.md }} />
+        <Button label="Enter address manually" variant="ghost" onPress={onReady} style={{ marginTop: spacing.sm }} />
+      </Screen>
+    );
+  }
+
+  if (checking) {
+    return <Loading label="Checking delivery availability…" />;
   }
 
   if (serviceability && !serviceability.serviceable) {
@@ -149,8 +141,8 @@ export default function LocationScreen({
           color={colors.textSecondary}
           style={{ textAlign: 'center', marginTop: spacing.md }}
         >
-          This location is {formatDistance(serviceability.distanceKm)} from our store. We
-          currently deliver up to {serviceability.maxRadiusKm} km.
+          This location is {formatStraightLineDistance(serviceability.distanceKm)} from our nearest store. We
+          currently deliver up to {serviceability.maxRadiusKm} km (straight line).
         </AppText>
 
         <Card style={{ marginTop: spacing.xl }}>

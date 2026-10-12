@@ -14,15 +14,18 @@
 import { prisma } from '../../infra/db/prisma';
 import { AppError } from '../../common/errors';
 import { ErrorCode, type SellerHoursDto } from '../../shared';
-import { isValidCoordinates } from '../../shared/distance';
+import { COORDINATE_PROBLEM_MESSAGE, coordinateProblem } from '../../shared/distance';
 import * as sellerRepository from './seller.repository';
 
 export interface UpdateSellerLocationInput {
   latitude: number;
   longitude: number;
   addressLine?: string;
+  locality?: string | null;
   city?: string;
+  district?: string | null;
   state?: string;
+  landmark?: string | null;
   pincode?: string;
   phone?: string;
 }
@@ -30,10 +33,15 @@ export interface UpdateSellerLocationInput {
 export interface SellerLocationDto {
   id: string;
   name: string;
+  /** Shop / building and street. */
   addressLine: string;
+  locality: string | null;
+  /** Village / city / town. */
   city: string;
+  district: string | null;
   state: string;
   pincode: string;
+  landmark: string | null;
   phone: string | null;
   latitude: number;
   longitude: number;
@@ -44,9 +52,12 @@ const LOCATION_SELECT = {
   id: true,
   name: true,
   addressLine: true,
+  locality: true,
   city: true,
+  district: true,
   state: true,
   pincode: true,
+  landmark: true,
   phone: true,
   latitude: true,
   longitude: true,
@@ -64,18 +75,13 @@ export async function updateSellerLocation(
   input: UpdateSellerLocationInput,
   actorUserId: string,
 ): Promise<SellerLocationDto> {
-  if (!isValidCoordinates(input.latitude, input.longitude)) {
+  // Invalid, (0, 0) — what a broken geolocation call produces — swapped, or
+  // outside India: any of these would make every distance from this store wrong.
+  const problem = coordinateProblem(input.latitude, input.longitude, { requireIndia: true });
+  if (problem) {
     throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message: 'Those coordinates are not valid.',
-      internalMessage: `rejected ${input.latitude},${input.longitude}`,
-    });
-  }
-
-  // 0,0 is in the Atlantic. It is what a broken geolocation call produces, and
-  // silently accepting it would make the whole town unserviceable.
-  if (input.latitude === 0 && input.longitude === 0) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message: 'Those coordinates look wrong (0, 0). Please set the location again.',
+      message: COORDINATE_PROBLEM_MESSAGE[problem],
+      internalMessage: `rejected ${input.latitude},${input.longitude} (${problem})`,
     });
   }
 
@@ -87,8 +93,11 @@ export async function updateSellerLocation(
       latitude: input.latitude,
       longitude: input.longitude,
       ...(input.addressLine !== undefined ? { addressLine: input.addressLine } : {}),
+      ...(input.locality !== undefined ? { locality: input.locality } : {}),
       ...(input.city !== undefined ? { city: input.city } : {}),
+      ...(input.district !== undefined ? { district: input.district } : {}),
       ...(input.state !== undefined ? { state: input.state } : {}),
+      ...(input.landmark !== undefined ? { landmark: input.landmark } : {}),
       ...(input.pincode !== undefined ? { pincode: input.pincode } : {}),
       ...(input.phone !== undefined ? { phone: input.phone } : {}),
     },
@@ -101,8 +110,8 @@ export async function updateSellerLocation(
       action: 'seller.update_location',
       entityType: 'Seller',
       entityId: sellerId,
-      before: { latitude: before.latitude, longitude: before.longitude, city: before.city, pincode: before.pincode },
-      after: { latitude: after.latitude, longitude: after.longitude, city: after.city, pincode: after.pincode },
+      before: { latitude: before.latitude, longitude: before.longitude, city: before.city, district: before.district, pincode: before.pincode },
+      after: { latitude: after.latitude, longitude: after.longitude, city: after.city, district: after.district, pincode: after.pincode },
     },
   });
 

@@ -11,6 +11,8 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { ApprovalStatus, DocumentStatus, PAGINATION_MAX_LIMIT, Permission, SellerLifecycleStatus, SellerType } from '../../shared';
+import { COORDINATE_PROBLEM_MESSAGE, coordinateProblem } from '../../shared/distance';
+import { isValidPincode } from '../../shared/phone';
 import { asyncHandler, created, ok, okCursorPage } from '../../common/response';
 import { validate, validatedQuery } from '../../middleware/validate';
 import { requirePermission, requireUser } from '../../middleware/auth';
@@ -36,15 +38,22 @@ const createSellerSchema = z.object({
   name: z.string().trim().min(2).max(SELLER_NAME_MAX),
   sellerType: z.nativeEnum(SellerType),
   addressLine: z.string().trim().min(2).max(300),
-  city: z.string().trim().min(2).max(SELLER_CITY_MAX),
+  locality: z.string().trim().max(160).nullable().optional(),
+  city: z.string().trim().min(2, 'Enter the village, city or town').max(SELLER_CITY_MAX),
+  district: z.string().trim().min(2, 'Enter the district').max(80).nullable().optional(),
   state: z.string().trim().min(2).max(SELLER_STATE_MAX),
-  pincode: z.string().trim().regex(/^\d{6}$/, 'Pincode must be 6 digits.'),
-  latitude: z.number().min(-90).max(90),
-  longitude: z.number().min(-180).max(180),
+  pincode: z.string().trim().refine(isValidPincode, 'Enter a valid 6-digit PIN code'),
+  landmark: z.string().trim().max(160).nullable().optional(),
+  latitude: z.number(),
+  longitude: z.number(),
   phone: z.string().trim().min(10).max(15).nullable().optional(),
   ownerMobile: z.string().trim().min(10).max(15),
   ownerFullName: z.string().trim().min(2).max(120),
   defaultCommissionBp: z.number().int().min(0).max(10_000).optional(),
+}).superRefine((body, ctx) => {
+  // The store point every customer distance is measured from: valid, not (0, 0), not swapped, in India.
+  const problem = coordinateProblem(body.latitude, body.longitude, { requireIndia: true });
+  if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['latitude'], message: COORDINATE_PROBLEM_MESSAGE[problem] });
 });
 
 /** Query strings arrive as text; `"true"` must become `true` (same shape as

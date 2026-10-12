@@ -232,7 +232,15 @@ export async function listOrders(options: {
         customerName: order.deliveryFullName,
         customerMobile: order.deliveryMobile,
         distanceKm: order.distanceKm,
-        addressSummary: `${order.deliveryAddressLine}, ${order.deliveryCity} ${order.deliveryPincode}`,
+        addressSummary: [
+          order.deliveryAddressLine,
+          order.deliveryCity,
+          // District when recorded and not just the city's name again.
+          order.deliveryDistrict && order.deliveryDistrict.toLowerCase() !== order.deliveryCity.toLowerCase() ? `District ${order.deliveryDistrict}` : null,
+          order.deliveryPincode,
+        ]
+          .filter(Boolean)
+          .join(', '),
         deliveryAgentName: order.deliveryTasks[0]?.agent.name ?? null,
         minutesSincePlaced: Math.floor(
           (now - (order.placedAt ?? order.createdAt).getTime()) / 60_000,

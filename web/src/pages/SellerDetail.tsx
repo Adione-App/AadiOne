@@ -404,12 +404,18 @@ function OverviewTab({
 
       <Panel title="Address">
         <dl className="divide-y divide-gray-100">
-          <DetailRow label="Address">{seller.addressLine}</DetailRow>
-          <DetailRow label="City">{seller.city}</DetailRow>
+          <DetailRow label="Shop / building and street">{seller.addressLine}</DetailRow>
+          <DetailRow label="Locality">{seller.locality ?? '—'}</DetailRow>
+          <DetailRow label="Village / City / Town">{seller.city}</DetailRow>
+          <DetailRow label="District">{seller.district ?? 'Not recorded'}</DetailRow>
           <DetailRow label="State">{seller.state}</DetailRow>
-          <DetailRow label="Pincode">{seller.pincode}</DetailRow>
-          <DetailRow label="Location">
-            {seller.latitude.toFixed(5)}, {seller.longitude.toFixed(5)}
+          <DetailRow label="PIN code">{seller.pincode}</DetailRow>
+          <DetailRow label="Landmark">{seller.landmark ?? '—'}</DetailRow>
+          <DetailRow label="Map point">
+            {seller.latitude.toFixed(5)}, {seller.longitude.toFixed(5)} ·{' '}
+            <a href={`https://www.google.com/maps?q=${seller.latitude},${seller.longitude}`} target="_blank" rel="noreferrer" className="font-semibold text-brand-600 hover:underline">
+              View on map
+            </a>
           </DetailRow>
         </dl>
       </Panel>

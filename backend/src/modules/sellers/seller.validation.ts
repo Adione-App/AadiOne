@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { refineQueryCoordinates } from '../../common/coordinates';
 
 /**
  * Coordinates arrive as query-string text and must be coerced.
@@ -19,6 +20,6 @@ export const serviceabilityQuerySchema = z.object({
     .refine(Number.isFinite, 'Longitude must be a number')
     .refine((v) => v >= -180 && v <= 180, 'Longitude is out of range')
     .refine((v) => v !== 0, 'Could not read your location. Please try again.'),
-});
+}).superRefine(refineQueryCoordinates);
 
 export type ServiceabilityQuery = z.infer<typeof serviceabilityQuerySchema>;

@@ -9,9 +9,8 @@
 
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Location from 'expo-location';
 import type { AuthResponse, ServiceabilityResult, UserDto } from '@shared';
-import { calculateDistance, isValidCoordinates } from '@shared/distance';
+import { isValidCoordinates } from '@shared/distance';
 import { api, readRefreshToken, saveRefreshToken, setAccessToken } from './api';
 import { connectSocket, disconnectSocket } from './socket';
 import { forgetPushRegistration, registerForPush } from './push';
@@ -99,6 +98,14 @@ export interface ChosenLocation {
   latitude: number;
   longitude: number;
   label: string;
+  /**
+   * GPS: a fresh device fix the customer confirmed. ADDRESS: a saved address
+   * they picked. A chosen location is never replaced behind their back — only
+   * by their own next choice.
+   */
+  source: 'GPS' | 'ADDRESS';
+  /** The fix's reported accuracy radius (metres), GPS only. */
+  accuracyM?: number | null;
 }
 
 /**
@@ -115,9 +122,6 @@ interface LocationCachePayload {
   serviceability: ServiceabilityResult;
 }
 
-/** A GPS fix this close to the cached one isn't a real move — just noise. */
-const MEANINGFUL_MOVE_KM = 0.3;
-
 function isValidCachedLocation(value: unknown): value is LocationCachePayload {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
@@ -129,6 +133,7 @@ function isValidCachedLocation(value: unknown): value is LocationCachePayload {
     typeof loc.longitude === 'number' &&
     typeof loc.label === 'string' &&
     isValidCoordinates(loc.latitude, loc.longitude) &&
+    !(loc.latitude === 0 && loc.longitude === 0) &&
     !!svc &&
     typeof svc.serviceable === 'boolean' &&
     typeof svc.distanceKm === 'number'
@@ -164,15 +169,17 @@ interface LocationState {
   /** Reads the persisted location/serviceability, if any valid one exists. */
   hydrate: () => Promise<void>;
   /**
-   * Silent background re-verification. Re-checks serviceability for the
-   * current location (the store's own state can change even if the customer
-   * hasn't moved), and opportunistically checks whether the device has moved
-   * enough to warrant a full re-detect. Never shows a loading state — this is
-   * exactly what a returning customer's Home should refresh itself with,
-   * without them ever seeing "Finding your location…" again.
+   * Silent background re-verification of the CHOSEN location: re-checks
+   * serviceability for the same coordinates (the store's own state — open,
+   * radius — can change while the customer stays put). It never swaps in the
+   * device's current position: that used to replace a saved address or a
+   * confirmed point with a minutes-old, unchecked GPS reading.
    */
   refresh: () => Promise<void>;
 }
+
+/** Each serviceability request's number: only the latest one may set the answer. */
+let latestCheck = 0;
 
 export const useLocation = create<LocationState>((set, get) => ({
   location: null,
@@ -183,16 +190,24 @@ export const useLocation = create<LocationState>((set, get) => ({
   hydrated: false,
 
   async setLocation(location) {
-    set({ location, checking: true, error: null });
+    const check = ++latestCheck;
+    const previous = get().location;
+    const samePoint = !!previous && previous.latitude === location.latitude && previous.longitude === location.longitude;
+    // A different point must never show the previous point's answer meanwhile;
+    // re-checking the same point keeps it while the fresh one loads.
+    set({ location, serviceability: samePoint ? get().serviceability : null, checking: true, error: null });
     try {
       // THE SERVER DECIDES. The app only displays the answer — it never
       // computes serviceability itself and never acts on a cached verdict.
       const result = await api.get<ServiceabilityResult>(
         `/store/serviceability?lat=${location.latitude}&lng=${location.longitude}`,
       );
+      // A slower answer for a location the customer has since changed is stale.
+      if (check !== latestCheck) return;
       set({ serviceability: result, checking: false });
       void persistLocationCache(location, result);
     } catch (error) {
+      if (check !== latestCheck) return;
       set({
         checking: false,
         error: error instanceof Error ? error.message : 'Could not check your location.',
@@ -210,7 +225,10 @@ export const useLocation = create<LocationState>((set, get) => ({
       if (raw) {
         const parsed: unknown = JSON.parse(raw);
         if (isValidCachedLocation(parsed)) {
-          set({ location: parsed.location, serviceability: parsed.serviceability });
+          set({
+            location: { ...parsed.location, source: parsed.location.source === 'ADDRESS' ? 'ADDRESS' : 'GPS' },
+            serviceability: parsed.serviceability,
+          });
         }
       }
     } catch {
@@ -223,55 +241,8 @@ export const useLocation = create<LocationState>((set, get) => ({
   async refresh() {
     const { location } = get();
     if (!location) return;
-
-    // Re-check the SAME coordinates first — cheap, and catches the store's
-    // own state changing (radius, hours, whether it's open) even when the
-    // customer hasn't moved at all.
+    // The same coordinates, re-verified — never replaced (see the interface).
     await get().setLocation(location);
-
-    // Then, only if permission is already granted (never prompts), see
-    // whether the device itself has actually moved. `getLastKnownPosition`
-    // is a cached OS value — near-instant, no GPS radio spin-up — so this
-    // costs nothing noticeable even running every 30s while Home is open.
-    try {
-      const { status } = await Location.getForegroundPermissionsAsync();
-      if (status !== 'granted') return;
-
-      const cached = await Location.getLastKnownPositionAsync({ maxAge: 5 * 60_000 });
-      if (!cached) return;
-
-      const movedKm = calculateDistance(
-        location.latitude,
-        location.longitude,
-        cached.coords.latitude,
-        cached.coords.longitude,
-      );
-      if (movedKm < MEANINGFUL_MOVE_KM) return;
-
-      let label = location.label;
-      try {
-        const [place] = await Location.reverseGeocodeAsync({
-          latitude: cached.coords.latitude,
-          longitude: cached.coords.longitude,
-        });
-        if (place) {
-          label = [place.district ?? place.subregion, place.city ?? place.region, place.postalCode]
-            .filter(Boolean)
-            .join(', ');
-        }
-      } catch {
-        // Reverse geocoding is cosmetic; coordinates are what decide.
-      }
-
-      await get().setLocation({
-        latitude: cached.coords.latitude,
-        longitude: cached.coords.longitude,
-        label,
-      });
-    } catch {
-      // Best-effort movement check — the same-coordinates re-verify above
-      // already ran, so silently skipping this half is safe.
-    }
   },
 }));
 

@@ -32,6 +32,8 @@ import {
   type CreateSellerRequest,
   type SellerLifecycleStatus,
 } from '@shared';
+import { isValidPincode } from '@shared/address';
+import { COORDINATE_PROBLEM_MESSAGE, coordinateProblem } from '@shared/distance';
 import {
   LIFECYCLE_FILTERS,
   SELLER_TYPES,
@@ -603,9 +605,12 @@ interface CreateForm {
   name: string;
   sellerType: string;
   addressLine: string;
+  locality: string;
   city: string;
+  district: string;
   state: string;
   pincode: string;
+  landmark: string;
   latitude: string;
   longitude: string;
   phone: string;
@@ -618,9 +623,12 @@ const EMPTY_FORM: CreateForm = {
   name: '',
   sellerType: '',
   addressLine: '',
+  locality: '',
   city: '',
+  district: '',
   state: '',
   pincode: '',
+  landmark: '',
   latitude: '',
   longitude: '',
   phone: '',
@@ -642,19 +650,24 @@ function validateCreate(form: CreateForm): { body?: CreateSellerRequest; errors:
 
   const name = text('name', 'Seller name', 2, 120);
   if (!SELLER_TYPES.includes(form.sellerType as SellerType)) errors.sellerType = 'Select a seller type.';
-  const addressLine = text('addressLine', 'Address', 2, 300);
-  const city = text('city', 'City', 2, 80);
+  const addressLine = text('addressLine', 'Shop / building and street', 2, 300);
+  const locality = form.locality.trim();
+  if (locality.length > 160) errors.locality = 'Locality must be at most 160 characters.';
+  const city = text('city', 'Village / City / Town', 2, 80);
+  const district = text('district', 'District', 2, 80);
   const state = text('state', 'State', 2, 80);
+  const landmark = form.landmark.trim();
+  if (landmark.length > 160) errors.landmark = 'Landmark must be at most 160 characters.';
   const pincode = form.pincode.trim();
-  if (!/^\d{6}$/.test(pincode)) errors.pincode = 'Pincode must be 6 digits.';
+  if (!isValidPincode(pincode)) errors.pincode = 'Enter a valid 6-digit PIN code.';
 
   const latitude = Number(form.latitude);
   const longitude = Number(form.longitude);
-  if (form.latitude.trim() === '' || !Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
-    errors.latitude = 'Latitude must be between -90 and 90.';
-  }
-  if (form.longitude.trim() === '' || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
-    errors.longitude = 'Longitude must be between -180 and 180.';
+  // The shared check: valid, not (0, 0), not swapped, in India.
+  const pointProblem =
+    form.latitude.trim() && form.longitude.trim() ? coordinateProblem(latitude, longitude, { requireIndia: true }) : 'MISSING';
+  if (pointProblem) {
+    errors.latitude = pointProblem === 'MISSING' ? 'Enter the store point (latitude and longitude).' : COORDINATE_PROBLEM_MESSAGE[pointProblem];
   }
 
   const phone = form.phone.trim();
@@ -681,9 +694,12 @@ function validateCreate(form: CreateForm): { body?: CreateSellerRequest; errors:
       name,
       sellerType: form.sellerType as SellerType,
       addressLine,
+      locality: locality || null,
       city,
+      district,
       state,
       pincode,
+      landmark: landmark || null,
       latitude,
       longitude,
       ...(phone ? { phone } : {}),
@@ -771,20 +787,31 @@ function CreateSellerModal({ onClose, onCreated }: { onClose: () => void; onCrea
           </Field>
         </div>
 
-        <Field label="Address" required>
+        <Field label="Shop / building and street" required>
           {input('addressLine')}
         </Field>
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Field label="City" required>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Locality / mohalla / colony" hint="Optional">
+            {input('locality')}
+          </Field>
+          <Field label="Village / City / Town" required>
             {input('city')}
+          </Field>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-3">
+          <Field label="District" required>
+            {input('district')}
           </Field>
           <Field label="State" required>
             {input('state')}
           </Field>
-          <Field label="Pincode" required>
+          <Field label="PIN code" required>
             {input('pincode', { inputMode: 'numeric', placeholder: '6 digits' })}
           </Field>
         </div>
+        <Field label="Landmark" hint="Optional">
+          {input('landmark')}
+        </Field>
         <div className="grid gap-4 sm:grid-cols-3">
           <Field label="Latitude" required>
             {input('latitude', { inputMode: 'decimal', placeholder: 'e.g. 27.6094' })}

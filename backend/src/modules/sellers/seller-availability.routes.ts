@@ -10,6 +10,7 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { Permission } from '../../shared';
+import { isValidPincode } from '../../shared/phone';
 import { asyncHandler, ok } from '../../common/response';
 import { validate } from '../../middleware/validate';
 import { requirePermission, requireUser } from '../../middleware/auth';
@@ -109,12 +110,16 @@ sellerAvailabilityRouter.delete(
  */
 const locationSchema = z
   .object({
-    latitude: z.number().min(-90).max(90),
-    longitude: z.number().min(-180).max(180),
+    // Validated by the service (shared coordinateProblem: range, (0, 0), swapped, India).
+    latitude: z.number(),
+    longitude: z.number(),
     addressLine: z.string().trim().min(2).max(300).optional(),
-    city: z.string().trim().min(2).max(80).optional(),
+    locality: z.string().trim().max(160).nullable().optional(),
+    city: z.string().trim().min(2, 'Enter the village, city or town').max(80).optional(),
+    district: z.string().trim().min(2, 'Enter the district').max(80).nullable().optional(),
     state: z.string().trim().min(2).max(80).optional(),
-    pincode: z.string().trim().regex(/^\d{6}$/, 'Pincode must be 6 digits.').optional(),
+    pincode: z.string().trim().refine(isValidPincode, 'Enter a valid 6-digit PIN code').optional(),
+    landmark: z.string().trim().max(160).nullable().optional(),
     phone: z.string().trim().min(10).max(15).optional(),
   })
   .strict();

@@ -19,6 +19,7 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { Permission } from '../../shared';
+import { refineQueryCoordinates } from '../../common/coordinates';
 import { asyncHandler, created, ok } from '../../common/response';
 import { validate, validatedQuery } from '../../middleware/validate';
 import { requirePermission, requireUser } from '../../middleware/auth';
@@ -40,7 +41,8 @@ restaurantRouter.get(
         lat: z.coerce.number().min(-90).max(90).optional(),
         lng: z.coerce.number().min(-180).max(180).optional(),
       })
-      .refine((q) => (q.lat === undefined) === (q.lng === undefined), { message: 'Send both lat and lng, or neither.' }),
+      .refine((q) => (q.lat === undefined) === (q.lng === undefined), { message: 'Send both lat and lng, or neither.' })
+      .superRefine(refineQueryCoordinates),
   }),
   asyncHandler(async (req: Request, res: Response) => {
     const { lat, lng } = validatedQuery<{ lat?: number; lng?: number }>(req);

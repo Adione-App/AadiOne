@@ -54,6 +54,7 @@ import { formatPaise } from "@shared/money";
 import { colors, radius, shadow, spacing } from "@shared/theme";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { addressPrimaryLine } from "@shared/text";
+import { formatAddressOneLine } from "@shared/address";
 
 import { api, ApiRequestError, resolveImageUrl } from "@/lib/api";
 import { clearCartAfterOrder, keys, useCartMutations, useMyCoupons } from "@/lib/queries";
@@ -154,7 +155,7 @@ export default function CartScreen({
   const tabBarClearance = useTabBarClearance();
   const queryClient = useQueryClient();
 
-  const { serviceability } = useLocation();
+  const { serviceability, selectedAddressId, selectAddress, setLocation } = useLocation();
 
   // The ONE cart source this screen reads — same optimistic, instantly-
   // updating data the product card / cart badge already read through this
@@ -254,16 +255,29 @@ export default function CartScreen({
     queryFn: () => api.get<AddressDto[]>("/addresses"),
   });
 
-  /** Default serviceable address, otherwise the first serviceable one. */
+  /**
+   * The address the customer CHOSE (Select Location) is the one checkout
+   * quotes and orders to — it used to be ignored in favour of the default
+   * address, so the order could go somewhere other than what Home showed.
+   * Without a choice: the default serviceable address, else the first
+   * serviceable one. A pick made here in the cart stays until the customer
+   * chooses again; a deleted address is replaced.
+   */
   useEffect(() => {
-    if (addressId || !addresses.data) return;
-
-    const preferred =
-      addresses.data.find((item) => item.isDefault && item.isServiceable) ??
-      addresses.data.find((item) => item.isServiceable);
-
-    if (preferred) setAddressId(preferred.id);
-  }, [addresses.data, addressId]);
+    if (!addresses.data) return;
+    const chosen = selectedAddressId ? addresses.data.find((item) => item.id === selectedAddressId) : undefined;
+    if (chosen) {
+      setAddressId(chosen.id);
+      return;
+    }
+    setAddressId((current) => {
+      if (current && addresses.data.some((item) => item.id === current)) return current;
+      const preferred =
+        addresses.data.find((item) => item.isDefault && item.isServiceable) ??
+        addresses.data.find((item) => item.isServiceable);
+      return preferred?.id ?? null;
+    });
+  }, [addresses.data, selectedAddressId]);
 
   /**
    * `/checkout/quote` prices the SERVER's cart, so the quote is keyed on what
@@ -786,6 +800,17 @@ export default function CartScreen({
         onSelect={(id) => {
           setAddressId(id);
           setAddressPickerOpen(false);
+          // Home, serviceability and checkout all follow the same chosen address.
+          const picked = addresses.data?.find((item) => item.id === id);
+          if (picked) {
+            selectAddress(picked.id);
+            void setLocation({
+              latitude: picked.latitude,
+              longitude: picked.longitude,
+              label: [addressPrimaryLine(picked), picked.city, picked.pincode].filter(Boolean).join(", "),
+              source: "ADDRESS",
+            });
+          }
         }}
         onAdd={() => {
           setAddressPickerOpen(false);
@@ -1087,7 +1112,7 @@ function AddressPickerModal({
                       {item.mobile}
                     </AppText>
                     <AppText variant="caption" color={colors.textSecondary} numberOfLines={1}>
-                      {addressPrimaryLine(item)}, {item.city} {item.pincode}
+                      {formatAddressOneLine(item)}
                     </AppText>
                     {disabled && (
                       <AppText variant="caption" color={colors.danger}>

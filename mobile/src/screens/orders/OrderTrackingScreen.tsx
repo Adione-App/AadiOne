@@ -36,7 +36,7 @@ import { OrderStatus, TERMINAL_ORDER_STATUSES } from "@shared";
 
 import { formatPaise } from "@shared/money";
 import { formatDateTimeInZone } from "@shared/datetime";
-import { formatAddressLine } from "@shared/text";
+import { formatAddressOneLine } from "@shared/address";
 
 import { colors, radius, spacing } from "@shared/theme";
 
@@ -827,7 +827,14 @@ export default function OrderTrackingScreen({
               color={colors.textSecondary}
               style={styles.addressText}
             >
-              {formatAddressLine(order.deliveryAddress)}
+              {/* The snapshot line already carries house / street / locality and "Near landmark". */}
+              {formatAddressOneLine({
+                area: order.deliveryAddress.area,
+                city: order.deliveryAddress.city,
+                district: order.deliveryAddress.district,
+                state: order.deliveryAddress.state,
+                pincode: order.deliveryAddress.pincode,
+              })}
             </AppText>
           </View>
         </View>

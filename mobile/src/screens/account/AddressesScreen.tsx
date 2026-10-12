@@ -12,6 +12,7 @@ import {
 } from "lucide-react-native";
 import type { AddressDto, PublicConfig } from "@shared";
 import { formatIndianMobile } from "@shared/phone";
+import { formatAddressOneLine } from "@shared/address";
 import { colors, radius, shadow, spacing } from "@shared/theme";
 import { api } from "@/lib/api";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
@@ -182,14 +183,15 @@ function AddressCard({
 }) {
   const TypeIcon = TYPE_ICON[address.label as keyof typeof TYPE_ICON] ?? MapPin;
 
-  // One compact line instead of five — house/street/area, landmark, city/state/pincode.
-  const fullAddress = [
-    [address.houseNo, address.street, address.area].filter(Boolean).join(", "),
-    address.landmark ? `Near ${address.landmark}` : null,
-    [address.city, address.state, address.pincode].filter(Boolean).join(" - "),
-  ]
-    .filter(Boolean)
-    .join(", ");
+  // One compact line: house / street / locality, landmark, village-city, district, state PIN.
+  const fullAddress = formatAddressOneLine(address);
+  // Never present a point as exact when it is not.
+  const pointNote =
+    address.locationSource === "GEOCODED"
+      ? "Approximate location (from the address) — edit to set the exact spot"
+      : address.locationSource === null
+        ? "Location not confirmed — edit the address to confirm it"
+        : null;
 
   return (
     <View style={[styles.card, menuOpen && styles.cardRaised]}>
@@ -256,6 +258,12 @@ function AddressCard({
       >
         {fullAddress}
       </AppText>
+
+      {pointNote && (
+        <AppText variant="caption" color={colors.textSecondary}>
+          {pointNote}
+        </AppText>
+      )}
 
       <AppText variant="caption" color={colors.textSecondary} style={styles.mobile}>
         {formatIndianMobile(address.mobile)}

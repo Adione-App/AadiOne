@@ -559,10 +559,15 @@ model Address {
   mobile   String  @db.VarChar(15)
   houseNo  String? @map("house_no") @db.VarChar(80)
   street   String? @db.VarChar(160)
-  /// Village / area — mandatory, because in this market it is often the only
-  /// part of the address that exists.
+  /// Locality / mohalla / colony — mandatory, because in this market it is
+  /// often the only part of the address that exists.
   area     String  @db.VarChar(160)
+  /// Village / city / town (one field: rural addresses have a village, urban
+  /// ones a city — never both required).
   city     String  @db.VarChar(80)
+  /// Revenue district — its own field, never merged with the locality or
+  /// village. NULL on addresses saved before it existed.
+  district String? @db.VarChar(80)
   state    String  @db.VarChar(80)
   pincode  String  @db.VarChar(6)
   /// First-class field: the rider navigates by landmark, not by street number.
@@ -570,6 +575,13 @@ model Address {
 
   latitude  Float
   longitude Float
+  /// Where the coordinates came from: GPS (device fix at the address),
+  /// MAP_PIN (pin placed / confirmed on a map) or GEOCODED (resolved from the
+  /// typed address — approximate). NULL = saved before this was recorded:
+  /// the point's origin is unknown, never assumed exact.
+  locationSource String? @map("location_source") @db.VarChar(16)
+  /// The device's reported accuracy radius (metres) for a GPS fix.
+  locationAccuracyM Float? @map("location_accuracy_m")
 
   isDefault Boolean @default(false) @map("is_default")
 
@@ -609,10 +621,17 @@ model Seller {
   /// state) rather than the schema special-casing "the" store by id.
   isPlatformOwned Boolean    @default(false) @map("is_platform_owned")
 
+  /// Shop / building number and street / road.
   addressLine String  @map("address_line") @db.VarChar(300)
+  /// Locality / mohalla / colony / market.
+  locality    String? @db.VarChar(160)
+  /// Village / city / town.
   city        String  @db.VarChar(80)
+  /// Revenue district — separate from the locality and the village / city.
+  district    String? @db.VarChar(80)
   state       String  @db.VarChar(80)
   pincode     String  @db.VarChar(6)
+  landmark    String? @db.VarChar(160)
   latitude    Float
   longitude   Float
   phone       String? @db.VarChar(15)
@@ -1521,6 +1540,7 @@ model Order {
   deliveryAddressLine String  @map("delivery_address_line") @db.VarChar(500)
   deliveryLandmark    String? @map("delivery_landmark") @db.VarChar(160)
   deliveryCity        String  @map("delivery_city") @db.VarChar(80)
+  deliveryDistrict    String? @map("delivery_district") @db.VarChar(80)
   deliveryState       String  @map("delivery_state") @db.VarChar(80)
   deliveryPincode     String  @map("delivery_pincode") @db.VarChar(6)
   deliveryLatitude    Float   @map("delivery_latitude")

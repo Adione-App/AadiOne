@@ -8,6 +8,7 @@
 
 import type { Address } from '@prisma/client';
 import { ConfigKey, ErrorCode, type AddressDto } from '../../shared';
+import { LOCATION_SOURCES, type LocationSource } from '../../shared/location';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import * as configService from '../configuration/configuration.service';
@@ -23,11 +24,17 @@ export function toAddressDto(address: Address): AddressDto {
     street: address.street,
     area: address.area,
     city: address.city,
+    district: address.district,
     state: address.state,
     pincode: address.pincode,
     landmark: address.landmark,
     latitude: address.latitude,
     longitude: address.longitude,
+    // Only a recorded, known source; anything else reads as "not recorded".
+    locationSource: (LOCATION_SOURCES as readonly string[]).includes(address.locationSource ?? '')
+      ? (address.locationSource as LocationSource)
+      : null,
+    locationAccuracyM: address.locationAccuracyM,
     isDefault: address.isDefault,
     isServiceable: address.isServiceable,
     distanceKm: address.distanceKm,
@@ -43,11 +50,14 @@ export interface UpsertAddressInput {
   street?: string | null;
   area: string;
   city: string;
+  district?: string | null;
   state: string;
   pincode: string;
   landmark?: string | null;
   latitude: number;
   longitude: number;
+  locationSource?: LocationSource | null;
+  locationAccuracyM?: number | null;
   isDefault?: boolean;
 }
 
@@ -128,11 +138,15 @@ export async function createAddress(
         street: input.street ?? null,
         area: input.area,
         city: input.city,
+        district: input.district ?? null,
         state: input.state,
         pincode: input.pincode,
         landmark: input.landmark ?? null,
         latitude: input.latitude,
         longitude: input.longitude,
+        locationSource: input.locationSource ?? null,
+        // An accuracy only means something for a device fix.
+        locationAccuracyM: input.locationSource === 'GPS' ? (input.locationAccuracyM ?? null) : null,
         isDefault: shouldBeDefault,
         isServiceable: serviceability.isServiceable,
         distanceKm: serviceability.distanceKm,
@@ -152,11 +166,21 @@ export async function updateAddress(
 
   const latitude = input.latitude ?? existing.latitude;
   const longitude = input.longitude ?? existing.longitude;
+  const pinMoved = latitude !== existing.latitude || longitude !== existing.longitude;
+  // A moved point carries its new origin (unrecorded if the client did not say);
+  // an unmoved point keeps its own unless the client confirms a new one.
+  const locationSource = pinMoved || input.locationSource !== undefined ? (input.locationSource ?? null) : existing.locationSource;
+  const locationAccuracyM =
+    locationSource === 'GPS'
+      ? pinMoved || input.locationAccuracyM !== undefined
+        ? (input.locationAccuracyM ?? null)
+        : existing.locationAccuracyM
+      : null;
 
   // Recompute whenever the pin moved — an edited address that keeps a stale
   // "serviceable" flag is how an undeliverable order gets accepted.
   const serviceability =
-    latitude !== existing.latitude || longitude !== existing.longitude
+    pinMoved
       ? await evaluateServiceability(latitude, longitude)
       : { isServiceable: existing.isServiceable, distanceKm: existing.distanceKm ?? 0 };
 
@@ -178,12 +202,15 @@ export async function updateAddress(
         ...(input.street !== undefined ? { street: input.street } : {}),
         ...(input.area !== undefined ? { area: input.area } : {}),
         ...(input.city !== undefined ? { city: input.city } : {}),
+        ...(input.district !== undefined ? { district: input.district } : {}),
         ...(input.state !== undefined ? { state: input.state } : {}),
         ...(input.pincode !== undefined ? { pincode: input.pincode } : {}),
         ...(input.landmark !== undefined ? { landmark: input.landmark } : {}),
         ...(input.isDefault !== undefined ? { isDefault: input.isDefault } : {}),
         latitude,
         longitude,
+        locationSource,
+        locationAccuracyM,
         isServiceable: serviceability.isServiceable,
         distanceKm: serviceability.distanceKm,
       },

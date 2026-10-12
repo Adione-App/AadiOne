@@ -7,11 +7,12 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import * as Location from "expo-location";
 import { useQuery } from "@tanstack/react-query";
 import type { AddressDto } from "@shared";
 import { colors, radius, spacing } from "@shared/theme";
-import { addressPrimaryLine } from "@shared/text";
+import { formatAddressLines } from "@shared/address";
+import { DETECT_MESSAGE, describeAccuracy, suggestionLabel, type DetectResult } from "@shared/location";
+import { detectDeviceLocation, suggestAddressFor } from "@/lib/deviceLocation";
 import { api } from "@/lib/api";
 import { useLocation } from "@/lib/store";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
@@ -31,70 +32,55 @@ export default function SelectLocationScreen({
     useLocation();
 
   const [detecting, setDetecting] = useState(false);
+  const [detectError, setDetectError] = useState<string | null>(null);
+  /** A fresh fix waiting for the customer to confirm it. */
+  const [pending, setPending] = useState<(Extract<DetectResult, { status: "OK" }> & { label: string }) | null>(null);
 
   const addresses = useQuery({
     queryKey: ["addresses"],
     queryFn: () => api.get<AddressDto[]>("/addresses"),
   });
 
+  /** One fresh fix with its accuracy — shown for confirmation, never applied silently. */
   async function useCurrentLocation(): Promise<void> {
     setDetecting(true);
-
+    setDetectError(null);
+    setPending(null);
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-
-      if (status !== "granted") {
+      const result = await detectDeviceLocation();
+      if (result.status !== "OK") {
+        setDetectError(DETECT_MESSAGE[result.status]);
         return;
       }
-
-      const position = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-
-      let label = "Current location";
-
-      try {
-        const [place] = await Location.reverseGeocodeAsync({
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-        });
-
-        if (place) {
-          label = [
-            place.district ?? place.subregion,
-            place.city ?? place.region,
-            place.postalCode,
-          ]
-            .filter(Boolean)
-            .join(", ");
-        }
-      } catch {
-        // Coordinates are enough for serviceability.
-      }
-
-      selectAddress(null);
-
-      await setLocation({
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-        label,
-      });
-
-      onBack();
+      const suggestion = await suggestAddressFor(result.latitude, result.longitude);
+      setPending({ ...result, label: suggestionLabel(suggestion) });
     } finally {
       setDetecting(false);
     }
   }
 
+  async function confirmCurrentLocation(): Promise<void> {
+    if (!pending) return;
+    selectAddress(null);
+    await setLocation({
+      latitude: pending.latitude,
+      longitude: pending.longitude,
+      label: pending.label,
+      source: "GPS",
+      accuracyM: pending.accuracyM,
+    });
+    onBack();
+  }
+
   function selectSavedAddress(address: AddressDto): void {
     selectAddress(address.id);
+    const lines = formatAddressLines(address);
 
     void setLocation({
       latitude: address.latitude,
       longitude: address.longitude,
-      label: [addressPrimaryLine(address), address.city, address.pincode]
-        .filter(Boolean)
-        .join(", "),
+      label: [lines.line1, address.city, address.pincode].filter(Boolean).join(", "),
+      source: "ADDRESS",
     });
 
     onBack();
@@ -162,6 +148,28 @@ export default function SelectLocationScreen({
             ›
           </AppText>
         </Pressable>
+
+        {detectError && (
+          <AppText variant="caption" color={colors.danger} style={{ marginTop: spacing.sm }}>
+            {detectError}
+          </AppText>
+        )}
+
+        {pending && (
+          <Card style={{ marginTop: spacing.md }}>
+            <AppText variant="bodyStrong">{pending.label}</AppText>
+            <AppText variant="caption" color={colors.textSecondary} style={{ marginTop: spacing.xs }}>
+              {describeAccuracy(pending.accuracyM)} · {pending.latitude.toFixed(5)}, {pending.longitude.toFixed(5)}
+            </AppText>
+            {pending.quality === "POOR" && (
+              <AppText variant="caption" color={colors.danger} style={{ marginTop: spacing.xs }}>
+                Only an approximate location was found. If it is not right, try again outdoors or pick a saved address.
+              </AppText>
+            )}
+            <Button label="Deliver here" onPress={() => void confirmCurrentLocation()} disabled={checking} style={{ marginTop: spacing.md }} />
+            <Button label="Cancel" variant="ghost" onPress={() => setPending(null)} style={{ marginTop: spacing.xs }} />
+          </Card>
+        )}
 
         {/* Saved addresses */}
         {list.length > 0 && (

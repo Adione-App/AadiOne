@@ -1,40 +1,38 @@
 /**
- * Add / Edit Address (Task 14.13), matching the approved mockup.
+ * Add / Edit Address (Task 14.13) — an Indian address in its own fields
+ * (@shared/address): house / building, street, locality, village / city /
+ * town, district, state, PIN, landmark — and, SEPARATELY, the point that
+ * every distance is measured from.
  *
- * ON THE PINCODE "CHECK" BUTTON — worth being precise about, because it is
- * easy to build something that looks right and lies:
+ * WHERE THE POINT COMES FROM — and what it is honestly worth:
  *
- * Serviceability is decided by DISTANCE FROM THE STORE, using coordinates.
- * An Indian PIN code routinely spans 10+ km, so a pincode alone cannot answer
- * "do we deliver here". Check therefore validates the pincode's format and
- * geocodes the address text the customer just typed — via the device's own
- * forward geocoder — to get coordinates for THIS address, then runs the real
- * serviceability call against those. If no location has been detected it
- * says so rather than inventing an answer — and the server re-checks at
- * checkout regardless, so this is guidance, never permission.
+ *   GPS        "Use my current location (I'm at this address)": one fresh
+ *              fix with its accuracy (@/lib/deviceLocation). The OS
+ *              geocoder's reading of that point is offered as SUGGESTED
+ *              address fields — applied only when the customer says so.
+ *   GEOCODED   "Find location from address": the device's forward geocoder
+ *              on the typed address. That is the centre of whatever area the
+ *              text names — saved and shown as APPROXIMATE, never as the door.
  *
- * WHY GEOCODE THE TYPED ADDRESS RATHER THAN REUSE THE APP'S CURRENT GPS FIX:
- * the customer's live location and the address they are typing are often two
- * different places — a work address filled in from home, an address saved
- * for someone else, or GPS drifting after they've walked around a store.
- * Silently substituting "wherever the phone currently is" for "wherever this
- * address actually is" produced a wrong, sometimes wildly wrong, distance —
- * and when no GPS fix existed at all, it defaulted to (0, 0), off the coast
- * of Africa. Resolving coordinates from the address text itself is the fix;
- * the current GPS fix is now only a last-resort fallback, never a default.
+ * Nothing else is ever used: not the app's current location, not a city
+ * centre, not (0, 0). (Falling back to the app's current GPS position — a
+ * different place when the address is someone else's — was the old bug.)
+ * A PIN code covers many villages; it validates the address, it never
+ * places it. The server re-checks serviceability at checkout regardless.
  */
 
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as Location from 'expo-location';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AddressDto, ServiceabilityResult } from '@shared';
-import { isValidPincode, normalizeIndianMobile } from '@shared/phone';
-import { formatDistance } from '@shared/distance';
+import { normalizeIndianMobile } from '@shared/phone';
+import { ADDRESS_FIELD_LABEL, INDIAN_STATES, isValidPincode, missingAddressFields } from '@shared/address';
+import { coordinateProblem, formatStraightLineDistance } from '@shared/distance';
+import { DETECT_MESSAGE, describeAccuracy, type AddressSuggestion, type LocationSource } from '@shared/location';
 import { colors, radius, spacing } from '@shared/theme';
 import { api, ApiRequestError } from '@/lib/api';
-import { useLocation } from '@/lib/store';
+import { detectDeviceLocation, geocodeAddressText, suggestAddressFor } from '@/lib/deviceLocation';
 import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, Button, Input, NoticeStrip, Screen } from '@/components/ui';
 
@@ -42,18 +40,29 @@ import { AppText, Button, Input, NoticeStrip, Screen } from '@/components/ui';
 const ADDRESS_TYPES = ['Home', 'Work', 'Other'] as const;
 type AddressType = (typeof ADDRESS_TYPES)[number];
 
-const INDIAN_STATES = [
-  'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh', 'Delhi', 'Goa',
-  'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka', 'Kerala',
-  'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha',
-  'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh',
-  'Uttarakhand', 'West Bengal',
-];
-
-interface CheckResult {
-  ok: boolean;
-  message: string;
+/** The point this address is measured from. `source` null = saved before origins were recorded. */
+interface Point {
+  latitude: number;
+  longitude: number;
+  source: LocationSource | null;
+  accuracyM: number | null;
 }
+
+type Fields = {
+  houseNo: string;
+  street: string;
+  area: string;
+  city: string;
+  district: string;
+  state: string;
+  pincode: string;
+  landmark: string;
+};
+
+const EMPTY_FIELDS: Fields = { houseNo: '', street: '', area: '', city: '', district: '', state: '', pincode: '', landmark: '' };
+
+/** Fields that say WHERE the address is (a change makes an approximate point stale). */
+const PLACE_FIELDS: (keyof Fields)[] = ['houseNo', 'street', 'area', 'city', 'district', 'state', 'pincode'];
 
 export default function AddressFormScreen({
   addressId,
@@ -65,7 +74,6 @@ export default function AddressFormScreen({
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
   const queryClient = useQueryClient();
-  const location = useLocation((state) => state.location);
   const isEditing = addressId !== undefined;
 
   // Reuses the same cached list AddressesScreen already fetched — editing
@@ -76,184 +84,197 @@ export default function AddressFormScreen({
     queryFn: () => api.get<AddressDto[]>('/addresses'),
     enabled: isEditing,
   });
-  const existing = addressId
-    ? addresses.data?.find((item) => item.id === addressId)
-    : undefined;
+  const existing = addressId ? addresses.data?.find((item) => item.id === addressId) : undefined;
 
   const [fullName, setFullName] = useState('');
   const [mobile, setMobile] = useState('');
-  const [pincode, setPincode] = useState('');
-  const [addressLine1, setAddressLine1] = useState('');
-  const [addressLine2, setAddressLine2] = useState('');
-  const [city, setCity] = useState('');
-  const [state, setState] = useState('');
+  const [fields, setFields] = useState<Fields>(EMPTY_FIELDS);
   const [addressType, setAddressType] = useState<AddressType>('Home');
   const [isDefault, setIsDefault] = useState(true);
-
   const [statePickerOpen, setStatePickerOpen] = useState(false);
-  const [checking, setChecking] = useState(false);
-  const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
-  const [addressCoords, setAddressCoords] = useState<{
-    latitude: number;
-    longitude: number;
-  } | null>(null);
+
+  const [point, setPoint] = useState<Point | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [locationNote, setLocationNote] = useState<{ ok: boolean; message: string } | null>(null);
+  /** Address fields read from the GPS point, waiting for the customer to apply them. */
+  const [suggestion, setSuggestion] = useState<AddressSuggestion | null>(null);
+  const [delivery, setDelivery] = useState<{ ok: boolean; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [seeded, setSeeded] = useState(false);
 
-  // Prefill once the address to edit has loaded, without clobbering typing
-  // afterwards — mirrors the pattern used by the admin Store location card.
+  // Prefill once the address to edit has loaded, without clobbering typing afterwards.
   useEffect(() => {
     if (!existing || seeded) return;
-
-    const line1 = existing.houseNo ?? existing.area;
-    const line2 = existing.landmark ?? (existing.area !== line1 ? existing.area : '');
-
     setFullName(existing.fullName);
     setMobile(existing.mobile);
-    setPincode(existing.pincode);
-    setAddressLine1(line1);
-    setAddressLine2(line2);
-    setCity(existing.city);
-    setState(existing.state);
-    setAddressType(
-      ADDRESS_TYPES.includes(existing.label as AddressType)
-        ? (existing.label as AddressType)
-        : 'Other',
-    );
+    setFields({
+      houseNo: existing.houseNo ?? '',
+      street: existing.street ?? '',
+      area: existing.area,
+      city: existing.city,
+      district: existing.district ?? '',
+      state: existing.state,
+      pincode: existing.pincode,
+      // Older addresses stored "line 2" as both locality and landmark; keep it once.
+      landmark: existing.landmark && existing.landmark !== existing.area ? existing.landmark : '',
+    });
+    setAddressType(ADDRESS_TYPES.includes(existing.label as AddressType) ? (existing.label as AddressType) : 'Other');
     setIsDefault(existing.isDefault);
-    setAddressCoords({ latitude: existing.latitude, longitude: existing.longitude });
+    setPoint({
+      latitude: existing.latitude,
+      longitude: existing.longitude,
+      source: existing.locationSource,
+      accuracyM: existing.locationAccuracyM,
+    });
     setSeeded(true);
   }, [existing, seeded]);
 
-  /** The address text changed since the last "Check" — its coordinates are stale. */
-  function clearCheck(): void {
-    setCheckResult(null);
-    setAddressCoords(null);
+  /** Typing changes the address; an APPROXIMATE / unrecorded point for the old text is dropped. */
+  function setField(key: keyof Fields, value: string): void {
+    setFields((current) => ({ ...current, [key]: value }));
+    if (PLACE_FIELDS.includes(key) && point && point.source !== 'GPS') {
+      setPoint(null);
+      setDelivery(null);
+      setLocationNote({ ok: false, message: 'The address changed — set its location again below.' });
+    }
   }
 
-  /**
-   * Resolves coordinates for THIS address from the text the customer has
-   * typed so far, using the device's forward geocoder. Falls back to the
-   * app's last detected GPS fix only when geocoding is unavailable (some
-   * devices ship without a geocoder service) — never to (0, 0).
-   */
-  async function resolveAddressCoordinates(): Promise<{
-    latitude: number;
-    longitude: number;
-  } | null> {
-    const fullAddress = [addressLine1, addressLine2, city, state, pincode, 'India']
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .join(', ');
-
-    if (fullAddress.length > 0) {
-      try {
-        const [geocoded] = await Location.geocodeAsync(fullAddress);
-        if (geocoded) {
-          return { latitude: geocoded.latitude, longitude: geocoded.longitude };
-        }
-      } catch {
-        // No geocoder service on this device, or the address text did not
-        // resolve — fall through to the GPS fallback below.
-      }
-    }
-
-    return location ? { latitude: location.latitude, longitude: location.longitude } : null;
-  }
-
-  async function checkPincode(): Promise<void> {
-    setCheckResult(null);
-
-    if (!isValidPincode(pincode)) {
-      setCheckResult({ ok: false, message: 'Enter a valid 6-digit PIN code.' });
-      return;
-    }
-
-    if (addressLine1.trim().length === 0 || city.trim().length === 0 || !state) {
-      setCheckResult({
-        ok: false,
-        message: 'Fill in the address, city and state above, then check.',
+  // Every new point gets the server's delivery answer for THAT point.
+  useEffect(() => {
+    if (!point) return;
+    let cancelled = false;
+    setDelivery(null);
+    api
+      .get<ServiceabilityResult>(`/store/serviceability?lat=${point.latitude}&lng=${point.longitude}`)
+      .then((result) => {
+        if (cancelled) return;
+        setDelivery(
+          result.serviceable
+            ? { ok: true, message: `We deliver here — about ${formatStraightLineDistance(result.distanceKm)} from the nearest store.` }
+            : { ok: false, message: `We don't deliver here yet: ${formatStraightLineDistance(result.distanceKm)} away; we deliver up to ${result.maxRadiusKm} km.` },
+        );
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setDelivery({ ok: false, message: err instanceof ApiRequestError ? err.message : 'Could not check delivery right now.' });
       });
+    return () => {
+      cancelled = true;
+    };
+  }, [point]);
+
+  /** "I'm at this address": a fresh fix + suggested fields (not applied yet). */
+  async function useCurrentLocation(): Promise<void> {
+    setLocating(true);
+    setLocationNote(null);
+    setSuggestion(null);
+    try {
+      const result = await detectDeviceLocation();
+      if (result.status !== 'OK') {
+        setLocationNote({ ok: false, message: DETECT_MESSAGE[result.status] });
+        return;
+      }
+      setPoint({ latitude: result.latitude, longitude: result.longitude, source: 'GPS', accuracyM: result.accuracyM });
+      const suggested = await suggestAddressFor(result.latitude, result.longitude);
+      setSuggestion(suggested);
+      // Consistency: the point's PIN / district against what was typed.
+      const mismatch = [
+        suggested?.pincode && isValidPincode(fields.pincode) && suggested.pincode !== fields.pincode ? `PIN ${suggested.pincode}` : null,
+        suggested?.district && fields.district.trim() && suggested.district.toLowerCase() !== fields.district.trim().toLowerCase()
+          ? `district ${suggested.district}`
+          : null,
+      ].filter(Boolean);
+      setLocationNote({
+        ok: result.quality !== 'POOR' && mismatch.length === 0,
+        message:
+          `Location set from your phone — ${describeAccuracy(result.accuracyM)}.` +
+          (result.quality === 'POOR' ? ' That is approximate: make sure you are at this address, or try again outdoors.' : '') +
+          (mismatch.length > 0
+            ? ` Your phone places you in ${mismatch.join(' / ')}, which differs from the address entered — check that you are at this address.`
+            : ''),
+      });
+    } finally {
+      setLocating(false);
+    }
+  }
+
+  /** Apply the suggested fields: only into empty ones, or replacing everything — the customer chooses. */
+  function applySuggestion(mode: 'empty' | 'all'): void {
+    if (!suggestion) return;
+    setFields((current) => {
+      const next = { ...current };
+      const put = (key: keyof Fields, value: string | null) => {
+        if (value && (mode === 'all' || !current[key].trim())) next[key] = value;
+      };
+      put('houseNo', suggestion.houseNo);
+      put('street', suggestion.street);
+      put('area', suggestion.area);
+      put('city', suggestion.city);
+      put('district', suggestion.district);
+      put('state', INDIAN_STATES.find((s) => s.toLowerCase() === suggestion.state?.toLowerCase()) ?? suggestion.state);
+      put('pincode', suggestion.pincode);
+      return next;
+    });
+    setSuggestion(null);
+  }
+
+  /** The typed address → its APPROXIMATE point (area centre), or an honest failure. */
+  async function findFromAddress(): Promise<void> {
+    const missing = missingAddressFields(fields);
+    if (missing.length > 0) {
+      setLocationNote({ ok: false, message: `First fill in: ${missing.map((key) => ADDRESS_FIELD_LABEL[key]).join(', ')}.` });
       return;
     }
-
-    setChecking(true);
+    setLocating(true);
+    setLocationNote(null);
+    setSuggestion(null);
     try {
-      const coords = await resolveAddressCoordinates();
-
-      if (!coords) {
-        // Honest rather than optimistic: without coordinates there is nothing
-        // to measure, and claiming "we deliver here" would be a guess.
-        setCheckResult({
+      const text = [fields.houseNo, fields.street, fields.area, fields.city, fields.district, fields.state, fields.pincode, 'India']
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .join(', ');
+      const hit = await geocodeAddressText(text);
+      if (!hit || coordinateProblem(hit.latitude, hit.longitude, { requireIndia: true })) {
+        setLocationNote({
           ok: false,
-          message: 'Turn on location to check delivery for this address.',
+          message:
+            "This address could not be found on the map. Your details are kept — to set the location, use your current location while you are at this address.",
         });
         return;
       }
-
-      setAddressCoords(coords);
-
-      const result = await api.get<ServiceabilityResult>(
-        `/store/serviceability?lat=${coords.latitude}&lng=${coords.longitude}`,
-      );
-      setCheckResult(
-        result.serviceable
-          ? {
-              ok: true,
-              message: `We deliver here — about ${formatDistance(result.distanceKm)} from our store.`,
-            }
-          : {
-              ok: false,
-              message: `Sorry, this looks ${formatDistance(result.distanceKm)} away. We deliver up to ${result.maxRadiusKm} km.`,
-            },
-      );
-    } catch (err) {
-      setCheckResult({
-        ok: false,
-        message: err instanceof ApiRequestError ? err.message : 'Could not check right now.',
+      setPoint({ latitude: hit.latitude, longitude: hit.longitude, source: 'GEOCODED', accuracyM: null });
+      setLocationNote({
+        ok: true,
+        message:
+          'Approximate location found from the address (the centre of the area, not your door). For exact delivery, use your current location while you are at this address.',
       });
     } finally {
-      setChecking(false);
+      setLocating(false);
     }
   }
 
   const save = useMutation({
     mutationFn: async () => {
-      // Reuse coordinates from a prior "Check" if the address text hasn't
-      // changed since; otherwise resolve fresh ones for what's on screen now.
-      const coords = addressCoords ?? (await resolveAddressCoordinates());
-
-      if (!coords) {
-        throw new Error(
-          "We couldn't determine this address's location. Tap Check above, or turn on location, and try again.",
-        );
-      }
-
+      if (!point) throw new Error('Set the location of this address first.');
       const body = {
         label: addressType,
         fullName: fullName.trim(),
         mobile,
-        // The mockup's two address lines map onto the API's structured fields:
-        // line 1 is house/building/street, line 2 is area and landmark. `area`
-        // is required server-side because in this market it is often the only
-        // part of an address that exists.
-        houseNo: addressLine1.trim() || null,
-        street: null,
-        area: addressLine2.trim() || addressLine1.trim(),
-        landmark: addressLine2.trim() || null,
-        city: city.trim(),
-        state,
-        pincode,
-        // Coordinates decide serviceability — always tied to the address just
-        // resolved above, never a stale or default value.
-        latitude: coords.latitude,
-        longitude: coords.longitude,
+        houseNo: fields.houseNo.trim() || null,
+        street: fields.street.trim() || null,
+        area: fields.area.trim(),
+        city: fields.city.trim(),
+        district: fields.district.trim(),
+        state: fields.state,
+        pincode: fields.pincode,
+        landmark: fields.landmark.trim() || null,
+        // The point decides serviceability — always the one confirmed above.
+        latitude: point.latitude,
+        longitude: point.longitude,
+        locationSource: point.source,
+        locationAccuracyM: point.source === 'GPS' ? point.accuracyM : null,
         isDefault,
       };
-
-      return isEditing
-        ? api.patch<AddressDto>(`/addresses/${addressId}`, body)
-        : api.post<AddressDto>('/addresses', body);
+      return isEditing ? api.patch<AddressDto>(`/addresses/${addressId}`, body) : api.post<AddressDto>('/addresses', body);
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['addresses'] });
@@ -262,13 +283,18 @@ export default function AddressFormScreen({
     onError: (err: Error) => setError(err.message || 'Could not save the address.'),
   });
 
-  const complete =
-    fullName.trim().length >= 2 &&
-    normalizeIndianMobile(mobile) !== null &&
-    isValidPincode(pincode) &&
-    addressLine1.trim().length > 0 &&
-    city.trim().length > 0 &&
-    state.length > 0;
+  const missing = missingAddressFields(fields, { requireArea: true });
+  const complete = fullName.trim().length >= 2 && normalizeIndianMobile(mobile) !== null && missing.length === 0 && point !== null;
+
+  const pointSummary = !point
+    ? 'Location not set yet.'
+    : point.source === 'GPS'
+      ? `From your phone at this address — ${describeAccuracy(point.accuracyM)}.`
+      : point.source === 'GEOCODED'
+        ? 'Approximate — found from the address text, not the exact door.'
+        : point.source === 'MAP_PIN'
+          ? 'Pin confirmed on the map.'
+          : 'Saved earlier; where it came from was not recorded. Set it again to be sure.';
 
   return (
     <Screen>
@@ -309,86 +335,35 @@ export default function AddressFormScreen({
         </Field>
 
         <Field label="Phone Number">
-          <Input
-            value={mobile}
-            onChangeText={setMobile}
-            placeholder="Enter phone number"
-            keyboardType="phone-pad"
-            maxLength={15}
-          />
+          <Input value={mobile} onChangeText={setMobile} placeholder="Enter phone number" keyboardType="phone-pad" maxLength={15} />
         </Field>
 
-        <Field label="Pincode">
-          <View style={styles.pincodeRow}>
-            <View style={{ flex: 1 }}>
-              <Input
-                value={pincode}
-                onChangeText={(value) => {
-                  setPincode(value.replace(/\D/g, ''));
-                  clearCheck();
-                }}
-                placeholder="Enter pincode"
-                keyboardType="number-pad"
-                maxLength={6}
-              />
-            </View>
-            <Pressable onPress={() => void checkPincode()} disabled={checking} style={styles.check}>
-              <AppText variant="bodyStrong" color={colors.primary}>
-                {checking ? 'Checking…' : 'Check'}
-              </AppText>
-            </Pressable>
-          </View>
-
-          {checkResult && (
-            <AppText
-              variant="caption"
-              color={checkResult.ok ? colors.primary : colors.danger}
-              style={{ marginTop: spacing.xs }}
-            >
-              {checkResult.message}
-            </AppText>
-          )}
+        <Field label="House / building / shop no." hint="Optional">
+          <Input value={fields.houseNo} onChangeText={(v) => setField('houseNo', v)} placeholder="e.g. 12, Shree Niwas" />
         </Field>
 
-        <Field label="Address Line 1">
-          <Input
-            value={addressLine1}
-            onChangeText={(value) => {
-              setAddressLine1(value);
-              clearCheck();
-            }}
-            placeholder="House / Building / Street"
-          />
+        <Field label="Street / road" hint="Optional">
+          <Input value={fields.street} onChangeText={(v) => setField('street', v)} placeholder="e.g. Station Road" />
         </Field>
 
-        <Field label="Address Line 2" hint="Optional">
-          <Input
-            value={addressLine2}
-            onChangeText={(value) => {
-              setAddressLine2(value);
-              clearCheck();
-            }}
-            placeholder="Area, Locality, Landmark"
-          />
+        <Field label="Locality / mohalla / colony">
+          <Input value={fields.area} onChangeText={(v) => setField('area', v)} placeholder="e.g. Shastri Nagar" />
         </Field>
 
-        <Field label="City">
-          <Input
-            value={city}
-            onChangeText={(value) => {
-              setCity(value);
-              clearCheck();
-            }}
-            placeholder="Enter city"
-          />
+        <Field label="Village / City / Town">
+          <Input value={fields.city} onChangeText={(v) => setField('city', v)} placeholder="Your village, or your city / town" />
+        </Field>
+
+        <Field label="District">
+          <Input value={fields.district} onChangeText={(v) => setField('district', v)} placeholder="e.g. Sikar" />
         </Field>
 
         <View style={{ flexDirection: 'row', gap: spacing.md }}>
           <View style={{ flex: 1 }}>
             <Field label="State">
               <Pressable onPress={() => setStatePickerOpen(!statePickerOpen)} style={styles.select}>
-                <AppText variant="body" color={state ? colors.textPrimary : colors.textMuted}>
-                  {state || 'Select state'}
+                <AppText variant="body" color={fields.state ? colors.textPrimary : colors.textMuted}>
+                  {fields.state || 'Select state'}
                 </AppText>
                 <AppText variant="body" color={colors.textSecondary}>
                   ⌄
@@ -396,44 +371,101 @@ export default function AddressFormScreen({
               </Pressable>
             </Field>
           </View>
-
           <View style={{ flex: 1 }}>
-            <Field label="Country">
-              {/* Fixed: the store serves one town, and a country picker would
-                  only offer a choice that cannot be honoured. */}
-              <View style={[styles.select, { backgroundColor: colors.surfaceSunken }]}>
-                <AppText variant="body">India</AppText>
-              </View>
+            <Field label="PIN code">
+              <Input
+                value={fields.pincode}
+                onChangeText={(value) => setField('pincode', value.replace(/\D/g, ''))}
+                placeholder="6 digits"
+                keyboardType="number-pad"
+                maxLength={6}
+              />
             </Field>
           </View>
         </View>
 
         {statePickerOpen && (
-          // A plain View clipped the list at maxHeight with no way to reach the
-          // states below Goa. It has to be a ScrollView, and on Android a
-          // same-axis scroller nested in the form's ScrollView only receives
-          // drag gestures with nestedScrollEnabled set.
-          <ScrollView
-            style={styles.stateList}
-            nestedScrollEnabled
-            keyboardShouldPersistTaps="handled"
-          >
+          // A plain View clipped the list at maxHeight; it has to be a
+          // ScrollView, and on Android a same-axis scroller nested in the
+          // form's ScrollView only receives drags with nestedScrollEnabled.
+          <ScrollView style={styles.stateList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
             {INDIAN_STATES.map((item) => (
               <Pressable
                 key={item}
                 onPress={() => {
-                  setState(item);
-                  clearCheck();
+                  setField('state', item);
                   setStatePickerOpen(false);
                 }}
                 style={styles.stateItem}
               >
-                <AppText variant="body" color={item === state ? colors.primary : colors.textPrimary}>
+                <AppText variant="body" color={item === fields.state ? colors.primary : colors.textPrimary}>
                   {item}
                 </AppText>
               </Pressable>
             ))}
           </ScrollView>
+        )}
+
+        {fields.pincode.length === 6 && !isValidPincode(fields.pincode) && (
+          <AppText variant="caption" color={colors.danger}>
+            Enter a valid 6-digit PIN code.
+          </AppText>
+        )}
+
+        <Field label="Landmark" hint="Optional">
+          <Input value={fields.landmark} onChangeText={(v) => setField('landmark', v)} placeholder="e.g. Near Shiv Mandir" />
+        </Field>
+
+        {/* The point — separate from the text above */}
+        <View style={styles.locationBox}>
+          <AppText variant="bodyStrong">Delivery location</AppText>
+          <AppText variant="caption" color={point?.source === 'GPS' ? colors.primary : colors.textSecondary} style={{ marginTop: spacing.xs }}>
+            {pointSummary}
+          </AppText>
+          <Button
+            label={locating ? 'Finding location…' : "Use my current location (I'm at this address)"}
+            onPress={() => void useCurrentLocation()}
+            disabled={locating}
+            style={{ marginTop: spacing.md }}
+          />
+          <Button
+            label="Find location from the address"
+            variant="secondary"
+            onPress={() => void findFromAddress()}
+            disabled={locating}
+            style={{ marginTop: spacing.sm }}
+          />
+          {locationNote && (
+            <AppText variant="caption" color={locationNote.ok ? colors.primary : colors.danger} style={{ marginTop: spacing.sm }}>
+              {locationNote.message}
+            </AppText>
+          )}
+          {suggestion && (
+            <View style={styles.suggestion}>
+              <AppText variant="bodyStrong">Address at your location</AppText>
+              <AppText variant="caption" color={colors.textSecondary} style={{ marginTop: spacing.xs }}>
+                {[suggestion.houseNo, suggestion.street, suggestion.area, suggestion.city, suggestion.district, suggestion.state, suggestion.pincode]
+                  .filter(Boolean)
+                  .join(', ')}
+              </AppText>
+              <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm, flexWrap: 'wrap' }}>
+                <Button label="Fill empty fields" variant="secondary" onPress={() => applySuggestion('empty')} />
+                <Button label="Replace all" variant="ghost" onPress={() => applySuggestion('all')} />
+                <Button label="Ignore" variant="ghost" onPress={() => setSuggestion(null)} />
+              </View>
+            </View>
+          )}
+          {delivery && (
+            <AppText variant="caption" color={delivery.ok ? colors.primary : colors.danger} style={{ marginTop: spacing.sm }}>
+              {delivery.message}
+            </AppText>
+          )}
+        </View>
+
+        {!complete && (missing.length > 0 || !point) && (
+          <AppText variant="caption" color={colors.textSecondary}>
+            Still needed: {[...missing.map((key) => ADDRESS_FIELD_LABEL[key]), ...(point ? [] : ['Delivery location'])].join(', ')}
+          </AppText>
         )}
 
         <Field label="Address Type">
@@ -521,11 +553,18 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   back: { width: 40, height: 40, justifyContent: 'center' },
-  pincodeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  check: {
-    minHeight: 48,
-    paddingHorizontal: spacing.base,
-    justifyContent: 'center',
+  locationBox: {
+    padding: spacing.base,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surface,
+  },
+  suggestion: {
+    marginTop: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surfaceMuted,
   },
   select: {
     minHeight: 48,

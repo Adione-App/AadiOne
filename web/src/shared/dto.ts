@@ -495,10 +495,15 @@ export interface AdminSellerDto extends SellerDto {
 export interface CreateSellerRequest {
   name: string;
   sellerType: SellerType;
+  /** Shop / building and street. */
   addressLine: string;
+  locality?: string | null;
+  /** Village / city / town. */
   city: string;
+  district?: string | null;
   state: string;
   pincode: string;
+  landmark?: string | null;
   latitude: number;
   longitude: number;
   phone?: string | null;
@@ -603,9 +608,12 @@ export interface AdminSellerDetailDto {
   name: string;
   sellerType: SellerType;
   addressLine: string;
+  locality: string | null;
   city: string;
+  district: string | null;
   state: string;
   pincode: string;
+  landmark: string | null;
   latitude: number;
   longitude: number;
   phone: string | null;
@@ -1303,23 +1311,38 @@ export interface AddressDto {
   mobile: string;
   houseNo: string | null;
   street: string | null;
+  /** Locality / mohalla / colony. */
   area: string;
+  /** Village / city / town. */
   city: string;
+  /** NULL on addresses saved before districts were collected. */
+  district: string | null;
   state: string;
   pincode: string;
   landmark: string | null;
   latitude: number;
   longitude: number;
+  /** GPS / MAP_PIN / GEOCODED (approximate); null = origin not recorded (older address). */
+  locationSource: 'GPS' | 'MAP_PIN' | 'GEOCODED' | null;
+  /** Reported accuracy radius of a GPS fix, metres. */
+  locationAccuracyM: number | null;
   isDefault: boolean;
   isServiceable: boolean;
+  /** Straight-line km to the nearest serving store (not a road distance). */
   distanceKm: number | null;
   createdAt: string;
 }
 
 export type UpsertAddressRequest = Omit<
   AddressDto,
-  'id' | 'isServiceable' | 'distanceKm' | 'createdAt'
-> & { isDefault?: boolean };
+  'id' | 'isServiceable' | 'distanceKm' | 'createdAt' | 'district' | 'locationSource' | 'locationAccuracyM'
+> & {
+  isDefault?: boolean;
+  /** Optional for older app versions; the current forms always send it. */
+  district?: string | null;
+  locationSource?: 'GPS' | 'MAP_PIN' | 'GEOCODED' | null;
+  locationAccuracyM?: number | null;
+};
 
 /* -------------------------------------------------------------------------- */
 /* Checkout & orders                                                          */

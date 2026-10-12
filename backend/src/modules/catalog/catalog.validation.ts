@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { PAGINATION_DEFAULT_LIMIT, PAGINATION_MAX_LIMIT } from '../../shared';
+import { refineQueryCoordinates } from '../../common/coordinates';
 
 const uuid = z.string().uuid('Invalid id');
 
@@ -57,7 +58,8 @@ export const listStoresQuerySchema = z
   .object(optionalLocation)
   .refine((query) => (query.lat === undefined) === (query.lng === undefined), {
     message: 'Send both lat and lng, or neither.',
-  });
+  })
+  .superRefine(refineQueryCoordinates);
 
 export const storeParamsSchema = z.object({ sellerId: uuid });
 

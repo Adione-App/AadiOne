@@ -4,6 +4,11 @@
  * Variants are selectable rather than collapsed into one price: the cart
  * treats each variant as a separate line, so the customer must be able to see
  * and choose which size they are buying.
+ *
+ * A product with several sizes / options has NO size preselected: Add stays
+ * "Select a size" until the customer taps an in-stock one (a sold-out size is
+ * shown but cannot be chosen). Until then the price reads "From …" — the
+ * lowest in-stock size. A simple item works exactly as before.
  */
 
 import { useRef, useState } from "react";
@@ -70,11 +75,18 @@ export default function ProductDetailScreen({
   // `product.data` exists — no hook depends on it, but keeping the shape
   // consistent with the rest of this file's "every value is optional-chained
   // until after the loading/error guards" convention.
-  const variant: VariantDto | undefined =
-    product.data?.variants.find((item) => item.id === selectedVariantId) ??
-    product.data?.variants.find((item) => item.inStock) ??
-    product.data?.variants[0];
-  const qtyInCart = variant ? cart.qtyFor(variant.id) : 0;
+  const allVariants = product.data?.variants ?? [];
+  const needsChoice = allVariants.length > 1;
+  // What Add / the stepper act on: the only variant, or the size the customer chose.
+  const chosen: VariantDto | undefined = needsChoice
+    ? allVariants.find((item) => item.id === selectedVariantId && item.inStock)
+    : allVariants[0];
+  const inStockVariants = allVariants.filter((item) => item.inStock);
+  // What the price shows before a choice: the cheapest size that can be bought.
+  const cheapest = inStockVariants.reduce<VariantDto | undefined>((low, item) => (!low || item.pricePaise < low.pricePaise ? item : low), undefined);
+  const variant: VariantDto | undefined = chosen ?? cheapest ?? allVariants[0];
+  const fromPrice = needsChoice && !chosen && new Set(inStockVariants.map((item) => item.pricePaise)).size > 1;
+  const qtyInCart = chosen ? cart.qtyFor(chosen.id) : 0;
 
   if (product.isLoading) return <Loading />;
   if (product.isError || !product.data) {
@@ -87,7 +99,10 @@ export default function ProductDetailScreen({
   }
 
   const detail = product.data;
-  const outOfStock = !variant?.inStock;
+  // The product (not just one size) cannot be bought right now.
+  const outOfStock = inStockVariants.length === 0;
+  const optionWord =
+    (detail.optionGroups ?? []).length === 1 ? detail.optionGroups[0]!.name.toLowerCase() : (detail.optionGroups ?? []).length > 1 ? 'option' : 'size';
   // Same "small square thumbnail drops into the cart" flourish the card's
   // own Add/stepper already has (see ProductCard.tsx) — lands on the global
   // mini-cart overlay (MiniCartBar.tsx), which is what registers the actual
@@ -144,7 +159,7 @@ export default function ProductDetailScreen({
           {variant && (
             <View style={styles.priceRow}>
               <AppText variant="display" color={colors.primary}>
-                {formatPaise(variant.pricePaise)}
+                {fromPrice ? `From ${formatPaise(variant.pricePaise)}` : formatPaise(variant.pricePaise)}
               </AppText>
               {variant.mrpPaise > variant.pricePaise && (
                 <>
@@ -181,11 +196,16 @@ export default function ProductDetailScreen({
               </AppText>
               <View style={styles.variantRow}>
                 {detail.variants.map((item) => {
-                  const active = item.id === variant?.id;
+                  const active = item.id === chosen?.id;
                   return (
                     <Pressable
                       key={item.id}
                       onPress={() => setSelectedVariantId(item.id)}
+                      // A sold-out size stays visible but cannot be chosen.
+                      disabled={!item.inStock}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active, disabled: !item.inStock }}
+                      accessibilityLabel={`${item.variantName}, ${item.inStock ? formatPaise(item.pricePaise) : 'sold out'}`}
                       style={[
                         styles.variantChip,
                         active && {
@@ -198,11 +218,12 @@ export default function ProductDetailScreen({
                       <AppText
                         variant="bodyStrong"
                         color={active ? colors.primary : colors.textPrimary}
+                        style={!item.inStock ? { textDecorationLine: "line-through" } : undefined}
                       >
                         {item.variantName}
                       </AppText>
                       <AppText variant="caption" color={colors.textSecondary}>
-                        {formatPaise(item.pricePaise)}
+                        {item.inStock ? formatPaise(item.pricePaise) : "Sold out"}
                       </AppText>
                     </Pressable>
                   );
@@ -342,7 +363,7 @@ export default function ProductDetailScreen({
             <View style={styles.footerPriceBlock}>
               <View style={styles.footerPriceLine}>
                 <AppText variant="h2" numberOfLines={1}>
-                  {formatPaise(variant.pricePaise)}
+                  {fromPrice ? `From ${formatPaise(variant.pricePaise)}` : formatPaise(variant.pricePaise)}
                 </AppText>
                 {variant.mrpPaise > variant.pricePaise && (
                   <AppText
@@ -367,7 +388,7 @@ export default function ProductDetailScreen({
                   </AppText>
                 )}
                 <AppText variant="caption" color={colors.textSecondary} numberOfLines={1}>
-                  {variant.variantName}
+                  {needsChoice && !chosen ? `Select a ${optionWord}` : variant.variantName}
                 </AppText>
               </View>
             </View>
@@ -381,22 +402,22 @@ export default function ProductDetailScreen({
           <View style={styles.footerActionBox}>
             <ActionBarTransition
               mode={
-                outOfStock || !variant
+                outOfStock || !chosen
                   ? "outOfStock"
                   : qtyInCart > 0
                     ? "stepper"
                     : "add"
               }
             >
-              {variant && !outOfStock ? (
+              {chosen && !outOfStock ? (
                 qtyInCart > 0 ? (
                   <QuantityStepper
                     qty={qtyInCart}
-                    max={variant.maxQtyPerOrder}
-                    busy={cart.isBusy(variant.id)}
+                    max={chosen.maxQtyPerOrder}
+                    busy={cart.isBusy(chosen.id)}
                     onIncrement={() => {
-                      flyToCart(flightImageUrl, variant.id);
-                      cart.increment(variant.id);
+                      flyToCart(flightImageUrl, chosen.id);
+                      cart.increment(chosen.id);
                     }}
                     onDecrement={() => {
                       // No "leaving the cart" flight here — matches
@@ -404,7 +425,7 @@ export default function ProductDetailScreen({
                       // thumbnail already plays a correctly position-aware
                       // exit on its own, see its comment for why a second,
                       // generic flying dot only duplicated that.
-                      cart.decrement(variant.id);
+                      cart.decrement(chosen.id);
                     }}
                     fullWidth
                     flatButtons
@@ -414,8 +435,8 @@ export default function ProductDetailScreen({
                   <Button
                     label="Add to Cart"
                     onPress={() => {
-                      flyToCart(flightImageUrl, variant.id);
-                      cart.add(variant.id, snapshotFromProduct(detail, variant));
+                      flyToCart(flightImageUrl, chosen.id);
+                      cart.add(chosen.id, snapshotFromProduct(detail, chosen));
                     }}
                     style={[styles.footerAddButton, styles.footerRectShape]}
                   />
@@ -423,7 +444,7 @@ export default function ProductDetailScreen({
               ) : (
                 <View style={styles.footerUnavailable}>
                   <AppText variant="bodyStrong" color={colors.textSecondary}>
-                    Currently unavailable
+                    {!outOfStock && needsChoice && !chosen ? `Select a ${optionWord}` : "Currently unavailable"}
                   </AppText>
                 </View>
               )}

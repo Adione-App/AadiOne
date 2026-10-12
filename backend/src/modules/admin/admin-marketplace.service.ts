@@ -86,7 +86,10 @@ export interface MarketplaceProductRow {
   key: string;
   productId: string;
   productName: string;
+  /** The variant's name; "3 variants" when the seller sells several sizes of the product. */
   variantName: string | null;
+  /** How many of the product's variants this seller lists (1 for a simple item). */
+  variantCount: number;
   imageUrl: string | null;
   category: { id: string; name: string };
   seller: { id: string; name: string };
@@ -128,6 +131,45 @@ export interface MarketplaceProductSummary {
   disabled: number;
 }
 
+/**
+ * Collapses a seller's listings of one product (its sizes / variants) into one
+ * row: stock, reserved and available added up, the lowest price, the best
+ * visibility (buyable when any size is), stock OUT only when every size is out
+ * and LOW when any size is low or out. Rows keep their first-seen order.
+ */
+export function mergeVariantRows(rows: MarketplaceProductRow[]): MarketplaceProductRow[] {
+  const merged = new Map<string, MarketplaceProductRow[]>();
+  for (const row of rows) {
+    const key = `${row.productId}:${row.seller.id}`;
+    merged.set(key, [...(merged.get(key) ?? []), row]);
+  }
+  return [...merged.values()].map((group) => {
+    if (group.length === 1) return group[0]!;
+    const listings = group.map((r) => r.listing).filter((l): l is NonNullable<MarketplaceProductRow['listing']> => l !== null);
+    const cheapest = listings.reduce((a, b) => (b.pricePaise < a.pricePaise ? b : a));
+    const sum = (pick: (l: (typeof listings)[number]) => number) => listings.reduce((n, l) => n + pick(l), 0);
+    const states = listings.map((l) => l.stock);
+    const stock: StockState = states.every((s) => s === 'OUT') ? 'OUT' : states.some((s) => s !== 'IN_STOCK') ? 'LOW' : 'IN_STOCK';
+    const first = group[0]!;
+    return {
+      ...first,
+      key: `p-${first.productId}-${first.seller.id}`,
+      variantName: `${group.length} variants`,
+      variantCount: group.length,
+      listing: {
+        ...cheapest,
+        stockQty: sum((l) => l.stockQty),
+        reservedQty: sum((l) => l.reservedQty),
+        availableQty: sum((l) => l.availableQty),
+        isAvailable: listings.some((l) => l.isAvailable),
+        stock,
+      },
+      visibility: group.find((r) => r.visibility.sellable)?.visibility ?? first.visibility,
+      updatedAt: group.reduce((a, r) => (r.updatedAt > a ? r.updatedAt : a), first.updatedAt),
+    };
+  });
+}
+
 export async function listMarketplaceProducts(
   query: MarketplaceProductQuery,
 ): Promise<Paged<MarketplaceProductRow> & { summary: MarketplaceProductSummary }> {
@@ -154,7 +196,7 @@ export async function listMarketplaceProducts(
     }),
   ]);
 
-  const listingRows = listings.map((l): MarketplaceProductRow => {
+  const perListing = listings.map((l): MarketplaceProductRow => {
     const product = l.variant.product;
     const { availableQty, state } = stockState(l);
     return {
@@ -162,6 +204,7 @@ export async function listMarketplaceProducts(
       productId: product.id,
       productName: product.name,
       variantName: l.variant.variantName,
+      variantCount: 1,
       imageUrl: imageOf(product),
       category: product.category,
       seller: { id: l.seller.id, name: l.seller.name },
@@ -188,6 +231,10 @@ export async function listMarketplaceProducts(
     };
   });
 
+  // One row per product per seller: a product sold in several sizes adds its
+  // sizes' stock up (lowest price shown), instead of one row per size.
+  const listingRows = mergeVariantRows(perListing);
+
   // A seller's own product shows once: as its listing when listed, otherwise here.
   const listed = new Set(listings.map((l) => `${l.variant.product.id}:${l.seller.id}`));
   const unlistedRows = submitted
@@ -197,6 +244,7 @@ export async function listMarketplaceProducts(
       productId: p.id,
       productName: p.name,
       variantName: p.variants[0]?.variantName ?? null,
+      variantCount: 1,
       imageUrl: imageOf(p),
       category: p.category,
       seller: { id: p.submittedBySeller!.id, name: p.submittedBySeller!.name },

@@ -574,12 +574,18 @@ function ProductCardImpl({
                 onPress={() => {
                   if (!variant) return;
                   tapHaptic();
+                  // Several sizes / options: the customer picks one on the
+                  // product page — the card never adds a size nobody chose.
+                  if (product.variantCount > 1) {
+                    openDetails();
+                    return;
+                  }
                   flyToCart(imageUrl, variant.id);
                   onAdd(variant.id, snapshotFromProduct(product, variant));
                 }}
                 style={styles.floatingAddButton}
                 accessibilityRole="button"
-                accessibilityLabel={`Add ${product.name} to cart`}
+                accessibilityLabel={product.variantCount > 1 ? `Choose a size of ${product.name}` : `Add ${product.name} to cart`}
               >
                 <Plus size={18} color={colors.primary} strokeWidth={2.6} />
               </Pressable>

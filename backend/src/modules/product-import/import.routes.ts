@@ -32,6 +32,7 @@ import { requirePermission, requireUser } from '../../middleware/auth';
 import { attachSellerContext, requireSellerId } from '../../middleware/sellerAuth';
 import { byUser, rateLimit } from '../../middleware/rateLimit';
 import * as service from './import.service';
+import { exportSellerProductsCsv } from './product-export';
 import { discardUploads, importUpload, readImportFiles } from './import-upload';
 
 const uuid = z.string().uuid();
@@ -64,6 +65,24 @@ sellerProductImportRouter.get('/imports/template.csv', (_req: Request, res: Resp
   res.setHeader('Content-Disposition', 'attachment; filename="aadione-product-import-template.csv"');
   res.send(service.templateCsv());
 });
+
+/**
+ * GET /seller/imports/export.csv — the seller's own products in the import
+ * format, one row per variant (product-export.ts): edit and upload it again
+ * in Update mode.
+ */
+sellerProductImportRouter.get(
+  '/imports/export.csv',
+  rateLimit({ scope: 'product-import:export', limit: 30, windowSeconds: 3600, identify: byUser }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const csv = await exportSellerProductsCsv(requireSellerId(req));
+    const day = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="aadione-products-${day}.csv"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(csv);
+  }),
+);
 
 sellerProductImportRouter.post(
   '/imports',

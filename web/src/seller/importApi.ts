@@ -157,6 +157,9 @@ async function download(path: string, fileName: string): Promise<void> {
 }
 
 export const downloadTemplate = () => download('/seller/imports/template.csv', 'aadione-product-import-template.csv');
+
+/** All of the seller's own products in the import format, one row per size / variant — edit and upload in Update mode. */
+export const downloadExport = () => download('/seller/imports/export.csv', `aadione-products-${new Date().toISOString().slice(0, 10)}.csv`);
 export const downloadErrorReport = (id: string) => download(`/seller/imports/${id}/error-report.csv`, `import-errors-${id.slice(0, 8)}.csv`);
 
 export const STATUS_LABEL: Record<ProductImportStatus, string> = {

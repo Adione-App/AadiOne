@@ -208,7 +208,10 @@ export default function ProductsPage() {
                       <td className="whitespace-nowrap px-3 py-3">
                         {row.listing ? (
                           <>
-                            <span className="font-semibold text-gray-900">{formatPaise(row.listing.pricePaise)}</span>
+                            <span className="font-semibold text-gray-900">
+                              {(row.variantCount ?? 1) > 1 && <span className="mr-1 text-xs font-medium text-gray-500">from</span>}
+                              {formatPaise(row.listing.pricePaise)}
+                            </span>
                             {row.listing.mrpPaise > row.listing.pricePaise && (
                               <span className="block text-xs text-gray-400 line-through">{formatPaise(row.listing.mrpPaise)}</span>
                             )}

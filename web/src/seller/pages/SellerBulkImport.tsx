@@ -31,6 +31,7 @@ import {
   confirmImport,
   decideImportRow,
   downloadErrorReport,
+  downloadExport,
   downloadTemplate,
   importKeys,
   retryImport,
@@ -200,12 +201,26 @@ function ImportUpload() {
               <li>
                 Download the template, fill one row per product (prices in rupees), and save it as <b>CSV UTF-8</b> or <b>.xlsx</b>.
               </li>
+              <li>
+                Products with sizes or colours: one row per size, all with the same <b>parent_sku</b> and each with its own <b>seller_sku</b>,{' '}
+                <b>size</b> (or <b>color</b>), price and stock — e.g. TEE-BLUE on the S, M and L rows. They become one product with three sizes, and are
+                imported only if every row is correct.
+              </li>
               <li>Optional: put the product photos in one ZIP and write each photo's file name in the image columns.</li>
               <li>Upload both files below, check the preview, then press Import.</li>
             </ol>
-            <Button variant="soft" onClick={() => void downloadTemplate().catch((e) => toast(sellerErrorMessage(e), false))}>
-              <Icon name="clipboard" className="h-4 w-4" /> Download CSV template
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="soft" onClick={() => void downloadTemplate().catch((e) => toast(sellerErrorMessage(e), false))}>
+                <Icon name="clipboard" className="h-4 w-4" /> Download CSV template
+              </Button>
+              <Button variant="soft" onClick={() => void downloadExport().catch((e) => toast(sellerErrorMessage(e), false))}>
+                <Icon name="clipboard" className="h-4 w-4" /> Export my products (CSV)
+              </Button>
+            </div>
+            <p className="text-xs text-gray-500">
+              The export has one row per size, in this same format: change prices or stock in it and upload it again in <b>Update</b> mode — your
+              products are matched by seller_sku and parent_sku, never copied.
+            </p>
             <fieldset className="space-y-2">
               <legend className="text-sm font-semibold text-gray-900">Import mode</legend>
               {(
@@ -663,6 +678,8 @@ function RowItem({ job, row, editable, onChanged }: { job: ProductImportDto; row
         <p className="font-semibold text-gray-900">
           {row.name ?? (job.kind === 'IMAGES' ? row.images[0]?.fileName : '—')}
           {row.sku && <span className="ml-2 font-mono text-xs font-normal text-gray-500">{row.sku}</span>}
+          {row.variantLabel && <span className="ml-2 text-xs font-medium text-brand-700">Size / option: {row.variantLabel}</span>}
+          {row.parentSku && <span className="ml-2 font-mono text-xs font-normal text-gray-500">in {row.parentSku}</span>}
         </p>
         {detail.length > 0 && <p className="text-gray-600">{detail.join(' · ')}</p>}
         {row.brand && row.status !== 'EXCLUDED' && (

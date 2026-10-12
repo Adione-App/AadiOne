@@ -14,6 +14,8 @@
  *   barcodes     duplicates among the seller's own products
  *   in the file  the same SKU / barcode twice: the later row is a DUPLICATE
  *   images       every name must be one usable file of the uploaded ZIP
+ *   products     rows sharing a parent_sku (sizes of one product) are checked
+ *                together, all-or-nothing — import-groups.ts
  *
  * Pure in its output: the caller stores the statuses. Re-running it (mode
  * switch, a seller decision on the preview) gives the same answer for the
@@ -27,6 +29,7 @@ import { prisma } from '../../infra/db/prisma';
 import { SheetError } from './csv';
 import { cellsByKey, headerProblems, imageNameKey, mapHeader, parseRow, type ParsedRow } from './row-rules';
 import { brandDisplayName, brandKey, brandProblem, findBrands } from './brand';
+import { applyCreateGroups, applyUpdateGroups, shareProductCells, type GroupRow } from './import-groups';
 
 /** The seller's choices on the preview, kept on the row across re-validation. */
 export interface RowDecisions {
@@ -56,6 +59,14 @@ export interface ResolvedRow extends ParsedRow {
   variantId?: string;
   productName?: string;
   makePrimary?: boolean;
+  /** This row's option values under the product's group names, e.g. { Size: "M" }. */
+  optionValues?: Record<string, string>;
+  /**
+   * Set when the row is one of several rows of ONE product (import-groups.ts):
+   * `key` identifies the product's rows ("P:<parent_sku>" or "ID:<product id>"),
+   * `head` is its first row, `optionGroups` the product's options as planned.
+   */
+  group?: { key: string; head: number; parentSku?: string; optionGroups?: { name: string; values: string[] }[] };
 }
 
 export interface ValidatedRow {
@@ -198,7 +209,14 @@ export async function validateProductRows(input: {
   if (problems.length > 0) throw new SheetError(problems.join(' '));
 
   const skuTag = sellerSkuTag(sellerId);
-  const rows = input.rows.map((row) => ({ row, ...parseRow(cellsByKey(header, row.cells), mode, skuTag) }));
+  // Rows of one product (shared parent_sku) share its details before each row is parsed.
+  const cellRows = input.rows.map((row) => ({ row, rowNumber: row.rowNumber, excluded: Boolean(row.decisions.excluded), cells: cellsByKey(header, row.cells) }));
+  const shared = shareProductCells(cellRows, mode);
+  const rows = cellRows.map(({ row, cells }) => {
+    const result = parseRow(cells, mode, skuTag);
+    result.errors.push(...(shared.get(row.rowNumber) ?? []));
+    return { row, ...result };
+  });
 
   /* Categories (the seller's own tree) and brands ------------------------- */
   const categories = await prisma.category.findMany({
@@ -251,6 +269,21 @@ export async function validateProductRows(input: {
   for (const part of chunk(matched.map((h) => h!.variantId))) {
     const found = await prisma.sellerListing.findMany({ where: { sellerId, variantId: { in: part } }, select: { variantId: true, mrpPaise: true, pricePaise: true } });
     for (const l of found) listings.set(l.variantId, l);
+  }
+
+  /*
+   * Update mode: rows that are sizes of a product — a parent_sku, an option
+   * value, or the SKU of a product that already has several variants — are
+   * checked as one product (import-groups.ts), not as single products.
+   */
+  const grouped = new Set<number>();
+  if (mode === 'UPDATE') {
+    for (const r of rows) {
+      if (r.row.decisions.excluded) continue;
+      const hit = r.parsed.sku ? bySku.get(r.parsed.sku) : undefined;
+      const several = isOwnLive(hit, sellerId) && (facts.get(hit.productId)?.liveVariants ?? 0) > 1;
+      if (r.parsed.parentSku || r.parsed.options || several) grouped.add(r.row.rowNumber);
+    }
   }
 
   /* Images used by more than one row (allowed, but worth a warning) ------- */
@@ -314,6 +347,9 @@ export async function validateProductRows(input: {
       const known = brands.get(brandKey(brandText));
       if (issue) {
         errors.push({ field: 'brand', message: issue });
+      } else if (mode === 'UPDATE' && grouped.has(row.rowNumber)) {
+        // Checked against the product the rows belong to (import-groups.ts).
+        if (known) resolved.brand = { status: 'MATCHED', name: known.name };
       } else if (mode === 'UPDATE') {
         // Sellers cannot change a product's brand anywhere else (no review step covers it);
         // repeating the brand the product already has is fine.
@@ -347,6 +383,8 @@ export async function validateProductRows(input: {
           status ??= ProductImportRowStatus.CONFLICT;
         }
       }
+    } else if (grouped.has(row.rowNumber)) {
+      // Matched to its product, and checked with the product's other sizes, in import-groups.ts.
     } else if (parsed.sku) {
       if (!isOwnLive(hit, sellerId)) {
         // Another seller's SKU is reported exactly like a missing one.
@@ -430,6 +468,28 @@ export async function validateProductRows(input: {
       imageNames: parsed.imageNames,
       productId,
     });
+  }
+
+  /* Products with several rows: checked together, all-or-nothing ---------- */
+  const groupRow = (v: ValidatedRow): GroupRow => {
+    const hit = v.sku ? bySku.get(v.sku) : undefined;
+    const own = isOwnLive(hit, sellerId);
+    return { v, ownVariant: own ? { variantId: hit.variantId, productId: hit.productId } : null, skuTakenElsewhere: Boolean(hit) && !own };
+  };
+  if (mode === 'CREATE') {
+    await applyCreateGroups(sellerId, out.map(groupRow));
+  } else if (grouped.size > 0) {
+    await applyUpdateGroups(
+      out.filter((v) => grouped.has(v.rowNumber)).map(groupRow),
+      {
+        sellerId,
+        brandIdOf: (row) => {
+          const text = row.v.parsed.brandName ? brandDisplayName(row.v.parsed.brandName) : '';
+          if (!text) return undefined;
+          return brands.get(brandKey(text))?.id ?? null;
+        },
+      },
+    );
   }
   return { rows: out, ignoredColumns: header.ignored };
 }

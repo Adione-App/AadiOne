@@ -10,6 +10,7 @@
  */
 
 import {
+  IMPORT_OPTION_GROUPS,
   PRODUCT_IMPORT_COLUMNS,
   PRODUCT_IMPORT_LIMITS,
   PRODUCT_IMPORT_UNIT_ALIASES,
@@ -69,10 +70,20 @@ export function headerProblems(map: HeaderMap, mode: ProductImportMode): string[
   return problems;
 }
 
+/**
+ * The export (and the error report) write a cell that starts with = + - @ as
+ * '=…, so a spreadsheet never runs it as a formula (csv.ts csvCell). Reading
+ * it back drops that one guard apostrophe, so a re-imported export keeps the
+ * text exactly as it was.
+ */
+export function unguardCell(text: string): string {
+  return /^'[=+\-@\t\r]/.test(text) ? text.slice(1) : text;
+}
+
 /** The row's cells by column key (trimmed; absent column = ''). */
 export function cellsByKey(map: HeaderMap, cells: readonly string[]): Partial<Record<ProductImportColumnKey, string>> {
   const out: Partial<Record<ProductImportColumnKey, string>> = {};
-  for (const [key, i] of map.index) out[key] = (cells[i] ?? '').trim();
+  for (const [key, i] of map.index) out[key] = unguardCell((cells[i] ?? '').trim());
   return out;
 }
 
@@ -196,6 +207,10 @@ export interface ParsedRow {
   sku: string | null;
   /** True when the SKU was taken from the barcode (no seller_sku given). */
   skuFromBarcode: boolean;
+  /** The parent product's code: rows sharing it are one product with several variants. */
+  parentSku?: string;
+  /** This row's option values by group name — { Size: "M", Color: "Blue" } — as given. */
+  options?: Record<string, string>;
   barcode?: string;
   name?: string;
   nameHi?: string;
@@ -214,6 +229,44 @@ export interface ParsedRow {
   imageNames: string[];
   /** image_filename was given: imageNames[0] is meant to be the main photo. */
   primaryImageGiven?: boolean;
+}
+
+const OPTION_TEXT_MAX = 40;
+
+/**
+ * size / color / option_name + option_value -> { Size: "M", Color: "Blue",
+ * Material: "Cotton" }. Values are kept as typed (trimmed); the group rules
+ * (every row of a product names the same options, no combination twice) are
+ * checked over the whole product in import-validation.ts.
+ */
+export function parseOptions(cells: Partial<Record<ProductImportColumnKey, string>>): { values: Record<string, string>; errors: ProductImportIssue[] } {
+  const values: Record<string, string> = {};
+  const errors: ProductImportIssue[] = [];
+  const add = (field: ProductImportColumnKey, group: string, raw: string) => {
+    const text = raw.trim();
+    if (!text) return;
+    if (text.length > OPTION_TEXT_MAX) errors.push({ field, message: `${group} can be at most ${OPTION_TEXT_MAX} characters.` });
+    else values[group] = text;
+  };
+  add('size', IMPORT_OPTION_GROUPS.size, cells.size ?? '');
+  add('color', IMPORT_OPTION_GROUPS.color, cells.color ?? '');
+  const name = (cells.option_name ?? '').trim();
+  const value = (cells.option_value ?? '').trim();
+  if (name && !value) errors.push({ field: 'option_value', message: `Give the ${name} of this item in option_value.` });
+  else if (value && !name) errors.push({ field: 'option_name', message: 'Name the option in option_name (e.g. Material) for the value in option_value.' });
+  else if (name) {
+    if (name.length > OPTION_TEXT_MAX) errors.push({ field: 'option_name', message: `option_name can be at most ${OPTION_TEXT_MAX} characters.` });
+    else if (Object.values(IMPORT_OPTION_GROUPS).some((g) => sameOptionName(g, name))) {
+      errors.push({ field: 'option_name', message: `Use the ${name.toLowerCase().startsWith('col') ? 'color' : 'size'} column for ${name}.` });
+    } else add('option_value', name, value);
+  }
+  return { values, errors };
+}
+
+/** Option-group names compare case-insensitively, and "Colour" is "Color". */
+export function sameOptionName(a: string, b: string): boolean {
+  const key = (s: string) => s.trim().toLowerCase().replace(/^colour$/, 'color');
+  return key(a) === key(b);
 }
 
 export interface RowParseResult {
@@ -265,6 +318,15 @@ export function parseRow(cells: Partial<Record<ProductImportColumnKey, string>>,
   } else if (!errors.some((e) => e.field === 'barcode')) {
     errors.push({ field: 'seller_sku', message: 'Enter a seller_sku (or a barcode) so this product can be identified.' });
   }
+
+  if (value('parent_sku')) {
+    const parent = normaliseSku(value('parent_sku'));
+    if (parent.ok) parsed.parentSku = parent.value;
+    else errors.push({ field: 'parent_sku', message: parent.message.replace(/^SKU/, 'parent_sku') });
+  }
+  const options = parseOptions(cells);
+  errors.push(...options.errors);
+  if (Object.keys(options.values).length > 0) parsed.options = options.values;
 
   const name = required('product_name', 'Product name');
   if (name) {
@@ -323,7 +385,9 @@ export function parseRow(cells: Partial<Record<ProductImportColumnKey, string>>,
     if (r.ok) parsed.unitValue = r.value;
     else errors.push({ field: 'unit_value', message: r.message });
   }
-  if (value('variant_name')) {
+  if (parsed.options) {
+    // An item with options is named from them ("M / Blue"), as on the product page.
+  } else if (value('variant_name')) {
     if (value('variant_name').length > 80) errors.push({ field: 'variant_name', message: 'Variant name can be at most 80 characters.' });
     else parsed.variantName = value('variant_name');
   } else if (create && parsed.unit && parsed.unitValue !== undefined) {
@@ -366,7 +430,7 @@ export function parseRow(cells: Partial<Record<ProductImportColumnKey, string>>,
 
   if (!create && errors.length === 0) {
     const changes = (Object.keys(parsed) as (keyof ParsedRow)[]).filter(
-      (k) => !['sku', 'skuFromBarcode', 'barcode', 'imageNames'].includes(k) && parsed[k] !== undefined,
+      (k) => !['sku', 'skuFromBarcode', 'barcode', 'imageNames', 'parentSku'].includes(k) && parsed[k] !== undefined,
     );
     if (changes.length === 0 && parsed.imageNames.length === 0 && !(parsed.barcode && parsed.sku)) {
       errors.push({ field: null, message: 'Nothing to change in this row: fill in at least one value to update.' });

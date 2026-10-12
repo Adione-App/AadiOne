@@ -583,18 +583,28 @@ export default function SellerProductsPage() {
                   {row.listing && row.listing.tracksStock && (
                     <div className="flex items-center justify-between gap-3 rounded-xl bg-gray-50 px-3 py-2.5">
                       <div className="min-w-0">
-                        <p className="text-base font-bold text-gray-900">{formatPaise(row.listing.pricePaise)}</p>
+                        <p className="text-base font-bold text-gray-900">
+                          {row.variantCount > 1 && <span className="mr-1 text-xs font-medium text-gray-500">from</span>}
+                          {formatPaise(row.listing.pricePaise)}
+                        </p>
                         <p className="text-xs text-gray-500">
                           {row.listing.stockQty} in stock · {row.listing.reservedQty} reserved
+                          {row.variantCount > 1 && ` · ${row.variantCount} sizes`}
                         </p>
                       </div>
-                      <StockStepper
-                        label={row.name}
-                        availableQty={row.listing.availableQty}
-                        stockQty={row.listing.stockQty}
-                        busy={adjusting(row)}
-                        onAdjust={(delta) => onAdjust(row, delta)}
-                      />
+                      {row.variantCount > 1 ? (
+                        <Link to={row.href} className="shrink-0 text-sm font-semibold text-brand-700 hover:underline">
+                          Stock per size
+                        </Link>
+                      ) : (
+                        <StockStepper
+                          label={row.name}
+                          availableQty={row.listing.availableQty}
+                          stockQty={row.listing.stockQty}
+                          busy={adjusting(row)}
+                          onAdjust={(delta) => onAdjust(row, delta)}
+                        />
+                      )}
                     </div>
                   )}
                   <RowActions row={row} shown={isShown(row)} toggling={toggling(row)} onToggle={() => onToggle(row)} onStart={() => setStarting(row.product)} onDelete={() => askDelete(row)} />
@@ -672,7 +682,12 @@ export default function SellerProductsPage() {
                       <td className="px-2 py-3 text-right tabular-nums">{row.listing?.stockQty ?? '—'}</td>
                       <td className="px-2 py-3 text-right tabular-nums">{row.listing?.reservedQty ?? '—'}</td>
                       <td className="px-2 py-3">
-                        {row.listing ? (
+                        {row.listing && row.variantCount > 1 ? (
+                          <Link to={row.href} className="block text-center text-sm">
+                            <span className="font-semibold tabular-nums text-gray-900">{row.listing.availableQty}</span>
+                            <span className="block text-xs font-semibold text-brand-700 hover:underline">{row.variantCount} sizes</span>
+                          </Link>
+                        ) : row.listing ? (
                           <div className="flex items-center justify-center gap-1">
                             <button
                               type="button"

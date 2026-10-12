@@ -1044,6 +1044,13 @@ model Product {
   /// The seller who submitted this product for the shared catalog. Null for
   /// products admin created directly.
   submittedBySellerId String?        @map("submitted_by_seller_id") @db.Uuid
+  /// The seller's own stable code for the PARENT product (bulk import /
+  /// export "parent_sku"): the rows of one product's sizes share it, and a
+  /// later import finds the product by it. Upper-cased. Null for products
+  /// that never had one. Unique per seller among live products (partial
+  /// unique index "products_seller_parent_sku_unique", migration
+  /// v2_product_parent_sku — Prisma can't express it).
+  parentSku           String?        @map("parent_sku") @db.VarChar(60)
 
   /// Vertical-specific display attributes: shelf life, storage, country of
   /// origin (grocery); prescription_required (pharmacy); crust/toppings

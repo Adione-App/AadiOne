@@ -1,15 +1,30 @@
 /**
- * Bulk product import — the file format both sides agree on.
+ * Bulk product import / export — the file format both sides agree on.
  *
  * The backend parses and validates against these columns; the Seller Panel
  * shows the same list on the Bulk Import page and builds the template from
- * it. One row = one product with one sellable variant (the same shape as the
- * single "Add Product" form). Prices are in RUPEES in the file (up to 2
- * decimals) and stored in paise, like everywhere else.
+ * it. Prices are in RUPEES in the file (up to 2 decimals) and stored in
+ * paise, like everywhere else.
+ *
+ * One row = one sellable variant:
+ *
+ *   - a row WITHOUT parent_sku is one product with one variant (the same
+ *     shape as the single "Add Product" form);
+ *   - rows that share a parent_sku are ONE product with several variants
+ *     (sizes, colours, …): each row has its own seller_sku, size / color /
+ *     option_value, price and stock; product details (name, category, brand,
+ *     …) may be repeated on every row (they must then agree) or given once,
+ *     and an empty price or unit cell takes the value of the product's other
+ *     rows. A product is imported only when ALL of its rows are valid.
+ *
+ * The export (one row per variant, same columns) can be uploaded again in
+ * Update mode: rows are matched by seller_sku, products by parent_sku, so a
+ * re-import changes the existing products instead of creating copies.
  */
 
 export type ProductImportColumnKey =
   | 'seller_sku'
+  | 'parent_sku'
   | 'barcode'
   | 'product_name'
   | 'description'
@@ -22,6 +37,10 @@ export type ProductImportColumnKey =
   | 'unit'
   | 'unit_value'
   | 'variant_name'
+  | 'size'
+  | 'color'
+  | 'option_name'
+  | 'option_value'
   | 'image_filename'
   | 'additional_image_filenames'
   | 'hindi_name'
@@ -41,8 +60,14 @@ export const PRODUCT_IMPORT_COLUMNS: readonly ProductImportColumn[] = [
   {
     key: 'seller_sku',
     requiredForCreate: true,
-    help: 'Your own product code (2–60 letters, digits, - _ . /). It identifies the product in later imports and image uploads. If empty, the barcode is used instead.',
-    aliases: ['sku', 'seller sku', 'item code', 'product code'],
+    help: 'Your own code for this item — for a product with sizes, the code of THIS size (2–60 letters, digits, - _ . /). It identifies the item in later imports and image uploads. If empty, the barcode is used instead.',
+    aliases: ['sku', 'seller sku', 'item code', 'product code', 'variant sku', 'variant_sku'],
+  },
+  {
+    key: 'parent_sku',
+    requiredForCreate: false,
+    help: 'Only for products with sizes / colours: one code for the whole product, the same on each of its rows (e.g. TSHIRT-BLUE on the S, M and L rows). Rows with the same parent_sku become one product. Leave empty for a single item.',
+    aliases: ['parent sku', 'parent code', 'parent', 'style code', 'group sku'],
   },
   {
     key: 'barcode',
@@ -97,6 +122,30 @@ export const PRODUCT_IMPORT_COLUMNS: readonly ProductImportColumn[] = [
     aliases: ['variant', 'pack label'],
   },
   {
+    key: 'size',
+    requiredForCreate: false,
+    help: 'The size of this row\'s item, e.g. S, M, L, 32 or 8 UK (with a parent_sku). Every row of the product then needs a size.',
+    aliases: ['size name', 'variant size'],
+  },
+  {
+    key: 'color',
+    requiredForCreate: false,
+    help: 'Optional colour of this row\'s item, e.g. Blue (with a parent_sku). If one row of the product has a colour, every row needs one.',
+    aliases: ['colour', 'color name', 'colour name'],
+  },
+  {
+    key: 'option_name',
+    requiredForCreate: false,
+    help: 'Optional other option, by name — e.g. Material or Pack — with its value in option_value. The same name on every row of the product.',
+    aliases: ['option', 'other option'],
+  },
+  {
+    key: 'option_value',
+    requiredForCreate: false,
+    help: 'The value of option_name for this row, e.g. Cotton.',
+    aliases: ['other option value'],
+  },
+  {
     key: 'image_filename',
     requiredForCreate: false,
     help: 'Main photo: a file name inside the ZIP you upload with this file, e.g. RB-250.jpg.',
@@ -116,6 +165,18 @@ export const PRODUCT_IMPORT_COLUMNS: readonly ProductImportColumn[] = [
     aliases: ['active', 'visible', 'status'],
   },
 ];
+
+/**
+ * Columns of the product export (GET /seller/imports/export.csv), in order:
+ * every import column except the image file names (photos live in the
+ * catalogue, not in a ZIP). One row per live variant.
+ */
+export const PRODUCT_EXPORT_COLUMNS: readonly ProductImportColumnKey[] = PRODUCT_IMPORT_COLUMNS.map((c) => c.key).filter(
+  (key) => key !== 'image_filename' && key !== 'additional_image_filenames',
+);
+
+/** Option-group names the size / color columns stand for (an existing "Colour" group matches "Color"). */
+export const IMPORT_OPTION_GROUPS = { size: 'Size', color: 'Color' } as const;
 
 export const PRODUCT_IMPORT_LIMITS = {
   /** Data rows per file (split larger catalogues into several files). */
@@ -226,6 +287,10 @@ export interface ProductImportRowDto {
   sku: string | null;
   /** Product name from the file (or the matched product's, for images-only). */
   name: string | null;
+  /** The product this row belongs to when it shares a parent_sku with other rows (one product, several variants). */
+  parentSku: string | null;
+  /** This row's variant label from its options, e.g. "M" or "M / Blue"; null for a single item. */
+  variantLabel: string | null;
   values: Record<string, string>;
   errors: ProductImportIssue[];
   warnings: ProductImportIssue[];

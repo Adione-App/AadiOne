@@ -32,7 +32,10 @@ export interface MarketplaceProductRow {
   key: string;
   productId: string;
   productName: string;
+  /** "3 variants" when one row stands for several sizes of the product. */
   variantName: string | null;
+  /** Sizes / variants this row adds up (stock summed, lowest price); absent from older servers. */
+  variantCount?: number;
   imageUrl: string | null;
   category: { id: string; name: string };
   seller: { id: string; name: string };

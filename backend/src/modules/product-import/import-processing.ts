@@ -18,7 +18,14 @@
  *              any brand the file names that does not exist yet (brand.ts) —
  *              and, in the SAME transaction, the rows marked DONE. Category and
  *              barcode facts are re-checked first (the preview may be days
- *              old). A failing batch is retried row by row.
+ *              old). A failing batch is retried product by product.
+ *   PRODUCTS   the rows of one product (sizes sharing a parent_sku) always
+ *   WITH SIZES travel together: a batch is widened to all of a product's rows,
+ *              they are written in ONE transaction (one product, one variant +
+ *              listing per row) and fail together — never some sizes only.
+ *              In Update mode they go through the product page's own services
+ *              (product details, syncProductVariants for new sizes / changed
+ *              options, updateOwnListing for price and stock).
  *   UPDATE     through the existing seller services (updateSellerProduct:
  *              ownership, editable window, price <= MRP, ledgered stock;
  *              setOwnProductStatus), in recorded stages: a retry resumes after
@@ -53,6 +60,10 @@ import { AppError } from '../../common/errors';
 import { moduleLogger } from '../../common/logger';
 import { prisma, runInTransaction, type Tx } from '../../infra/db/prisma';
 import { loadEditableOwnProduct, setOwnProductStatus, updateSellerProduct } from '../catalog/product-approval.service';
+import { syncProductVariants, type VariantInput } from '../catalog/product-variant.service';
+import { updateOwnListing } from '../catalog/seller-listing.service';
+import { optionGroupsOf, optionValuesOf, type UnitType } from '../../shared';
+import { groupsOf } from './import-groups';
 import { releaseImportImages } from './import-analysis';
 import { brandKey, ensureBrands } from './brand';
 import type { ResolvedRow } from './import-validation';
@@ -115,6 +126,7 @@ function imagesOf(row: Pick<ProductImportRow, 'imageNames'>, images: Map<string,
 /** Seller-safe reason a row could not be written. */
 function rowFailure(error: unknown, row: Pick<ProductImportRow, 'sku'>): string {
   if (error instanceof AppError && error.status < 500) return error.message;
+  if (/parent_sku/i.test(String((error as Error)?.message))) return 'This parent_sku was taken by another of your products while importing. Use a different parent_sku.';
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     if (error.code === 'P2002') return row.sku ? `SKU ${row.sku} was taken by another product while importing. Use a different SKU.` : 'This SKU was taken by another product while importing.';
     if (error.code === 'P2003') return 'The category was removed while importing. Choose a current category.';
@@ -260,10 +272,68 @@ async function linkBrands(tx: Tx, job: Job, plan: { p: ResolvedRow; productId: s
   return out;
 }
 
-async function writeCreateBatch(job: Job, rows: ProductImportRow[], images: Map<string, StoredImage>): Promise<void> {
-  const plan = rows.map((row) => {
-    const p = row.parsed as unknown as ResolvedRow;
-    return { row, p, productId: randomUUID(), variantId: randomUUID(), listingId: randomUUID(), images: imagesOf(row, images) };
+/** A product's rows: several for a product with sizes (one group key), else one. */
+type Unit = ProductImportRow[];
+
+const groupKey = (row: ProductImportRow): string | null => (row.parsed as unknown as ResolvedRow).group?.key ?? null;
+
+function unitsOf(rows: ProductImportRow[]): Unit[] {
+  const units: Unit[] = [];
+  const byKey = new Map<string, Unit>();
+  for (const row of rows) {
+    const key = groupKey(row);
+    if (!key) {
+      units.push([row]);
+      continue;
+    }
+    const unit = byKey.get(key);
+    if (unit) unit.push(row);
+    else {
+      const fresh = [row];
+      byKey.set(key, fresh);
+      units.push(fresh);
+    }
+  }
+  for (const unit of units) unit.sort((a, b) => a.rowNumber - b.rowNumber);
+  return units;
+}
+
+/** The batch plus every other READY row of the products it touches, so a product's sizes are never split. */
+async function withWholeProducts(job: Job, rows: ProductImportRow[]): Promise<ProductImportRow[]> {
+  const keys = [...new Set(rows.map(groupKey).filter((k): k is string => Boolean(k)))];
+  if (keys.length === 0) return rows;
+  const more = await prisma.productImportRow.findMany({
+    where: { importId: job.id, status: ProductImportRowStatus.READY, OR: keys.map((key) => ({ parsed: { path: ['group', 'key'], equals: key } })) },
+    orderBy: { rowNumber: 'asc' },
+  });
+  const byId = new Map([...rows, ...more].map((row) => [row.id, row]));
+  return [...byId.values()].sort((a, b) => a.rowNumber - b.rowNumber);
+}
+
+/** Fails the rows of a product whose other rows could not be written. */
+async function failUnitRest(job: Job, rest: ProductImportRow[], failed: ProductImportRow[]): Promise<void> {
+  const numbers = failed.map((r) => r.rowNumber).join(', ');
+  for (const row of rest) {
+    await markFailed(job, row, new AppError(ErrorCode.VALIDATION_ERROR, { message: `Not imported: row ${numbers} of the same product could not be saved, so none of its sizes were. Fix it and upload the product again.` }));
+  }
+}
+
+function unitImages(unit: Unit, images: Map<string, StoredImage>): StoredImage[] {
+  const out: StoredImage[] = [];
+  for (const row of unit) for (const image of imagesOf(row, images)) if (!out.some((o) => o.url === image.url)) out.push(image);
+  return out;
+}
+
+async function writeCreateBatch(job: Job, units: Unit[], images: Map<string, StoredImage>): Promise<void> {
+  const plan = units.map((unit) => {
+    const p = unit[0]!.parsed as unknown as ResolvedRow;
+    return {
+      unit,
+      p,
+      productId: randomUUID(),
+      variants: unit.map((row) => ({ row, p: row.parsed as unknown as ResolvedRow, variantId: randomUUID(), listingId: randomUUID() })),
+      images: unitImages(unit, images),
+    };
   });
   await runInTransaction(
     async (tx) => {
@@ -283,23 +353,29 @@ async function writeCreateBatch(job: Job, rows: ProductImportRow[], images: Map<
           // Exactly like "Add Product": nothing sells before Aadione approves it.
           approvalStatus: ApprovalStatus.PENDING,
           submittedBySellerId: job.sellerId,
+          parentSku: p.group?.parentSku ?? p.parentSku ?? null,
+          optionGroups: (p.group?.optionGroups ?? []) as Prisma.InputJsonValue,
         })),
       });
       await tx.productVariant.createMany({
-        data: plan.map(({ p, productId, variantId }) => ({
-          id: variantId,
-          productId,
-          sku: p.sku!,
-          variantName: p.variantName!,
-          unit: p.unit!,
-          unitValue: p.unitValue!,
-          barcode: p.barcode ?? null,
-          isDefault: true,
-          status: ProductStatus.ACTIVE,
-        })),
+        data: plan.flatMap(({ productId, variants }) =>
+          variants.map(({ p, variantId }, index) => ({
+            id: variantId,
+            productId,
+            sku: p.sku!,
+            variantName: p.variantName!,
+            optionValues: (p.optionValues ?? {}) as Prisma.InputJsonValue,
+            unit: p.unit!,
+            unitValue: p.unitValue!,
+            barcode: p.barcode ?? null,
+            isDefault: index === 0,
+            displayOrder: index,
+            status: ProductStatus.ACTIVE,
+          })),
+        ),
       });
       await tx.sellerListing.createMany({
-        data: plan.map(({ p, variantId, listingId }) => ({
+        data: plan.flatMap(({ variants }) => variants).map(({ p, variantId, listingId }) => ({
           id: listingId,
           sellerId: job.sellerId,
           variantId,
@@ -310,7 +386,7 @@ async function writeCreateBatch(job: Job, rows: ProductImportRow[], images: Map<
           isAvailable: true,
         })),
       });
-      const opening = plan.filter(({ p }) => p.stockQty! > 0);
+      const opening = plan.flatMap(({ variants }) => variants).filter(({ p }) => p.stockQty! > 0);
       if (opening.length > 0) {
         await tx.stockLedger.createMany({
           data: opening.map(({ p, listingId }) => ({
@@ -328,7 +404,7 @@ async function writeCreateBatch(job: Job, rows: ProductImportRow[], images: Map<
       );
       if (imageRows.length > 0) await tx.productImage.createMany({ data: imageRows });
       await tx.auditLog.createMany({
-        data: plan.map(({ row, p, productId, listingId }) => ({
+        data: plan.map(({ p, productId, variants }) => ({
           actorUserId: job.createdByUserId,
           action: 'product.seller_create',
           entityType: 'Product',
@@ -337,19 +413,23 @@ async function writeCreateBatch(job: Job, rows: ProductImportRow[], images: Map<
             sellerId: job.sellerId,
             name: p.name!,
             categoryId: p.categoryId!,
-            listingId,
+            ...(p.group?.parentSku ? { parentSku: p.group.parentSku } : {}),
+            listingId: variants[0]!.listingId,
             mrpPaise: p.mrpPaise!,
             pricePaise: p.pricePaise!,
             stockQty: p.stockQty!,
+            ...(variants.length > 1
+              ? { variants: variants.map((v) => ({ sku: v.p.sku!, name: v.p.variantName!, listingId: v.listingId, mrpPaise: v.p.mrpPaise!, pricePaise: v.p.pricePaise!, stockQty: v.p.stockQty! })) }
+              : {}),
             importId: job.id,
-            rowNumber: row.rowNumber,
+            rowNumber: variants[0]!.row.rowNumber,
           },
         })),
       });
       await markDone(
         tx,
         job,
-        plan.map(({ row, productId }) => ({ rowId: row.id, productId })),
+        plan.flatMap(({ productId, variants }) => variants.map(({ row }) => ({ rowId: row.id, productId }))),
       );
     },
     { timeoutMs: 30_000 },
@@ -357,21 +437,28 @@ async function writeCreateBatch(job: Job, rows: ProductImportRow[], images: Map<
 }
 
 async function processCreateBatch(job: Job, batch: ProductImportRow[]): Promise<void> {
-  const rows = await recheckCreateRows(job, batch);
-  if (rows.length === 0) return;
-  const images = await loadImages(job.id, rows);
+  const all = await withWholeProducts(job, batch);
+  const kept = new Set((await recheckCreateRows(job, all)).map((row) => row.id));
+  // A product whose re-check failed for one size is not written at all.
+  const units: Unit[] = [];
+  for (const unit of unitsOf(all)) {
+    const failed = unit.filter((row) => !kept.has(row.id));
+    if (failed.length === 0) units.push(unit);
+    else await failUnitRest(job, unit.filter((row) => kept.has(row.id)), failed);
+  }
+  if (units.length === 0) return;
+  const images = await loadImages(job.id, units.flat());
   try {
-    await writeCreateBatch(job, rows, images);
+    await writeCreateBatch(job, units, images);
   } catch (error) {
     if (error instanceof StopImport) throw error;
-    if (rows.length === 1) return markFailed(job, rows[0]!, error);
-    // One bad row must not sink the batch: write them one by one.
-    for (const row of rows) {
+    // One bad product must not sink the batch: write them one by one.
+    for (const unit of units) {
       try {
-        await writeCreateBatch(job, [row], images);
-      } catch (rowError) {
-        if (rowError instanceof StopImport) throw rowError;
-        await markFailed(job, row, rowError);
+        await writeCreateBatch(job, [unit], images);
+      } catch (unitError) {
+        if (unitError instanceof StopImport) throw unitError;
+        for (const row of unit) await markFailed(job, row, unitError);
       }
     }
   }
@@ -540,6 +627,158 @@ async function processUpdateRow(job: Job, row: ProductImportRow, images: Map<str
   }
 }
 
+/**
+ * The rows of one product with sizes, in Update mode: product details, then
+ * the size set (new sizes, changed options) or just prices and stock, then
+ * parent_sku, shown / hidden, photos — and every row DONE in one go.
+ *
+ * Idempotent by desired state like processUpdateRow: everything is compared
+ * with the database first, so a retry after a crash sends only what is still
+ * missing. A size created by an earlier, interrupted attempt is found by its
+ * SKU and treated as existing — never created twice.
+ */
+async function processUpdateGroup(job: Job, unit: Unit, images: Map<string, StoredImage>): Promise<void> {
+  const head = unit[0]!.parsed as unknown as ResolvedRow;
+  const actor = job.createdByUserId!;
+  const productId = head.productId!;
+  try {
+    const product = await prisma.product.findFirst({
+      where: { id: productId, submittedBySellerId: job.sellerId, deletedAt: null },
+      select: {
+        name: true,
+        nameHi: true,
+        description: true,
+        categoryId: true,
+        status: true,
+        parentSku: true,
+        optionGroups: true,
+        variants: {
+          where: { deletedAt: null },
+          orderBy: [{ isDefault: 'desc' }, { displayOrder: 'asc' }, { createdAt: 'asc' }],
+          select: {
+            id: true,
+            sku: true,
+            variantName: true,
+            optionValues: true,
+            unit: true,
+            unitValue: true,
+            sellerListings: { where: { sellerId: job.sellerId }, select: { id: true, mrpPaise: true, pricePaise: true, stockQty: true } },
+          },
+        },
+      },
+    });
+    if (!product) throw new AppError(ErrorCode.NOT_FOUND, { message: 'This product no longer exists.' });
+    const rows = unit.map((row) => row.parsed as unknown as ResolvedRow);
+    const names = (head.group?.optionGroups ?? []).map((g) => g.name);
+    const currentGroups = optionGroupsOf(product.optionGroups);
+    const simple = names.length === 0 && product.variants.length === 1;
+
+    // 1. Product details (and, for a single-item product, its own variant fields).
+    const differs: Record<string, unknown> = {};
+    const want = <K extends keyof ResolvedRow>(key: K, current: unknown) => {
+      const value = rows.find((r) => r[key] !== undefined)?.[key];
+      if (value !== undefined && value !== current) differs[key] = value;
+    };
+    want('name', product.name);
+    want('nameHi', product.nameHi);
+    want('description', product.description);
+    want('categoryId', product.categoryId);
+    if (simple) {
+      want('variantName', product.variants[0]!.variantName);
+      want('unit', product.variants[0]!.unit);
+      want('unitValue', product.variants[0]!.unitValue);
+    }
+    if (Object.keys(differs).length > 0) await updateSellerProduct(job.sellerId, productId, differs, actor);
+
+    // 2. Sizes: the whole set when its shape changes, otherwise price / stock only.
+    const bySku = new Map(rows.filter((r) => r.sku).map((r) => [r.sku!, r]));
+    const same = (a: Record<string, string>, b: Record<string, string>) => names.every((n) => (a[n] ?? '') === (b[n] ?? ''));
+    let structural = names.length !== currentGroups.length || names.some((n, i) => n !== currentGroups[i]?.name);
+    const variants: VariantInput[] = product.variants.map((v) => {
+      const row = bySku.get(v.sku);
+      const listing = v.sellerListings[0];
+      const current = optionValuesOf(v.optionValues);
+      const values = row?.optionValues ?? current;
+      if (row && (!same(values, current) || (row.unit !== undefined && row.unit !== v.unit) || (row.unitValue !== undefined && row.unitValue !== v.unitValue))) structural = true;
+      if (row && !listing && (row.pricePaise !== undefined || row.stockQty !== undefined)) structural = true;
+      return {
+        id: v.id,
+        optionValues: values,
+        variantName: v.variantName,
+        sku: v.sku,
+        ...(row?.unit !== undefined ? { unit: row.unit as UnitType } : {}),
+        ...(row?.unitValue !== undefined ? { unitValue: row.unitValue } : {}),
+        pricePaise: row?.pricePaise ?? listing?.pricePaise ?? 0,
+        mrpPaise: row?.mrpPaise ?? listing?.mrpPaise,
+        stockQty: row?.stockQty ?? listing?.stockQty,
+      };
+    });
+    const known = new Set(product.variants.map((v) => v.sku));
+    for (const row of rows) {
+      if (!row.sku || known.has(row.sku)) continue;
+      structural = true;
+      variants.push({
+        optionValues: row.optionValues ?? {},
+        sku: row.sku,
+        unit: row.unit as UnitType,
+        unitValue: row.unitValue,
+        pricePaise: row.pricePaise!,
+        mrpPaise: row.mrpPaise,
+        stockQty: row.stockQty,
+      });
+    }
+    if (structural) {
+      // The product page's own rules: names, combinations, SKUs, review of new sizes, ledgered stock.
+      await syncProductVariants(
+        job.sellerId,
+        productId,
+        { optionGroups: groupsOf(names, variants.map((v) => v.optionValues ?? {}), currentGroups), variants },
+        actor,
+      );
+    } else {
+      for (const v of product.variants) {
+        const row = bySku.get(v.sku);
+        const listing = v.sellerListings[0];
+        if (!row || !listing) continue;
+        const changes = {
+          ...(row.mrpPaise !== undefined && row.mrpPaise !== listing.mrpPaise ? { mrpPaise: row.mrpPaise } : {}),
+          ...(row.pricePaise !== undefined && row.pricePaise !== listing.pricePaise ? { pricePaise: row.pricePaise } : {}),
+          ...(row.stockQty !== undefined && row.stockQty !== listing.stockQty ? { stockQty: row.stockQty } : {}),
+        };
+        if (Object.keys(changes).length > 0) await updateOwnListing(job.sellerId, listing.id, changes, actor);
+      }
+    }
+
+    // 3. The parent code, when the product has none yet (an exported product without one).
+    const parentSku = head.group?.parentSku;
+    if (parentSku && !product.parentSku) {
+      const set = await prisma.product.updateMany({ where: { id: productId, parentSku: null }, data: { parentSku } });
+      if (set.count > 0) {
+        await prisma.auditLog.create({
+          data: { actorUserId: actor, action: 'product.parent_sku_set', entityType: 'Product', entityId: productId, after: { parentSku, importId: job.id } },
+        });
+      }
+    }
+
+    // 4. Shown / hidden.
+    const isActive = rows.find((r) => r.isActive !== undefined)?.isActive;
+    const wantStatus = isActive === undefined ? null : isActive ? ProductStatus.ACTIVE : ProductStatus.INACTIVE;
+    if (wantStatus && product.status !== wantStatus) await setOwnProductStatus(job.sellerId, productId, wantStatus, actor);
+
+    // 5. Photos and DONE, together.
+    await runInTransaction(async (tx) => {
+      const list = unitImages(unit, images);
+      if (list.length > 0) {
+        await attachImages(tx, job, productId, list, rows.some((r) => r.primaryImageGiven), (head.name ?? head.productName ?? null)?.slice(0, 200) ?? null);
+      }
+      await markDone(tx, job, unit.map((row) => ({ rowId: row.id, productId })));
+    });
+  } catch (error) {
+    if (error instanceof StopImport) throw error;
+    for (const row of unit) await markFailed(job, row, error);
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Job                                                                        */
 /* -------------------------------------------------------------------------- */
@@ -625,13 +864,25 @@ export async function processImport(importId: string): Promise<void> {
       if (rows.length === 0) break;
       if (job.kind === ProductImportKind.PRODUCTS && job.mode === ProductImportMode.CREATE) {
         await processCreateBatch(job, rows);
+      } else if (job.kind === ProductImportKind.PRODUCTS) {
+        const all = await withWholeProducts(job, rows);
+        const images = await loadImages(job.id, all);
+        for (const unit of unitsOf(all)) {
+          if (lease.state.lost) throw new StopImport('lease lost', true);
+          try {
+            if (groupKey(unit[0]!)) await processUpdateGroup(job, unit, images);
+            else await processUpdateRow(job, unit[0]!, images);
+          } catch (error) {
+            if (error instanceof StopImport) throw error;
+            for (const row of unit) await markFailed(job, row, error);
+          }
+        }
       } else {
         const images = await loadImages(job.id, rows);
         for (const row of rows) {
           if (lease.state.lost) throw new StopImport('lease lost', true);
           try {
-            if (job.kind === ProductImportKind.IMAGES) await processImageRow(job, row, images);
-            else await processUpdateRow(job, row, images);
+            await processImageRow(job, row, images);
           } catch (error) {
             if (error instanceof StopImport) throw error;
             await markFailed(job, row, error);

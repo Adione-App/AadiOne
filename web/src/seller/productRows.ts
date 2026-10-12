@@ -34,7 +34,13 @@ export interface ProductRow {
   name: string;
   category: string;
   image: string | null;
+  /**
+   * For an own product with several sizes / variants: the stock of ALL of
+   * them added up (price = the lowest). Otherwise the one listing.
+   */
   listing: RowListing | null;
+  /** Live variants (sizes / options) of an own product; 1 for a simple item or a catalogue listing. */
+  variantCount: number;
   visibility: ListingVisibility;
   /** APPROVED | PENDING | REJECTED (a catalogue listing is always APPROVED). */
   approval: string;
@@ -55,6 +61,28 @@ export interface ProductRow {
 
 const later = (a: string, b: string | null | undefined): string => (b && b > a ? b : a);
 
+/**
+ * One row per product: a product with several sizes shows the sum of every
+ * size's own stock (and its lowest price), never just the default size's.
+ */
+function productListing(p: SellerProductInventory, updatedAt: string | null): RowListing | null {
+  const own = p.listing ? { ...p.listing, updatedAt } : null;
+  const listings = (p.variants ?? []).map((v) => v.listing).filter((l): l is NonNullable<typeof l> => l !== null);
+  if (listings.length <= 1 || !own) return own;
+  const cheapest = listings.reduce((a, b) => (b.pricePaise < a.pricePaise ? b : a));
+  const sum = (pick: (l: (typeof listings)[number]) => number) => listings.reduce((n, l) => n + pick(l), 0);
+  return {
+    ...own,
+    pricePaise: cheapest.pricePaise,
+    mrpPaise: cheapest.mrpPaise,
+    stockQty: sum((l) => l.stockQty),
+    reservedQty: sum((l) => l.reservedQty),
+    availableQty: sum((l) => l.availableQty),
+    isAvailable: listings.some((l) => l.isAvailable),
+    tracksStock: listings.every((l) => l.tracksStock),
+  };
+}
+
 export function rowsOf(products: SellerProductInventory[], listings: SellerListingInventory[]): ProductRow[] {
   const ownListingIds = new Set(products.map((p) => p.listing?.id).filter(Boolean));
   const listingUpdated = new Map(listings.map((l) => [l.id, l.updatedAt]));
@@ -68,7 +96,8 @@ export function rowsOf(products: SellerProductInventory[], listings: SellerListi
       name: p.name,
       category: [p.category.name, p.subcategory?.name].filter(Boolean).join(' › '),
       image: p.images[0]?.thumbUrl ?? p.images[0]?.url ?? null,
-      listing: p.listing ? { ...p.listing, updatedAt: listingUpdatedAt } : null,
+      listing: productListing(p, listingUpdatedAt),
+      variantCount: Math.max(1, (p.variants ?? []).length),
       visibility: p.visibility,
       approval: p.approvalStatus,
       draft: p.approvalStatus === 'PENDING' && p.latestApproval?.status !== 'PENDING',
@@ -93,6 +122,7 @@ export function rowsOf(products: SellerProductInventory[], listings: SellerListi
       category: [l.categoryName, l.variantName].filter(Boolean).join(' · '),
       image: l.imageUrl,
       listing: l,
+      variantCount: 1,
       visibility: l.visibility,
       approval: l.approvalStatus,
       draft: false,

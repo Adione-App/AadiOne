@@ -53,7 +53,7 @@ import {
   formatSellerDate,
 } from '@/components/SellerBadges';
 import { SellerStatusModal } from '@/components/SellerStatusModal';
-import { ReasonModal } from '@/components/SellerLifecyclePanel';
+import { DECISION_REASON_MIN, ReasonModal } from '@/components/SellerLifecyclePanel';
 import {
   Button,
   EmptyState,
@@ -544,8 +544,9 @@ function ApplicationsPanel({ onNotice }: { onNotice: (message: string) => void }
       {rejecting && (
         <ReasonModal
           title={`Reject application — ${rejecting.businessName}`}
-          subtitle="The applicant sees this reason and cannot continue to onboarding."
+          subtitle="The applicant sees this reason and can correct and resubmit the application. Onboarding stays locked until you approve it."
           confirmLabel="Reject application"
+          minLength={DECISION_REASON_MIN}
           busy={review.isPending}
           error={review.isError ? sellerErrorMessage(review.error, 'Could not reject the application.') : null}
           onClose={() => setRejecting(null)}

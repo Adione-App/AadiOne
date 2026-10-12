@@ -4,11 +4,18 @@
  * The two-gate lifecycle (schema.prisma's SellerLifecycleStatus):
  *
  *   APPLICATION_PENDING --Gate 1 approve--> ONBOARDING_PENDING
- *                       --Gate 1 reject---> APPLICATION_REJECTED (terminal)
- *   ONBOARDING_PENDING / ONBOARDING_CHANGES_REQUIRED --submit--> ONBOARDING_PENDING_REVIEW
+ *                       --Gate 1 reject---> APPLICATION_REJECTED
+ *   APPLICATION_REJECTED --corrected application resubmitted--> APPLICATION_PENDING
+ *   ONBOARDING_PENDING / ONBOARDING_CHANGES_REQUIRED / ONBOARDING_REJECTED
+ *                       --submit (resubmit)--> ONBOARDING_PENDING_REVIEW
  *   ONBOARDING_PENDING_REVIEW --Gate 2 approve---------> ACTIVE
  *                             --Gate 2 request changes-> ONBOARDING_CHANGES_REQUIRED
- *                             --Gate 2 reject----------> ONBOARDING_REJECTED (terminal)
+ *                             --Gate 2 reject----------> ONBOARDING_REJECTED
+ *
+ * Neither rejection is final for the seller: a rejected applicant corrects
+ * and resubmits the application (onboarding stays locked until Gate 1
+ * approves), a finally-rejected seller corrects its onboarding and resubmits
+ * it for final approval — in both cases nothing is approved automatically.
  *
  * This file decides (1) which Seller Panel API paths a seller in each state
  * may call — enforced by middleware/sellerLifecycle.ts on every /seller
@@ -39,7 +46,15 @@ import { normalizeIndianMobile } from '../../shared/phone';
 export const EDITABLE_ONBOARDING_STATES: readonly SellerLifecycleStatus[] = [
   SellerLifecycleStatus.ONBOARDING_PENDING,
   SellerLifecycleStatus.ONBOARDING_CHANGES_REQUIRED,
+  // Final rejection: the seller corrects what was rejected and resubmits.
+  SellerLifecycleStatus.ONBOARDING_REJECTED,
 ];
+
+/** Admin decisions the seller must act on carry a reason at least this long. */
+export const MIN_DECISION_REASON_LENGTH = 10;
+
+/** The rejected applicant's own "correct and resubmit the application" route. */
+export const APPLICATION_RESUBMIT_PATH = '/lifecycle/application';
 
 /** Past Gate 1: the seller may at least READ its onboarding record. */
 const ONBOARDING_VISIBLE_STATES: readonly SellerLifecycleStatus[] = [
@@ -119,6 +134,13 @@ export function sellerPanelAccess(status: SellerLifecycleStatus, method: string,
 
   if (normalised === '/lifecycle' && isRead) return { allowed: true };
 
+  // Only a rejected applicant resubmits its application (the service re-checks the state).
+  if (normalised === APPLICATION_RESUBMIT_PATH) {
+    return status === SellerLifecycleStatus.APPLICATION_REJECTED && method.toUpperCase() === 'POST'
+      ? { allowed: true }
+      : { allowed: false, reason: 'NOT_ACTIVE' };
+  }
+
   if (status === SellerLifecycleStatus.ACTIVE) return { allowed: true };
 
   const onboardingArea = under(normalised, '/onboarding') || normalised === '/location';
@@ -145,7 +167,7 @@ export function sellerPanelAccess(status: SellerLifecycleStatus, method: string,
 export function isSellerOnboardingWrite(method: string, path: string): boolean {
   if (READ_METHODS.has(method.toUpperCase())) return false;
   const normalised = path.replace(/\/+$/, '') || '/';
-  return under(normalised, '/onboarding') || normalised === '/location';
+  return under(normalised, '/onboarding') || normalised === '/location' || normalised === APPLICATION_RESUBMIT_PATH;
 }
 
 /* -------------------------------------------------------------------------- */

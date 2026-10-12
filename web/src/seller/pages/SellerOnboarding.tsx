@@ -4,11 +4,15 @@
  * (GET /seller/lifecycle) is not ACTIVE:
  *
  *   APPLICATION_PENDING         "Seller Application Pending"
- *   APPLICATION_REJECTED        application not approved (+ reason)
+ *   APPLICATION_REJECTED        application not approved (+ reason): correct + resubmit
  *   ONBOARDING_PENDING          "Complete Your Seller Onboarding" (editable)
  *   ONBOARDING_CHANGES_REQUIRED "Changes Required" (+ reason, editable)
  *   ONBOARDING_PENDING_REVIEW   "Verification in Progress" (read-only)
- *   ONBOARDING_REJECTED         not approved (+ reason)
+ *   ONBOARDING_REJECTED         not approved (+ reason): correct + resubmit for final approval
+ *
+ * Onboarding is two steps — 1. Business & Documents, 2. Address & Bank
+ * Details — then a review with the submission. Every section saves to the
+ * server on its own, so a seller can stop and resume at any point.
  *
  * The server enforces the same rule (middleware/sellerLifecycle.ts): even a
  * hand-typed URL or API call cannot reach orders, products, earnings… before
@@ -16,9 +20,9 @@
  * here uses the existing seller onboarding APIs; numbers come back masked.
  */
 
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { isFoodSellerType, type SellerLifecycleDto } from '@shared';
+import { SellerType, isFoodSellerType, type SellerLifecycleDto } from '@shared';
 import { AadioneWordmark } from '@/components/PartnerLogin';
 import { Button, ErrorBanner, Field, Icon, Modal, Panel, Pill, inputClass, type IconName, type Tone } from '@/components/ui';
 import {
@@ -50,7 +54,7 @@ const STATUS_COPY: Record<Lifecycle, { title: string; badge: string; tone: Tone;
     badge: 'Application Rejected',
     tone: 'red',
     icon: 'alert',
-    message: 'Aadione could not approve your seller application.',
+    message: 'Aadione could not approve your seller application. Read the reason below, correct your application and send it again.',
   },
   ONBOARDING_PENDING: {
     title: 'Complete Your Seller Onboarding',
@@ -72,14 +76,14 @@ const STATUS_COPY: Record<Lifecycle, { title: string; badge: string; tone: Tone;
     badge: 'Under Review',
     tone: 'blue',
     icon: 'shield',
-    message: 'Your onboarding is under review. You will get full access to the Seller Panel once Aadione approves it.',
+    message: 'Your onboarding is pending final review. You will get full access to the Seller Panel once Aadione approves it.',
   },
   ONBOARDING_REJECTED: {
-    title: 'Seller Account Not Approved',
+    title: 'Onboarding Not Approved',
     badge: 'Rejected',
     tone: 'red',
     icon: 'alert',
-    message: 'Aadione could not approve your seller onboarding.',
+    message: 'Aadione could not approve your onboarding. Read the reason below, correct the rejected information and resubmit it for final approval.',
   },
   ACTIVE: {
     title: 'Your seller account is active',
@@ -185,6 +189,7 @@ export default function SellerOnboardingPage() {
   const showsOnboarding =
     data.lifecycleStatus === 'ONBOARDING_PENDING' ||
     data.lifecycleStatus === 'ONBOARDING_CHANGES_REQUIRED' ||
+    data.lifecycleStatus === 'ONBOARDING_REJECTED' ||
     data.lifecycleStatus === 'ONBOARDING_PENDING_REVIEW';
 
   return (
@@ -211,7 +216,7 @@ export default function SellerOnboardingPage() {
             }`}
           >
             <span className="font-semibold">
-              {data.lifecycleStatus === 'ONBOARDING_CHANGES_REQUIRED' ? 'What to change: ' : 'Reason: '}
+              {data.lifecycleStatus === 'ONBOARDING_CHANGES_REQUIRED' ? 'What to change: ' : 'Reason from Aadione: '}
             </span>
             {data.reason}
           </div>
@@ -229,10 +234,11 @@ export default function SellerOnboardingPage() {
         </dl>
 
         {(data.lifecycleStatus === 'APPLICATION_REJECTED' || data.lifecycleStatus === 'ONBOARDING_REJECTED') && (
-          <p className="mt-3 text-sm text-gray-500">If you think this is a mistake, please contact Aadione support.</p>
+          <p className="mt-3 text-sm text-gray-500">Questions about the decision? Contact Aadione support.</p>
         )}
       </section>
 
+      {data.lifecycleStatus === 'APPLICATION_REJECTED' && <ApplicationResubmit lifecycle={data} />}
       {showsOnboarding && <OnboardingWorkspace lifecycle={data} />}
     </Shell>
   );
@@ -251,12 +257,47 @@ const DOCUMENT_STATUS: Record<string, { label: string; tone: Tone }> = {
   REJECTED: { label: 'Rejected', tone: 'red' },
 };
 
+/** The two onboarding steps (checklist keys by step) and the final review. */
+type StepKey = 'business' | 'address' | 'review';
+
+const ADDRESS_STEP_ITEMS = new Set(['storeAddress', 'storeLocation', 'bank']);
+const stepOfItem = (key: string): 'business' | 'address' => (ADDRESS_STEP_ITEMS.has(key) ? 'address' : 'business');
+
+const STEP_TABS: { key: StepKey; label: string }[] = [
+  { key: 'business', label: '1. Business & Documents' },
+  { key: 'address', label: '2. Address & Bank Details' },
+  { key: 'review', label: '3. Review & Submit' },
+];
+
+// The step the seller was on, per seller — a convenience only (the data itself is saved on the server).
+const stepStorageKey = (sellerId: string) => `aadione.seller.onboardingStep.${sellerId}`;
+function readStep(sellerId: string): StepKey {
+  try {
+    const saved = localStorage.getItem(stepStorageKey(sellerId));
+    return saved === 'address' || saved === 'review' ? saved : 'business';
+  } catch {
+    return 'business';
+  }
+}
+function writeStep(sellerId: string, step: StepKey | null): void {
+  try {
+    if (step) localStorage.setItem(stepStorageKey(sellerId), step);
+    else localStorage.removeItem(stepStorageKey(sellerId));
+  } catch {
+    // Private mode / blocked storage: the seller simply starts on step 1.
+  }
+}
+
 function OnboardingWorkspace({ lifecycle }: { lifecycle: SellerLifecycleDto }) {
   const queryClient = useQueryClient();
   const editable = lifecycle.canEditOnboarding;
   const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState<'business' | 'bank' | 'restaurant' | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [step, setStepState] = useState<StepKey>(() => readStep(lifecycle.sellerId));
+  const [submittedNow, setSubmittedNow] = useState(false);
+  // Set synchronously: a double click never sends a second submission.
+  const submitting = useRef(false);
 
   const onboarding = useQuery({
     queryKey: sellerKeys.onboarding,
@@ -284,10 +325,17 @@ function OnboardingWorkspace({ lifecycle }: { lifecycle: SellerLifecycleDto }) {
     onSuccess: (data) => {
       queryClient.setQueryData(sellerKeys.lifecycle, data);
       setNotice(null);
+      setSubmittedNow(true);
+      writeStep(lifecycle.sellerId, null);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     },
     onSettled: refresh,
   });
+  const onSubmit = () => {
+    if (submitting.current || submit.isPending) return;
+    submitting.current = true;
+    submit.mutate(undefined, { onSettled: () => (submitting.current = false) });
+  };
 
   if (onboarding.isPending) return <SkeletonBlock lines={6} label="Loading your onboarding…" />;
   if (onboarding.isError) return <ErrorBanner message={sellerErrorMessage(onboarding.error)} />;
@@ -295,219 +343,206 @@ function OnboardingWorkspace({ lifecycle }: { lifecycle: SellerLifecycleDto }) {
   const data = onboarding.data;
   const serverError = save.isError ? sellerErrorMessage(save.error) : null;
   const missing = lifecycle.checklist.filter((item) => !item.met);
+  const missingIn = (key: 'business' | 'address') => missing.filter((item) => stepOfItem(item.key) === key);
+  const rejectedDocuments = data.documents.filter((d) => d.status === 'REJECTED');
   const isRestaurant = isFoodSellerType(lifecycle.sellerType);
+  const resubmitting = lifecycle.lifecycleStatus === 'ONBOARDING_CHANGES_REQUIRED' || lifecycle.lifecycleStatus === 'ONBOARDING_REJECTED';
   const open = (what: 'business' | 'bank' | 'restaurant') => {
     save.reset();
     setNotice(null);
     setEditing(what);
   };
+  const setStep = (next: StepKey) => {
+    setStepState(next);
+    writeStep(lifecycle.sellerId, next);
+    setNotice(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
-  return (
-    <>
-      {notice && (
-        <div role="status" className="rounded-xl border border-brand-500/30 bg-brand-50 px-3.5 py-2.5 text-sm text-brand-600">
-          {notice}
-        </div>
+  /* Sections — the same panels in every step view ------------------------- */
+
+  const businessPanel = (
+    <Panel
+      title="Business, contact & tax details"
+      action={
+        editable && (
+          <Button variant="secondary" onClick={() => open('business')}>
+            {data.profile ? 'Edit' : 'Add'}
+          </Button>
+        )
+      }
+    >
+      {data.profile ? (
+        <dl className="divide-y divide-gray-100">
+          <Row label="Business name" value={data.profile.businessName} />
+          <Row label="Business type" value={data.profile.businessType} />
+          <Row label="Owner name" value={data.profile.ownerFullName} />
+          <Row label="Mobile number" value={data.profile.ownerMobile} />
+          <Row label="Email" value={data.profile.ownerEmail} />
+          <Row label="PAN" value={data.profile.panNumber} />
+          <Row label="Aadhaar" value={data.profile.aadhaarNumber} />
+          <Row label="GST number" value={data.profile.gstNumber} />
+          <Row label="FSSAI licence number" value={data.profile.fssaiNumber} />
+        </dl>
+      ) : (
+        <Note>Add your business, contact and tax details.</Note>
       )}
+    </Panel>
+  );
 
-      {/* Checklist + submit */}
-      <Panel
-        title={editable ? 'Onboarding checklist' : 'Submitted details'}
-        action={
-          <span className="text-sm font-semibold text-gray-500">
-            {lifecycle.checklist.length - missing.length}/{lifecycle.checklist.length} done
-          </span>
-        }
-      >
+  const documentsPanel = (
+    <Panel
+      title="Documents & licences"
+      action={
+        editable && (
+          <Button variant="secondary" onClick={() => { setNotice(null); setUploading(true); }}>
+            Upload document
+          </Button>
+        )
+      }
+    >
+      {data.documents.length === 0 ? (
+        <Note>No documents uploaded yet. Upload your PAN card as a PDF with its number.</Note>
+      ) : (
         <ul className="divide-y divide-gray-100">
-          {lifecycle.checklist.map((item) => (
-            <li key={item.key} className="flex items-start justify-between gap-3 py-2.5">
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-gray-900">{item.label}</p>
-                {!item.met && <p className="text-xs text-gray-500">{item.hint}</p>}
-              </div>
-              <span
-                className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                  item.met ? 'bg-brand-50 text-brand-700' : 'bg-warn-50 text-warn-500'
-                }`}
-              >
-                <Icon name={item.met ? 'check' : 'clock'} className="h-3.5 w-3.5" />
-                {item.met ? 'Done' : 'To do'}
-              </span>
+          {data.documents.map((document) => {
+            const status = DOCUMENT_STATUS[document.status] ?? { label: document.status, tone: 'gray' as Tone };
+            return (
+              <li key={document.id} className="space-y-1 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-gray-900">{DOCUMENT_TYPE_LABEL[document.type] ?? document.type}</span>
+                  <Pill tone={status.tone}>{status.label}</Pill>
+                </div>
+                <p className="text-sm text-gray-700">
+                  <span className="text-gray-500">Number: </span>
+                  <DocumentNumber masked={document.documentNumberMasked} />
+                </p>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-gray-700">
+                  <span className="min-w-0 truncate">
+                    <span className="text-gray-500">File: </span>
+                    {document.hasFile
+                      ? `${document.fileName ?? 'document.pdf'}${document.fileSizeBytes ? ` · ${formatFileSize(document.fileSizeBytes)}` : ''}`
+                      : 'No file'}
+                  </span>
+                  {document.hasFile && <ViewPdfButton load={() => sellerApi.getBlob(`/seller/onboarding/documents/${document.id}/file`)} />}
+                </div>
+                {document.status === 'REJECTED' && (
+                  <p className="text-sm text-danger-600">
+                    Rejected{document.rejectionReason ? `: ${document.rejectionReason}` : ''} — upload a new PDF to replace it.
+                  </p>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div className="mt-3">
+        <Note>PDF only, up to 10 MB. To replace a document, upload a new one of the same type.</Note>
+      </div>
+    </Panel>
+  );
+
+  const restaurantPanel = isRestaurant && (
+    <Panel
+      title="Restaurant details"
+      action={
+        editable && (
+          <Button variant="secondary" onClick={() => open('restaurant')}>
+            {data.restaurantProfile ? 'Edit' : 'Add'}
+          </Button>
+        )
+      }
+    >
+      {data.restaurantProfile ? (
+        <dl className="divide-y divide-gray-100">
+          <Row label="Cuisines" value={data.restaurantProfile.cuisine.join(', ')} />
+          <Row label="Vegetarian only" value={data.restaurantProfile.isVegOnly ? 'Yes' : 'No'} />
+          <Row label="Average preparation time" value={data.restaurantProfile.avgPrepMins ? `${data.restaurantProfile.avgPrepMins} min` : null} />
+        </dl>
+      ) : (
+        <Note>Add your cuisines and average preparation time.</Note>
+      )}
+    </Panel>
+  );
+
+  // Store address + map point (GET/PATCH /seller/location)
+  const locationPanel = (
+    <StoreLocationPanel
+      readOnly={!editable}
+      onSaved={(message) => {
+        setNotice(message);
+        refresh();
+      }}
+    />
+  );
+
+  const bankPanel = (
+    <Panel
+      title="Bank account"
+      action={
+        editable && (
+          <Button variant="secondary" onClick={() => open('bank')}>
+            {data.bankDetail ? 'Edit' : 'Add bank details'}
+          </Button>
+        )
+      }
+    >
+      {data.bankDetail ? (
+        <dl className="divide-y divide-gray-100">
+          <Row label="Account holder" value={data.bankDetail.accountHolderName} />
+          <Row label="Bank" value={data.bankDetail.bankName} />
+          <Row label="Account number" value={data.bankDetail.accountNumber} />
+          <Row label="IFSC" value={data.bankDetail.ifscCode} />
+          <div className="flex justify-between py-2.5">
+            <dt className="text-sm text-gray-500">Status</dt>
+            <dd>
+              <Pill tone={data.bankDetail.isVerified ? 'brand' : 'amber'}>{data.bankDetail.isVerified ? 'Verified' : 'Not verified yet'}</Pill>
+            </dd>
+          </div>
+        </dl>
+      ) : (
+        <Note>Add the bank account your settlements will be paid into.</Note>
+      )}
+    </Panel>
+  );
+
+  /** What is still missing in a step, with the hint for each item. */
+  const toDo = (key: 'business' | 'address') => {
+    const items = missingIn(key);
+    if (!editable || items.length === 0) return null;
+    return (
+      <div role="note" className="rounded-xl border border-warn-500/30 bg-warn-50 px-3.5 py-3 text-sm text-warn-600">
+        <p className="font-semibold">Still required in this step ({items.length}):</p>
+        <ul className="mt-1 list-disc space-y-0.5 pl-5">
+          {items.map((item) => (
+            <li key={item.key}>
+              <span className="font-medium">{item.label}</span> — {item.hint}
             </li>
           ))}
         </ul>
-        {editable && (
-          <div className="mt-4 space-y-3 border-t border-gray-100 pt-4">
-            {submit.isError && <ErrorBanner message={sellerErrorMessage(submit.error)} />}
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm text-gray-500">
-                {lifecycle.canSubmit
-                  ? 'Everything is in place. Submit to send your onboarding to Aadione for verification. You cannot edit it while it is being reviewed.'
-                  : `Complete ${missing.length} more item${missing.length === 1 ? '' : 's'} to submit.`}
-              </p>
-              <Button disabled={!lifecycle.canSubmit || submit.isPending} onClick={() => submit.mutate()} className="shrink-0">
-                {submit.isPending
-                  ? 'Submitting…'
-                  : lifecycle.lifecycleStatus === 'ONBOARDING_CHANGES_REQUIRED'
-                    ? 'Resubmit for Verification'
-                    : 'Submit for Verification'}
-              </Button>
-            </div>
-          </div>
-        )}
-      </Panel>
+      </div>
+    );
+  };
 
-      {/* Business & contact & tax */}
-      <Panel
-        title="Business, contact & tax details"
-        action={
-          editable && (
-            <Button variant="secondary" onClick={() => open('business')}>
-              {data.profile ? 'Edit' : 'Add'}
-            </Button>
-          )
-        }
-      >
-        {data.profile ? (
-          <dl className="divide-y divide-gray-100">
-            <Row label="Business name" value={data.profile.businessName} />
-            <Row label="Business type" value={data.profile.businessType} />
-            <Row label="Owner name" value={data.profile.ownerFullName} />
-            <Row label="Mobile number" value={data.profile.ownerMobile} />
-            <Row label="Email" value={data.profile.ownerEmail} />
-            <Row label="PAN" value={data.profile.panNumber} />
-            <Row label="Aadhaar" value={data.profile.aadhaarNumber} />
-            <Row label="GST number" value={data.profile.gstNumber} />
-            <Row label="FSSAI licence number" value={data.profile.fssaiNumber} />
-          </dl>
-        ) : (
-          <Note>Add your business, contact and tax details.</Note>
-        )}
-      </Panel>
+  const rejectedDocumentsNote = rejectedDocuments.length > 0 && (
+    <div role="note" className="rounded-xl border border-danger-500/30 bg-danger-50 px-3.5 py-3 text-sm text-danger-600">
+      <p className="font-semibold">
+        {rejectedDocuments.length === 1 ? 'A document was rejected' : `${rejectedDocuments.length} documents were rejected`} — upload a
+        replacement PDF in Step 1:
+      </p>
+      <ul className="mt-1 list-disc space-y-0.5 pl-5">
+        {rejectedDocuments.map((d) => (
+          <li key={d.id}>
+            <span className="font-medium">{DOCUMENT_TYPE_LABEL[d.type] ?? d.type}</span>
+            {d.rejectionReason ? `: ${d.rejectionReason}` : ''}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 
-      {/* Store address + map point (GET/PATCH /seller/location) */}
-      <StoreLocationPanel
-        readOnly={!editable}
-        onSaved={(message) => {
-          setNotice(message);
-          refresh();
-        }}
-      />
-
-      {/* Bank */}
-      <Panel
-        title="Bank account"
-        action={
-          editable && (
-            <Button variant="secondary" onClick={() => open('bank')}>
-              {data.bankDetail ? 'Edit' : 'Add bank details'}
-            </Button>
-          )
-        }
-      >
-        {data.bankDetail ? (
-          <dl className="divide-y divide-gray-100">
-            <Row label="Account holder" value={data.bankDetail.accountHolderName} />
-            <Row label="Bank" value={data.bankDetail.bankName} />
-            <Row label="Account number" value={data.bankDetail.accountNumber} />
-            <Row label="IFSC" value={data.bankDetail.ifscCode} />
-            <div className="flex justify-between py-2.5">
-              <dt className="text-sm text-gray-500">Status</dt>
-              <dd>
-                <Pill tone={data.bankDetail.isVerified ? 'brand' : 'amber'}>
-                  {data.bankDetail.isVerified ? 'Verified' : 'Not verified yet'}
-                </Pill>
-              </dd>
-            </div>
-          </dl>
-        ) : (
-          <Note>Add the bank account your settlements will be paid into.</Note>
-        )}
-      </Panel>
-
-      {/* Documents */}
-      <Panel
-        title="Documents & licences"
-        action={
-          editable && (
-            <Button variant="secondary" onClick={() => { setNotice(null); setUploading(true); }}>
-              Upload document
-            </Button>
-          )
-        }
-      >
-        {data.documents.length === 0 ? (
-          <Note>No documents uploaded yet. Upload your PAN card as a PDF with its number.</Note>
-        ) : (
-          <ul className="divide-y divide-gray-100">
-            {data.documents.map((document) => {
-              const status = DOCUMENT_STATUS[document.status] ?? { label: document.status, tone: 'gray' as Tone };
-              return (
-                <li key={document.id} className="space-y-1 py-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-sm font-semibold text-gray-900">
-                      {DOCUMENT_TYPE_LABEL[document.type] ?? document.type}
-                    </span>
-                    <Pill tone={status.tone}>{status.label}</Pill>
-                  </div>
-                  <p className="text-sm text-gray-700">
-                    <span className="text-gray-500">Number: </span>
-                    <DocumentNumber masked={document.documentNumberMasked} />
-                  </p>
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-gray-700">
-                    <span className="min-w-0 truncate">
-                      <span className="text-gray-500">File: </span>
-                      {document.hasFile
-                        ? `${document.fileName ?? 'document.pdf'}${document.fileSizeBytes ? ` · ${formatFileSize(document.fileSizeBytes)}` : ''}`
-                        : 'No file'}
-                    </span>
-                    {document.hasFile && (
-                      <ViewPdfButton load={() => sellerApi.getBlob(`/seller/onboarding/documents/${document.id}/file`)} />
-                    )}
-                  </div>
-                  {document.status === 'REJECTED' && (
-                    <p className="text-sm text-danger-600">
-                      Rejected{document.rejectionReason ? `: ${document.rejectionReason}` : ''} — upload a new PDF to replace it.
-                    </p>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        <div className="mt-3">
-          <Note>PDF only, up to 10 MB. To replace a document, upload a new one of the same type.</Note>
-        </div>
-      </Panel>
-
-      {/* Restaurant details */}
-      {isRestaurant && (
-        <Panel
-          title="Restaurant details"
-          action={
-            editable && (
-              <Button variant="secondary" onClick={() => open('restaurant')}>
-                {data.restaurantProfile ? 'Edit' : 'Add'}
-              </Button>
-            )
-          }
-        >
-          {data.restaurantProfile ? (
-            <dl className="divide-y divide-gray-100">
-              <Row label="Cuisines" value={data.restaurantProfile.cuisine.join(', ')} />
-              <Row label="Vegetarian only" value={data.restaurantProfile.isVegOnly ? 'Yes' : 'No'} />
-              <Row
-                label="Average preparation time"
-                value={data.restaurantProfile.avgPrepMins ? `${data.restaurantProfile.avgPrepMins} min` : null}
-              />
-            </dl>
-          ) : (
-            <Note>Add your cuisines and average preparation time.</Note>
-          )}
-        </Panel>
-      )}
-
+  const modals = (
+    <>
       {editing === 'business' && (
         <BusinessModal
           initial={data}
@@ -517,7 +552,6 @@ function OnboardingWorkspace({ lifecycle }: { lifecycle: SellerLifecycleDto }) {
           onSave={(body) => save.mutate({ path: '/seller/onboarding/profile', body, done: 'Business details saved.' })}
         />
       )}
-
       {editing === 'bank' && (
         <BankDetailsModal
           hasExisting={data.bankDetail !== null}
@@ -530,7 +564,6 @@ function OnboardingWorkspace({ lifecycle }: { lifecycle: SellerLifecycleDto }) {
           onSave={(body) => save.mutate({ path: '/seller/onboarding/bank-detail', body, done: 'Bank details saved.' })}
         />
       )}
-
       {editing === 'restaurant' && (
         <RestaurantModal
           initial={data.restaurantProfile ?? { cuisine: [], isVegOnly: false, avgPrepMins: null }}
@@ -540,7 +573,6 @@ function OnboardingWorkspace({ lifecycle }: { lifecycle: SellerLifecycleDto }) {
           onSave={(body) => save.mutate({ path: '/seller/onboarding/restaurant-profile', body, done: 'Restaurant details saved.' })}
         />
       )}
-
       {uploading && (
         <UploadDocumentModal
           onClose={() => setUploading(false)}
@@ -552,6 +584,277 @@ function OnboardingWorkspace({ lifecycle }: { lifecycle: SellerLifecycleDto }) {
         />
       )}
     </>
+  );
+
+  const noticeEl = notice && (
+    <div role="status" className="rounded-xl border border-brand-500/30 bg-brand-50 px-3.5 py-2.5 text-sm text-brand-600">
+      {notice}
+    </div>
+  );
+
+  /* Submitted: read-only, with the confirmation ----------------------------- */
+
+  if (!editable) {
+    return (
+      <>
+        <div role="status" className="rounded-xl border border-brand-500/30 bg-brand-50 px-3.5 py-3 text-sm text-brand-700">
+          <p className="font-semibold">{submittedNow ? 'Submitted successfully.' : 'Your onboarding is submitted.'}</p>
+          <p className="mt-0.5">
+            {lifecycle.onboardingSubmittedAt ? `Sent for final review on ${formatDate(lifecycle.onboardingSubmittedAt)}. ` : ''}
+            Current status: Pending final review. Aadione will notify you of the decision; your details are locked until then.
+          </p>
+        </div>
+        {businessPanel}
+        {documentsPanel}
+        {restaurantPanel}
+        {locationPanel}
+        {bankPanel}
+      </>
+    );
+  }
+
+  /* Editable: two steps + review ------------------------------------------- */
+
+  const stepIndex = STEP_TABS.findIndex((tab) => tab.key === step);
+  const nav = (
+    <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
+      {stepIndex > 0 ? (
+        <Button variant="secondary" onClick={() => setStep(STEP_TABS[stepIndex - 1]!.key)}>
+          ← Back
+        </Button>
+      ) : (
+        <span />
+      )}
+      {stepIndex < STEP_TABS.length - 1 && (
+        <Button onClick={() => setStep(STEP_TABS[stepIndex + 1]!.key)}>
+          {stepIndex === 0 ? 'Continue to Address & Bank →' : 'Continue to Review →'}
+        </Button>
+      )}
+    </div>
+  );
+
+  return (
+    <>
+      <nav aria-label="Onboarding steps" className="grid gap-2 sm:grid-cols-3">
+        {STEP_TABS.map((tab) => {
+          const count = tab.key === 'review' ? missing.length : missingIn(tab.key).length;
+          const active = tab.key === step;
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setStep(tab.key)}
+              aria-current={active ? 'step' : undefined}
+              className={`flex min-h-12 items-center justify-between gap-2 rounded-xl border px-3.5 py-2 text-left text-sm font-semibold outline-none transition focus-visible:ring-2 focus-visible:ring-brand-400 ${
+                active ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              <span>{tab.label}</span>
+              {tab.key !== 'review' &&
+                (count === 0 ? (
+                  <Icon name="check" className="h-4 w-4 shrink-0 text-brand-600" aria-label="complete" />
+                ) : (
+                  <span className="shrink-0 rounded-full bg-warn-50 px-2 py-0.5 text-xs text-warn-600">{count} to do</span>
+                ))}
+            </button>
+          );
+        })}
+      </nav>
+      <p className="text-xs text-gray-500">
+        Each section is saved when you press Save — you can leave at any time and continue later; nothing you entered is lost when you
+        switch steps.
+      </p>
+      {noticeEl}
+
+      {step === 'business' && (
+        <>
+          {rejectedDocumentsNote}
+          {toDo('business')}
+          {businessPanel}
+          {documentsPanel}
+          {restaurantPanel}
+        </>
+      )}
+
+      {step === 'address' && (
+        <>
+          {toDo('address')}
+          {locationPanel}
+          {bankPanel}
+        </>
+      )}
+
+      {step === 'review' && (
+        <>
+          {rejectedDocumentsNote}
+          <Panel
+            title="Review before submitting"
+            action={
+              <span className="text-sm font-semibold text-gray-500">
+                {lifecycle.checklist.length - missing.length}/{lifecycle.checklist.length} done
+              </span>
+            }
+          >
+            {(['business', 'address'] as const).map((key) => (
+              <div key={key} className="border-b border-gray-100 py-2 last:border-0">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-gray-900">{STEP_TABS.find((tab) => tab.key === key)!.label}</p>
+                  <Button variant="ghost" onClick={() => setStep(key)} className="min-h-9">
+                    Edit
+                  </Button>
+                </div>
+                <ul className="divide-y divide-gray-50">
+                  {lifecycle.checklist
+                    .filter((item) => stepOfItem(item.key) === key)
+                    .map((item) => (
+                      <li key={item.key} className="flex items-start justify-between gap-3 py-2">
+                        <div className="min-w-0">
+                          <p className="text-sm text-gray-800">{item.label}</p>
+                          {!item.met && <p className="text-xs text-gray-500">{item.hint}</p>}
+                        </div>
+                        <span
+                          className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                            item.met ? 'bg-brand-50 text-brand-700' : 'bg-warn-50 text-warn-500'
+                          }`}
+                        >
+                          <Icon name={item.met ? 'check' : 'clock'} className="h-3.5 w-3.5" />
+                          {item.met ? 'Done' : 'Missing'}
+                        </span>
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            ))}
+            <div className="mt-4 space-y-3 border-t border-gray-100 pt-4">
+              {submit.isError && <ErrorBanner message={sellerErrorMessage(submit.error)} />}
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-gray-500">
+                  {lifecycle.canSubmit
+                    ? `Everything is in place. ${resubmitting ? 'Resubmit' : 'Submit'} to send your onboarding to Aadione for final approval. You cannot edit it while it is being reviewed.`
+                    : `Complete ${missing.length} more item${missing.length === 1 ? '' : 's'} before submitting — see the list above.`}
+                </p>
+                <Button disabled={!lifecycle.canSubmit || submit.isPending} onClick={onSubmit} className="shrink-0">
+                  {submit.isPending ? 'Submitting…' : resubmitting ? 'Resubmit for Final Approval' : 'Submit for Verification'}
+                </Button>
+              </div>
+            </div>
+          </Panel>
+          {businessPanel}
+          {documentsPanel}
+          {restaurantPanel}
+          {locationPanel}
+          {bankPanel}
+        </>
+      )}
+
+      {nav}
+      {modals}
+    </>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Rejected application: correct and resubmit                                */
+/* -------------------------------------------------------------------------- */
+
+const SELLER_TYPES = Object.values(SellerType);
+
+/** POST /seller/lifecycle/application — the same fields (and rules) as the registration form. */
+function ApplicationResubmit({ lifecycle }: { lifecycle: SellerLifecycleDto }) {
+  const queryClient = useQueryClient();
+  const [businessName, setBusinessName] = useState(lifecycle.sellerName);
+  const [fullName, setFullName] = useState(lifecycle.ownerFullName ?? '');
+  const [sellerType, setSellerType] = useState<SellerType>(lifecycle.sellerType as SellerType);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const sending = useRef(false);
+
+  const resubmit = useMutation({
+    mutationFn: () =>
+      sellerApi.post<SellerLifecycleDto>('/seller/lifecycle/application', { businessName: businessName.trim(), fullName: fullName.trim(), sellerType }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(sellerKeys.lifecycle, data);
+      setConfirming(false);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: sellerKeys.lifecycle }),
+  });
+
+  const check = () => {
+    if (businessName.trim().length < 2) return setProblem('Enter your business or store name (at least 2 characters).');
+    if (fullName.trim().length < 2) return setProblem('Enter your full name (at least 2 characters).');
+    setProblem(null);
+    resubmit.reset();
+    setConfirming(true);
+  };
+  const send = () => {
+    if (sending.current || resubmit.isPending) return;
+    sending.current = true;
+    resubmit.mutate(undefined, { onSettled: () => (sending.current = false) });
+  };
+
+  return (
+    <Panel title="Correct and resubmit your application">
+      <form
+        className="space-y-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          check();
+        }}
+      >
+        <p className="text-sm text-gray-600">
+          Fix what the reason above mentions and send your application again. It goes back to Aadione for verification — onboarding opens
+          only after it is approved.
+        </p>
+        <ErrorBanner message={problem} />
+        <Field label="Business or store name" required>
+          <input value={businessName} maxLength={120} onChange={(e) => setBusinessName(e.target.value)} className={inputClass} />
+        </Field>
+        <Field label="Your full name" required>
+          <input value={fullName} maxLength={120} onChange={(e) => setFullName(e.target.value)} className={inputClass} />
+        </Field>
+        <Field label="Seller type" required>
+          <select value={sellerType} onChange={(e) => setSellerType(e.target.value as SellerType)} className={inputClass}>
+            {SELLER_TYPES.map((type) => (
+              <option key={type} value={type}>
+                {SELLER_TYPE_LABEL[type]}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <div className="flex justify-end">
+          <Button type="submit">Review & Resubmit</Button>
+        </div>
+      </form>
+      {confirming && (
+        <Modal
+          title="Resubmit your application?"
+          subtitle="Aadione reviews it again before you can start onboarding."
+          onClose={() => {
+            if (!resubmit.isPending) setConfirming(false);
+          }}
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setConfirming(false)} disabled={resubmit.isPending}>
+                Back
+              </Button>
+              <Button onClick={send} disabled={resubmit.isPending}>
+                {resubmit.isPending ? 'Sending…' : 'Resubmit Application'}
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-3 text-sm">
+            <ErrorBanner message={resubmit.isError ? sellerErrorMessage(resubmit.error) : null} />
+            <dl className="divide-y divide-gray-100">
+              <Row label="Business name" value={businessName.trim()} />
+              <Row label="Full name" value={fullName.trim()} />
+              <Row label="Seller type" value={SELLER_TYPE_LABEL[sellerType] ?? sellerType} />
+            </dl>
+          </div>
+        </Modal>
+      )}
+    </Panel>
   );
 }
 

@@ -36,6 +36,8 @@ export const SellerAuditAction = {
   APPLICATION_APPROVE: 'seller_application.approve',
   /** Gate 1 rejected; `after.reason` is the reason shown to the applicant. */
   APPLICATION_REJECT: 'seller_application.reject',
+  /** A rejected applicant corrected the application and sent it back to Gate 1. */
+  APPLICATION_RESUBMIT: 'seller_application.resubmit',
   /** Seller submitted (or resubmitted) onboarding for Gate 2 verification. */
   ONBOARDING_SUBMIT: 'seller_onboarding.submit',
   /** Gate 2: admin asked for changes; `after.reason` is shown to the seller. */

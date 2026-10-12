@@ -389,10 +389,11 @@ export async function getSellerDetail(sellerId: string): Promise<AdminSellerDeta
   });
   if (!seller) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Seller not found.' });
 
-  const [onboarding, availability, lastRejection] = await Promise.all([
+  const [onboarding, availability, lastRejection, lifecycleHistory] = await Promise.all([
     onboardingService.getOnboardingDetail(seller.id, undefined, false),
     sellerService.evaluateSellerAvailability(seller),
     onboardingService.getLastOnboardingRejection(seller.id),
+    onboardingService.getLifecycleHistory(seller.id),
   ]);
 
   const countDocuments = (status?: DocumentStatus) =>
@@ -423,6 +424,7 @@ export async function getSellerDetail(sellerId: string): Promise<AdminSellerDeta
     isComplete: onboarding.isComplete,
     lastRejectionReason: lastRejection?.reason ?? null,
     lastRejectedAt: lastRejection?.rejectedAt.toISOString() ?? null,
+    lifecycleHistory,
     isActive: seller.isActive,
     isAcceptingOrders: seller.isAcceptingOrders,
     availability: {

@@ -9,11 +9,14 @@
  *   Gate 1 (APPLICATION_PENDING)        Approve Application / Reject Application
  *   Gate 2 (ONBOARDING_PENDING_REVIEW)  Approve Seller / Request Changes / Reject Seller
  * Decisions go to PATCH /admin/sellers/:id/application/review and
- * .../verification/review; the server re-checks every rule.
+ * .../verification/review; the server re-checks every rule. A rejected seller
+ * can correct and resubmit (the application at Gate 1, the onboarding at
+ * Gate 2), so a corrected submission comes back here for a new decision; the
+ * review history lists every submission and decision with its reason.
  */
 
 import { useState } from 'react';
-import type { AdminSellerDetailDto, SellerLifecycleStatus } from '@shared';
+import type { AdminSellerDetailDto, SellerLifecycleEventDto, SellerLifecycleStatus } from '@shared';
 import { sellerErrorMessage, useReviewSellerApplication, useReviewSellerVerification } from '@/lib/sellers';
 import { DetailRow, LifecyclePill, formatSellerDate } from '@/components/SellerBadges';
 import { Button, ErrorBanner, Field, Icon, Modal, Pill, Surface, inputClass, type Tone } from '@/components/ui';
@@ -49,6 +52,8 @@ function onboardingStatus(status: SellerLifecycleStatus): { label: string; tone:
       return { label: 'In progress', tone: 'blue' };
     case 'ONBOARDING_CHANGES_REQUIRED':
       return { label: 'Changes required', tone: 'amber' };
+    case 'ONBOARDING_REJECTED':
+      return { label: 'Rejected — seller may correct and resubmit', tone: 'red' };
     default:
       return { label: 'Submitted', tone: 'brand' };
   }
@@ -157,6 +162,8 @@ export function SellerLifecyclePanel({
         </div>
       )}
 
+      {seller.lifecycleHistory.length > 0 && <ReviewHistory events={seller.lifecycleHistory} />}
+
       {error && (
         <div className="mt-3">
           <ErrorBanner message={error} />
@@ -226,13 +233,14 @@ export function SellerLifecyclePanel({
           }
           subtitle={
             asking.gate === 1
-              ? `${seller.name} — the applicant sees this reason and cannot continue to onboarding.`
+              ? `${seller.name} — the applicant sees this reason and can correct and resubmit the application; onboarding stays locked until you approve it.`
               : asking.decision === 'REQUEST_CHANGES'
                 ? `${seller.name} — tell the seller exactly what to fix. They edit and resubmit; no new application is needed.`
-                : `${seller.name} — a final rejection. The seller sees this reason.`
+                : `${seller.name} — the seller sees this reason, stays inactive, and can correct the onboarding and resubmit it for final approval.`
           }
           confirmLabel={asking.gate === 2 && asking.decision === 'REQUEST_CHANGES' ? 'Send request' : 'Reject'}
           danger={!(asking.gate === 2 && asking.decision === 'REQUEST_CHANGES')}
+          minLength={DECISION_REASON_MIN}
           busy={busy}
           error={error}
           onClose={() => setAsking(null)}
@@ -256,6 +264,43 @@ export function SellerLifecyclePanel({
   );
 }
 
+/** Lifecycle rejections / requests for changes: the server's MIN_DECISION_REASON_LENGTH. */
+export const DECISION_REASON_MIN = 10;
+
+const HISTORY_LABEL: Record<SellerLifecycleEventDto['event'], { label: string; tone: Tone }> = {
+  APPLICATION_SUBMITTED: { label: 'Application submitted', tone: 'gray' },
+  APPLICATION_RESUBMITTED: { label: 'Application resubmitted', tone: 'blue' },
+  APPLICATION_APPROVED: { label: 'Application approved', tone: 'brand' },
+  APPLICATION_REJECTED: { label: 'Application rejected', tone: 'red' },
+  ONBOARDING_SUBMITTED: { label: 'Onboarding submitted', tone: 'gray' },
+  ONBOARDING_RESUBMITTED: { label: 'Onboarding resubmitted', tone: 'blue' },
+  CHANGES_REQUESTED: { label: 'Changes requested', tone: 'amber' },
+  ONBOARDING_APPROVED: { label: 'Approved — active', tone: 'brand' },
+  ONBOARDING_REJECTED: { label: 'Onboarding rejected', tone: 'red' },
+};
+
+/** Every submission and decision, newest first, with its time and reason. */
+function ReviewHistory({ events }: { events: SellerLifecycleEventDto[] }) {
+  return (
+    <details className="mt-3 rounded-xl border border-gray-200 px-3.5 py-2.5 text-sm" open={events.length <= 8}>
+      <summary className="cursor-pointer font-medium text-gray-800">Review history ({events.length})</summary>
+      <ol className="mt-2 space-y-2">
+        {events.map((event, index) => (
+          <li key={`${event.at}-${index}`} className="flex flex-col gap-0.5 sm:flex-row sm:items-start sm:gap-3">
+            <span className="shrink-0 text-xs text-gray-500 sm:w-40">
+              {new Date(event.at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' })}
+            </span>
+            <span className="min-w-0">
+              <Pill tone={HISTORY_LABEL[event.event].tone}>{HISTORY_LABEL[event.event].label}</Pill>
+              {event.reason && <span className="ml-2 text-gray-600">“{event.reason}”</span>}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
 /** A decision that needs a reason the seller will read. */
 export function ReasonModal({
   title,
@@ -264,6 +309,7 @@ export function ReasonModal({
   busy,
   error,
   danger = true,
+  minLength = 3,
   onClose,
   onConfirm,
 }: {
@@ -273,13 +319,19 @@ export function ReasonModal({
   busy: boolean;
   error: string | null;
   danger?: boolean;
+  /** Shortest reason accepted (the server enforces its own minimum too). */
+  minLength?: number;
   onClose: () => void;
   onConfirm: (reason: string) => void;
 }) {
   const [reason, setReason] = useState('');
   const [problem, setProblem] = useState<string | null>(null);
   const submit = () => {
-    if (reason.trim().length < 3) return setProblem('Write a short reason the seller can act on.');
+    if (reason.trim().length < minLength) {
+      return setProblem(
+        minLength > 3 ? `Write a clear reason the seller can act on (at least ${minLength} characters).` : 'Write a short reason the seller can act on.',
+      );
+    }
     setProblem(null);
     onConfirm(reason.trim());
   };
@@ -301,7 +353,7 @@ export function ReasonModal({
     >
       <div className="space-y-3">
         <ErrorBanner message={problem ?? error} />
-        <Field label="Reason (shown to the seller)" required hint={`${reason.trim().length}/500`}>
+        <Field label="Reason (shown to the seller)" required hint={`${reason.trim().length}/500${minLength > 3 ? ` · at least ${minLength} characters` : ''}`}>
           <textarea value={reason} maxLength={500} rows={4} onChange={(e) => setReason(e.target.value)} className={inputClass} />
         </Field>
       </div>

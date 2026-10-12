@@ -352,7 +352,7 @@ export interface SellerLifecycleDto {
   reason: string | null;
   /** Full operational Seller Panel (ACTIVE). */
   panelUnlocked: boolean;
-  /** Onboarding data may be edited now (ONBOARDING_PENDING / CHANGES_REQUIRED). */
+  /** Onboarding data may be edited now (ONBOARDING_PENDING / CHANGES_REQUIRED / REJECTED). */
   canEditOnboarding: boolean;
   /** Editable AND every checklist item met. */
   canSubmit: boolean;
@@ -361,6 +361,35 @@ export interface SellerLifecycleDto {
   onboardingSubmittedAt: string | null;
   activatedAt: string | null;
   lifecycleUpdatedAt: string | null;
+  /** Owner name on the business profile — pre-fills a rejected applicant's resubmission. */
+  ownerFullName: string | null;
+}
+
+/**
+ * POST /seller/lifecycle/application — a rejected applicant corrects its
+ * application (the signup's business fields) and sends it back to Gate 1.
+ */
+export interface SellerApplicationResubmitRequest {
+  businessName: string;
+  fullName: string;
+  sellerType: SellerType;
+}
+
+/** One lifecycle event from the audit trail (admin review history). */
+export interface SellerLifecycleEventDto {
+  event:
+    | 'APPLICATION_SUBMITTED'
+    | 'APPLICATION_RESUBMITTED'
+    | 'APPLICATION_APPROVED'
+    | 'APPLICATION_REJECTED'
+    | 'ONBOARDING_SUBMITTED'
+    | 'ONBOARDING_RESUBMITTED'
+    | 'CHANGES_REQUESTED'
+    | 'ONBOARDING_APPROVED'
+    | 'ONBOARDING_REJECTED';
+  at: string;
+  /** The reason given with a rejection / request for changes. */
+  reason: string | null;
 }
 
 /** POST /auth/seller/signup — the public seller application (Gate 1 input). */
@@ -598,6 +627,8 @@ export interface AdminSellerDetailDto {
    * kept after a resubmission or a later approval, as history. */
   lastRejectionReason: string | null;
   lastRejectedAt: string | null;
+  /** Every application / onboarding submission and decision, newest first (from the audit trail). */
+  lifecycleHistory: SellerLifecycleEventDto[];
   isActive: boolean;
   isAcceptingOrders: boolean;
   availability: AdminSellerAvailabilitySummaryDto;

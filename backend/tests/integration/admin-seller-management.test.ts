@@ -507,8 +507,8 @@ describe('admin seller detail', () => {
     });
     expect(first.lastRejectedAt).not.toBeNull();
 
-    // A second review round (Gate 2 rejection is terminal, so the round is
-    // re-opened directly in the database): only the LATEST rejection is reported.
+    // A second review round (re-opened directly in the database here; the
+    // seller-facing resubmission is covered in seller-onboarding.test): only the LATEST rejection is reported.
     await prisma.seller.update({
       where: { id: sellerId },
       data: { onboardingStatus: 'PENDING', lifecycleStatus: 'ONBOARDING_PENDING_REVIEW' },

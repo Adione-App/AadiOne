@@ -183,6 +183,8 @@ function compose(type: NotificationType, c: NotifyContext): { title: string; bod
   const order = c.orderNumber ?? '';
   const seller = c.sellerName ?? 'The store';
   const money = (paise?: number) => (paise !== undefined ? formatPaise(paise) : '');
+  // A reason quoted mid-message, ending in exactly one full stop.
+  const sentence = (text: string) => `${text.trim().replace(/[.!?]+$/, '')}.`;
   switch (type) {
     /* --- customer --------------------------------------------------------- */
     case NotificationType.ORDER_PLACED:
@@ -238,13 +240,13 @@ function compose(type: NotificationType, c: NotifyContext): { title: string; bod
     case NotificationType.SELLER_ONBOARDING_APPROVED:
       return { title: 'You are approved', body: 'Your seller account has been approved. You can start selling.' };
     case NotificationType.SELLER_ONBOARDING_REJECTED:
-      return { title: 'Seller account not approved', body: `Your seller onboarding was not approved${c.reason ? `: ${c.reason}` : '.'}` };
+      return { title: 'Onboarding not approved', body: `Your seller onboarding was not approved${c.reason ? `: ${sentence(c.reason)}` : '.'} Correct it and resubmit for final approval.` };
     case NotificationType.SELLER_ONBOARDING_CHANGES_REQUESTED:
       return { title: 'Onboarding needs changes', body: `Please update your onboarding and resubmit${c.reason ? `: ${c.reason}` : '.'}` };
     case NotificationType.SELLER_APPLICATION_APPROVED:
       return { title: 'Application approved', body: 'Your seller application is approved. Complete your seller onboarding to start selling.' };
     case NotificationType.SELLER_APPLICATION_REJECTED:
-      return { title: 'Application not approved', body: `Your seller application was not approved${c.reason ? `: ${c.reason}` : '.'}` };
+      return { title: 'Application not approved', body: `Your seller application was not approved${c.reason ? `: ${sentence(c.reason)}` : '.'} Correct it and resubmit your application.` };
     case NotificationType.SELLER_PRODUCT_APPROVED:
       return c.count
         ? { title: 'Products approved', body: `${c.count} product${c.count === 1 ? ' is' : 's are'} approved and now live for customers (when in stock).` }

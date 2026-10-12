@@ -2,11 +2,11 @@
  * Seller onboarding — the two-gate lifecycle (Seller.lifecycleStatus):
  *
  *   APPLICATION_PENDING --Gate 1 approve--> ONBOARDING_PENDING
- *                       --Gate 1 reject---> APPLICATION_REJECTED (terminal)
- *   ONBOARDING_PENDING / ONBOARDING_CHANGES_REQUIRED --submit--> ONBOARDING_PENDING_REVIEW
+ *                       --Gate 1 reject---> APPLICATION_REJECTED --resubmit--> APPLICATION_PENDING
+ *   ONBOARDING_PENDING / ONBOARDING_CHANGES_REQUIRED / ONBOARDING_REJECTED --submit--> ONBOARDING_PENDING_REVIEW
  *   ONBOARDING_PENDING_REVIEW --Gate 2 approve---------> ACTIVE
  *                             --Gate 2 request changes-> ONBOARDING_CHANGES_REQUIRED
- *                             --Gate 2 reject----------> ONBOARDING_REJECTED (terminal)
+ *                             --Gate 2 reject----------> ONBOARDING_REJECTED (correct + resubmit)
  *
  * End to end through the HTTP API: self-signup, both admin gates, the
  * seller's own onboarding data (profile, bank, location, PDF documents), the
@@ -301,11 +301,14 @@ describe('Gate 1 — application review', () => {
     expect(expectError(again.body).code).toBe(ErrorCode.INVALID_STATUS_TRANSITION);
   });
 
-  it('reject: needs a reason, is terminal, and the applicant sees why', async () => {
+  it('reject: needs a meaningful reason, keeps onboarding locked, and the applicant sees why', async () => {
     const adminToken = await loginAdmin();
     const { sellerId, token } = await signupSeller('9500000112', 'Rejected Applicant');
 
     expect((await gate1(adminToken, sellerId, { decision: 'REJECT' })).status).toBe(400);
+    const tooShort = await gate1(adminToken, sellerId, { decision: 'REJECT', reason: '  Too vague  ' }); // 9 characters once trimmed
+    expect(tooShort.status).toBe(400);
+    expect(expectError(tooShort.body).message).toMatch(/at least 10 characters/);
     expect((await lifecycleRow(sellerId)).lifecycleStatus).toBe('APPLICATION_PENDING');
 
     await gate1(adminToken, sellerId, { decision: 'REJECT', reason: 'Outside our service area' }).expect(200);
@@ -324,6 +327,60 @@ describe('Gate 1 — application review', () => {
     expect(await prisma.notification.count({ where: { type: NotificationType.SELLER_APPLICATION_REJECTED } })).toBe(1);
 
     expect((await gate1(adminToken, sellerId, { decision: 'APPROVE' })).status).toBe(409);
+  });
+
+  it('a rejected applicant corrects and resubmits; it goes back to Pending Verification, never approved on its own', async () => {
+    const adminToken = await loginAdmin();
+    const { sellerId, token } = await signupSeller('9500000113', 'Wrong Name Store');
+    const resubmit = (body: object) => api().post('/api/v1/seller/lifecycle/application').set('Authorization', bearer(token)).send(body);
+    const corrected = { businessName: 'Sharma Kirana', fullName: 'Ravi Sharma', sellerType: 'GROCERY' };
+
+    // Not before a rejection.
+    expectNotActive(await resubmit(corrected));
+    await gate1(adminToken, sellerId, { decision: 'REJECT', reason: 'Business name does not match your documents' }).expect(200);
+    const firstApplied = (await lifecycleRow(sellerId)).applicationSubmittedAt!;
+
+    // The same rules as signup.
+    expect((await resubmit({ ...corrected, businessName: 'X' })).status).toBe(400);
+    expect((await resubmit({ ...corrected, sellerType: 'SPACESHIP' })).status).toBe(400);
+    expect((await resubmit({ ...corrected, mobile: '9000000000' })).status).toBe(400);
+
+    const after = expectSuccess<SellerLifecycleDto>((await resubmit(corrected).expect(200)).body).data;
+    expect(after).toMatchObject({ lifecycleStatus: 'APPLICATION_PENDING', reason: null, sellerName: 'Sharma Kirana', ownerFullName: 'Ravi Sharma', canEditOnboarding: false });
+    const row = await prisma.seller.findUniqueOrThrow({ where: { id: sellerId }, include: { profile: true } });
+    expect(row).toMatchObject({ name: 'Sharma Kirana', sellerType: 'GROCERY', lifecycleStatus: 'APPLICATION_PENDING', onboardingStatus: 'PENDING', lifecycleReason: null });
+    expect(row.profile).toMatchObject({ businessName: 'Sharma Kirana', ownerFullName: 'Ravi Sharma' });
+    expect(row.applicationSubmittedAt!.getTime()).toBeGreaterThanOrEqual(firstApplied.getTime());
+    // Still locked: onboarding opens only after Gate 1 approves.
+    expectNotActive(await seller(token).get('/onboarding'));
+    expectNotActive(await seller(token).get('/orders'));
+    // A second click: no longer rejected, so nothing to resubmit.
+    expectNotActive(await resubmit(corrected));
+
+    // Admin reviews it again: reject (history kept), then approve the next correction.
+    await gate1(adminToken, sellerId, { decision: 'REJECT', reason: 'Seller type should be Grocery, not Fashion' }).expect(200);
+    await resubmit({ ...corrected, sellerType: 'GROCERY' }).expect(200);
+    await gate1(adminToken, sellerId, { decision: 'APPROVE' }).expect(200);
+    expect((await lifecycleRow(sellerId)).lifecycleStatus).toBe('ONBOARDING_PENDING');
+    await seller(token).get('/onboarding').expect(200);
+
+    const history = expectSuccess<{ lifecycleHistory: { event: string; reason: string | null }[] }>(
+      (await api().get(`/api/v1/admin/sellers/${sellerId}`).set('Authorization', bearer(adminToken)).expect(200)).body,
+    ).data.lifecycleHistory;
+    expect(history.map((e) => e.event)).toEqual([
+      'APPLICATION_APPROVED',
+      'APPLICATION_RESUBMITTED',
+      'APPLICATION_REJECTED',
+      'APPLICATION_RESUBMITTED',
+      'APPLICATION_REJECTED',
+      'APPLICATION_SUBMITTED',
+    ]);
+    expect(history.filter((e) => e.reason).map((e) => e.reason)).toEqual([
+      'Seller type should be Grocery, not Fashion',
+      'Business name does not match your documents',
+    ]);
+    // Each resubmission notified the admins again.
+    expect(await prisma.notification.count({ where: { type: NotificationType.ADMIN_SELLER_APPLICATION_SUBMITTED } })).toBeGreaterThanOrEqual(3);
   });
 
   it('applies only to an application: an admin-created seller (already past Gate 1) is 409', async () => {
@@ -584,38 +641,130 @@ describe('Gate 2 — approve', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/* Drafts and permissions                                                     */
+/* -------------------------------------------------------------------------- */
+
+describe('Onboarding drafts and decision permissions', () => {
+  it('keeps a partly filled onboarding (a draft) and names exactly what is still missing', async () => {
+    const { sellerId, token } = await seedSellerWithOwner('9500000171', 'Draft Store');
+    // Step 1 only: business details saved, nothing else yet.
+    await seller(token).put('/onboarding/profile', profileBody()).expect(200);
+
+    // Coming back later: the saved draft is all there.
+    const draft = expectSuccess<{ profile: { businessName: string } | null; bankDetail: unknown }>((await seller(token).get('/onboarding').expect(200)).body).data;
+    expect(draft.profile).toMatchObject({ businessName: profileBody().businessName });
+    expect(draft.bankDetail).toBeNull();
+    const lifecycle = await lifecycleOf(token);
+    expect(lifecycle).toMatchObject({ canEditOnboarding: true, canSubmit: false });
+    const missing = lifecycle.checklist.filter((item) => !item.met).map((item) => item.key);
+    // (The fixture seller already has its store address and map point.)
+    expect(missing.sort()).toEqual(['bank', 'panDocument']);
+
+    // Submitting early lists the incomplete items, field by field.
+    const early = await seller(token).submit();
+    expect(early.status).toBe(400);
+    const error = expectError(early.body);
+    expect(error.message).toMatch(/Complete these before submitting: .*Bank account/);
+    expect((error.details as { field: string }[]).map((d) => d.field)).toEqual(expect.arrayContaining(['bank', 'panDocument']));
+    expect((await lifecycleRow(sellerId)).lifecycleStatus).toBe('ONBOARDING_PENDING');
+  });
+
+  it('only admins with the review permission decide; a seller cannot review itself', async () => {
+    const { sellerId, token } = await signupSeller('9500000172', 'Self Approver');
+    expect((await api().patch(`/api/v1/admin/sellers/${sellerId}/application/review`).set('Authorization', bearer(token)).send({ decision: 'APPROVE' })).status).toBe(403);
+    expect((await api().patch(`/api/v1/admin/sellers/${sellerId}/verification/review`).set('Authorization', bearer(token)).send({ decision: 'APPROVE' })).status).toBe(403);
+    expect((await lifecycleRow(sellerId)).lifecycleStatus).toBe('APPLICATION_PENDING');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /* Gate 2 — Reject                                                            */
 /* -------------------------------------------------------------------------- */
 
 describe('Gate 2 — reject', () => {
-  it('needs a reason, is terminal, and keeps the seller out of the operational panel', async () => {
+  it('needs a meaningful reason, keeps the seller inactive, and shows what was rejected', async () => {
     const adminToken = await loginAdmin();
     const { sellerId, token } = await submittedSeller('9500000161', 'Rejected Seller');
 
     expect((await gate2(adminToken, sellerId, { decision: 'REJECT' })).status).toBe(400);
+    expect((await gate2(adminToken, sellerId, { decision: 'REJECT', reason: 'Bad docs' })).status).toBe(400);
+    expect((await gate2(adminToken, sellerId, { decision: 'REQUEST_CHANGES', reason: 'Fix it' })).status).toBe(400);
     expect((await lifecycleRow(sellerId)).lifecycleStatus).toBe('ONBOARDING_PENDING_REVIEW');
 
+    // The rejected document is identified, with its own reason.
+    const pan = await prisma.sellerDocument.findFirstOrThrow({ where: { sellerId, type: 'PAN_CARD' } });
+    await api()
+      .patch(`/api/v1/admin/sellers/${sellerId}/onboarding/documents/${pan.id}/review`)
+      .set('Authorization', bearer(adminToken))
+      .send({ status: 'REJECTED', rejectionReason: 'PAN scan is blurry, upload a clear copy' })
+      .expect(200);
     await gate2(adminToken, sellerId, { decision: 'REJECT', reason: 'Documents do not match the business' }).expect(200);
     expect(await lifecycleRow(sellerId)).toMatchObject({
       lifecycleStatus: 'ONBOARDING_REJECTED',
       onboardingStatus: 'REJECTED',
       lifecycleReason: 'Documents do not match the business',
     });
-    expect(await lifecycleOf(token)).toMatchObject({
+    const rejected = await lifecycleOf(token);
+    expect(rejected).toMatchObject({
       lifecycleStatus: 'ONBOARDING_REJECTED',
       reason: 'Documents do not match the business',
-      canEditOnboarding: false,
+      canEditOnboarding: true,
+      canSubmit: false,
       panelUnlocked: false,
     });
+    expect(rejected.checklist.find((item) => item.key === 'panDocument')).toMatchObject({ met: false });
+    const record = expectSuccess<{ documents: { type: string; status: string; rejectionReason: string | null }[] }>(
+      (await seller(token).get('/onboarding').expect(200)).body,
+    ).data;
+    expect(record.documents).toEqual([expect.objectContaining({ type: 'PAN_CARD', status: 'REJECTED', rejectionReason: 'PAN scan is blurry, upload a clear copy' })]);
     expect(await prisma.notification.count({ where: { type: NotificationType.SELLER_ONBOARDING_REJECTED } })).toBe(1);
 
-    // Terminal: it can read its record, but cannot change or resubmit it, and
-    // admin cannot approve it.
-    await seller(token).get('/onboarding').expect(200);
-    expectNotActive(await seller(token).put('/onboarding/profile', profileBody()));
-    expectNotActive(await seller(token).submit());
+    // Still inactive: no operational panel, and admin cannot approve before a resubmission.
     expectNotActive(await seller(token).get('/orders'));
     expect((await gate2(adminToken, sellerId, { decision: 'APPROVE' })).status).toBe(409);
+  });
+
+  it('the seller corrects the rejected information, keeps everything valid, and resubmits for final approval', async () => {
+    const adminToken = await loginAdmin();
+    const { sellerId, token } = await submittedSeller('9500000162', 'Second Chance Store');
+    const bankBefore = await prisma.sellerBankDetail.findUniqueOrThrow({ where: { sellerId } });
+    const pan = await prisma.sellerDocument.findFirstOrThrow({ where: { sellerId, type: 'PAN_CARD' } });
+    await api()
+      .patch(`/api/v1/admin/sellers/${sellerId}/onboarding/documents/${pan.id}/review`)
+      .set('Authorization', bearer(adminToken))
+      .send({ status: 'REJECTED', rejectionReason: 'PAN scan is blurry, upload a clear copy' })
+      .expect(200);
+    await gate2(adminToken, sellerId, { decision: 'REJECT', reason: 'PAN card is unreadable' }).expect(200);
+
+    // Not resubmittable until the rejected document is replaced.
+    const early = await seller(token).submit();
+    expect(early.status).toBe(400);
+    expect(expectError(early.body).message).toMatch(/PAN card/);
+
+    // Correct: a business detail and the rejected document; the bank account is left alone.
+    await seller(token).put('/onboarding/profile', profileBody({ businessName: 'Second Chance Kirana' })).expect(200);
+    await seller(token).uploadPan().expect(201);
+    expect(await lifecycleOf(token)).toMatchObject({ lifecycleStatus: 'ONBOARDING_REJECTED', canSubmit: true });
+
+    const resubmitted = expectSuccess<SellerLifecycleDto>((await seller(token).submit().expect(200)).body).data;
+    expect(resubmitted).toMatchObject({ lifecycleStatus: 'ONBOARDING_PENDING_REVIEW', canEditOnboarding: false, reason: null, panelUnlocked: false });
+    expect(await lifecycleRow(sellerId)).toMatchObject({ lifecycleStatus: 'ONBOARDING_PENDING_REVIEW', onboardingStatus: 'PENDING', lifecycleReason: null });
+    // Valid data was kept as it was.
+    expect(await prisma.sellerBankDetail.findUniqueOrThrow({ where: { sellerId } })).toMatchObject({ id: bankBefore.id, accountNumber: bankBefore.accountNumber, ifscCode: bankBefore.ifscCode });
+    // Locked again while under review; a second submission is refused.
+    expect((await seller(token).put('/onboarding/profile', profileBody())).status).toBe(403);
+    expect((await seller(token).submit()).status).toBe(403);
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { entityId: sellerId, action: 'seller_onboarding.submit' }, orderBy: { createdAt: 'desc' } });
+    expect(audit.after).toMatchObject({ resubmitted: true, from: 'ONBOARDING_REJECTED' });
+
+    // Admin reviews the corrected submission and approves it.
+    await gate2(adminToken, sellerId, { decision: 'APPROVE' }).expect(200);
+    expect(await lifecycleOf(token)).toMatchObject({ lifecycleStatus: 'ACTIVE', panelUnlocked: true });
+    const history = expectSuccess<{ lifecycleHistory: { event: string; reason: string | null }[] }>(
+      (await api().get(`/api/v1/admin/sellers/${sellerId}`).set('Authorization', bearer(adminToken)).expect(200)).body,
+    ).data.lifecycleHistory;
+    expect(history.slice(0, 4).map((e) => e.event)).toEqual(['ONBOARDING_APPROVED', 'ONBOARDING_RESUBMITTED', 'ONBOARDING_REJECTED', 'ONBOARDING_SUBMITTED']);
+    expect(history[2]).toMatchObject({ reason: 'PAN card is unreadable' });
   });
 });
 

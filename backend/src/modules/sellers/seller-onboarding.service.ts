@@ -39,6 +39,7 @@ import {
   type AdminSellerOnboardingSummaryDto,
   type SellerDocumentDto,
   type SellerDocumentType,
+  type SellerLifecycleEventDto,
   type SellerOnboardingDetailDto,
   type SellerOnboardingRequirementsDto,
   type SellerOnboardingStage,
@@ -1041,4 +1042,60 @@ export async function listOnboardingQueue(options: { cursor?: string | null; lim
     hasMore,
     nextCursor: hasMore && last ? last.createdAt.toISOString() : null,
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Review history (admin)                                                     */
+/* -------------------------------------------------------------------------- */
+
+const HISTORY_ACTIONS = [
+  SellerAuditAction.APPLICATION_SUBMIT,
+  SellerAuditAction.APPLICATION_RESUBMIT,
+  SellerAuditAction.APPLICATION_APPROVE,
+  SellerAuditAction.APPLICATION_REJECT,
+  SellerAuditAction.ONBOARDING_SUBMIT,
+  SellerAuditAction.ONBOARDING_REQUEST_CHANGES,
+  SellerAuditAction.ONBOARDING_APPROVE,
+  SellerAuditAction.ONBOARDING_REJECT,
+];
+
+/**
+ * Every application / onboarding submission and decision of a seller, newest
+ * first, read from the audit trail — the seller row only keeps the LATEST
+ * reason, the audit log keeps them all with their timestamps.
+ */
+export async function getLifecycleHistory(sellerId: string, limit = 50): Promise<SellerLifecycleEventDto[]> {
+  const entries = await prisma.auditLog.findMany({
+    where: { entityType: 'Seller', entityId: sellerId, action: { in: HISTORY_ACTIONS } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take: limit,
+    select: { action: true, after: true, createdAt: true },
+  });
+  return entries.map((entry) => {
+    const after = entry.after !== null && typeof entry.after === 'object' && !Array.isArray(entry.after) ? entry.after : {};
+    const rawReason = (after as Record<string, unknown>)['reason'];
+    const reason = typeof rawReason === 'string' && rawReason.trim() ? rawReason.trim() : null;
+    const event: SellerLifecycleEventDto['event'] = (() => {
+      switch (entry.action) {
+        case SellerAuditAction.APPLICATION_SUBMIT:
+          return 'APPLICATION_SUBMITTED';
+        case SellerAuditAction.APPLICATION_RESUBMIT:
+          return 'APPLICATION_RESUBMITTED';
+        case SellerAuditAction.APPLICATION_APPROVE:
+          return 'APPLICATION_APPROVED';
+        case SellerAuditAction.APPLICATION_REJECT:
+          return 'APPLICATION_REJECTED';
+        case SellerAuditAction.ONBOARDING_SUBMIT:
+          return (after as Record<string, unknown>)['resubmitted'] === true ? 'ONBOARDING_RESUBMITTED' : 'ONBOARDING_SUBMITTED';
+        case SellerAuditAction.ONBOARDING_REQUEST_CHANGES:
+          return 'CHANGES_REQUESTED';
+        case SellerAuditAction.ONBOARDING_APPROVE:
+          return 'ONBOARDING_APPROVED';
+        default:
+          return 'ONBOARDING_REJECTED';
+      }
+    })();
+    const decision = event === 'APPLICATION_REJECTED' || event === 'CHANGES_REQUESTED' || event === 'ONBOARDING_REJECTED';
+    return { event, at: entry.createdAt.toISOString(), reason: decision ? reason : null };
+  });
 }

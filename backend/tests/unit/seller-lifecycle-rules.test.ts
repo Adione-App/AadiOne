@@ -101,10 +101,24 @@ describe('sellerPanelAccess', () => {
     expect(sellerPanelAccess(S.ONBOARDING_PENDING_REVIEW, 'PATCH', '/location').allowed).toBe(false);
   });
 
-  it('keeps a finally-rejected seller read-only', () => {
+  it('lets a finally-rejected seller correct and resubmit its onboarding — and nothing operational', () => {
     expect(sellerPanelAccess(S.ONBOARDING_REJECTED, 'GET', '/onboarding').allowed).toBe(true);
-    expect(sellerPanelAccess(S.ONBOARDING_REJECTED, 'PUT', '/onboarding/profile').allowed).toBe(false);
+    expect(sellerPanelAccess(S.ONBOARDING_REJECTED, 'PUT', '/onboarding/profile').allowed).toBe(true);
+    expect(sellerPanelAccess(S.ONBOARDING_REJECTED, 'POST', '/onboarding/documents').allowed).toBe(true);
+    expect(sellerPanelAccess(S.ONBOARDING_REJECTED, 'POST', '/onboarding/submit').allowed).toBe(true);
     expect(sellerPanelAccess(S.ONBOARDING_REJECTED, 'GET', '/orders').allowed).toBe(false);
+  });
+
+  it('opens the application resubmission only to a rejected applicant, and only as a POST', () => {
+    expect(sellerPanelAccess(S.APPLICATION_REJECTED, 'POST', '/lifecycle/application').allowed).toBe(true);
+    expect(sellerPanelAccess(S.APPLICATION_REJECTED, 'POST', '/lifecycle/application/').allowed).toBe(true);
+    expect(sellerPanelAccess(S.APPLICATION_REJECTED, 'GET', '/lifecycle/application').allowed).toBe(false);
+    for (const status of ALL.filter((s) => s !== S.APPLICATION_REJECTED)) {
+      expect(sellerPanelAccess(status, 'POST', '/lifecycle/application').allowed, status).toBe(false);
+    }
+    // A rejected applicant still has no onboarding and no operational panel.
+    expect(sellerPanelAccess(S.APPLICATION_REJECTED, 'GET', '/onboarding').allowed).toBe(false);
+    expect(sellerPanelAccess(S.APPLICATION_REJECTED, 'PUT', '/onboarding/profile').allowed).toBe(false);
   });
 
   it('is not fooled by look-alike paths, trailing slashes or method case', () => {
@@ -144,8 +158,8 @@ describe('lifecycle mappings', () => {
     }
   });
 
-  it('only onboarding and changes-required are editable', () => {
-    expect(ALL.filter(isOnboardingEditable)).toEqual([S.ONBOARDING_PENDING, S.ONBOARDING_CHANGES_REQUIRED]);
+  it('onboarding, changes-required and a final rejection are editable — never under review or before Gate 1', () => {
+    expect(ALL.filter(isOnboardingEditable)).toEqual([S.ONBOARDING_PENDING, S.ONBOARDING_CHANGES_REQUIRED, S.ONBOARDING_REJECTED]);
   });
 });
 
@@ -239,6 +253,7 @@ describe('isSellerOnboardingWrite (admin never writes seller onboarding data)', 
       ['POST', '/onboarding/submit'],
       ['PATCH', '/location'],
       ['PATCH', '/location/'],
+      ['POST', '/lifecycle/application'],
     ] as const) {
       expect(isSellerOnboardingWrite(method, path), `${method} ${path}`).toBe(true);
     }

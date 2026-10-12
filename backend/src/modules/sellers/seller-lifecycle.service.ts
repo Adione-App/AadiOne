@@ -3,9 +3,14 @@
  *
  *   signup (public)            -> APPLICATION_PENDING
  *   Gate 1 (admin)             -> ONBOARDING_PENDING | APPLICATION_REJECTED
+ *   resubmit application       -> APPLICATION_PENDING (from APPLICATION_REJECTED)
  *   submit (seller)            -> ONBOARDING_PENDING_REVIEW
  *   Gate 2 (admin)             -> ACTIVE | ONBOARDING_CHANGES_REQUIRED | ONBOARDING_REJECTED
- *   resubmit after changes     -> ONBOARDING_PENDING_REVIEW
+ *   resubmit after changes /
+ *   after a final rejection    -> ONBOARDING_PENDING_REVIEW
+ *
+ * Every rejection / request for changes needs a reason of at least
+ * MIN_DECISION_REASON_LENGTH characters: the seller reads it and acts on it.
  *
  * Every transition is a compare-and-set on the state it starts from (a
  * concurrent or repeated decision is a 409, never applied twice), writes
@@ -31,6 +36,7 @@ import {
   type AdminSellerApplicationDto,
   type AuthResponse,
   type CursorPage,
+  type SellerApplicationResubmitRequest,
   type SellerLifecycleDto,
   type SellerOnboardingChecklistItemDto,
   type SellerSignupRequest,
@@ -46,6 +52,7 @@ import { toUserDto, type RequestContextInput } from '../auth/auth.service';
 import { allocateSellerCode } from './admin-seller-management.service';
 import { SellerAuditAction } from './seller-audit';
 import {
+  MIN_DECISION_REASON_LENGTH,
   buildOnboardingChecklist,
   checklistComplete,
   isOnboardingEditable,
@@ -90,6 +97,22 @@ export async function loadChecklist(sellerId: string): Promise<SellerOnboardingC
     })),
     restaurantProfile: seller.restaurantProfile,
   });
+}
+
+/**
+ * The reason a seller must act on (a rejection / request for changes):
+ * required, and long enough to say something — "no" or "bad docs" tells the
+ * seller nothing to fix. Returns the trimmed reason.
+ */
+function requireDecisionReason(reason: string | null | undefined, missingMessage: string): string {
+  const text = reason?.trim() ?? '';
+  if (!text) throw new AppError(ErrorCode.VALIDATION_ERROR, { message: missingMessage });
+  if (text.length < MIN_DECISION_REASON_LENGTH) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message: `Give the seller a clear reason they can act on (at least ${MIN_DECISION_REASON_LENGTH} characters).`,
+    });
+  }
+  return text;
 }
 
 function invalidTransition(sellerId: string, from: string, attempted: string, message: string): AppError {
@@ -312,10 +335,14 @@ export async function getSellerLifecycle(sellerId: string): Promise<SellerLifecy
   const seller = await loadLiveSeller(sellerId);
   const status = seller.lifecycleStatus as SellerLifecycleStatus;
   const editable = isOnboardingEditable(status);
-  const checklist = await loadChecklist(sellerId);
+  const [checklist, profile] = await Promise.all([
+    loadChecklist(sellerId),
+    prisma.sellerProfile.findUnique({ where: { sellerId }, select: { ownerFullName: true } }),
+  ]);
   return {
     sellerId: seller.id,
     sellerName: seller.name,
+    ownerFullName: profile?.ownerFullName ?? null,
     sellerType: seller.sellerType,
     lifecycleStatus: status,
     reason: seller.lifecycleReason,
@@ -339,10 +366,10 @@ export async function reviewApplication(
   input: { decision: 'APPROVE' | 'REJECT'; reason?: string | null },
   actorUserId: string,
 ): Promise<void> {
-  const reason = input.reason?.trim() || null;
-  if (input.decision === 'REJECT' && !reason) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'A reason is required when rejecting an application.' });
-  }
+  const reason =
+    input.decision === 'REJECT'
+      ? requireDecisionReason(input.reason, 'A reason is required when rejecting an application.')
+      : input.reason?.trim() || null;
   const seller = await loadLiveSeller(sellerId);
   if (seller.lifecycleStatus !== SellerLifecycleStatus.APPLICATION_PENDING) {
     throw invalidTransition(
@@ -374,6 +401,83 @@ export async function reviewApplication(
     dedupeKey: `seller-application:${sellerId}:${approve ? 'approved' : 'rejected'}`,
     context: { reason },
   });
+}
+
+/**
+ * POST /seller/lifecycle/application — a rejected applicant corrects its
+ * application (the same business fields as signup: business name, owner
+ * name, seller type) and sends it back to Gate 1. Only from
+ * APPLICATION_REJECTED, compare-and-set like every transition: the state
+ * goes back to APPLICATION_PENDING (never approved here), the previous
+ * reason is cleared from the seller row but kept in the audit trail, and
+ * onboarding stays locked until an admin approves the application.
+ * Mobile and email are the login identity and are not part of this.
+ */
+export async function resubmitApplication(
+  sellerId: string,
+  input: SellerApplicationResubmitRequest,
+  actorUserId: string,
+): Promise<SellerLifecycleDto> {
+  const seller = await loadLiveSeller(sellerId);
+  if (seller.lifecycleStatus !== SellerLifecycleStatus.APPLICATION_REJECTED) {
+    throw invalidTransition(
+      sellerId,
+      seller.lifecycleStatus,
+      'resubmit_application',
+      seller.lifecycleStatus === SellerLifecycleStatus.APPLICATION_PENDING
+        ? 'Your application has already been sent and is waiting for review.'
+        : 'Only a rejected application can be resubmitted.',
+    );
+  }
+  const businessName = input.businessName.trim();
+  const fullName = input.fullName.trim();
+  const now = new Date();
+
+  await runInTransaction(async (tx) => {
+    const { count } = await tx.seller.updateMany({
+      where: { id: sellerId, deletedAt: null, lifecycleStatus: SellerLifecycleStatus.APPLICATION_REJECTED },
+      data: {
+        name: businessName,
+        sellerType: input.sellerType,
+        lifecycleStatus: SellerLifecycleStatus.APPLICATION_PENDING,
+        onboardingStatus: onboardingStatusFor(SellerLifecycleStatus.APPLICATION_PENDING),
+        lifecycleReason: null,
+        lifecycleUpdatedAt: now,
+        applicationSubmittedAt: now,
+      },
+    });
+    if (count === 0) {
+      throw invalidTransition(sellerId, seller.lifecycleStatus, 'resubmit_application', 'Your application status changed — refresh and try again.');
+    }
+    await tx.sellerProfile.upsert({
+      where: { sellerId },
+      create: { sellerId, businessName, ownerFullName: fullName, ownerMobile: seller.phone ?? '', ownerEmail: null },
+      update: { businessName, ownerFullName: fullName },
+    });
+    // The applicant's own account name (what the admin applications list shows).
+    await tx.user.update({ where: { id: actorUserId }, data: { fullName } });
+    await tx.auditLog.create({
+      data: {
+        actorUserId,
+        action: SellerAuditAction.APPLICATION_RESUBMIT,
+        entityType: 'Seller',
+        entityId: sellerId,
+        before: { lifecycleStatus: SellerLifecycleStatus.APPLICATION_REJECTED, name: seller.name, sellerType: seller.sellerType, reason: seller.lifecycleReason },
+        after: { lifecycleStatus: SellerLifecycleStatus.APPLICATION_PENDING, name: businessName, sellerType: input.sellerType },
+      },
+    });
+  });
+
+  const round = await prisma.auditLog.count({
+    where: { entityType: 'Seller', entityId: sellerId, action: SellerAuditAction.APPLICATION_RESUBMIT },
+  });
+  await notificationService.notifyAdmins(Permission.SELLER_ONBOARDING_REVIEW, {
+    type: NotificationType.ADMIN_SELLER_APPLICATION_SUBMITTED,
+    dedupeKey: `seller-application:${sellerId}:resubmitted:${round}`,
+    context: { sellerName: businessName },
+  });
+  log.info({ sellerId, round }, 'seller application resubmitted');
+  return getSellerLifecycle(sellerId);
 }
 
 /** Admin "Seller Applications" view — applicant contact included, by design. */
@@ -456,13 +560,15 @@ export async function submitForVerification(sellerId: string, actorUserId: strin
     });
   }
 
-  const resubmission = status === SellerLifecycleStatus.ONBOARDING_CHANGES_REQUIRED;
+  // After a request for changes or a final rejection: a resubmission for final approval.
+  const resubmission =
+    status === SellerLifecycleStatus.ONBOARDING_CHANGES_REQUIRED || status === SellerLifecycleStatus.ONBOARDING_REJECTED;
   await transition(
     sellerId,
     [status],
     SellerLifecycleStatus.ONBOARDING_PENDING_REVIEW,
     { onboardingSubmittedAt: new Date(), lifecycleReason: null },
-    [{ actorUserId, action: SellerAuditAction.ONBOARDING_SUBMIT, after: { resubmitted: resubmission } }],
+    [{ actorUserId, action: SellerAuditAction.ONBOARDING_SUBMIT, after: { resubmitted: resubmission, from: status } }],
     'Your onboarding status changed — refresh and try again.',
   );
 
@@ -488,15 +594,13 @@ export async function reviewVerification(
   input: { decision: 'APPROVE' | 'REQUEST_CHANGES' | 'REJECT'; reason?: string | null },
   actorUserId: string,
 ): Promise<void> {
-  const reason = input.reason?.trim() || null;
-  if (input.decision !== 'APPROVE' && !reason) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message:
-        input.decision === 'REQUEST_CHANGES'
-          ? 'Tell the seller what needs to change.'
-          : 'A reason is required when rejecting a seller.',
-    });
-  }
+  const reason =
+    input.decision === 'APPROVE'
+      ? input.reason?.trim() || null
+      : requireDecisionReason(
+          input.reason,
+          input.decision === 'REQUEST_CHANGES' ? 'Tell the seller what needs to change.' : 'A reason is required when rejecting a seller.',
+        );
 
   const seller = await loadLiveSeller(sellerId);
   if (seller.lifecycleStatus !== SellerLifecycleStatus.ONBOARDING_PENDING_REVIEW) {

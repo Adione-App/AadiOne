@@ -102,6 +102,11 @@ export async function getStore(req: Request, res: Response): Promise<void> {
   );
 }
 
+/** GET /products/previously-ordered — the signed-in customer's own past products. */
+export async function listPreviouslyOrdered(req: Request, res: Response): Promise<void> {
+  ok(res, await catalogService.listPreviouslyOrderedProducts(requireUser(req).id));
+}
+
 /** POST /products/:variantId/notify-me */
 export async function notifyMe(req: Request, res: Response): Promise<void> {
   const user = requireUser(req);

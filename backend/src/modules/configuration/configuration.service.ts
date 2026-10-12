@@ -203,6 +203,10 @@ const NON_NEGATIVE_NUMBER_KEYS: readonly (keyof ConfigValues)[] = [
   ConfigKey.REFERRAL_MIN_ORDER_PAISE,
 ];
 
+/** HOME_CATEGORY_ORDER holds top-level category paths — one slug, no "/". */
+const CATEGORY_PATH_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const MAX_HOME_CATEGORY_ORDER = 50;
+
 function validateValue(key: keyof ConfigValues, value: unknown): void {
   const fail = (reason: string): never => {
     throw badRequest(`Invalid value for ${String(key)}: ${reason}`);
@@ -237,6 +241,16 @@ function validateValue(key: keyof ConfigValues, value: unknown): void {
         fail('each slab needs a whole, non-negative feePaise');
       }
     }
+  }
+
+  if (key === ConfigKey.HOME_CATEGORY_ORDER) {
+    if (!Array.isArray(value)) fail('must be a list of category paths');
+    const paths = value as unknown[];
+    if (paths.length > MAX_HOME_CATEGORY_ORDER) fail(`can list at most ${MAX_HOME_CATEGORY_ORDER} categories`);
+    for (const path of paths) {
+      if (typeof path !== 'string' || !CATEGORY_PATH_PATTERN.test(path)) fail('each entry must be a top-level category path such as "grocery"');
+    }
+    if (new Set(paths).size !== paths.length) fail('a category can be listed only once');
   }
 
   if (key === ConfigKey.DEFAULT_COD_POLICY) {

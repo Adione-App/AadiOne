@@ -41,7 +41,7 @@ export const listProductsQuerySchema = z.object({
 export const productParamsSchema = z.object({ id: uuid });
 
 export const railParamsSchema = z.object({
-  key: z.enum(['POPULAR', 'DAILY_ESSENTIALS', 'BEST_SELLERS', 'RECENTLY_ADDED', 'OFFERS']),
+  key: z.enum(['POPULAR', 'DAILY_ESSENTIALS', 'BEST_SELLERS', 'RECENTLY_ADDED', 'OFFERS', 'TOP_PICKS']),
 });
 
 export const railQuerySchema = z.object({

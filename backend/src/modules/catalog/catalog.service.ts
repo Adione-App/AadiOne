@@ -19,8 +19,11 @@ import type { Category } from "@prisma/client";
 import {
   CodPolicy,
   ErrorCode,
+  HOME_BANNER_PLACEMENTS,
   ProductStatus,
+  type BannerDto,
   type CategoryDto,
+  type HomeSectionBannerPlacement,
   type CursorPage,
   type HomeFeedDto,
   type ProductDetailDto,
@@ -39,7 +42,8 @@ import * as configService from "../configuration/configuration.service";
 import { ConfigKey, optionGroupsOf, optionValuesOf } from "../../shared";
 import * as repository from "./catalog.repository";
 import { MARKETPLACE_SELLER_WHERE, type HydratedProduct, type ProductSort } from "./catalog.repository";
-import { HOME_TOP_PLACEMENT, listActiveBanners } from "../banners/banner.service";
+import { HOME_TOP_PLACEMENT, listActiveBanners, listActiveBannersByPlacement } from "../banners/banner.service";
+import { balanceBySubcategory, orderByPreference } from "./home-selection";
 
 /* -------------------------------------------------------------------------- */
 /* Category tree                                                              */
@@ -216,18 +220,28 @@ export async function listCategories(options: {
     parentPath = parent.path;
   }
 
-  const all = [...groups.values()];
-  const level = all.filter((group) => group.parentPath === parentPath);
+  return categoryLevel(groups, parentPath, options.includeChildren ?? false, withCounts).map(({ dto }) => dto);
+}
 
-  return level.map((group) => {
-    const dto = groupDto(group, groups, withCounts);
-    if (options.includeChildren) {
-      dto.children = all
-        .filter((child) => child.parentPath === group.path)
-        .map((child) => groupDto(child, groups, withCounts));
-    }
-    return dto;
-  });
+/** One level of the merged tree (optionally with children), each DTO beside its group. */
+function categoryLevel(
+  groups: Map<string, CategoryGroup>,
+  parentPath: string | null,
+  includeChildren: boolean,
+  withCounts: boolean,
+): { group: CategoryGroup; dto: CategoryDto }[] {
+  const all = [...groups.values()];
+  return all
+    .filter((group) => group.parentPath === parentPath)
+    .map((group) => {
+      const dto = groupDto(group, groups, withCounts);
+      if (includeChildren) {
+        dto.children = all
+          .filter((child) => child.parentPath === group.path)
+          .map((child) => groupDto(child, groups, withCounts));
+      }
+      return { group, dto };
+    });
 }
 
 export async function listSubcategories(
@@ -620,6 +634,8 @@ const RAILS = [
   { key: "OFFERS", title: "Offers for You" },
   { key: "BEST_SELLERS", title: "Best Sellers" },
   { key: "RECENTLY_ADDED", title: "Recently Added" },
+  // Real delivered sales first, then a stable order — see listRailProductIds.
+  { key: "TOP_PICKS", title: "Top Picks" },
   { key: "POPULAR", title: "Popular Products" },
 ] as const;
 
@@ -630,6 +646,15 @@ const MIN_RAIL_SIZE = 4;
 const RAIL_DISPLAY_SIZE = 10;
 /** How many products a category's Home shelf shows before "See All". */
 const CATEGORY_RAIL_SIZE = 10;
+/** Ranked candidates a category shelf balances across its subcategories. */
+const CATEGORY_SHELF_CANDIDATES = 80;
+
+/** Home's placements below the top carousel, delivered as HomeFeedDto.sectionBanners. */
+const HOME_SECTION_PLACEMENTS: readonly HomeSectionBannerPlacement[] = [
+  HOME_BANNER_PLACEMENTS.FOOD,
+  HOME_BANNER_PLACEMENTS.EXPLORE,
+  HOME_BANNER_PLACEMENTS.BOTTOM,
+];
 
 /**
  * One call fills the whole Home screen.
@@ -639,12 +664,26 @@ const CATEGORY_RAIL_SIZE = 10;
  * services, not a new domain.
  */
 export async function getHomeFeed(): Promise<HomeFeedDto> {
-  const context = await mappingContext();
+  const [context, groups, preferredOrder, topBanners, sectionBannerMap] = await Promise.all([
+    mappingContext(),
+    marketplaceCategoryGroups(),
+    configService.get(ConfigKey.HOME_CATEGORY_ORDER),
+    listActiveBanners(HOME_TOP_PLACEMENT),
+    listActiveBannersByPlacement([...HOME_SECTION_PLACEMENTS, HOME_BANNER_PLACEMENTS.CATEGORY]),
+  ]);
 
-  const categories = await listCategories({
-    parentId: null,
-    includeChildren: true,
-  });
+  /*
+   * Top categories in Home order: the admin's HOME_CATEGORY_ORDER first, then
+   * every other live top category in its usual order — so a category created
+   * tomorrow shows up without anyone touching this list. (The config map can
+   * briefly predate this key after a deploy, hence the fallback.)
+   */
+  const { ordered: topLevel, featured } = orderByPreference(
+    categoryLevel(groups, null, true, false),
+    (entry) => entry.group.path,
+    preferredOrder ?? [],
+  );
+  const categories = topLevel.map((entry) => entry.dto);
 
   /*
    * Each rail is ranked independently (popularity, recency, discount, …).
@@ -684,44 +723,109 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
   }
 
   /*
-   * One shelf per top-level category, so a category the shopper just added
-   * (or any category too small to win a spot in the popularity/recency
-   * rails above) still gets real visibility on Home. `categoryPath` already
-   * matches every product beneath it, not just direct children.
+   * One shelf per top-level category, in Home order, so a category the
+   * shopper just added (or any category too small to win a spot in the
+   * popularity/recency rails above) still gets real visibility on Home. A
+   * shelf is spread across the category's subcategories — one product from
+   * each before a second from any — so "Grocery" shows rice, oil and snacks
+   * rather than ten of whichever subcategory ranks highest. The candidate
+   * path filter matches every product beneath the category.
    */
-  const topLevelCategories = [...(await marketplaceCategoryGroups()).values()].filter(
-    (group) => group.parentPath === null,
+  const shelfIds = await Promise.all(
+    topLevel.map(async ({ group }) =>
+      balanceBySubcategory(
+        await repository.listCategoryShelfCandidates(group.path, CATEGORY_SHELF_CANDIDATES),
+        group.path,
+        CATEGORY_RAIL_SIZE,
+      ),
+    ),
+  );
+  // Every shelf's products hydrated in one query, then dealt back out.
+  const shelfProducts = new Map(
+    (await repository.hydrateProducts([...new Set(shelfIds.flat())])).map((product) => [product.id, product]),
   );
 
   const categoryRails: HomeFeedDto["categoryRails"] = [];
-
-  for (const category of topLevelCategories) {
-    const rows = await repository.listProductIds({
-      categoryPath: category.path,
-      inStockOnly: true,
-      sort: "POPULAR",
-      limit: CATEGORY_RAIL_SIZE,
-    });
-
-    if (rows.length === 0) continue;
-
-    const products = await repository.hydrateProducts(rows.map((row) => row.id));
-
+  for (const [index, { group }] of topLevel.entries()) {
+    const products = (shelfIds[index] ?? [])
+      .map((id) => shelfProducts.get(id))
+      .filter((product): product is HydratedProduct => product !== undefined);
+    if (products.length === 0) continue;
     categoryRails.push({
-      categoryId: category.rep.id,
-      title: category.rep.name,
-      products: await Promise.all(
-        products.map((product) => toSummaryDto(product, context)),
-      ),
+      categoryId: group.rep.id,
+      title: group.rep.name,
+      products: await Promise.all(products.map((product) => toSummaryDto(product, context))),
     });
   }
 
+  const sectionBanners: Partial<Record<HomeSectionBannerPlacement, BannerDto[]>> = {};
+  for (const placement of HOME_SECTION_PLACEMENTS) {
+    const banners = sectionBannerMap.get(placement);
+    if (banners && banners.length > 0) sectionBanners[placement] = banners;
+  }
+
+  /*
+   * "Above a category shelf" banners: the banner opens a category (any
+   * seller's row of it, or one of its subcategories); it sits above the shelf
+   * of that category's TOP category. One whose category is gone, or has no
+   * shelf on Home right now, is left out rather than shown somewhere random.
+   */
+  const categoryById = await getCategoryMap();
+  const shelfByPath = new Map(
+    topLevel
+      .filter(({ group }) => categoryRails.some((rail) => rail.categoryId === group.rep.id))
+      .map(({ group }) => [group.path, group.rep.id]),
+  );
+  const bannersByShelf = new Map<string, BannerDto[]>();
+  for (const banner of sectionBannerMap.get(HOME_BANNER_PLACEMENTS.CATEGORY) ?? []) {
+    if (banner.actionType !== "CATEGORY" || !banner.actionValue) continue;
+    const target = categoryById.get(banner.actionValue);
+    const shelfId = target ? shelfByPath.get(target.path.split("/")[0] ?? "") : undefined;
+    if (!shelfId) continue;
+    bannersByShelf.set(shelfId, [...(bannersByShelf.get(shelfId) ?? []), banner]);
+  }
+  const categoryBanners = [...bannersByShelf].map(([categoryId, banners]) => ({ categoryId, banners }));
+
   return {
-    banners: await listActiveBanners(HOME_TOP_PLACEMENT),
+    banners: topBanners,
+    sectionBanners,
+    categoryBanners,
     categories,
+    featuredCategoryIds: featured.map((entry) => entry.group.rep.id),
     rails: rails.filter((rail) => rail.products.length > 0),
     categoryRails,
   };
+}
+
+/** How many past products "Previous orders" on Home can show. */
+const PREVIOUSLY_ORDERED_LIMIT = 20;
+
+/**
+ * GET /products/previously-ordered — what this customer has ordered before,
+ * most recent first, limited to products that are still visible and in stock
+ * right now (the same rules as every customer listing). Empty for a customer
+ * without orders; never padded with anything else.
+ */
+export async function listPreviouslyOrderedProducts(userId: string): Promise<ProductSummaryDto[]> {
+  const orderedIds = await repository.listOrderedProductIds(userId, PREVIOUSLY_ORDERED_LIMIT * 2);
+  if (orderedIds.length === 0) return [];
+
+  const eligible = new Set(
+    (
+      await repository.listProductIds({
+        productIds: orderedIds,
+        inStockOnly: true,
+        sort: "POPULAR",
+        limit: orderedIds.length,
+      })
+    ).map((row) => row.id),
+  );
+  const ids = orderedIds.filter((id) => eligible.has(id)).slice(0, PREVIOUSLY_ORDERED_LIMIT);
+  if (ids.length === 0) return [];
+
+  const context = await mappingContext();
+  const products = await repository.hydrateProducts(ids);
+  return Promise.all(products.map((product) => toSummaryDto(product, context)));
 }
 
 /**

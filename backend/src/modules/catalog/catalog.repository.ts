@@ -191,6 +191,8 @@ export interface ListProductIdsInput {
   brandId?: string | null;
   /** Only this seller's listings (a store page). */
   sellerId?: string | null;
+  /** Only these products — still subject to every visibility rule above. */
+  productIds?: readonly string[] | null;
   inStockOnly?: boolean;
   sort: ProductSort;
   limit: number;
@@ -233,6 +235,12 @@ export async function listProductIds(
     ? Prisma.sql`AND sl.seller_id = ${input.sellerId}::uuid`
     : Prisma.empty;
 
+  const productFilter = input.productIds
+    ? input.productIds.length > 0
+      ? Prisma.sql`AND p.id IN (${Prisma.join(input.productIds.map((id) => Prisma.sql`${id}::uuid`))})`
+      : Prisma.sql`AND FALSE`
+    : Prisma.empty;
+
   // The value each sort orders by, exposed so the cursor can resume from it.
   const sortValue = {
     PRICE_ASC: Prisma.sql`MIN(sl.price_paise)`,
@@ -260,6 +268,7 @@ export async function listProductIds(
       ${categoryFilter}
       ${brandFilter}
       ${sellerFilter}
+      ${productFilter}
       ${stockFilter}
     GROUP BY p.id, p.popularity_score, p.created_at
     ${cursorFilter}
@@ -269,6 +278,56 @@ export async function listProductIds(
   return rows.map((row) => ({ id: row.id, sortValue: Number(row.sort_value) }));
 }
 
+/**
+ * In-stock products under one top-level category path, each with its own
+ * category path — what the Home shelf of that category balances across its
+ * subcategories. Ranked like the category listing's "popular" sort, then
+ * newest first, then by id, so the result never changes between requests
+ * unless the catalogue does.
+ */
+export async function listCategoryShelfCandidates(
+  topPath: string,
+  limit: number,
+  client: DbClient = prisma,
+): Promise<{ id: string; path: string }[]> {
+  return client.$queryRaw<{ id: string; path: string }[]>`
+    SELECT p.id, c.path
+    FROM products p
+    ${LISTED_JOINS}
+    WHERE ${PUBLIC_PRODUCT_SQL}
+      AND (c.path = ${topPath} OR c.path LIKE ${`${topPath}/%`})
+      AND sl.is_available
+      AND (sl.stock_qty - sl.reserved_qty) > 0
+    GROUP BY p.id, c.path, p.popularity_score, p.created_at
+    ORDER BY p.popularity_score DESC, p.created_at DESC, p.id DESC
+    LIMIT ${limit}`;
+}
+
+/**
+ * The products a customer has ordered, most recently ordered first. Orders
+ * that never went through (awaiting or failed payment) do not count. These
+ * are only candidates: callers re-check visibility and stock before showing
+ * any of them.
+ */
+export async function listOrderedProductIds(
+  userId: string,
+  limit: number,
+  client: DbClient = prisma,
+): Promise<string[]> {
+  const rows = await client.$queryRaw<{ id: string }[]>`
+    SELECT v.product_id AS id
+    FROM orders o
+    JOIN seller_orders so ON so.order_id = o.id
+    JOIN order_items oi ON oi.seller_order_id = so.id
+    JOIN product_variants v ON v.id = oi.variant_id
+    WHERE o.user_id = ${userId}::uuid
+      AND o.status NOT IN ('PENDING_PAYMENT', 'PAYMENT_FAILED')
+    GROUP BY v.product_id
+    ORDER BY MAX(o.created_at) DESC, v.product_id ASC
+    LIMIT ${limit}`;
+  return rows.map((row) => row.id);
+}
+
 /** Curated Home rails (PRD §9.4 `GET /home`), across every marketplace seller. */
 export async function listRailProductIds(
   rail:
@@ -276,7 +335,8 @@ export async function listRailProductIds(
     | "DAILY_ESSENTIALS"
     | "BEST_SELLERS"
     | "RECENTLY_ADDED"
-    | "OFFERS",
+    | "OFFERS"
+    | "TOP_PICKS",
   limit: number,
   client: DbClient = prisma,
 ): Promise<string[]> {
@@ -302,6 +362,8 @@ export async function listRailProductIds(
     OFFERS: Prisma.sql`
       AND sl.mrp_paise > sl.price_paise
     `,
+
+    TOP_PICKS: Prisma.empty,
   }[rail];
 
   /*
@@ -323,6 +385,26 @@ export async function listRailProductIds(
           JOIN orders o
             ON o.id = so.order_id
            AND o.status = 'DELIVERED'
+        `
+      : Prisma.empty;
+
+  /*
+   * Top Picks: every in-stock product, ranked by real delivered quantity
+   * (the same signal as Best Sellers, but products without sales still take
+   * part), then by a stable order — never random, never "for you".
+   */
+  const topPicksJoin =
+    rail === "TOP_PICKS"
+      ? Prisma.sql`
+          LEFT JOIN (
+            SELECT oi.variant_id, so.seller_id, SUM(oi.qty) AS qty
+            FROM order_items oi
+            JOIN seller_orders so ON so.id = oi.seller_order_id
+            JOIN orders o ON o.id = so.order_id AND o.status = 'DELIVERED'
+            GROUP BY oi.variant_id, so.seller_id
+          ) sold
+            ON sold.variant_id = v.id
+           AND sold.seller_id = sl.seller_id
         `
       : Prisma.empty;
 
@@ -354,6 +436,12 @@ export async function listRailProductIds(
         / NULLIF(sl.mrp_paise, 0)
       ) DESC
     `,
+
+    TOP_PICKS: Prisma.sql`
+      COALESCE(SUM(sold.qty), 0) DESC,
+      p.popularity_score DESC,
+      p.created_at ASC
+    `,
   }[rail];
 
   const rows = await client.$queryRaw<{ id: string }[]>`
@@ -362,6 +450,7 @@ export async function listRailProductIds(
     ${LISTED_JOINS}
 
     ${bestSellerJoin}
+    ${topPicksJoin}
 
     WHERE ${PUBLIC_PRODUCT_SQL}
 

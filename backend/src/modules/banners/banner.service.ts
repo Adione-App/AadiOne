@@ -15,7 +15,7 @@
 
 import { BannerActionType, Prisma, type Banner } from '@prisma/client';
 import sharp from 'sharp';
-import { ErrorCode, type AdminBannerDto, type BannerDto } from '../../shared';
+import { ErrorCode, HOME_BANNER_PLACEMENTS, type AdminBannerDto, type BannerDto } from '../../shared';
 import { AppError } from '../../common/errors';
 import { prisma } from '../../infra/db/prisma';
 import { MAX_IMAGE_BYTES, storage, storageKeyFromUrl } from '../../infra/storage';
@@ -23,7 +23,7 @@ import { assertAdminKey } from '../admin/admin-upload.service';
 import { processUploadedImage, removeStoredImageIfUnused } from '../catalog/uploaded-image.service';
 
 /** The placement the Home screen's top carousel asks for (HomeFeedDto.banners). */
-export const HOME_TOP_PLACEMENT = 'home_top';
+export const HOME_TOP_PLACEMENT = HOME_BANNER_PLACEMENTS.TOP;
 
 /** "home_top", "food", "category:3f2…" — mirrors the banners_placement_format CHECK. */
 export const PLACEMENT_PATTERN = /^[a-z][a-z0-9_]*(:[A-Za-z0-9_-]+)?$/;
@@ -58,6 +58,24 @@ const ORDER: Prisma.BannerOrderByWithRelationInput[] = [{ displayOrder: 'asc' },
 export async function listActiveBanners(placement: string): Promise<BannerDto[]> {
   const banners = await prisma.banner.findMany({ where: { placement, isActive: true }, orderBy: ORDER });
   return banners.map(toDto);
+}
+
+/**
+ * Active banners of several placements in one query, each placement's in
+ * order — the Home feed's section banners. Placements without any are absent.
+ */
+export async function listActiveBannersByPlacement(placements: readonly string[]): Promise<Map<string, BannerDto[]>> {
+  const banners = await prisma.banner.findMany({
+    where: { placement: { in: [...placements] }, isActive: true },
+    orderBy: ORDER,
+  });
+  const byPlacement = new Map<string, BannerDto[]>();
+  for (const banner of banners) {
+    const list = byPlacement.get(banner.placement);
+    if (list) list.push(toDto(banner));
+    else byPlacement.set(banner.placement, [toDto(banner)]);
+  }
+  return byPlacement;
 }
 
 /** GET /admin/banners — every banner (active or not), optionally one placement. */
@@ -111,6 +129,19 @@ function assertPlacement(placement: string): void {
   }
 }
 
+/**
+ * A "home_category" banner shows directly above the Home shelf of the category
+ * it opens, so it must open a category — otherwise there is nowhere to put it.
+ */
+function assertPlacementAction(placement: string, actionType: BannerActionType): void {
+  if (placement === HOME_BANNER_PLACEMENTS.CATEGORY && actionType !== BannerActionType.CATEGORY) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message: 'A banner shown above a category shelf must open that category. Choose "Opens a category".',
+      details: [{ field: 'actionType', message: 'must be CATEGORY for this placement' }],
+    });
+  }
+}
+
 /** Runs an admin upload through the image pipeline; returns the WebP and its size. */
 async function processBannerImage(key: string): Promise<{ url: string; width: number; height: number }> {
   assertAdminKey(key);
@@ -142,6 +173,7 @@ async function audit(actorUserId: string, action: string, entityId: string, befo
 /** POST /admin/banners */
 export async function createBanner(input: BannerInput & { imageKey: string }, actorUserId: string): Promise<AdminBannerDto> {
   assertPlacement(input.placement);
+  assertPlacementAction(input.placement, input.actionType);
   const actionValue = await assertAction(input.actionType, input.actionValue);
   const image = await processBannerImage(input.imageKey);
   const banner = await prisma.banner.create({
@@ -173,6 +205,7 @@ export async function updateBanner(
 
   if (input.placement !== undefined) assertPlacement(input.placement);
   const actionType = input.actionType ?? current.actionType;
+  assertPlacementAction(input.placement ?? current.placement, actionType);
   const actionValue =
     input.actionType !== undefined || input.actionValue !== undefined
       ? await assertAction(actionType, input.actionValue !== undefined ? input.actionValue : current.actionValue)

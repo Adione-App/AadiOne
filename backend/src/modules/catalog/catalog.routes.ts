@@ -62,6 +62,16 @@ catalogRouter.get(
   asyncHandler(controller.listRailProducts),
 );
 
+/**
+ * GET /products/previously-ordered — Home's "Previous orders". The one
+ * catalogue read that needs a customer: it is built from their own orders.
+ */
+catalogRouter.get(
+  '/products/previously-ordered',
+  authenticate,
+  asyncHandler(controller.listPreviouslyOrdered),
+);
+
 catalogRouter.get(
   '/products/:id',
   validate({ params: productParamsSchema }),

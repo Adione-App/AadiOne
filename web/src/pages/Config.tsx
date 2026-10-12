@@ -449,7 +449,8 @@ export default function ConfigPage() {
     return <Spinner label="Loading settings…" />;
   }
 
-  const entries = config.data;
+  // The Home category order has its own editor (Banners → Home page category order).
+  const entries = config.data.filter((entry) => entry.key !== "HOME_CATEGORY_ORDER");
 
   /**
    * Group configuration entries.

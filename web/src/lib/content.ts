@@ -7,7 +7,7 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
-import type { AdminBannerDto } from '@shared';
+import { ConfigKey, HOME_BANNER_PLACEMENTS, type AdminBannerDto, type CategoryDto } from '@shared';
 import { api } from './api';
 import { uploadProductImage, type PresignedUpload } from './upload';
 
@@ -40,13 +40,22 @@ export function removeCategoryImage(categoryId: string): Promise<CategoryImageRe
 /**
  * Suggested placements. A placement is just a slug — any other one (for
  * example "category:<id>") can be typed in; the app shows a placement once it
- * asks for it. Only "home_top" is shown by the app today.
+ * asks for it. `live` = the customer Home page shows it (app version with the
+ * redesigned Home); `hint` explains where.
  */
-export const BANNER_PLACEMENTS: { value: string; label: string; live: boolean }[] = [
-  { value: 'home_top', label: 'Home — top carousel', live: true },
+export const BANNER_PLACEMENTS: { value: string; label: string; live: boolean; hint?: string }[] = [
+  { value: HOME_BANNER_PLACEMENTS.TOP, label: 'Home — main banner (top carousel)', live: true },
+  { value: HOME_BANNER_PLACEMENTS.FOOD, label: 'Home — food banner', live: true, hint: 'Shown above the restaurants row.' },
+  {
+    value: HOME_BANNER_PLACEMENTS.CATEGORY,
+    label: 'Home — above a category shelf',
+    live: true,
+    hint: 'Shown directly above the Home shelf of the category it opens (e.g. a fashion banner that opens Men). Must open a category.',
+  },
+  { value: HOME_BANNER_PLACEMENTS.EXPLORE, label: 'Home — explore more categories', live: true, hint: 'Shown above the subcategory grid.' },
+  { value: HOME_BANNER_PLACEMENTS.BOTTOM, label: 'Home — final banner (bottom)', live: true, hint: 'The last banner on the page.' },
   { value: 'home_middle', label: 'Home — middle section', live: false },
-  { value: 'home_bottom', label: 'Home — bottom section', live: false },
-  { value: 'food', label: 'Food section', live: false },
+  { value: 'food', label: 'Food screen', live: false },
 ];
 
 export function placementLabel(placement: string): string {
@@ -54,6 +63,32 @@ export function placementLabel(placement: string): string {
 }
 
 export const bannerKeys = { all: ['admin', 'banners'] as const };
+
+/* Home page category order ------------------------------------------------ */
+
+/** The admin's Home category order (top-level category paths), from GET /admin/config. */
+export function useHomeCategoryOrder() {
+  return useQuery({
+    queryKey: ['config'],
+    queryFn: () => api.get<{ key: string; value: unknown }[]>('/admin/config'),
+    select: (entries): string[] => {
+      const value = entries.find((entry) => entry.key === ConfigKey.HOME_CATEGORY_ORDER)?.value;
+      return Array.isArray(value) ? value.filter((path): path is string => typeof path === 'string') : [];
+    },
+  });
+}
+
+export function saveHomeCategoryOrder(paths: string[]) {
+  return api.patch('/admin/config', { key: ConfigKey.HOME_CATEGORY_ORDER, value: paths });
+}
+
+/** The live top-level categories customers see (merged across sellers; slug = path). */
+export function useCustomerTopCategories() {
+  return useQuery({
+    queryKey: ['admin', 'customer-top-categories'],
+    queryFn: () => api.get<CategoryDto[]>('/categories'),
+  });
+}
 
 export function useAdminBanners() {
   return useQuery({ queryKey: bannerKeys.all, queryFn: () => api.get<AdminBannerDto[]>('/admin/banners') });

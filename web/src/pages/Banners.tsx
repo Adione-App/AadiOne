@@ -2,16 +2,20 @@
  * Banners — admin-managed promotional images (GET/POST/PATCH/DELETE
  * /admin/banners).
  *
- * A banner belongs to a PLACEMENT — a slug such as "home_top", "home_middle",
- * "food" or "category:<id>". The customer app asks for a placement and gets its
- * active banners in order; today it shows "home_top" (the Home carousel, which
- * falls back to the app's built-in banners while none is active). Images are
- * uploaded like every other image and stored as optimised WebP by the server.
+ * A banner belongs to a PLACEMENT — a slug such as "home_top", "home_food",
+ * "home_category" or "home_bottom" (HOME_BANNER_PLACEMENTS). The customer app
+ * gets each Home placement's active banners in order with the Home feed; an
+ * empty placement simply shows nothing. Images are uploaded like every other
+ * image and stored as optimised WebP by the server.
+ *
+ * Also here: the Home page category order (config HOME_CATEGORY_ORDER) —
+ * which top categories Home shows first. Every other category follows
+ * automatically.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Permission, roleHasPermission, type AdminBannerDto } from '@shared';
+import { HOME_BANNER_PLACEMENTS, Permission, roleHasPermission, type AdminBannerDto } from '@shared';
 import { Button, EmptyState, ErrorBanner, Field, Icon, Modal, Pill, Spinner, Surface, Toggle, inputClass } from '@/components/ui';
 import { useAuth } from '@/lib/auth';
 import { imageSrc } from '@/lib/image';
@@ -23,9 +27,12 @@ import {
   createBanner,
   deleteBanner,
   placementLabel,
+  saveHomeCategoryOrder,
   updateBanner,
   uploadAdminImage,
   useAdminBanners,
+  useCustomerTopCategories,
+  useHomeCategoryOrder,
   type BannerFields,
 } from '@/lib/content';
 
@@ -74,10 +81,10 @@ export default function BannersPage() {
       <div className="flex items-start gap-3 rounded-2xl border border-info-500/20 bg-info-50 px-4 py-3 text-sm text-gray-700">
         <Icon name="image" className="mt-0.5 h-5 w-5 shrink-0 text-info-500" />
         <p>
-          Banners show in the customer app by <span className="font-semibold">placement</span>. The app shows{' '}
-          <span className="font-semibold">Home — top carousel</span> today (with its built-in banners while none is active); other
-          placements are saved now and shown once the app asks for them. Recommended Home banner size: 1983 × 793 px (2.5 : 1), at
-          least 600 px wide. Every image is stored as an optimised WebP.
+          Banners show in the customer app by <span className="font-semibold">placement</span>: the Home main banner, the food banner,
+          banners above a category's shelf, the explore banner and the final banner. A placement without an active banner shows
+          nothing. Changes reach the app on its next Home refresh — no app update needed. Recommended Home banner size: 1983 × 793 px
+          (2.5 : 1), at least 600 px wide. Every image is stored as an optimised WebP.
         </p>
       </div>
 
@@ -89,6 +96,8 @@ export default function BannersPage() {
           {notice.text}
         </p>
       )}
+
+      <HomeCategoryOrder canEdit={canEdit} onNotice={setNotice} />
 
       {canEdit && (
         <div className="flex justify-end">
@@ -103,7 +112,7 @@ export default function BannersPage() {
       ) : banners.isError ? (
         <ErrorBanner message={adminErrorMessage(banners.error)} />
       ) : groups.length === 0 ? (
-        <EmptyState title="No banners yet" hint="Create one to replace the app's built-in Home banners." />
+        <EmptyState title="No banners yet" hint="Create one to show it on the customer Home page." />
       ) : (
         groups.map(([placement, list]) => (
           <Surface key={placement} className="p-3.5">
@@ -223,6 +232,9 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
     if (!placement) return setError('Choose where the banner shows.');
     if (!current && !file) return setError('Choose a banner image.');
     if (actionType !== 'NONE' && !actionValue.trim()) return setError('Choose what the banner opens.');
+    if (placement === HOME_BANNER_PLACEMENTS.CATEGORY && actionType !== 'CATEGORY') {
+      return setError('A banner shown above a category shelf must open that category. Choose "Opens a category".');
+    }
     const order = Number(displayOrder);
     if (!Number.isInteger(order) || order < 0) return setError('Order must be a whole number, 0 or more.');
 
@@ -312,6 +324,9 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
               ))}
               <option value="OTHER">Other placement…</option>
             </select>
+            {BANNER_PLACEMENTS.find((p) => p.value === placementChoice)?.hint && (
+              <p className="mt-1 text-xs text-gray-500">{BANNER_PLACEMENTS.find((p) => p.value === placementChoice)?.hint}</p>
+            )}
           </Field>
           {placementChoice === 'OTHER' ? (
             <Field label="Placement key" required hint='Lowercase slug, e.g. "home_offers" or "category:<id>".'>
@@ -373,5 +388,137 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
         </div>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * Home page category order — which top categories the customer Home page
+ * shows first (config HOME_CATEGORY_ORDER, a list of category paths). Listed
+ * categories get their shelves among the main shopping sections, in this
+ * order; every other live category follows automatically further down, so a
+ * new category never has to be added here to appear.
+ */
+function HomeCategoryOrder({ canEdit, onNotice }: { canEdit: boolean; onNotice: (notice: Notice) => void }) {
+  const queryClient = useQueryClient();
+  const saved = useHomeCategoryOrder();
+  const categories = useCustomerTopCategories();
+  const [draft, setDraft] = useState<string[] | null>(null);
+
+  // Start from the saved order once it arrives; a save re-reads it.
+  useEffect(() => {
+    if (saved.data && draft === null) setDraft(saved.data);
+  }, [saved.data, draft]);
+
+  const byPath = useMemo(() => new Map((categories.data ?? []).map((category) => [category.slug, category])), [categories.data]);
+  const order = draft ?? saved.data ?? [];
+  const listed = order.filter((path) => byPath.has(path));
+  const stale = order.filter((path) => !byPath.has(path));
+  const others = (categories.data ?? []).filter((category) => !order.includes(category.slug));
+  const dirty = JSON.stringify(order) !== JSON.stringify(saved.data ?? []);
+
+  const save = useMutation({
+    mutationFn: () => saveHomeCategoryOrder(listed),
+    onSuccess: async () => {
+      onNotice({ ok: true, text: 'Home category order saved. The app shows it on its next Home refresh.' });
+      setDraft(null);
+      await queryClient.invalidateQueries({ queryKey: ['config'] });
+    },
+    onError: (error) => onNotice({ ok: false, text: adminErrorMessage(error) }),
+  });
+
+  const move = (index: number, by: -1 | 1) => {
+    const next = [...listed];
+    const [item] = next.splice(index, 1);
+    next.splice(index + by, 0, item!);
+    setDraft(next);
+  };
+
+  return (
+    <Surface className="p-3.5">
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-base font-semibold text-gray-900">Home page category order</h2>
+        <span className="text-xs text-gray-500">Categories not listed follow automatically</span>
+      </div>
+      <p className="mb-3 text-sm text-gray-600">
+        Choose which top categories the customer Home page shows first, in order (for example groceries, then fruits &amp;
+        vegetables). Every other category — including ones sellers add later — appears further down by itself.
+      </p>
+
+      {saved.isPending || categories.isPending ? (
+        <Spinner label="Loading categories…" />
+      ) : saved.isError || categories.isError ? (
+        <ErrorBanner message={adminErrorMessage(saved.error ?? categories.error)} />
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2">
+          <div>
+            <h3 className="mb-2 text-sm font-semibold text-gray-800">Shown first ({listed.length})</h3>
+            {listed.length === 0 ? (
+              <p className="rounded-xl border border-dashed border-gray-200 px-3 py-4 text-sm text-gray-500">
+                None — Home shows every category in its default order.
+              </p>
+            ) : (
+              <ol className="space-y-2" aria-label="Categories shown first on Home">
+                {listed.map((path, index) => (
+                  <li key={path} className="flex items-center gap-2 rounded-xl border border-gray-100 px-3 py-2 text-sm">
+                    <span className="w-5 text-right text-xs font-semibold text-gray-400">{index + 1}</span>
+                    <span className="min-w-0 flex-1 truncate font-medium text-gray-900">{byPath.get(path)?.name ?? path}</span>
+                    {canEdit && (
+                      <>
+                        <Button variant="ghost" disabled={index === 0} onClick={() => move(index, -1)}>
+                          <span aria-hidden="true">↑</span>
+                          <span className="sr-only">Move {byPath.get(path)?.name ?? path} up</span>
+                        </Button>
+                        <Button variant="ghost" disabled={index === listed.length - 1} onClick={() => move(index, 1)}>
+                          <span aria-hidden="true">↓</span>
+                          <span className="sr-only">Move {byPath.get(path)?.name ?? path} down</span>
+                        </Button>
+                        <Button variant="ghost" onClick={() => setDraft(listed.filter((p) => p !== path))}>
+                          Remove<span className="sr-only"> {byPath.get(path)?.name ?? path}</span>
+                        </Button>
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            )}
+            {stale.length > 0 && (
+              <p className="mt-2 text-xs text-gray-500">
+                {stale.length} saved {stale.length === 1 ? 'entry has' : 'entries have'} no live category right now and {stale.length === 1 ? 'is' : 'are'} skipped; saving removes {stale.length === 1 ? 'it' : 'them'}.
+              </p>
+            )}
+          </div>
+          <div>
+            <h3 className="mb-2 text-sm font-semibold text-gray-800">Other categories (automatic)</h3>
+            {others.length === 0 ? (
+              <p className="text-sm text-gray-500">Every live category is listed.</p>
+            ) : (
+              <ul className="space-y-2" aria-label="Other categories">
+                {others.map((category) => (
+                  <li key={category.id} className="flex items-center gap-2 rounded-xl border border-gray-100 px-3 py-2 text-sm">
+                    <span className="min-w-0 flex-1 truncate text-gray-700">{category.name}</span>
+                    {canEdit && (
+                      <Button variant="secondary" onClick={() => setDraft([...listed, category.slug])}>
+                        Add<span className="sr-only"> {category.name} to the categories shown first</span>
+                      </Button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
+
+      {canEdit && (
+        <div className="mt-3 flex justify-end gap-2">
+          <Button variant="secondary" disabled={!dirty || save.isPending} onClick={() => setDraft(saved.data ?? [])}>
+            Reset
+          </Button>
+          <Button disabled={(!dirty && stale.length === 0) || save.isPending} onClick={() => save.mutate()}>
+            {save.isPending ? 'Saving…' : 'Save order'}
+          </Button>
+        </div>
+      )}
+    </Surface>
   );
 }

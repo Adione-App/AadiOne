@@ -7,7 +7,6 @@
 
 import {
   keepPreviousData,
-  queryOptions,
   useInfiniteQuery,
   useMutation,
   useQuery,
@@ -67,8 +66,7 @@ export const keys = {
   product: (id: string) => ["product", id] as const,
   search: (term: string) => ["search", term] as const,
   rail: (key: string) => ["rail", key] as const,
-  homeSection: (categoryId: string) =>
-    ["home-section", CATALOG_CACHE_VERSION, categoryId] as const,
+  previouslyOrdered: ["previously-ordered"] as const,
   stores: (near: string) => ["stores", near] as const,
   store: (sellerId: string, near: string) => ["store", sellerId, near] as const,
   storeProducts: (sellerId: string) => ["store-products", sellerId] as const,
@@ -232,31 +230,23 @@ export function useOffers() {
 }
 
 /**
- * Products for one of Home's lazily loaded category shelves. More than a
- * shelf shows, because Home drops any product an earlier shelf already
- * showed. In-stock only: Home is for things that can be bought right now.
+ * Home's "Previous Orders": products this customer ordered before that are
+ * still visible and in stock (server-checked, most recent first). A server
+ * without the endpoint (404) simply means no section — never an error state.
  */
-const HOME_SECTION_LIMIT = 20;
-
-export function homeSectionQuery(categoryId: string) {
-  return queryOptions({
-    queryKey: keys.homeSection(categoryId),
-    queryFn: ({ signal }) =>
-      api.get<CursorPage<ProductSummaryDto>>(
-        `/products?categoryId=${categoryId}&inStock=true&limit=${HOME_SECTION_LIMIT}`,
-        { signal },
-      ),
-    staleTime: 2 * 60_000,
-    gcTime: 30 * 60_000,
+export function usePreviouslyOrdered() {
+  return useQuery({
+    queryKey: keys.previouslyOrdered,
+    queryFn: async () => {
+      try {
+        return await api.get<ProductSummaryDto[]>("/products/previously-ordered");
+      } catch (error) {
+        if (error instanceof ApiRequestError && error.status === 404) return [];
+        throw error;
+      }
+    },
+    staleTime: 5 * 60_000,
   });
-}
-
-/**
- * Fetched only once its section scrolls near the screen (`enabled`), so a
- * catalogue with hundreds of subcategories never loads them all up front.
- */
-export function useHomeSectionProducts(categoryId: string, enabled: boolean) {
-  return useQuery({ ...homeSectionQuery(categoryId), enabled });
 }
 
 /** The full rail a Home "See All" opens — same ranking as the preview, no cap. */

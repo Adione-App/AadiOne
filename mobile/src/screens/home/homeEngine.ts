@@ -2,21 +2,38 @@
  * Home section engine — turns whatever the backend returns into the ordered
  * list of sections Home renders. Pure functions, no React, no I/O.
  *
- * NOTHING ABOUT THE CATALOGUE IS WRITTEN HERE. Section order is decided by
- * section KIND (curated rail, category shelf, stores, food, offers) — never by
- * a category, product or seller name. A category added tomorrow gets a shelf
- * because it is in `feed.categoryRails` / `feed.categories`, a store appears
- * because `/stores` returned it, and something disabled disappears because
- * the backend stopped returning it.
+ * NOTHING ABOUT THE CATALOGUE IS WRITTEN HERE. Sections are decided by KIND
+ * (banner slot, category grid, category shelf, discovery rail) — never by a
+ * category, product, seller or banner name:
  *
- * ONE DISCOVERY FEED, NO PRODUCT TWICE: shelves are filled top to bottom and
- * a product id is shown at most ONCE on the whole page (`pickUnique`). A shelf
- * shows only the products no earlier shelf showed — however few that leaves —
- * and is hidden when it has nothing new. There is no fallback that reuses an
- * already-shown product to fill a shelf.
+ *   - which top categories come first is the admin's HOME_CATEGORY_ORDER
+ *     (the server sends `categories` in that order and names the featured
+ *     ones in `featuredCategoryIds`); every other category follows by itself;
+ *   - every banner is an admin banner from the feed (HOME_BANNER_PLACEMENTS),
+ *     and an empty placement shows nothing;
+ *   - a category added tomorrow gets a tile and a shelf because the server
+ *     returns it, and something switched off disappears because it stops.
+ *
+ * The page, top to bottom (any section without data is simply absent):
+ *
+ *   main banner · top categories
+ *   food banner · restaurants · featured category shelves (each with the
+ *     banners placed above it)
+ *   explore banner · explore subcategories · remaining category shelves ·
+ *     more categories · stores near you
+ *   top picks · offers (products, then coupons) · recently added ·
+ *     previous orders · final banner · footer
+ *
+ * DUPLICATES: a category shelf always shows its own products (category
+ * correctness first). The discovery rails after them prefer products the page
+ * has not shown yet, and only fall back to repeats when fewer than
+ * MIN_FRESH new ones are left — so a small catalogue never hides valid
+ * inventory behind an empty rail. Previous orders are the customer's own
+ * history and are never filtered against the rest of the page.
  */
 
 import type {
+  BannerDto,
   CategoryDto,
   HomeFeedDto,
   OfferDto,
@@ -27,18 +44,38 @@ import type {
 
 export type RailKey = HomeFeedDto["rails"][number]["key"];
 
-/** Where a section's "View All" / a banner's CTA goes. */
+/** Where a section's "View All" / a banner's tap goes. */
 export type HomeAction =
   | { type: "rail"; railKey: RailKey; title: string }
   | { type: "category"; categoryId: string }
+  | { type: "allCategories" }
   | { type: "product"; productId: string }
   | { type: "food" }
+  | { type: "orders" }
   | { type: "coupon"; code: string }
   | { type: "none" };
 
+/** One admin banner, ready to draw. */
+export interface PromoSlide {
+  key: string;
+  title: string | null;
+  subtitle: string | null;
+  imageUrl: string;
+  /** Width / height of the uploaded image, so it shows whole, uncropped. */
+  aspectRatio: number | null;
+  action: HomeAction;
+}
+
 export type HomeSection =
-  | { kind: "banners"; key: "banners" }
-  | { kind: "categories"; key: "categories" }
+  | { kind: "banners"; key: string; slides: PromoSlide[] }
+  | {
+      kind: "categoryGrid";
+      key: string;
+      title: string;
+      categories: CategoryDto[];
+      columns: 4 | 5;
+      viewAll: HomeAction | null;
+    }
   | { kind: "food"; key: "food" }
   | { kind: "stores"; key: "stores" }
   | { kind: "offers"; key: "offers" }
@@ -46,298 +83,267 @@ export type HomeSection =
       kind: "shelf";
       key: string;
       title: string;
+      subtitle: string | null;
       products: ProductSummaryDto[];
-      viewAll: HomeAction;
-      /** Set for a lazily loaded category shelf — its section fetches this category. */
-      lazyCategoryId: string | null;
-      /** True while a lazy shelf's products have not arrived yet (render a skeleton). */
-      loading: boolean;
+      viewAll: HomeAction | null;
     }
   | { kind: "footer"; key: "footer" };
 
 /* -------------------------------------------------------------------------- */
-/* Unique product selection                                                    */
+/* Limits                                                                      */
 /* -------------------------------------------------------------------------- */
 
 /** Products per shelf on Home — "View All" has the rest. */
-export const MAX_SHELF = 12;
+export const MAX_SHELF = 10;
+/** A discovery rail shows only new products while at least this many are left. */
+export const MIN_FRESH = 4;
+/** Top categories in the first grid (two rows of four); the rest go to "More categories". */
+export const TOP_CATEGORY_TILES = 8;
+/** Subcategories in "Explore subcategories" (two rows of five). */
+export const EXPLORE_SUBCATEGORY_TILES = 10;
+/** Tiles in the "More categories" grid before "View All". */
+export const MORE_CATEGORY_TILES = 12;
+
+/* -------------------------------------------------------------------------- */
+/* Product selection                                                           */
+/* -------------------------------------------------------------------------- */
 
 /** Only things a customer can add right now belong on Home. */
 function isBuyable(product: ProductSummaryDto): boolean {
   return product.defaultVariant !== null && product.defaultVariant.inStock;
 }
 
-/**
- * The shelf's buyable products that are not on the page yet (capped at
- * MAX_SHELF), recorded in `shown` so no later shelf can show them again.
- * Empty = nothing new: the caller hides the shelf.
- */
-function pickUnique(products: readonly ProductSummaryDto[], shown: Set<string>): ProductSummaryDto[] {
-  const picked: ProductSummaryDto[] = [];
-  for (const product of products) {
-    if (!isBuyable(product) || shown.has(product.id)) continue;
-    shown.add(product.id);
-    picked.push(product);
-    if (picked.length === MAX_SHELF) break;
-  }
+/** A category shelf: its own buyable products, whatever else the page shows. */
+function pickCategoryShelf(products: readonly ProductSummaryDto[], shown: Set<string>): ProductSummaryDto[] {
+  const picked = products.filter(isBuyable).slice(0, MAX_SHELF);
+  for (const product of picked) shown.add(product.id);
   return picked;
 }
+
+/**
+ * A discovery rail: products the page has not shown yet, in the rail's own
+ * order. When fewer than MIN_FRESH are new, the rail's already-shown products
+ * fill in after them rather than leaving it near-empty.
+ */
+export function pickPreferFresh(products: readonly ProductSummaryDto[], shown: Set<string>): ProductSummaryDto[] {
+  const buyable = products.filter(isBuyable);
+  const fresh = buyable.filter((product) => !shown.has(product.id));
+  const chosen = fresh.length >= MIN_FRESH ? fresh : [...fresh, ...buyable.filter((product) => shown.has(product.id))];
+  const picked = chosen.slice(0, MAX_SHELF);
+  for (const product of picked) shown.add(product.id);
+  return picked;
+}
+
 /* -------------------------------------------------------------------------- */
-/* Section layout                                                              */
+/* Category grids                                                              */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Every subcategory, in the server's category order, as a lazily loaded
- * shelf. Top-level categories already have a shelf each (`categoryRails`).
+ * Up to `limit` subcategories, taking turns across their parents (first
+ * subcategory of every parent, then the second of every parent, …) so the
+ * grid spans as many different categories as possible. Order follows the
+ * server's category order; nothing is shuffled.
  */
-export function lazyShelfCategories(feed: HomeFeedDto): CategoryDto[] {
-  return feed.categories.flatMap((category) => category.children ?? []);
+export function spreadSubcategories(categories: readonly CategoryDto[], limit: number): CategoryDto[] {
+  const lists = categories.map((category) => category.children ?? []);
+  const picked: CategoryDto[] = [];
+  const seen = new Set<string>();
+  for (let round = 0; picked.length < limit; round += 1) {
+    let tookAny = false;
+    for (const list of lists) {
+      const child = list[round];
+      if (!child) continue;
+      tookAny = true;
+      if (seen.has(child.id)) continue;
+      seen.add(child.id);
+      picked.push(child);
+      if (picked.length === limit) break;
+    }
+    if (!tookAny) break;
+  }
+  return picked;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Banners                                                                     */
+/* -------------------------------------------------------------------------- */
+
+function bannerAction(banner: BannerDto, whenNone: HomeAction): HomeAction {
+  const value = banner.actionValue;
+  switch (banner.actionType) {
+    case "CATEGORY":
+      return value ? { type: "category", categoryId: value } : whenNone;
+    case "PRODUCT":
+      return value ? { type: "product", productId: value } : whenNone;
+    case "COUPON":
+      return value ? { type: "coupon", code: value } : whenNone;
+    default:
+      return whenNone;
+  }
+}
+
+/** Admin banners as slides. `whenNone` is where an image-only banner goes (usually nowhere). */
+export function bannerSlides(
+  banners: readonly BannerDto[] | undefined,
+  keyPrefix: string,
+  whenNone: HomeAction = { type: "none" },
+): PromoSlide[] {
+  return (banners ?? []).map((banner) => ({
+    key: `${keyPrefix}:${banner.id}`,
+    title: banner.title,
+    subtitle: banner.subtitle,
+    imageUrl: banner.imageUrl,
+    aspectRatio: banner.imageWidth > 0 && banner.imageHeight > 0 ? banner.imageWidth / banner.imageHeight : null,
+    action: bannerAction(banner, whenNone),
+  }));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Section layout                                                              */
+/* -------------------------------------------------------------------------- */
 
 export interface HomeLayoutInput {
   feed: HomeFeedDto;
   hasFood: boolean;
   hasStores: boolean;
   hasOffers: boolean;
-  /** How many lazy shelves are on the page so far (grows as the customer scrolls). */
-  lazyCount: number;
-  /** categoryId → its loaded products; absent = not loaded yet. */
-  lazyProducts: ReadonlyMap<string, ProductSummaryDto[]>;
+  /** The customer's previously ordered products (already eligible); null/empty = none. */
+  previousOrders: readonly ProductSummaryDto[] | null;
 }
 
-type Slot =
-  | { slot: "fixed"; section: HomeSection }
-  | { slot: "rail"; rail: HomeFeedDto["rails"][number] }
-  | { slot: "categoryRail"; rail: HomeFeedDto["categoryRails"][number] }
-  | { slot: "lazy"; category: CategoryDto };
-
-/**
- * The page, top to bottom:
- *
- *   banners · categories · deals · daily essentials · food · first category
- *   shelves · stores · best sellers · offers & coupons · remaining category
- *   shelves (new arrivals woven in) · popular · subcategory shelves (lazy,
- *   incremental) · footer
- *
- * Any section whose data is empty is simply not in the list.
- */
 export function buildHomeSections(input: HomeLayoutInput): HomeSection[] {
   const { feed } = input;
-  const railByKey = new Map(feed.rails.map((rail) => [rail.key, rail]));
-  const rail = (key: RailKey): Slot[] => {
-    const found = railByKey.get(key);
-    return found ? [{ slot: "rail", rail: found }] : [];
-  };
-  const fixed = (section: HomeSection, when = true): Slot[] =>
-    when ? [{ slot: "fixed", section }] : [];
-
-  const categoryRails: Slot[] = feed.categoryRails.map((entry) => ({ slot: "categoryRail", rail: entry }));
-  const firstCategories = categoryRails.slice(0, 2);
-  const laterCategories = categoryRails.slice(2);
-  const lazyAll = lazyShelfCategories(feed);
-  const lazy: Slot[] = lazyAll
-    .slice(0, input.lazyCount)
-    .map((category) => ({ slot: "lazy", category }));
-
-  const slots: Slot[] = [
-    ...fixed({ kind: "banners", key: "banners" }),
-    ...fixed({ kind: "categories", key: "categories" }, feed.categories.length > 0),
-    ...rail("OFFERS"),
-    ...rail("DAILY_ESSENTIALS"),
-    ...fixed({ kind: "food", key: "food" }, input.hasFood),
-    ...firstCategories,
-    ...fixed({ kind: "stores", key: "stores" }, input.hasStores),
-    ...rail("BEST_SELLERS"),
-    ...fixed({ kind: "offers", key: "offers" }, input.hasOffers),
-    // New arrivals sit after the first of the remaining category shelves so
-    // the page alternates "what's new" with "browse a category".
-    ...laterCategories.slice(0, 1),
-    ...rail("RECENTLY_ADDED"),
-    ...laterCategories.slice(1),
-    ...rail("POPULAR"),
-    ...lazy,
-    ...fixed({ kind: "footer", key: "footer" }, input.lazyCount >= lazyAll.length),
-  ];
-
-  // Every product id already on the page, in render order.
-  const shown = new Set<string>();
   const sections: HomeSection[] = [];
+  const shown = new Set<string>();
 
-  for (const slot of slots) {
-    switch (slot.slot) {
-      case "fixed":
-        sections.push(slot.section);
-        break;
+  const banners = (key: string, slides: PromoSlide[]) => {
+    if (slides.length > 0) sections.push({ kind: "banners", key, slides });
+  };
 
-      case "rail": {
-        const products = pickUnique(slot.rail.products, shown);
-        if (products.length > 0) {
-          sections.push({
-            kind: "shelf",
-            key: `rail:${slot.rail.key}`,
-            title: slot.rail.title,
-            products,
-            viewAll: { type: "rail", railKey: slot.rail.key, title: slot.rail.title },
-            lazyCategoryId: null,
-            loading: false,
-          });
-        }
-        break;
-      }
+  /* A — main banner, top categories ---------------------------------------- */
 
-      case "categoryRail": {
-        const products = pickUnique(slot.rail.products, shown);
-        if (products.length > 0) {
-          sections.push({
-            kind: "shelf",
-            key: `category:${slot.rail.categoryId}`,
-            title: slot.rail.title,
-            products,
-            viewAll: { type: "category", categoryId: slot.rail.categoryId },
-            lazyCategoryId: null,
-            loading: false,
-          });
-        }
-        break;
-      }
+  banners("banners:top", bannerSlides(feed.banners, "top"));
 
-      case "lazy": {
-        const loaded = input.lazyProducts.get(slot.category.id);
-        const base = {
-          kind: "shelf" as const,
-          key: `sub:${slot.category.id}`,
-          title: slot.category.name,
-          viewAll: { type: "category" as const, categoryId: slot.category.id },
-          lazyCategoryId: slot.category.id,
-        };
-        if (!loaded) {
-          sections.push({ ...base, products: [], loading: true });
-          break;
-        }
-        const products = pickUnique(loaded, shown);
-        if (products.length > 0) sections.push({ ...base, products, loading: false });
-        break;
-      }
+  const topCategories = feed.categories.slice(0, TOP_CATEGORY_TILES);
+  if (topCategories.length > 0) {
+    sections.push({
+      kind: "categoryGrid",
+      key: "grid:top",
+      title: "Top Categories",
+      categories: topCategories,
+      columns: 4,
+      viewAll: { type: "allCategories" },
+    });
+  }
+
+  /* B — food, featured category shelves ------------------------------------- */
+
+  banners(
+    "banners:food",
+    bannerSlides(feed.sectionBanners?.home_food, "food", input.hasFood ? { type: "food" } : { type: "none" }),
+  );
+  if (input.hasFood) sections.push({ kind: "food", key: "food" });
+
+  const bannersAbove = new Map((feed.categoryBanners ?? []).map((entry) => [entry.categoryId, entry.banners]));
+  const categoryShelf = (rail: HomeFeedDto["categoryRails"][number]) => {
+    banners(`banners:category:${rail.categoryId}`, bannerSlides(bannersAbove.get(rail.categoryId), `category:${rail.categoryId}`));
+    const products = pickCategoryShelf(rail.products, shown);
+    if (products.length > 0) {
+      sections.push({
+        kind: "shelf",
+        key: `category:${rail.categoryId}`,
+        title: rail.title,
+        subtitle: null,
+        products,
+        viewAll: { type: "category", categoryId: rail.categoryId },
+      });
     }
+  };
+
+  // No admin order (or an older server): every category shelf is a main one.
+  const featuredIds = feed.featuredCategoryIds ?? [];
+  const featured = new Set(featuredIds.length > 0 ? featuredIds : feed.categoryRails.map((rail) => rail.categoryId));
+  for (const rail of feed.categoryRails) if (featured.has(rail.categoryId)) categoryShelf(rail);
+
+  /* C — category discovery --------------------------------------------------- */
+
+  banners("banners:explore", bannerSlides(feed.sectionBanners?.home_explore, "explore"));
+
+  const explore = spreadSubcategories(feed.categories, EXPLORE_SUBCATEGORY_TILES);
+  if (explore.length > 0) {
+    sections.push({
+      kind: "categoryGrid",
+      key: "grid:explore",
+      title: "Explore Subcategories",
+      categories: explore,
+      columns: 5,
+      viewAll: { type: "allCategories" },
+    });
   }
 
+  for (const rail of feed.categoryRails) if (!featured.has(rail.categoryId)) categoryShelf(rail);
+
+  // Everything not already a tile above: top categories past the first grid,
+  // then the subcategories "Explore" did not show.
+  const onGrid = new Set([...topCategories, ...explore].map((category) => category.id));
+  const more = [
+    ...feed.categories.slice(TOP_CATEGORY_TILES),
+    ...feed.categories.flatMap((category) => category.children ?? []),
+  ]
+    .filter((category) => !onGrid.has(category.id))
+    .slice(0, MORE_CATEGORY_TILES);
+  if (more.length > 0) {
+    sections.push({
+      kind: "categoryGrid",
+      key: "grid:more",
+      title: "More Categories",
+      categories: more,
+      columns: 4,
+      viewAll: { type: "allCategories" },
+    });
+  }
+
+  if (input.hasStores) sections.push({ kind: "stores", key: "stores" });
+
+  /* D — product discovery ---------------------------------------------------- */
+
+  const railByKey = new Map(feed.rails.map((rail) => [rail.key, rail]));
+  const discoveryRail = (rail: HomeFeedDto["rails"][number] | undefined) => {
+    if (!rail) return;
+    const products = pickPreferFresh(rail.products, shown);
+    if (products.length === 0) return;
+    sections.push({
+      kind: "shelf",
+      key: `rail:${rail.key}`,
+      title: rail.title,
+      subtitle: null,
+      products,
+      viewAll: { type: "rail", railKey: rail.key, title: rail.title },
+    });
+  };
+
+  // Top Picks; a server without it still has real Best Sellers.
+  discoveryRail(railByKey.get("TOP_PICKS") ?? railByKey.get("BEST_SELLERS"));
+  discoveryRail(railByKey.get("OFFERS"));
+  if (input.hasOffers) sections.push({ kind: "offers", key: "offers" });
+  discoveryRail(railByKey.get("RECENTLY_ADDED"));
+
+  const previous = (input.previousOrders ?? []).filter(isBuyable).slice(0, MAX_SHELF);
+  if (previous.length > 0) {
+    sections.push({
+      kind: "shelf",
+      key: "previous-orders",
+      title: "Previous Orders",
+      subtitle: "Order again",
+      products: previous,
+      viewAll: { type: "orders" },
+    });
+  }
+
+  banners("banners:bottom", bannerSlides(feed.sectionBanners?.home_bottom, "bottom"));
+
+  sections.push({ kind: "footer", key: "footer" });
   return sections;
-}
-
-/* -------------------------------------------------------------------------- */
-/* Banner slides                                                               */
-/* -------------------------------------------------------------------------- */
-
-/**
- * What a composed slide draws beside its copy. Deliberately NEVER a
- * catalogue product photo: every product may appear only once on Home (as a
- * ProductCard), so a banner showing one would repeat it. Banners also never
- * claim products in the shelf selection above.
- */
-export type SlideVisual =
-  /** The category's own image when the seller set one, else its keyword icon. */
-  | { kind: "category"; name: string; imageUrl: string | null }
-  /** A discount graphic for the deals slide. */
-  | { kind: "deals" }
-  /** A food graphic for the restaurants & cafes slide. */
-  | { kind: "food" };
-
-export interface PromoSlide {
-  key: string;
-  title: string;
-  subtitle: string | null;
-  /** Short highlight pill, e.g. "Up to 40% off". */
-  badge: string | null;
-  /** Non-product graphic for a composed slide; null for backend artwork. */
-  visual: SlideVisual | null;
-  /** A full designed banner image from the backend (drawn edge to edge). */
-  artworkUrl: string | null;
-  /** A full designed banner bundled with the app (`require(...)`), drawn edge to edge. */
-  artworkAsset: number | null;
-  /** Width / height of the designed artwork, so the slide shows all of it, uncropped. */
-  artworkAspectRatio: number | null;
-  ctaLabel: string;
-  action: HomeAction;
-}
-
-/** The designed Home banners bundled with the app (1983 × 793 px each). */
-const HOME_BANNER_ASPECT_RATIO = 1983 / 793;
-const HOME_BANNERS: ReadonlyArray<{ key: string; title: string; asset: number; categoryKeywords: readonly string[] }> = [
-  {
-    key: "daily-essentials",
-    title: "Daily essentials",
-    asset: require("../../../assets/home-banner-daily-essentials.png") as number,
-    categoryKeywords: ["essential", "grocery", "kirana", "staple"],
-  },
-  {
-    key: "electronics",
-    title: "Electronics",
-    asset: require("../../../assets/home-banner-electronics.png") as number,
-    categoryKeywords: ["electronic", "gadget", "appliance"],
-  },
-  {
-    key: "vegetables-fruits",
-    title: "Vegetables & fruits",
-    asset: require("../../../assets/home-banner-vegetables-fruits.png") as number,
-    categoryKeywords: ["vegetable", "fruit", "veggie"],
-  },
-];
-
-/** A banner opens the first top category whose name matches it; with none, it only shows. */
-function bannerCategoryAction(categories: HomeFeedDto["categories"], keywords: readonly string[]): HomeAction {
-  const match = categories.find((category) => keywords.some((word) => category.name.toLowerCase().includes(word)));
-  return match ? { type: "category", categoryId: match.id } : { type: "none" };
-}
-
-function bannerAction(banner: HomeFeedDto["banners"][number]): HomeAction {
-  const value = banner.actionValue;
-  if (!value) return { type: "none" };
-  switch (banner.actionType) {
-    case "CATEGORY":
-      return { type: "category", categoryId: value };
-    case "PRODUCT":
-      return { type: "product", productId: value };
-    case "COUPON":
-      return { type: "coupon", code: value };
-    default:
-      return { type: "none" };
-  }
-}
-
-/**
- * The carousel's slides. Banners configured on the backend (`feed.banners`)
- * win — that is where admin-managed banners belong. Until any exist, the
- * three designed banners bundled with the app are shown.
- */
-export function buildPromoSlides(feed: HomeFeedDto): PromoSlide[] {
-  if (feed.banners.length > 0) {
-    return feed.banners.map((banner) => ({
-      key: `banner:${banner.id}`,
-      title: banner.title ?? "",
-      subtitle: banner.subtitle,
-      badge: null,
-      visual: null,
-      artworkUrl: banner.imageUrl,
-      artworkAsset: null,
-      // Admin banners carry their size, so the carousel shows them whole, uncropped.
-      artworkAspectRatio: banner.imageWidth > 0 && banner.imageHeight > 0 ? banner.imageWidth / banner.imageHeight : null,
-      ctaLabel: "Shop Now",
-      action: bannerAction(banner),
-    }));
-  }
-
-  return HOME_BANNERS.map((banner) => ({
-    key: `home-banner:${banner.key}`,
-    title: banner.title,
-    subtitle: null,
-    badge: null,
-    visual: null,
-    artworkUrl: null,
-    artworkAsset: banner.asset,
-    artworkAspectRatio: HOME_BANNER_ASPECT_RATIO,
-    ctaLabel: "Shop Now",
-    action: bannerCategoryAction(feed.categories, banner.categoryKeywords),
-  }));
 }
 
 /* -------------------------------------------------------------------------- */

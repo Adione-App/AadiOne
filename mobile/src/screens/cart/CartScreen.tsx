@@ -388,6 +388,7 @@ export default function CartScreen({
       queryClient.setQueryData(keys.order(result.order.id), result.order);
       void queryClient.invalidateQueries({ queryKey: keys.cart });
       void queryClient.invalidateQueries({ queryKey: keys.orders });
+      void queryClient.invalidateQueries({ queryKey: keys.previouslyOrdered });
 
       onPlaced(result.order, result.requiresPayment);
     } catch (err) {

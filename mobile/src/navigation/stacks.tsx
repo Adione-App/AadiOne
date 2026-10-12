@@ -102,7 +102,16 @@ export function HomeStack() {
              * Select Location screen.
              */
             onOpenLocation={() => navigation.navigate("SelectLocation")}
-            onOpenProfile={() => navigation.getParent()?.navigate("Account")}
+            onOpenCart={() =>
+              navigation.getParent()?.navigate("Cart", { screen: "CartHome" })
+            }
+            onOpenOrders={() =>
+              navigation.getParent()?.navigate("Account", {
+                screen: "Orders",
+                // Keep Account's home underneath, so "back" lands there.
+                initial: false,
+              })
+            }
             onOpenNotifications={() => navigation.navigate("Notifications")}
             onOpenOrderTracking={(orderId) =>
               navigation.navigate("OrderTracking", { orderId })

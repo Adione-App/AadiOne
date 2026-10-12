@@ -79,6 +79,9 @@ export const ConfigKey = {
   SUPPORT_WHATSAPP: "SUPPORT_WHATSAPP",
   SUPPORT_EMAIL: "SUPPORT_EMAIL",
   DELIVERY_PROMISE_TEXT: "DELIVERY_PROMISE_TEXT",
+
+  /* customer home page */
+  HOME_CATEGORY_ORDER: "HOME_CATEGORY_ORDER",
 } as const;
 
 export type ConfigKey = (typeof ConfigKey)[keyof typeof ConfigKey];
@@ -136,6 +139,13 @@ export interface ConfigValues {
   SUPPORT_WHATSAPP: string;
   SUPPORT_EMAIL: string;
   DELIVERY_PROMISE_TEXT: string;
+
+  /**
+   * Top-level category paths (slugs, e.g. "grocery") the customer Home page
+   * shows first, in this order. Every other live top category follows
+   * automatically, so a new category never needs this list to appear.
+   */
+  HOME_CATEGORY_ORDER: string[];
 }
 
 /**
@@ -197,6 +207,8 @@ export const CONFIG_DEFAULTS: ConfigValues = {
   SUPPORT_WHATSAPP: "",
   SUPPORT_EMAIL: "support@adione.in",
   DELIVERY_PROMISE_TEXT: "in 30 minutes",
+
+  HOME_CATEGORY_ORDER: [],
 };
 
 /**
@@ -324,4 +336,7 @@ export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
 
   DELIVERY_PROMISE_TEXT:
     'Marketing copy for delivery speed (e.g. "in 30 minutes"). Per-order ETA is always computed separately.',
+
+  HOME_CATEGORY_ORDER:
+    "Top categories (by path) the customer Home page shows first, in order. Other categories follow automatically. Managed from Admin → Banners → Home page category order.",
 };

@@ -19,19 +19,18 @@ import { Ionicons } from "@expo/vector-icons";
 import { ChevronRight, Package } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useIsFocused } from "@react-navigation/native";
-import { useQueries } from "@tanstack/react-query";
 import * as Clipboard from "expo-clipboard";
 
-import type { CategoryDto, CursorPage, ProductSummaryDto } from "@shared";
+import type { CategoryDto } from "@shared";
 import { colors, radius, spacing } from "@shared/theme";
 import { formatDistance } from "@shared/distance";
 
 import {
-  homeSectionQuery,
   useHomeFeed,
   useNotificationUnreadCount,
   useOffers,
   useOrders,
+  usePreviouslyOrdered,
   useRestaurants,
   useStores,
 } from "@/lib/queries";
@@ -39,6 +38,7 @@ import { formatUnreadBadge } from "@/lib/notifications";
 import { useCartActions } from "@/lib/useCartActions";
 import { useLocation } from "@/lib/store";
 
+import BrandMark from "@/components/BrandMark";
 import { AppText, ErrorState, NoticeStrip, Screen } from "@/components/ui";
 
 import {
@@ -48,8 +48,6 @@ import {
 
 import {
   buildHomeSections,
-  buildPromoSlides,
-  lazyShelfCategories,
   type HomeAction,
   type HomeSection,
   type RailKey,
@@ -63,9 +61,6 @@ import { ProductShelf, SHELF_CARD_WIDTH } from "./sections/ProductShelf";
 import { PromoCarousel } from "./sections/PromoCarousel";
 import { HOME_BACKGROUND } from "./sections/SectionShell";
 import { StoreSection } from "./sections/StoreSection";
-
-/** Subcategory shelves added to the page per "near the end" scroll. */
-const LAZY_BATCH = 4;
 
 const NO_RESULTS: never[] = [];
 
@@ -156,11 +151,12 @@ function AnimatedSearchPlaceholder({ phrases }: { phrases: string[] }) {
    HOME SCREEN
 
    A long, virtualized discovery feed. This component only orchestrates:
-   it fetches (one Home feed call, plus stores / restaurants / offers, plus
-   each subcategory shelf lazily as the customer scrolls toward it), hands
-   everything to the section engine (homeEngine.ts — section order, cross-
-   section de-duplication, banner slides), and renders whatever sections
-   come back. Nothing about the catalogue is written here.
+   it fetches (one Home feed call — categories, shelves, rails and every
+   admin banner — plus stores / restaurants / offers and the customer's
+   previously ordered products), hands everything to the section engine
+   (homeEngine.ts — section order, duplicate control, banner slots), and
+   renders whatever sections come back. Nothing about the catalogue is
+   written here.
 ===================================================================== */
 
 export default function HomeScreen({
@@ -170,7 +166,8 @@ export default function HomeScreen({
   onOpenRail,
   onOpenSearch,
   onOpenLocation,
-  onOpenProfile,
+  onOpenCart,
+  onOpenOrders,
   onOpenNotifications,
   onOpenOrderTracking,
   onOpenRestaurant,
@@ -183,7 +180,8 @@ export default function HomeScreen({
   onOpenRail: (key: RailKey, title: string) => void;
   onOpenSearch: () => void;
   onOpenLocation: () => void;
-  onOpenProfile: () => void;
+  onOpenCart: () => void;
+  onOpenOrders: () => void;
   onOpenNotifications: () => void;
   onOpenOrderTracking: (orderId: string) => void;
   onOpenRestaurant: (sellerId: string) => void;
@@ -200,6 +198,9 @@ export default function HomeScreen({
 
   const feed = useHomeFeed();
   const cart = useCartActions();
+  // Same optimistic count as the Cart tab's badge (see MainTabs).
+  const cartCount = cart.cart?.bill.itemCount ?? 0;
+  const previouslyOrdered = usePreviouslyOrdered();
 
   // The most recent order that's still ONGOING (not delivered/cancelled/
   // rejected/failed/refunded — see `bucket`, computed server-side in
@@ -455,49 +456,6 @@ export default function HomeScreen({
   const stores = storesQuery.data ?? NO_RESULTS;
   const offers = offersQuery.data ?? NO_RESULTS;
 
-  /* ----------------------------------------------------------------
-     LAZY SUBCATEGORY SHELVES
-
-     Every subcategory can have its own shelf, but only `lazyCount` of
-     them are on the page at a time — `onEndReached` adds the next batch.
-     Each shelf fetches its own products only once FlatList mounts it
-     (see ProductShelf's LazyShelfLoader). The DISABLED observers below
-     never fetch anything themselves; they just let this screen see each
-     shelf's products the moment they land, so the engine can de-duplicate
-     them against everything above.
-  ---------------------------------------------------------------- */
-
-  const allLazyCategories = useMemo(
-    () => (feed.data ? lazyShelfCategories(feed.data) : NO_RESULTS),
-    [feed.data],
-  );
-  const [lazyCount, setLazyCount] = useState(LAZY_BATCH);
-  const activeLazyCategories = useMemo(
-    () => allLazyCategories.slice(0, lazyCount),
-    [allLazyCategories, lazyCount],
-  );
-  const lazyItems = useQueries({
-    queries: activeLazyCategories.map((category) => ({
-      ...homeSectionQuery(category.id),
-      enabled: false,
-    })),
-    combine: combineLazyItems,
-  });
-  const lazyProducts = useMemo(() => {
-    const byCategory = new Map<string, ProductSummaryDto[]>();
-    activeLazyCategories.forEach((category, index) => {
-      const items = lazyItems[index];
-      if (items) byCategory.set(category.id, items);
-    });
-    return byCategory;
-  }, [activeLazyCategories, lazyItems]);
-
-  const loadMoreShelves = useCallback(() => {
-    setLazyCount((current) =>
-      current < allLazyCategories.length ? current + LAZY_BATCH : current,
-    );
-  }, [allLazyCategories.length]);
-
   const sections = useMemo(
     () =>
       feed.data
@@ -506,14 +464,11 @@ export default function HomeScreen({
             hasFood: restaurants.length > 0,
             hasStores: stores.length > 0,
             hasOffers: offers.length > 0,
-            lazyCount: Math.min(lazyCount, allLazyCategories.length),
-            lazyProducts,
+            previousOrders: previouslyOrdered.data ?? null,
           })
         : (NO_RESULTS as HomeSection[]),
-    [feed.data, restaurants.length, stores.length, offers.length, lazyCount, allLazyCategories.length, lazyProducts],
+    [feed.data, restaurants.length, stores.length, offers.length, previouslyOrdered.data],
   );
-
-  const slides = useMemo(() => (feed.data ? buildPromoSlides(feed.data) : []), [feed.data]);
 
   const phrases = useMemo(() => searchPhrases(feed.data?.categories), [feed.data?.categories]);
 
@@ -535,6 +490,7 @@ export default function HomeScreen({
     onOpenRestaurant,
     onOpenStore,
     onOpenFood,
+    onOpenOrders,
   });
   nav.current = {
     onOpenProduct,
@@ -545,6 +501,7 @@ export default function HomeScreen({
     onOpenRestaurant,
     onOpenStore,
     onOpenFood,
+    onOpenOrders,
   };
 
   const handlers = useMemo(
@@ -563,6 +520,12 @@ export default function HomeScreen({
             break;
           case "category":
             nav.current.onOpenCategory(action.categoryId);
+            break;
+          case "allCategories":
+            nav.current.onOpenAllCategories();
+            break;
+          case "orders":
+            nav.current.onOpenOrders();
             break;
           case "product":
             nav.current.onOpenProduct(action.productId);
@@ -585,15 +548,19 @@ export default function HomeScreen({
     ({ item }: { item: HomeSection }) => {
       switch (item.kind) {
         case "banners":
-          return <PromoCarousel slides={slides} onAction={handlers.action} />;
-        case "categories":
+          return <PromoCarousel slides={item.slides} onAction={handlers.action} />;
+        case "categoryGrid": {
+          const viewAll = item.viewAll;
           return (
             <CategoryGrid
-              categories={feed.data?.categories ?? NO_RESULTS}
+              title={item.title}
+              categories={item.categories}
+              columns={item.columns}
               onOpenCategory={handlers.openCategory}
-              onViewAll={handlers.openAllCategories}
+              onViewAll={viewAll ? () => handlers.action(viewAll) : undefined}
             />
           );
+        }
         case "food":
           return (
             <FoodSection
@@ -619,7 +586,7 @@ export default function HomeScreen({
           return <BrandFooter onShop={handlers.openSearch} />;
       }
     },
-    [slides, feed.data?.categories, restaurants, stores, offers, near, cart, handlers],
+    [restaurants, stores, offers, near, cart, handlers],
   );
 
   return (
@@ -726,26 +693,25 @@ export default function HomeScreen({
               accessibilityRole="button"
               accessibilityLabel="Change delivery location"
             >
-              {/* Location Icon */}
+              {/* Brand */}
 
-              <View style={styles.locationPin}>
-                <Ionicons
-                  name="location-outline"
-                  size={19}
-                  color={colors.primary}
-                />
+              <View style={styles.logo}>
+                <BrandMark size={34} />
               </View>
 
               {/* Location Text */}
 
               <View style={styles.locationText}>
-                <AppText
-                  variant="caption"
-                  color={colors.textSecondary}
-                  style={styles.deliveringText}
-                >
-                  Delivering to
-                </AppText>
+                <View style={styles.deliveringRow}>
+                  <Ionicons name="location" size={11} color={colors.primary} />
+                  <AppText
+                    variant="caption"
+                    color={colors.textSecondary}
+                    style={styles.deliveringText}
+                  >
+                    Delivering to
+                  </AppText>
+                </View>
 
                 <AppText
                   variant="bodyStrong"
@@ -803,17 +769,27 @@ export default function HomeScreen({
             </Pressable>
 
             {/* ----------------------------------------------------------
-            ACCOUNT
+            CART — the live item count from the real cart (the same
+            optimistic count the Cart tab's badge shows).
         ---------------------------------------------------------- */}
 
             <Pressable
-              onPress={onOpenProfile}
-              style={styles.profileButton}
+              onPress={onOpenCart}
+              style={styles.cartButton}
               hitSlop={8}
               accessibilityRole="button"
-              accessibilityLabel="Open account"
+              accessibilityLabel={
+                cartCount > 0 ? `Cart, ${cartCount} ${cartCount === 1 ? "item" : "items"}` : "Cart, empty"
+              }
             >
-              <Ionicons name="person-circle" size={38} color={colors.primary} />
+              <Ionicons name="bag-handle-outline" size={25} color={colors.primary} />
+              {cartCount > 0 && (
+                <View style={styles.bellBadge}>
+                  <AppText variant="overline" color={colors.textOnPrimary} style={styles.bellBadgeText}>
+                    {cartCount > 99 ? "99+" : String(cartCount)}
+                  </AppText>
+                </View>
+              )}
             </Pressable>
           </ReanimatedAnimated.View>
         </ReanimatedAnimated.View>
@@ -839,14 +815,11 @@ export default function HomeScreen({
             accessibilityRole="button"
             accessibilityLabel="Search products"
           >
-            <Ionicons
-              name="search-outline"
-              size={20}
-              color={colors.textMuted}
-              style={styles.searchIcon}
-            />
-
             <AnimatedSearchPlaceholder phrases={phrases} />
+
+            <View style={styles.searchAction}>
+              <Ionicons name="search" size={17} color={colors.textOnPrimary} />
+            </View>
           </Pressable>
         </ReanimatedAnimated.View>
       </View>
@@ -867,8 +840,6 @@ export default function HomeScreen({
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
         style={styles.scroll}
-        onEndReached={loadMoreShelves}
-        onEndReachedThreshold={1.5}
         initialNumToRender={5}
         maxToRenderPerBatch={4}
         windowSize={9}
@@ -976,13 +947,6 @@ export default function HomeScreen({
 
 const sectionKey = (section: HomeSection) => section.key;
 
-/** Stable `combine` for the lazy-shelf observers: each shelf's items, or undefined until loaded. */
-function combineLazyItems(
-  results: { data?: CursorPage<ProductSummaryDto> | undefined }[],
-): (ProductSummaryDto[] | undefined)[] {
-  return results.map((result) => result.data?.items);
-}
-
 /* =====================================================================
    STYLES
 ===================================================================== */
@@ -1064,29 +1028,24 @@ const styles = StyleSheet.create({
 
     alignItems: "center",
 
-    // Keeps the location area shorter and creates
-    // clear space before the account button.
-    marginRight: 50,
+    // Clear space before the notification and cart buttons.
+    marginRight: spacing.sm,
   },
 
   /* ================================================================
      LOCATION ICON
   ================================================================ */
 
-  locationPin: {
-    width: 32,
+  logo: {
+    marginRight: 10,
+  },
 
-    height: 32,
-
-    borderRadius: radius.circle,
-
-    backgroundColor: colors.primarySurface,
+  deliveringRow: {
+    flexDirection: "row",
 
     alignItems: "center",
 
-    justifyContent: "center",
-
-    marginRight: 8,
+    gap: 3,
   },
 
   /* ================================================================
@@ -1186,10 +1145,10 @@ const styles = StyleSheet.create({
   },
 
   /* ================================================================
-     ACCOUNT BUTTON
+     CART BUTTON (shares the bell's badge style)
   ================================================================ */
 
-  profileButton: {
+  cartButton: {
     width: 42,
 
     height: 42,
@@ -1198,7 +1157,7 @@ const styles = StyleSheet.create({
 
     justifyContent: "center",
 
-    marginLeft: 0,
+    marginLeft: 2,
   },
 
   /* ================================================================
@@ -1245,11 +1204,26 @@ searchBarRow: {
 
     alignItems: "center",
 
-    paddingHorizontal: 13,
+    paddingLeft: 13,
+
+    paddingRight: 5,
   },
 
-  searchIcon: {
-    marginRight: 8,
+  // The search action at the end of the bar — the whole bar opens Search.
+  searchAction: {
+    width: 34,
+
+    height: 34,
+
+    marginLeft: 8,
+
+    borderRadius: radius.md,
+
+    backgroundColor: colors.primary,
+
+    alignItems: "center",
+
+    justifyContent: "center",
   },
 
   searchPlaceholderClip: {

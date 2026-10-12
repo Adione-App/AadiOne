@@ -848,19 +848,74 @@ export interface AdminBannerDto extends BannerDto {
   updatedAt: string;
 }
 
+/**
+ * The admin banner placements the customer Home page shows. A placement is a
+ * free-form slug (see AdminBannerDto.placement); these are the ones Home asks
+ * for, delivered in HomeFeedDto.
+ *
+ *   home_top       the main carousel under the search bar
+ *   home_food      above the restaurants row
+ *   home_category  directly above the shelf of the category the banner opens
+ *                  (its CATEGORY action decides where it shows)
+ *   home_explore   above "Explore more categories"
+ *   home_bottom    the last banner on the page
+ */
+export const HOME_BANNER_PLACEMENTS = {
+  TOP: 'home_top',
+  FOOD: 'home_food',
+  CATEGORY: 'home_category',
+  EXPLORE: 'home_explore',
+  BOTTOM: 'home_bottom',
+} as const;
+
+export type HomeBannerPlacement = (typeof HOME_BANNER_PLACEMENTS)[keyof typeof HOME_BANNER_PLACEMENTS];
+
+/**
+ * Home placements delivered as HomeFeedDto.sectionBanners — everything except
+ * the top carousel (HomeFeedDto.banners) and the per-category banners
+ * (HomeFeedDto.categoryBanners).
+ */
+export type HomeSectionBannerPlacement = Exclude<HomeBannerPlacement, 'home_top' | 'home_category'>;
+
 export interface HomeFeedDto {
   /** The "home_top" placement's active banners, in order. */
   banners: BannerDto[];
+  /**
+   * Active banners of Home's other placements, in order — an empty or missing
+   * placement shows nothing. Optional: absent from servers older than it.
+   */
+  sectionBanners?: Partial<Record<HomeSectionBannerPlacement, BannerDto[]>>;
+  /**
+   * "home_category" banners grouped under the top category whose shelf they
+   * sit above (`categoryId` = that category's id in `categories`). The
+   * server resolves the banner's target — any seller's row, or a subcategory —
+   * to its top category; a banner whose category is not on Home is left out.
+   * Optional: absent from servers older than it.
+   */
+  categoryBanners?: { categoryId: string; banners: BannerDto[] }[];
+  /**
+   * Top categories (merged by path, so their representative ids) in Home
+   * order: the admin's HOME_CATEGORY_ORDER first, then every other live top
+   * category. Children carry their own order.
+   */
   categories: CategoryDto[];
+  /**
+   * The categories the admin placed first on Home (HOME_CATEGORY_ORDER), in
+   * that order — Home shows their shelves among the main shopping sections
+   * and the rest of the categories further down. Empty when none are set.
+   * Optional: absent from servers older than it.
+   */
+  featuredCategoryIds?: string[];
   rails: {
-    key: 'POPULAR' | 'DAILY_ESSENTIALS' | 'BEST_SELLERS' | 'RECENTLY_ADDED' | 'OFFERS';
+    key: 'POPULAR' | 'DAILY_ESSENTIALS' | 'BEST_SELLERS' | 'RECENTLY_ADDED' | 'OFFERS' | 'TOP_PICKS';
     title: string;
     products: ProductSummaryDto[];
   }[];
   /**
-   * One rail per top-level category ("Grocery", "Vegetables & Fruits", …),
-   * so a newly added category gets its own visible shelf on Home instead of
-   * competing for space in the generic popularity/recency rails above.
+   * One rail per top-level category with in-stock products, in the same order
+   * as `categories`, so a newly added category gets its own visible shelf on
+   * Home. Its products are spread across the category's subcategories: one
+   * from each before a second from any (see getHomeFeed).
    */
   categoryRails: {
     categoryId: string;

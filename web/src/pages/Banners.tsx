@@ -2,11 +2,14 @@
  * Banners — admin-managed promotional images (GET/POST/PATCH/DELETE
  * /admin/banners).
  *
- * A banner belongs to a PLACEMENT — a slug such as "home_top", "home_food",
- * "home_category" or "home_bottom" (HOME_BANNER_PLACEMENTS). The customer app
- * gets each Home placement's active banners in order with the Home feed; an
- * empty placement simply shows nothing. Images are uploaded like every other
- * image and stored as optimised WebP by the server.
+ * A banner belongs to a PLACEMENT from the shared registry (BANNER_PLACEMENTS:
+ * Home, Food, Categories and Store positions). Customers get a placement's
+ * LIVE banners in order — PUBLISHED, switched on and inside the optional
+ * schedule; a draft is saved but never shown, an archived one is retired.
+ * Each banner carries its presentation (style, frame, fit, alignment —
+ * previewed on a phone-sized frame with the app's own sizing rules) and a
+ * validated tap target picked from the live catalogue. A placement with
+ * nothing live shows nothing. Images are stored as optimised WebP.
  *
  * Also here: the Home page category order (config HOME_CATEGORY_ORDER) —
  * which top categories Home shows first. Every other category follows
@@ -15,18 +18,28 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { FOOD_BANNER_PLACEMENTS, HOME_BANNER_PLACEMENTS, Permission, roleHasPermission, type AdminBannerDto } from '@shared';
+import {
+  BANNER_PLACEMENTS,
+  HOME_BANNER_PLACEMENTS,
+  Permission,
+  bannerPlacementInfo,
+  roleHasPermission,
+  type AdminBannerDto,
+  type BannerLayoutDto,
+  type BannerStatusDto,
+} from '@shared';
 import { Button, EmptyState, ErrorBanner, Field, Icon, Modal, Pill, Spinner, Surface, Toggle, inputClass } from '@/components/ui';
 import { useAuth } from '@/lib/auth';
 import { imageSrc } from '@/lib/image';
 import { ACCEPTED_IMAGE_TYPES, validateImage } from '@/lib/upload';
 import { adminErrorMessage, useMarketplaceCatalogue } from '@/lib/marketplace';
 import {
-  BANNER_PLACEMENTS,
+  BANNER_PLACEMENT_OPTIONS,
   bannerKeys,
   createBanner,
   deleteBanner,
   placementLabel,
+  reorderBanners,
   saveHomeCategoryOrder,
   updateBanner,
   uploadAdminImage,
@@ -35,16 +48,13 @@ import {
   useHomeCategoryOrder,
   type BannerFields,
 } from '@/lib/content';
+import { ACTION_LABEL, LayoutControls, PhonePreview, TargetPicker, VISIBILITY_LABEL, fromLocalInput, toLocalInput } from './bannerEditor';
 
 type Notice = { ok: boolean; text: string };
 type Editing = { mode: 'create' } | { mode: 'edit'; banner: AdminBannerDto };
 
-const ACTION_LABEL: Record<AdminBannerDto['actionType'], string> = {
-  NONE: 'Nothing (image only)',
-  CATEGORY: 'Opens a category',
-  PRODUCT: 'Opens a product',
-  COUPON: 'Applies a coupon',
-};
+/** "Mon 14 Oct, 18:00" — a schedule bound in the admin's local time. */
+const when = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 export default function BannersPage() {
   const role = useAuth((state) => state.user?.role);
@@ -63,6 +73,20 @@ export default function BannersPage() {
     onSettled: () => refresh(),
   });
 
+  const setStatus = useMutation({
+    mutationFn: (input: { id: string; status: BannerStatusDto }) => updateBanner(input.id, { status: input.status }),
+    onSuccess: (banner) => setNotice({ ok: true, text: banner.status === 'ARCHIVED' ? 'Banner archived.' : 'Banner restored as a draft.' }),
+    onError: (error) => setNotice({ ok: false, text: adminErrorMessage(error) }),
+    onSettled: () => refresh(),
+  });
+
+  const move = useMutation({
+    mutationFn: (input: { placement: string; ids: string[] }) => reorderBanners(input.placement, input.ids),
+    onSuccess: () => setNotice({ ok: true, text: 'Order saved.' }),
+    onError: (error) => setNotice({ ok: false, text: adminErrorMessage(error) }),
+    onSettled: () => refresh(),
+  });
+
   const remove = useMutation({
     mutationFn: (id: string) => deleteBanner(id),
     onSuccess: () => setNotice({ ok: true, text: 'Banner deleted.' }),
@@ -70,10 +94,15 @@ export default function BannersPage() {
     onSettled: () => refresh(),
   });
 
+  // Placements in registry order (the app's screens top to bottom), then any others.
   const groups = useMemo(() => {
     const byPlacement = new Map<string, AdminBannerDto[]>();
     for (const banner of banners.data ?? []) byPlacement.set(banner.placement, [...(byPlacement.get(banner.placement) ?? []), banner]);
-    return [...byPlacement.entries()];
+    const rank = (placement: string) => {
+      const index = BANNER_PLACEMENTS.findIndex((entry) => entry.key === placement);
+      return index < 0 ? BANNER_PLACEMENTS.length : index;
+    };
+    return [...byPlacement.entries()].sort(([a], [b]) => rank(a) - rank(b));
   }, [banners.data]);
 
   return (
@@ -81,10 +110,10 @@ export default function BannersPage() {
       <div className="flex items-start gap-3 rounded-2xl border border-info-500/20 bg-info-50 px-4 py-3 text-sm text-gray-700">
         <Icon name="image" className="mt-0.5 h-5 w-5 shrink-0 text-info-500" />
         <p>
-          Banners show in the customer app by <span className="font-semibold">placement</span>: the Home main banner, the food banner,
-          banners above a category's shelf, the explore banner and the final banner. A placement without an active banner shows
-          nothing. Changes reach the app on its next Home refresh — no app update needed. Recommended Home banner size: 1983 × 793 px
-          (2.5 : 1), at least 600 px wide. Every image is stored as an optimised WebP.
+          Promotions show in the customer app by <span className="font-semibold">placement</span> — Home, Food, Categories and store
+          pages. Only <span className="font-semibold">live</span> banners reach customers: published, switched on and inside their
+          schedule. A placement with nothing live shows nothing at all. Changes reach the app on its next refresh — no app update
+          needed. Images: at least 600 px wide; every image is stored as an optimised WebP.
         </p>
       </div>
 
@@ -112,19 +141,42 @@ export default function BannersPage() {
       ) : banners.isError ? (
         <ErrorBanner message={adminErrorMessage(banners.error)} />
       ) : groups.length === 0 ? (
-        <EmptyState title="No banners yet" hint="Create one to show it on the customer Home page." />
+        <EmptyState title="No banners yet" hint="Create one to show it in the customer app." />
       ) : (
         groups.map(([placement, list]) => (
           <Surface key={placement} className="p-3.5">
             <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
               <h2 className="text-base font-semibold text-gray-900">{placementLabel(placement)}</h2>
               <span className="text-xs text-gray-500">
-                {placement} · {list.filter((b) => b.isActive).length} active of {list.length}
+                {placement} · {list.filter((b) => b.visibility === 'LIVE').length} live of {list.length}
               </span>
             </div>
             <ul className="space-y-3" aria-label={`${placementLabel(placement)} banners`}>
-              {list.map((banner) => (
+              {list.map((banner, index) => (
                 <li key={banner.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-100 p-2.5">
+                  {canEdit && (
+                    <div className="flex flex-col gap-1">
+                      {(['up', 'down'] as const).map((direction) => {
+                        const target = direction === 'up' ? index - 1 : index + 1;
+                        return (
+                          <button
+                            key={direction}
+                            type="button"
+                            disabled={move.isPending || target < 0 || target >= list.length}
+                            onClick={() => {
+                              const ids = list.map((b) => b.id);
+                              [ids[index], ids[target]] = [ids[target]!, ids[index]!];
+                              move.mutate({ placement, ids });
+                            }}
+                            className="rounded-lg border border-gray-200 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-30"
+                            aria-label={`Move ${banner.title || 'banner'} ${direction}`}
+                          >
+                            {direction === 'up' ? '↑' : '↓'}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                   <img
                     src={imageSrc(banner.imageUrl)}
                     alt={banner.title ?? 'Banner'}
@@ -136,12 +188,19 @@ export default function BannersPage() {
                     {banner.subtitle && <p className="text-gray-600">{banner.subtitle}</p>}
                     <p className="mt-1 text-xs text-gray-500">
                       {ACTION_LABEL[banner.actionType]}
-                      {banner.actionValue ? `: ${banner.actionValue}` : ''} · order {banner.displayOrder} · {banner.imageWidth}×
+                      {banner.actionValue ? `: ${banner.actionValue}` : ''} · {banner.layout?.variant ?? 'banner'} · {banner.imageWidth}×
                       {banner.imageHeight}
                     </p>
+                    {(banner.startsAt || banner.endsAt) && (
+                      <p className="mt-0.5 text-xs text-gray-500">
+                        {banner.startsAt ? `From ${when(banner.startsAt)}` : 'Now'} → {banner.endsAt ? when(banner.endsAt) : 'no end'}
+                      </p>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <Pill tone={banner.isActive ? 'brand' : 'gray'}>{banner.isActive ? 'Active' : 'Disabled'}</Pill>
+                    <Pill tone={VISIBILITY_LABEL[banner.visibility ?? (banner.isActive ? 'LIVE' : 'OFF')].tone}>
+                      {VISIBILITY_LABEL[banner.visibility ?? (banner.isActive ? 'LIVE' : 'OFF')].text}
+                    </Pill>
                     {canEdit && (
                       <>
                         <Toggle
@@ -152,6 +211,18 @@ export default function BannersPage() {
                         />
                         <Button variant="secondary" onClick={() => setEditing({ mode: 'edit', banner })}>
                           Edit
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          disabled={setStatus.isPending}
+                          onClick={() => {
+                            if (banner.status === 'ARCHIVED') setStatus.mutate({ id: banner.id, status: 'DRAFT' });
+                            else if (window.confirm('Archive this banner? Customers stop seeing it; you can restore it later.')) {
+                              setStatus.mutate({ id: banner.id, status: 'ARCHIVED' });
+                            }
+                          }}
+                        >
+                          {banner.status === 'ARCHIVED' ? 'Restore' : 'Archive'}
                         </Button>
                         <Button
                           variant="ghost"
@@ -189,7 +260,7 @@ export default function BannersPage() {
 
 function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose: () => void; onSaved: (text: string) => Promise<void> }) {
   const current = editing.mode === 'edit' ? editing.banner : null;
-  const presetValues = BANNER_PLACEMENTS.map((p) => p.value);
+  const presetValues = BANNER_PLACEMENT_OPTIONS.map((p) => p.value);
   const [placementChoice, setPlacementChoice] = useState(
     current ? (presetValues.includes(current.placement) ? current.placement : 'OTHER') : 'home_top',
   );
@@ -201,8 +272,13 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
   const [actionValue, setActionValue] = useState(current?.actionValue ?? '');
   const [displayOrder, setDisplayOrder] = useState(String(current?.displayOrder ?? 0));
   const [isActive, setIsActive] = useState(current?.isActive ?? true);
+  const [status, setStatus] = useState<BannerStatusDto>(current?.status ?? 'PUBLISHED');
+  const [startsAt, setStartsAt] = useState(toLocalInput(current?.startsAt));
+  const [endsAt, setEndsAt] = useState(toLocalInput(current?.endsAt));
+  const [layout, setLayout] = useState<BannerLayoutDto>(current?.layout ?? {});
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  const [fileSize, setFileSize] = useState<{ width: number; height: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
 
@@ -217,19 +293,27 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
     [catalogue.data],
   );
 
+  const chosenPlacement = placementChoice === 'OTHER' ? customPlacement.trim() : placementChoice;
+  const defaultVariant = bannerPlacementInfo(chosenPlacement.split(':')[0] ?? '')?.defaultVariant ?? 'banner';
+
   function chooseFile(next: File | undefined): void {
     if (!next) return;
     const invalid = validateImage(next);
     if (invalid) return setError(invalid);
     setError(null);
     if (preview) URL.revokeObjectURL(preview);
+    const url = URL.createObjectURL(next);
     setFile(next);
-    setPreview(URL.createObjectURL(next));
+    setPreview(url);
+    // Its real size, so the preview frames it exactly as the app will.
+    const probe = new Image();
+    probe.onload = () => setFileSize({ width: probe.naturalWidth, height: probe.naturalHeight });
+    probe.src = url;
   }
 
-  async function save(): Promise<void> {
+  async function save(publish: BannerStatusDto): Promise<void> {
     setError(null);
-    const placement = placementChoice === 'OTHER' ? customPlacement.trim() : placementChoice;
+    const placement = chosenPlacement;
     if (!placement) return setError('Choose where the banner shows.');
     if (!current && !file) return setError('Choose a banner image.');
     if (actionType !== 'NONE' && !actionValue.trim()) return setError('Choose what the banner opens.');
@@ -238,6 +322,9 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
     }
     const order = Number(displayOrder);
     if (!Number.isInteger(order) || order < 0) return setError('Order must be a whole number, 0 or more.');
+    const start = fromLocalInput(startsAt);
+    const end = fromLocalInput(endsAt);
+    if (start && end && new Date(end) <= new Date(start)) return setError('The end time must be after the start time.');
 
     const fields: BannerFields = {
       placement,
@@ -248,6 +335,10 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
       actionValue: actionType === 'NONE' ? null : actionValue.trim(),
       displayOrder: order,
       isActive,
+      status: publish,
+      startsAt: start,
+      endsAt: end,
+      layout,
     };
     try {
       let imageKey: string | undefined;
@@ -259,7 +350,7 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
       if (current) await updateBanner(current.id, { ...fields, ...(imageKey ? { imageKey } : {}) });
       else await createBanner({ ...fields, imageKey: imageKey! });
       if (preview) URL.revokeObjectURL(preview);
-      await onSaved(current ? 'Banner updated.' : 'Banner created.');
+      await onSaved(publish === 'DRAFT' ? 'Saved as a draft — not shown to customers.' : current ? 'Banner updated.' : 'Banner published.');
     } catch (failure) {
       setError(adminErrorMessage(failure, 'The banner could not be saved. Please try again.'));
     } finally {
@@ -268,7 +359,7 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
   }
 
   const shown = preview ?? (current ? imageSrc(current.imageUrl) : undefined);
-  const chosenPlacement = placementChoice === 'OTHER' ? customPlacement.trim() : placementChoice;
+  const size = fileSize ?? (current && !preview ? { width: current.imageWidth, height: current.imageHeight } : { width: 0, height: 0 });
 
   return (
     <Modal
@@ -281,119 +372,136 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
           <Button variant="secondary" onClick={onClose} disabled={Boolean(saving)}>
             Cancel
           </Button>
-          <Button onClick={() => void save()} disabled={Boolean(saving)}>
-            {saving ?? (current ? 'Save changes' : 'Create banner')}
-          </Button>
+          {current ? (
+            <Button onClick={() => void save(status)} disabled={Boolean(saving)}>
+              {saving ?? 'Save changes'}
+            </Button>
+          ) : (
+            <>
+              <Button variant="secondary" onClick={() => void save('DRAFT')} disabled={Boolean(saving)}>
+                {saving ?? 'Save as draft'}
+              </Button>
+              <Button onClick={() => void save('PUBLISHED')} disabled={Boolean(saving)}>
+                {saving ?? 'Publish'}
+              </Button>
+            </>
+          )}
         </>
       }
     >
-      <div className="space-y-4">
+      <div className="space-y-5">
         <ErrorBanner message={error} />
-        {chosenPlacement === FOOD_BANNER_PLACEMENTS.HERO && (
-          <FoodHeroPreview title={title} subtitle={subtitle} ctaLabel={ctaLabel} imageUrl={shown ?? null} />
-        )}
 
-        <Field label="Banner image" required={!current} hint="JPEG, PNG, WebP or AVIF, up to 5 MB, at least 600 px wide.">
-          <div className="space-y-2">
-            {shown && (
-              <img
-                src={shown}
-                alt="Banner preview"
-                className="w-full max-w-md rounded-xl border border-gray-200 object-cover"
-                style={current && !preview ? { aspectRatio: `${current.imageWidth} / ${current.imageHeight}` } : undefined}
-              />
-            )}
-            <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50">
-              <Icon name="upload" className="h-4 w-4" />
-              {shown ? 'Replace image' : 'Choose image'}
-              <input
-                type="file"
-                accept={ACCEPTED_IMAGE_TYPES.join(',')}
-                className="sr-only"
-                onChange={(event) => {
-                  chooseFile(event.target.files?.[0]);
-                  event.target.value = '';
-                }}
-              />
-            </label>
+        <div className="grid gap-5 lg:grid-cols-[1fr_auto]">
+          <div className="space-y-4">
+            <Field label="Banner image" required={!current} hint="JPEG, PNG, WebP or AVIF, up to 5 MB, at least 600 px wide.">
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50">
+                <Icon name="upload" className="h-4 w-4" />
+                {shown ? 'Replace image' : 'Choose image'}
+                <input
+                  type="file"
+                  accept={ACCEPTED_IMAGE_TYPES.join(',')}
+                  className="sr-only"
+                  onChange={(event) => {
+                    chooseFile(event.target.files?.[0]);
+                    event.target.value = '';
+                  }}
+                />
+              </label>
+              {size.width > 0 && <p className="mt-1 text-xs text-gray-500">{size.width} × {size.height} px</p>}
+            </Field>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Placement" required>
+                <select className={inputClass} value={placementChoice} onChange={(event) => setPlacementChoice(event.target.value)}>
+                  {BANNER_PLACEMENT_OPTIONS.map((p) => (
+                    <option key={p.value} value={p.value}>
+                      {p.label}
+                    </option>
+                  ))}
+                  <option value="OTHER">Other placement…</option>
+                </select>
+                {BANNER_PLACEMENT_OPTIONS.find((p) => p.value === placementChoice)?.hint && (
+                  <p className="mt-1 text-xs text-gray-500">{BANNER_PLACEMENT_OPTIONS.find((p) => p.value === placementChoice)?.hint}</p>
+                )}
+              </Field>
+              {placementChoice === 'OTHER' ? (
+                <Field label="Placement key" required hint='Lowercase slug — the app only shows placements it knows.'>
+                  <input className={inputClass} value={customPlacement} maxLength={60} onChange={(event) => setCustomPlacement(event.target.value)} />
+                </Field>
+              ) : (
+                <Field label="Order" hint="Lower numbers show first (or use ↑ ↓ in the list).">
+                  <input className={inputClass} inputMode="numeric" value={displayOrder} onChange={(event) => setDisplayOrder(event.target.value)} />
+                </Field>
+              )}
+              <Field label="Title" hint="Optional — the headline, and for accessibility.">
+                <input className={inputClass} value={title} maxLength={120} onChange={(event) => setTitle(event.target.value)} />
+              </Field>
+              <Field label="Subtitle" hint="Optional.">
+                <input className={inputClass} value={subtitle} maxLength={200} onChange={(event) => setSubtitle(event.target.value)} />
+              </Field>
+              <Field label="Button text" hint='Optional, e.g. "Order now". Shown by the Split style.'>
+                <input className={inputClass} value={ctaLabel} maxLength={40} onChange={(event) => setCtaLabel(event.target.value)} />
+              </Field>
+              <Field label="On tap">
+                <select
+                  className={inputClass}
+                  value={actionType}
+                  onChange={(event) => {
+                    setActionType(event.target.value as AdminBannerDto['actionType']);
+                    setActionValue('');
+                  }}
+                >
+                  {(Object.keys(ACTION_LABEL) as AdminBannerDto['actionType'][]).map((type) => (
+                    <option key={type} value={type}>
+                      {ACTION_LABEL[type]}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <TargetPicker actionType={actionType} value={actionValue} categoryOptions={categoryOptions} onChange={setActionValue} />
+            </div>
+
+            <fieldset className="rounded-xl border border-gray-200 p-3">
+              <legend className="px-1 text-sm font-semibold text-gray-800">Look</legend>
+              <LayoutControls layout={layout} defaultVariant={defaultVariant} onChange={setLayout} />
+            </fieldset>
+
+            <fieldset className="rounded-xl border border-gray-200 p-3">
+              <legend className="px-1 text-sm font-semibold text-gray-800">Publishing</legend>
+              <div className="grid gap-4 sm:grid-cols-2">
+                {current && (
+                  <Field label="Status">
+                    <select className={inputClass} value={status} onChange={(event) => setStatus(event.target.value as BannerStatusDto)}>
+                      <option value="PUBLISHED">Published</option>
+                      <option value="DRAFT">Draft — never shown</option>
+                      <option value="ARCHIVED">Archived</option>
+                    </select>
+                  </Field>
+                )}
+                <Field label="Switch">
+                  <Toggle checked={isActive} onChange={setIsActive} label={isActive ? 'On' : 'Off — hidden even when published'} />
+                </Field>
+                <Field label="Starts" hint="Optional. Empty = straight away.">
+                  <input type="datetime-local" className={inputClass} value={startsAt} onChange={(event) => setStartsAt(event.target.value)} />
+                </Field>
+                <Field label="Ends" hint="Optional. Empty = until switched off.">
+                  <input type="datetime-local" className={inputClass} value={endsAt} onChange={(event) => setEndsAt(event.target.value)} />
+                </Field>
+              </div>
+            </fieldset>
           </div>
-        </Field>
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Placement" required>
-            <select className={inputClass} value={placementChoice} onChange={(event) => setPlacementChoice(event.target.value)}>
-              {BANNER_PLACEMENTS.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                  {p.live ? '' : ' (not shown in the app yet)'}
-                </option>
-              ))}
-              <option value="OTHER">Other placement…</option>
-            </select>
-            {BANNER_PLACEMENTS.find((p) => p.value === placementChoice)?.hint && (
-              <p className="mt-1 text-xs text-gray-500">{BANNER_PLACEMENTS.find((p) => p.value === placementChoice)?.hint}</p>
-            )}
-          </Field>
-          {placementChoice === 'OTHER' ? (
-            <Field label="Placement key" required hint='Lowercase slug, e.g. "home_offers" or "category:<id>".'>
-              <input className={inputClass} value={customPlacement} maxLength={60} onChange={(event) => setCustomPlacement(event.target.value)} />
-            </Field>
-          ) : (
-            <span />
-          )}
-          <Field label="Title" hint="Optional — for accessibility and admin lists.">
-            <input className={inputClass} value={title} maxLength={120} onChange={(event) => setTitle(event.target.value)} />
-          </Field>
-          <Field label="Subtitle" hint="Optional.">
-            <input className={inputClass} value={subtitle} maxLength={200} onChange={(event) => setSubtitle(event.target.value)} />
-          </Field>
-          <Field label="Button text" hint='Optional, e.g. "Order now". Empty = no button.'>
-            <input className={inputClass} value={ctaLabel} maxLength={40} onChange={(event) => setCtaLabel(event.target.value)} />
-          </Field>
-          <Field label="On tap">
-            <select
-              className={inputClass}
-              value={actionType}
-              onChange={(event) => {
-                setActionType(event.target.value as AdminBannerDto['actionType']);
-                setActionValue('');
-              }}
-            >
-              {(Object.keys(ACTION_LABEL) as AdminBannerDto['actionType'][]).map((type) => (
-                <option key={type} value={type}>
-                  {ACTION_LABEL[type]}
-                </option>
-              ))}
-            </select>
-          </Field>
-          {actionType === 'CATEGORY' ? (
-            <Field label="Category" required>
-              <select className={inputClass} value={actionValue} onChange={(event) => setActionValue(event.target.value)}>
-                <option value="">Choose a category…</option>
-                {categoryOptions.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          ) : actionType === 'PRODUCT' ? (
-            <Field label="Product id" required hint="The product's id (from the Products page).">
-              <input className={inputClass} value={actionValue} onChange={(event) => setActionValue(event.target.value)} />
-            </Field>
-          ) : actionType === 'COUPON' ? (
-            <Field label="Coupon code" required>
-              <input className={inputClass} value={actionValue} maxLength={40} onChange={(event) => setActionValue(event.target.value.toUpperCase())} />
-            </Field>
-          ) : (
-            <span />
-          )}
-          <Field label="Order" hint="Lower numbers show first.">
-            <input className={inputClass} inputMode="numeric" value={displayOrder} onChange={(event) => setDisplayOrder(event.target.value)} />
-          </Field>
-          <Field label="Status">
-            <Toggle checked={isActive} onChange={setIsActive} label={isActive ? 'Active — shown in the app' : 'Disabled — hidden'} />
-          </Field>
+          <PhonePreview
+            layout={layout}
+            defaultVariant={defaultVariant}
+            imageUrl={shown ?? null}
+            imageWidth={size.width}
+            imageHeight={size.height}
+            title={title}
+            subtitle={subtitle}
+            ctaLabel={ctaLabel}
+          />
         </div>
       </div>
     </Modal>
@@ -529,44 +637,5 @@ function HomeCategoryOrder({ canEdit, onNotice }: { canEdit: boolean; onNotice: 
         </div>
       )}
     </Surface>
-  );
-}
-
-/**
- * What the Food hero will look like in the app (FoodScreen.tsx HeroSlide):
- * the title as the headline with its last two words in brand green, the
- * subtitle, the optional button and the dish image on the right — so the
- * banner can be checked before it is switched on.
- */
-function FoodHeroPreview({ title, subtitle, ctaLabel, imageUrl }: { title: string; subtitle: string; ctaLabel: string; imageUrl: string | null }) {
-  const words = title.trim().split(/\s+/).filter(Boolean);
-  const head = words.length >= 3 ? words.slice(0, -2).join(' ') : words.join(' ');
-  const accent = words.length >= 3 ? words.slice(-2).join(' ') : '';
-  return (
-    <div>
-      <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500">Preview — Food screen</p>
-      <div className="mx-auto flex max-w-sm items-center gap-3 rounded-2xl bg-[#F1F9F3] p-4">
-        <div className="min-w-0 flex-[1.15]">
-          {words.length > 0 ? (
-            <p className="text-xl font-extrabold leading-tight text-gray-900">
-              {head} {accent && <span className="text-[#17762F]">{accent}</span>}
-            </p>
-          ) : (
-            <p className="text-sm italic text-gray-400">Add a title to show a headline</p>
-          )}
-          {subtitle.trim() && <p className="mt-1 text-sm text-gray-600">{subtitle}</p>}
-          {ctaLabel.trim() && (
-            <span className="mt-3 inline-block rounded-full bg-[#17762F] px-4 py-1.5 text-sm font-bold text-white">{ctaLabel}</span>
-          )}
-        </div>
-        <div className="flex flex-1 items-center justify-center">
-          {imageUrl ? (
-            <img src={imageUrl} alt="" className="max-h-36 w-full object-contain" />
-          ) : (
-            <span className="text-xs text-gray-400">Dish image</span>
-          )}
-        </div>
-      </div>
-    </div>
   );
 }

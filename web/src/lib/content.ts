@@ -7,7 +7,15 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
-import { ConfigKey, FOOD_BANNER_PLACEMENTS, HOME_BANNER_PLACEMENTS, type AdminBannerDto, type CategoryDto } from '@shared';
+import {
+  BANNER_PLACEMENTS,
+  ConfigKey,
+  bannerPlacementInfo,
+  type AdminBannerDto,
+  type BannerLayoutDto,
+  type BannerStatusDto,
+  type CategoryDto,
+} from '@shared';
 import { api } from './api';
 import { uploadProductImage, type PresignedUpload } from './upload';
 
@@ -38,39 +46,19 @@ export function removeCategoryImage(categoryId: string): Promise<CategoryImageRe
 /* Banners ------------------------------------------------------------------ */
 
 /**
- * Suggested placements. A placement is just a slug — any other one (for
- * example "category:<id>") can be typed in; the app shows a placement once it
- * asks for it. `live` = the customer Home page shows it (app version with the
- * redesigned Home); `hint` explains where.
+ * Where a banner can show — the shared placement registry (BANNER_PLACEMENTS
+ * in @shared), the same list the server and the app use; nothing is kept
+ * only here. `label` / `hint` explain each place to the admin.
  */
-export const BANNER_PLACEMENTS: { value: string; label: string; live: boolean; hint?: string }[] = [
-  { value: HOME_BANNER_PLACEMENTS.TOP, label: 'Home — main banner (top carousel)', live: true },
-  { value: HOME_BANNER_PLACEMENTS.FOOD, label: 'Home — food banner', live: true, hint: 'Shown above the restaurants row.' },
-  {
-    value: HOME_BANNER_PLACEMENTS.CATEGORY,
-    label: 'Home — above a category shelf',
-    live: true,
-    hint: 'Shown directly above the Home shelf of the category it opens (e.g. a fashion banner that opens Men). Must open a category.',
-  },
-  { value: HOME_BANNER_PLACEMENTS.EXPLORE, label: 'Home — explore more categories', live: true, hint: 'Shown above the subcategory grid.' },
-  { value: HOME_BANNER_PLACEMENTS.BOTTOM, label: 'Home — final banner (bottom)', live: true, hint: 'The last banner on the page.' },
-  {
-    value: FOOD_BANNER_PLACEMENTS.HERO,
-    label: 'Food — hero banner',
-    live: true,
-    hint: 'The top of the Food screen: the dish image on the right, the title as the headline (its last two words in green), the subtitle under it, and an optional button. Several rotate.',
-  },
-  {
-    value: FOOD_BANNER_PLACEMENTS.BACKGROUND,
-    label: 'Food — page background',
-    live: true,
-    hint: 'An image only, drawn behind the Food header and hero. The first active one is used.',
-  },
-  { value: 'home_middle', label: 'Home — middle section', live: false },
-];
+export const BANNER_PLACEMENT_OPTIONS = BANNER_PLACEMENTS.map((entry) => ({
+  value: entry.key,
+  label: entry.label,
+  hint: entry.hint,
+  defaultVariant: entry.defaultVariant,
+}));
 
 export function placementLabel(placement: string): string {
-  return BANNER_PLACEMENTS.find((p) => p.value === placement)?.label ?? placement;
+  return bannerPlacementInfo(placement)?.label ?? placement;
 }
 
 export const bannerKeys = { all: ['admin', 'banners'] as const };
@@ -115,6 +103,17 @@ export interface BannerFields {
   actionValue: string | null;
   displayOrder: number;
   isActive: boolean;
+  /** DRAFT = saved but never shown; PUBLISHED = shown while on and inside the schedule; ARCHIVED = retired. */
+  status: BannerStatusDto;
+  /** ISO date-times; null = no limit. */
+  startsAt: string | null;
+  endsAt: string | null;
+  layout: BannerLayoutDto;
+}
+
+/** PUT /admin/banners/order — one placement's banners, first to last. */
+export function reorderBanners(placement: string, ids: string[]): Promise<AdminBannerDto[]> {
+  return api.put<AdminBannerDto[]>('/admin/banners/order', { placement, ids });
 }
 
 export function createBanner(fields: BannerFields & { imageKey: string }): Promise<AdminBannerDto> {

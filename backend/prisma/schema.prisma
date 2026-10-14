@@ -2054,6 +2054,16 @@ enum BannerActionType {
   CATEGORY
   PRODUCT
   COUPON
+  STORE
+  RESTAURANT
+  RAIL
+  URL
+}
+
+enum BannerStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
 }
 
 /// Admin-managed banner. `placement` is a free-form slug, not an enum, so a
@@ -2075,11 +2085,20 @@ model Banner {
   imageHeight Int    @map("image_height")
 
   actionType  BannerActionType @default(NONE) @map("action_type")
-  /// Category id, product id or coupon code, by actionType; null for NONE.
-  actionValue String?          @map("action_value") @db.VarChar(120)
+  /// Category / product / seller id, coupon code, rail key or https URL, by actionType; null for NONE.
+  actionValue String?          @map("action_value") @db.VarChar(500)
 
   displayOrder Int     @default(0) @map("display_order")
   isActive     Boolean @default(true) @map("is_active")
+
+  /// DRAFT is never shown; PUBLISHED shows while `isActive` and inside the
+  /// optional schedule; ARCHIVED is retired (kept for the record).
+  status   BannerStatus @default(PUBLISHED)
+  startsAt DateTime?    @map("starts_at") @db.Timestamptz(3)
+  endsAt   DateTime?    @map("ends_at") @db.Timestamptz(3)
+  /// Presentation (shared BannerLayoutDto: variant, frame, fit, alignment…);
+  /// {} = the placement's defaults.
+  layout   Json         @default("{}")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)

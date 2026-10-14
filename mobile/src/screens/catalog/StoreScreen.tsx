@@ -17,6 +17,7 @@ import { AppText, EmptyState, ErrorState, NoticeStrip, Screen } from "@/componen
 import { useStore, useStoreProducts } from "@/lib/queries";
 import { useLocation } from "@/lib/store";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
+import { PromoSlot } from "@/components/PromoBanner";
 import { useCartActions } from "@/lib/useCartActions";
 import { useGridColumns } from "@/lib/useGridColumns";
 import { storeSubtitle } from "@/screens/home/homeEngine";
@@ -128,7 +129,13 @@ export default function StoreScreen({
           renderItem={renderItem}
           extraData={cart}
           numColumns={columns}
-          ListHeaderComponent={store.data ? <StoreHeader store={store.data} /> : null}
+          ListHeaderComponent={
+            <>
+              {store.data ? <StoreHeader store={store.data} /> : null}
+              {/* Admin banners (Banners → "Store pages — top"); nothing when none is live. */}
+              <PromoSlot placement="store_top" style={styles.promo} />
+            </>
+          }
           ListEmptyComponent={<EmptyState title="Nothing here yet" hint="This store hasn't listed any products right now." />}
           ListFooterComponent={
             products.isFetchingNextPage ? <ActivityIndicator color={colors.primary} style={{ margin: spacing.base }} /> : null
@@ -148,6 +155,8 @@ export default function StoreScreen({
 }
 
 const styles = StyleSheet.create({
+  // Cancels the list's own padding: PromoSlot keeps its own screen margins.
+  promo: { marginHorizontal: -spacing.sm, marginBottom: spacing.sm },
   screen: {
     paddingHorizontal: 0,
     paddingTop: 0,

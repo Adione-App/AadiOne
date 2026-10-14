@@ -18,9 +18,9 @@
  */
 
 import { Router, type Request, type Response } from 'express';
-import { BannerActionType } from '@prisma/client';
+import { BannerActionType, BannerStatus } from '@prisma/client';
 import { z } from 'zod';
-import { Permission } from '../../shared';
+import { BANNER_ASPECT_LIMITS, BANNER_HEIGHT_LIMITS, BANNER_VARIANTS, Permission } from '../../shared';
 import { asyncHandler, created, ok } from '../../common/response';
 import { validate, validatedQuery } from '../../middleware/validate';
 import { requirePermission, requireUser } from '../../middleware/auth';
@@ -93,15 +93,41 @@ adminContentRouter.delete(
 
 /* Banners ------------------------------------------------------------------ */
 
+/** A banner's presentation: every field optional, numbers within the shared safe limits. */
+const bannerLayout = z
+  .object({
+    variant: z.enum(BANNER_VARIANTS).optional(),
+    aspectRatio: z.number().min(BANNER_ASPECT_LIMITS.min).max(BANNER_ASPECT_LIMITS.max).nullable().optional(),
+    height: z.number().int().min(BANNER_HEIGHT_LIMITS.min).max(BANNER_HEIGHT_LIMITS.max).nullable().optional(),
+    width: z.enum(['full', 'content']).optional(),
+    fit: z.enum(['contain', 'cover']).optional(),
+    alignX: z.enum(['left', 'center', 'right']).optional(),
+    alignY: z.enum(['top', 'center', 'bottom']).optional(),
+    radius: z.enum(['none', 'sm', 'md', 'lg']).optional(),
+    background: z.enum(['none', 'white', 'green', 'grey']).optional(),
+  })
+  .strict();
+
+/** ISO date-time (with offset) or null = no limit. */
+const scheduleTime = z
+  .string()
+  .datetime({ offset: true })
+  .nullable()
+  .transform((value) => (value === null ? null : new Date(value)));
+
 const bannerFields = {
   placement,
   title: text(120),
   subtitle: text(200),
   ctaLabel: text(40),
   actionType: z.nativeEnum(BannerActionType),
-  actionValue: text(120),
+  actionValue: text(500),
   displayOrder: z.number().int().min(0).max(10_000),
   isActive: z.boolean(),
+  status: z.nativeEnum(BannerStatus),
+  startsAt: scheduleTime,
+  endsAt: scheduleTime,
+  layout: bannerLayout,
 };
 
 adminContentRouter.get(
@@ -127,6 +153,10 @@ adminContentRouter.post(
         actionValue: bannerFields.actionValue.default(null),
         displayOrder: bannerFields.displayOrder.default(0),
         isActive: bannerFields.isActive.default(true),
+        status: bannerFields.status.default(BannerStatus.PUBLISHED),
+        startsAt: bannerFields.startsAt.default(null),
+        endsAt: bannerFields.endsAt.default(null),
+        layout: bannerFields.layout.default({}),
         imageKey: key,
       })
       .strict(),
@@ -151,12 +181,26 @@ adminContentRouter.patch(
         actionValue: bannerFields.actionValue.optional(),
         displayOrder: bannerFields.displayOrder.optional(),
         isActive: bannerFields.isActive.optional(),
+        status: bannerFields.status.optional(),
+        startsAt: bannerFields.startsAt.optional(),
+        endsAt: bannerFields.endsAt.optional(),
+        layout: bannerFields.layout.optional(),
         imageKey: key.optional(),
       })
       .strict(),
   }),
   asyncHandler(async (req: Request, res: Response) => {
     ok(res, await banners.updateBanner(req.params['id'] as string, req.body, requireUser(req).id));
+  }),
+);
+
+/** The order of one placement's banners: every banner of it, listed first to last. */
+adminContentRouter.put(
+  '/banners/order',
+  requirePermission(Permission.CATALOG_WRITE),
+  validate({ body: z.object({ placement, ids: z.array(uuid).min(1).max(200) }).strict() }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await banners.reorderBanners(req.body.placement, req.body.ids, requireUser(req).id));
   }),
 );
 

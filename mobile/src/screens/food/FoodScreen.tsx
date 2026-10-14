@@ -6,10 +6,13 @@
  * Top to bottom: header (back, "Food", delivery location, search), the hero,
  * the filter chips, then one card per place.
  *
- *   hero        admin banners of placement "food" (headline, subtitle,
- *               optional button text, dish image) on an optional
- *               "food_background" image — Admin Panel → Banners. With no
- *               banner configured a plain, generic hero is shown instead.
+ *   hero        the live admin banners of placement "food" — the ONE source
+ *               of this screen's top banner (Admin Panel → Banners), drawn
+ *               by the shared PromoBanners (default style: headline +
+ *               image, "split"), on an optional "food_background" image.
+ *               With none live there is no hero at all: the screen starts
+ *               straight at its filters, no empty space.
+ *   list        "food_list" banners after the second place.
  *   filters     All / Veg / Non-Veg / Restaurant / Cafe, applied by the
  *               SERVER (pure-veg kitchens, places with a non-veg item, seller
  *               type) — never guessed from names.
@@ -19,14 +22,14 @@
  */
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import { FlatList, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
+import { FlatList, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { Image } from "expo-image";
-import * as Clipboard from "expo-clipboard";
 import { ArrowLeft, ChevronDown, Coffee, Drumstick, Leaf, MapPin, Search, Utensils, UtensilsCrossed, X } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { FOOD_BANNER_PLACEMENTS, type BannerDto, type RestaurantListQuery, type RestaurantSummaryDto } from "@shared";
+import { FOOD_BANNER_PLACEMENTS, type RestaurantListQuery, type RestaurantSummaryDto } from "@shared";
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { FoodRestaurantCard } from "@/components/FoodRestaurantCard";
+import { PromoBanners, PromoSlot } from "@/components/PromoBanner";
 import { AppText, EmptyState, ErrorState, Screen } from "@/components/ui";
 import { resolveImageUrl } from "@/lib/api";
 import { useBanners, useRestaurants } from "@/lib/queries";
@@ -54,66 +57,6 @@ function FilterIcon({ filter, active }: { filter: FilterKey; active: boolean }) 
   if (filter === "RESTAURANT") return <Utensils size={size} color={active ? colors.textOnPrimary : colors.textPrimary} strokeWidth={2.25} />;
   if (filter === "CAFE") return <Coffee size={size} color={active ? colors.textOnPrimary : "#B45309"} strokeWidth={2.25} />;
   return null;
-}
-
-/** "Good food brings good mood" → the last two words in brand green, as in the design. */
-function HeroTitle({ text }: { text: string }) {
-  const words = text.trim().split(/\s+/);
-  if (words.length < 3) return <AppText style={styles.heroTitle}>{text}</AppText>;
-  return (
-    <AppText style={styles.heroTitle}>
-      {words.slice(0, -2).join(" ")} <AppText style={[styles.heroTitle, styles.heroAccent]}>{words.slice(-2).join(" ")}</AppText>
-    </AppText>
-  );
-}
-
-function HeroSlide({ banner, width, onCta }: { banner: BannerDto; width: number; onCta: (banner: BannerDto) => void }) {
-  const image = resolveImageUrl(banner.imageUrl);
-  const ratio = banner.imageWidth > 0 && banner.imageHeight > 0 ? banner.imageWidth / banner.imageHeight : 1;
-  return (
-    <View style={[styles.heroSlide, { width }]}>
-      <View style={styles.heroCopy}>
-        {banner.title ? <HeroTitle text={banner.title} /> : null}
-        {banner.subtitle ? (
-          <AppText style={styles.heroSubtitle} numberOfLines={3}>
-            {banner.subtitle}
-          </AppText>
-        ) : null}
-        {banner.ctaLabel ? (
-          <Pressable onPress={() => onCta(banner)} style={({ pressed }) => [styles.heroCta, pressed && { opacity: 0.85 }]} accessibilityRole="button">
-            <AppText style={styles.heroCtaText}>{banner.ctaLabel}</AppText>
-          </Pressable>
-        ) : null}
-      </View>
-      {image ? (
-        <View style={styles.heroArt}>
-          <Image
-            source={{ uri: image }}
-            style={{ width: "100%", aspectRatio: Math.min(Math.max(ratio, 0.6), 2.2) }}
-            contentFit="contain"
-            transition={150}
-            cachePolicy="memory-disk"
-            accessibilityLabel={banner.title ?? "Food"}
-          />
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-/** Shown only while no "food" banner is configured: plain and generic, nothing made up. */
-function HeroFallback() {
-  return (
-    <View style={styles.heroSlide}>
-      <View style={styles.heroCopy}>
-        <HeroTitle text="Food from places near you" />
-        <AppText style={styles.heroSubtitle}>Restaurants and cafes that deliver to your location</AppText>
-      </View>
-      <View style={[styles.heroArt, styles.heroFallbackArt]}>
-        <UtensilsCrossed size={56} color={palette.green600} strokeWidth={1.5} />
-      </View>
-    </View>
-  );
 }
 
 function FoodSkeleton() {
@@ -144,7 +87,6 @@ export default function FoodScreen({
   onOpenLocation?: (() => void) | undefined;
 }) {
   const insets = useSafeAreaInsets();
-  const { width } = useWindowDimensions();
   const tabBarClearance = useTabBarClearance();
   const location = useLocation((state) => state.location);
   const near = useMemo(() => (location ? { latitude: location.latitude, longitude: location.longitude } : null), [location]);
@@ -157,7 +99,6 @@ export default function FoodScreen({
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [copied, setCopied] = useState<string | null>(null);
   const listRef = useRef<FlatList<RestaurantSummaryDto>>(null);
 
   // A food seller with an empty menu has nothing to order yet.
@@ -170,20 +111,11 @@ export default function FoodScreen({
 
   const slides = heroBanners.data ?? [];
   const backgroundUrl = resolveImageUrl(background.data?.[0]?.imageUrl ?? null);
-  const slideWidth = width - spacing.base * 2;
 
-  const onCta = useCallback(
-    (banner: BannerDto) => {
-      if (banner.actionType === "COUPON" && banner.actionValue) {
-        void Clipboard.setStringAsync(banner.actionValue);
-        setCopied(banner.actionValue);
-        return;
-      }
-      // Otherwise the button takes the customer to the places to order from.
-      listRef.current?.scrollToOffset({ offset: 320, animated: true });
-    },
-    [],
-  );
+  // A hero button on a banner with no tap target takes the customer to the places to order from.
+  const scrollToList = useCallback(() => {
+    listRef.current?.scrollToOffset({ offset: 320, animated: true });
+  }, []);
 
   const refreshing = query.isRefetching || heroBanners.isRefetching;
   const refresh = useCallback(() => {
@@ -250,27 +182,9 @@ export default function FoodScreen({
           </View>
         ) : null}
 
+        {/* Only live "food" banners; none = no hero and no space for one. */}
         {slides.length > 0 ? (
-          <ScrollView
-            horizontal
-            pagingEnabled
-            showsHorizontalScrollIndicator={false}
-            scrollEnabled={slides.length > 1}
-            style={{ marginTop: spacing.sm }}
-          >
-            {slides.map((banner) => (
-              <HeroSlide key={banner.id} banner={banner} width={slideWidth} onCta={onCta} />
-            ))}
-          </ScrollView>
-        ) : heroBanners.isLoading ? (
-          <View style={{ height: 150 }} />
-        ) : (
-          <HeroFallback />
-        )}
-        {copied ? (
-          <AppText style={styles.copied}>
-            Code {copied} copied
-          </AppText>
+          <PromoBanners banners={slides} defaultVariant="split" onDecorativeCta={scrollToList} style={styles.hero} />
         ) : null}
       </View>
 
@@ -307,10 +221,14 @@ export default function FoodScreen({
         ref={listRef}
         data={query.isLoading || query.isError ? [] : visible}
         keyExtractor={(item) => item.sellerId}
-        renderItem={({ item }) => (
-          <View style={styles.cardWrap}>
-            <FoodRestaurantCard restaurant={item} onPress={onOpenRestaurant} />
-          </View>
+        renderItem={({ item, index }) => (
+          <>
+            <View style={styles.cardWrap}>
+              <FoodRestaurantCard restaurant={item} onPress={onOpenRestaurant} />
+            </View>
+            {/* "food_list" banners: after the second place (or the only one). */}
+            {index === Math.min(1, visible.length - 1) ? <PromoSlot placement={FOOD_BANNER_PLACEMENTS.LIST} style={styles.listBanner} /> : null}
+          </>
         )}
         ListHeaderComponent={header}
         ListEmptyComponent={
@@ -419,63 +337,13 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     paddingVertical: 0,
   },
-  heroSlide: {
-    flexDirection: "row",
-    alignItems: "center",
-    minHeight: 150,
+  // Cancels the header's side padding: PromoBanners keeps its own screen margins.
+  hero: {
     marginTop: spacing.sm,
+    marginHorizontal: -spacing.base,
   },
-  heroCopy: {
-    flex: 1.15,
-    paddingRight: spacing.sm,
-  },
-  heroTitle: {
-    fontSize: 26,
-    lineHeight: 31,
-    fontWeight: "800",
-    color: colors.textPrimary,
-  },
-  heroAccent: {
-    color: palette.green600,
-  },
-  heroSubtitle: {
-    marginTop: spacing.xs,
-    fontSize: 14,
-    lineHeight: 19,
-    color: colors.textSecondary,
-  },
-  heroCta: {
-    alignSelf: "flex-start",
-    marginTop: spacing.md,
-    paddingHorizontal: spacing.base,
-    height: 38,
-    borderRadius: radius.pill,
-    backgroundColor: palette.green600,
-    justifyContent: "center",
-  },
-  heroCtaText: {
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: "800",
-    color: colors.textOnPrimary,
-  },
-  heroArt: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  heroFallbackArt: {
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: colors.surface,
-    maxWidth: 120,
-    alignSelf: "center",
-  },
-  copied: {
-    marginTop: spacing.xs,
-    fontSize: 12,
-    fontWeight: "700",
-    color: palette.green700,
+  listBanner: {
+    marginBottom: spacing.md,
   },
   chips: {
     paddingHorizontal: spacing.base,

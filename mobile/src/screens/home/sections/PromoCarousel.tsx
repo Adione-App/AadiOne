@@ -20,13 +20,22 @@ const AUTOPLAY_MS = 3500;
 /** Used only for a banner whose image size is unknown. */
 const FALLBACK_ASPECT_RATIO = 2.5;
 const MAX_SLIDE_WIDTH = 640;
+const AXIS = { left: "0%", center: "50%", right: "100%", top: "0%", bottom: "100%" } as const;
 
 function SlideContent({ slide }: { slide: PromoSlide }) {
   const artwork = resolveImageUrl(slide.imageUrl);
   return (
     <>
       {artwork ? (
-        <Image source={{ uri: artwork }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} cachePolicy="memory-disk" />
+        <Image
+          source={{ uri: artwork }}
+          style={StyleSheet.absoluteFill}
+          // The admin's fit and image position (Admin Panel → Banners); never stretched.
+          contentFit={slide.layout.fit}
+          contentPosition={{ left: AXIS[slide.layout.alignX], top: AXIS[slide.layout.alignY] }}
+          transition={150}
+          cachePolicy="memory-disk"
+        />
       ) : null}
       {slide.title ? (
         <View style={styles.artworkCaption}>
@@ -74,7 +83,9 @@ function PromoCarouselImpl({
   // Every slide of a slot shares one height — the widest banner's — so a
   // carousel never jumps between slides and no banner is cropped.
   const ratio = slides.length > 0 ? Math.max(...slides.map((slide) => slide.aspectRatio ?? FALLBACK_ASPECT_RATIO)) : FALLBACK_ASPECT_RATIO;
-  const slideHeight = Math.round(slideWidth / ratio);
+  // An admin-set fixed height (clamped by resolveBannerLayout) wins over the shape.
+  const fixedHeight = slides.find((slide) => slide.layout.height !== null)?.layout.height ?? null;
+  const slideHeight = fixedHeight ?? Math.round(slideWidth / ratio);
 
   const [active, setActive] = useState(0);
   const scrollRef = useRef<ScrollView>(null);

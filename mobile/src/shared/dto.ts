@@ -835,17 +835,158 @@ export interface BannerDto {
   subtitle: string | null;
   /** Optional button text drawn on the banner (e.g. "Order now"); null = no button. Absent from older servers. */
   ctaLabel?: string | null;
-  actionType: 'CATEGORY' | 'PRODUCT' | 'COUPON' | 'NONE';
-  /** Category id, product id or coupon code, by actionType; null for NONE. */
+  actionType: BannerActionTypeDto;
+  /**
+   * What the tap opens, by actionType: a category / product / seller id, a
+   * coupon code, a rail key (BANNER_RAIL_TARGETS) or an https URL; null for
+   * NONE. Customers get NONE (non-interactive) when the target no longer exists.
+   */
   actionValue: string | null;
+  /** How the banner is drawn (see BannerLayoutDto); absent from older servers = the defaults. */
+  layout?: BannerLayoutDto;
 }
+
+/** What tapping a banner does. NONE = a purely decorative image. */
+export type BannerActionTypeDto = 'CATEGORY' | 'PRODUCT' | 'COUPON' | 'STORE' | 'RESTAURANT' | 'RAIL' | 'URL' | 'NONE';
+
+/* -------------------------------------------------------------------------- */
+/* Banner presentation — set per banner in the Admin Panel                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * banner  an image (optionally with title/subtitle under it); several in one
+ *         placement become a swipeable carousel
+ * card    a compact image card with its title and subtitle beside it
+ * tile    a small image; several in one placement sit side by side
+ * strip   a slim full-width announcement image
+ * split   headline, subtitle and button on the left, image on the right
+ *         (the Food hero)
+ */
+export const BANNER_VARIANTS = ['banner', 'card', 'tile', 'strip', 'split'] as const;
+export type BannerVariant = (typeof BANNER_VARIANTS)[number];
+
+export interface BannerLayoutDto {
+  variant?: BannerVariant;
+  /** Frame width ÷ height; null = the image's own shape. Ignored when `height` is set. */
+  aspectRatio?: number | null;
+  /** Fixed frame height in dp; null = from the aspect ratio. Clamped to BANNER_HEIGHT_LIMITS. */
+  height?: number | null;
+  /** full = edge to edge; content = inside the screen's side margins. */
+  width?: 'full' | 'content';
+  /** contain = the whole image, may leave empty space; cover = fills the frame, may crop. Never stretched. */
+  fit?: 'contain' | 'cover';
+  alignX?: 'left' | 'center' | 'right';
+  alignY?: 'top' | 'center' | 'bottom';
+  radius?: 'none' | 'sm' | 'md' | 'lg';
+  /** Theme colors only. */
+  background?: 'none' | 'white' | 'green' | 'grey';
+}
+
+export const BANNER_HEIGHT_LIMITS = { min: 48, max: 420 } as const;
+export const BANNER_ASPECT_LIMITS = { min: 0.5, max: 6 } as const;
+
+/** Ready-made frame shapes for the Admin Panel; null = the image's own shape. */
+export const BANNER_ASPECT_PRESETS: readonly { label: string; value: number | null }[] = [
+  { label: "Image's own shape", value: null },
+  { label: 'Wide 16:9', value: 16 / 9 },
+  { label: 'Banner 2:1', value: 2 },
+  { label: 'Strip 4:1', value: 4 },
+  { label: 'Card 4:3', value: 4 / 3 },
+  { label: 'Square 1:1', value: 1 },
+  { label: 'Portrait 4:5', value: 0.8 },
+];
+
+export type ResolvedBannerLayout = Required<BannerLayoutDto>;
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+/**
+ * A banner's layout with every field filled in and every number within safe
+ * limits — the ONE place defaults and clamping live (server, Admin Panel
+ * preview and app all use it). `defaultVariant` comes from the placement.
+ */
+export function resolveBannerLayout(layout: BannerLayoutDto | null | undefined, defaultVariant: BannerVariant = 'banner'): ResolvedBannerLayout {
+  const value = layout ?? {};
+  const pick = <T extends string>(candidate: unknown, allowed: readonly T[], fallback: T): T =>
+    allowed.includes(candidate as T) ? (candidate as T) : fallback;
+  const aspect = typeof value.aspectRatio === 'number' && Number.isFinite(value.aspectRatio) ? value.aspectRatio : null;
+  const height = typeof value.height === 'number' && Number.isFinite(value.height) ? value.height : null;
+  return {
+    variant: pick(value.variant, BANNER_VARIANTS, defaultVariant),
+    aspectRatio: aspect === null ? null : clamp(aspect, BANNER_ASPECT_LIMITS.min, BANNER_ASPECT_LIMITS.max),
+    height: height === null ? null : Math.round(clamp(height, BANNER_HEIGHT_LIMITS.min, BANNER_HEIGHT_LIMITS.max)),
+    width: pick(value.width, ['full', 'content'] as const, 'content'),
+    fit: pick(value.fit, ['contain', 'cover'] as const, 'contain'),
+    alignX: pick(value.alignX, ['left', 'center', 'right'] as const, 'center'),
+    alignY: pick(value.alignY, ['top', 'center', 'bottom'] as const, 'center'),
+    radius: pick(value.radius, ['none', 'sm', 'md', 'lg'] as const, 'lg'),
+    background: pick(value.background, ['none', 'white', 'green', 'grey'] as const, 'none'),
+  };
+}
+
+/** Screen-edge margin the app keeps around a "content"-width banner (dp). */
+export const BANNER_SIDE_MARGIN = 16;
+
+/**
+ * The frame one banner is drawn in, in dp — the SAME numbers in the app and
+ * in the Admin Panel's phone preview. `screenWidth` is the full screen width;
+ * `imageAspect` the stored image's width ÷ height; `count` how many banners
+ * share the placement (tiles sit side by side, up to three per row).
+ * The image is then drawn inside this frame with `fit` — never stretched.
+ */
+export function bannerFrameSize(
+  layout: ResolvedBannerLayout,
+  screenWidth: number,
+  imageAspect: number,
+  count = 1,
+): { width: number; height: number; imageWidth: number } {
+  const limit = (value: number) => Math.round(clamp(value, BANNER_HEIGHT_LIMITS.min, BANNER_HEIGHT_LIMITS.max));
+  const shape = layout.aspectRatio ?? (imageAspect > 0 ? imageAspect : 2);
+  const width = layout.width === 'full' && layout.variant !== 'tile' ? screenWidth : screenWidth - BANNER_SIDE_MARGIN * 2;
+  switch (layout.variant) {
+    case 'tile': {
+      const perRow = Math.min(Math.max(count, 1), 3);
+      const tile = (width - 10 * (perRow - 1)) / perRow;
+      return { width: Math.floor(tile), height: limit(layout.height ?? tile / (layout.aspectRatio ?? 1)), imageWidth: Math.floor(tile) };
+    }
+    case 'card': {
+      const imageWidth = Math.round(width * 0.32);
+      return { width, height: limit(layout.height ?? clamp(imageWidth / shape, 72, 160)), imageWidth };
+    }
+    case 'split': {
+      const imageWidth = Math.round(width * 0.45);
+      return { width, height: limit(layout.height ?? clamp(imageWidth / shape, 130, 220)), imageWidth };
+    }
+    case 'strip':
+      return { width, height: limit(layout.height ?? clamp(width / shape, 48, 96)), imageWidth: width };
+    default:
+      return { width, height: limit(layout.height ?? width / shape), imageWidth: width };
+  }
+}
+
+/** Product listings a banner can open (the app's existing rails, by key). */
+export const BANNER_RAIL_TARGETS: readonly { key: string; label: string }[] = [
+  { key: 'OFFERS', label: 'Offers' },
+  { key: 'POPULAR', label: 'Popular' },
+  { key: 'BEST_SELLERS', label: 'Best sellers' },
+  { key: 'TOP_PICKS', label: 'Top picks' },
+  { key: 'DAILY_ESSENTIALS', label: 'Daily essentials' },
+  { key: 'RECENTLY_ADDED', label: 'Recently added' },
+];
 
 /** GET/POST/PATCH /admin/banners — a banner with its management fields. */
 export interface AdminBannerDto extends BannerDto {
-  /** Where it shows: a slug such as "home_top", "home_middle", "food" or "category:<id>". */
+  /** Where it shows: a slug such as "home_top", "food" or "categories_top" (see BANNER_PLACEMENTS). */
   placement: string;
   displayOrder: number;
   isActive: boolean;
+  /** DRAFT = never shown; PUBLISHED = shown while on and inside its schedule; ARCHIVED = retired. Absent from older servers. */
+  status?: BannerStatusDto;
+  /** Optional schedule (ISO); null = no limit on that side. */
+  startsAt?: string | null;
+  endsAt?: string | null;
+  /** What customers see right now, from status + switch + schedule. */
+  visibility?: BannerVisibility;
   createdAt: string;
   updatedAt: string;
 }
@@ -872,6 +1013,55 @@ export const HOME_BANNER_PLACEMENTS = {
 
 export type HomeBannerPlacement = (typeof HOME_BANNER_PLACEMENTS)[keyof typeof HOME_BANNER_PLACEMENTS];
 
+export type BannerStatusDto = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+export type BannerVisibility = 'LIVE' | 'SCHEDULED' | 'ENDED' | 'OFF' | 'DRAFT' | 'ARCHIVED';
+
+/** Whether customers see a banner right now (the server's own rule for GET /banners). */
+export function bannerVisibility(
+  banner: { status?: BannerStatusDto; isActive: boolean; startsAt?: string | null; endsAt?: string | null },
+  now: Date = new Date(),
+): BannerVisibility {
+  if (banner.status === 'DRAFT') return 'DRAFT';
+  if (banner.status === 'ARCHIVED') return 'ARCHIVED';
+  if (!banner.isActive) return 'OFF';
+  if (banner.startsAt && new Date(banner.startsAt) > now) return 'SCHEDULED';
+  if (banner.endsAt && new Date(banner.endsAt) <= now) return 'ENDED';
+  return 'LIVE';
+}
+
+/**
+ * Every place the app shows admin banners — the registry the Admin Panel
+ * offers and the server accepts (plus the per-category "home_category"
+ * shelf banners). `defaultVariant` is how a banner there is drawn unless
+ * the admin picks another; a placement with nothing live shows nothing at
+ * all (no empty space).
+ */
+export interface BannerPlacementInfo {
+  key: string;
+  screen: 'Home' | 'Food' | 'Categories' | 'Store';
+  label: string;
+  hint: string;
+  defaultVariant: BannerVariant;
+}
+
+export const BANNER_PLACEMENTS: readonly BannerPlacementInfo[] = [
+  { key: 'home_top', screen: 'Home', label: 'Home — top carousel', hint: 'The swipeable banners at the top of Home.', defaultVariant: 'banner' },
+  { key: 'home_food', screen: 'Home', label: 'Home — above the restaurants', hint: 'Shown above the Food section on Home.', defaultVariant: 'banner' },
+  { key: 'home_category', screen: 'Home', label: 'Home — above a category shelf', hint: 'Must open a category; shown above that category\'s shelf.', defaultVariant: 'banner' },
+  { key: 'home_explore', screen: 'Home', label: 'Home — explore more categories', hint: 'Shown above the subcategory grid.', defaultVariant: 'banner' },
+  { key: 'home_bottom', screen: 'Home', label: 'Home — final banner (bottom)', hint: 'The last banner on the page.', defaultVariant: 'banner' },
+  { key: 'food', screen: 'Food', label: 'Food — top hero', hint: 'The top of the Food screen. With none live, the screen starts straight with its filters.', defaultVariant: 'split' },
+  { key: 'food_background', screen: 'Food', label: 'Food — header background', hint: 'An image only, behind the Food header. The first live one is used.', defaultVariant: 'banner' },
+  { key: 'food_list', screen: 'Food', label: 'Food — between restaurants', hint: 'Shown after the second restaurant in the list.', defaultVariant: 'banner' },
+  { key: 'categories_top', screen: 'Categories', label: 'Categories — top', hint: 'Above the main categories on the Categories screen.', defaultVariant: 'banner' },
+  { key: 'categories_mid', screen: 'Categories', label: 'Categories — between sections', hint: 'After the second category section.', defaultVariant: 'banner' },
+  { key: 'store_top', screen: 'Store', label: 'Store pages — top', hint: 'At the top of every store page.', defaultVariant: 'banner' },
+];
+
+export function bannerPlacementInfo(placement: string): BannerPlacementInfo | undefined {
+  return BANNER_PLACEMENTS.find((entry) => entry.key === placement);
+}
+
 /**
  * The admin banner placements the customer Food screen shows
  * (GET /banners?placement=…):
@@ -883,6 +1073,8 @@ export type HomeBannerPlacement = (typeof HOME_BANNER_PLACEMENTS)[keyof typeof H
 export const FOOD_BANNER_PLACEMENTS = {
   HERO: 'food',
   BACKGROUND: 'food_background',
+  /** Banners between restaurants — after the second place. */
+  LIST: 'food_list',
 } as const;
 
 /**

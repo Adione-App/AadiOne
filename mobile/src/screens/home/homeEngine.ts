@@ -32,9 +32,11 @@
  * history and are never filtered against the rest of the page.
  */
 
+import { BANNER_RAIL_TARGETS, resolveBannerLayout } from "@shared";
 import type {
   BannerDto,
   CategoryDto,
+  ResolvedBannerLayout,
   HomeFeedDto,
   OfferDto,
   ProductSummaryDto,
@@ -53,6 +55,8 @@ export type HomeAction =
   | { type: "food" }
   | { type: "orders" }
   | { type: "coupon"; code: string }
+  /** Store / restaurant / web link banners — opened by lib/bannerAction.ts. */
+  | { type: "banner"; banner: BannerDto }
   | { type: "none" };
 
 /** One admin banner, ready to draw. */
@@ -61,8 +65,10 @@ export interface PromoSlide {
   title: string | null;
   subtitle: string | null;
   imageUrl: string;
-  /** Width / height of the uploaded image, so it shows whole, uncropped. */
+  /** Frame width / height: the admin's frame shape, else the uploaded image's own. */
   aspectRatio: number | null;
+  /** The banner's presentation (fit, image position, fixed height…) from the Admin Panel. */
+  layout: ResolvedBannerLayout;
   action: HomeAction;
 }
 
@@ -177,6 +183,17 @@ function bannerAction(banner: BannerDto, whenNone: HomeAction): HomeAction {
       return value ? { type: "product", productId: value } : whenNone;
     case "COUPON":
       return value ? { type: "coupon", code: value } : whenNone;
+
+    case "RAIL": {
+      const rail = BANNER_RAIL_TARGETS.find((entry) => entry.key === value);
+      return rail ? { type: "rail", railKey: rail.key as RailKey, title: rail.label } : whenNone;
+    }
+
+    case "STORE":
+    case "RESTAURANT":
+    case "URL":
+      return value ? { type: "banner", banner } : whenNone;
+
     default:
       return whenNone;
   }
@@ -188,14 +205,22 @@ export function bannerSlides(
   keyPrefix: string,
   whenNone: HomeAction = { type: "none" },
 ): PromoSlide[] {
-  return (banners ?? []).map((banner) => ({
-    key: `${keyPrefix}:${banner.id}`,
-    title: banner.title,
-    subtitle: banner.subtitle,
-    imageUrl: banner.imageUrl,
-    aspectRatio: banner.imageWidth > 0 && banner.imageHeight > 0 ? banner.imageWidth / banner.imageHeight : null,
-    action: bannerAction(banner, whenNone),
-  }));
+  return (banners ?? []).map((banner) => {
+    const layout = resolveBannerLayout(banner.layout);
+    return {
+      key: `${keyPrefix}:${banner.id}`,
+      title: banner.title,
+      subtitle: banner.subtitle,
+      imageUrl: banner.imageUrl,
+      aspectRatio:
+        layout.aspectRatio ??
+        (banner.imageWidth > 0 && banner.imageHeight > 0
+          ? banner.imageWidth / banner.imageHeight
+          : null),
+      layout,
+      action: bannerAction(banner, whenNone),
+    };
+  });
 }
 
 /* -------------------------------------------------------------------------- */

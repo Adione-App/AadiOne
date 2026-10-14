@@ -37,6 +37,7 @@ import {
 import { formatUnreadBadge } from "@/lib/notifications";
 import { useCartActions } from "@/lib/useCartActions";
 import { useLocation } from "@/lib/store";
+import { openBannerAction } from "@/lib/bannerAction";
 
 import BrandMark from "@/components/BrandMark";
 import { AppText, ErrorState, NoticeStrip, Screen } from "@/components/ui";
@@ -535,6 +536,9 @@ export default function HomeScreen({
             break;
           case "coupon":
             void Clipboard.setStringAsync(action.code);
+            break;
+          case "banner":
+            openBannerAction(action.banner);
             break;
           case "none":
             break;

@@ -19,7 +19,10 @@
 
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { INDIAN_STATES, formatAddressLines, isValidPincode, landmarkPhrase } from '@shared/address';
+import { formatAddressLines, isValidPincode, landmarkPhrase } from '@shared/address';
+
+/** Aadione operates only in Rajasthan; the server checks the state and the map point. */
+const SERVICE_STATE = 'Rajasthan';
 import { COORDINATE_PROBLEM_MESSAGE, coordinateProblem } from '@shared/distance';
 import { DETECT_MESSAGE, describeAccuracy, type DetectResult } from '@shared/location';
 import { Button, ErrorBanner, Field, Panel, inputClass } from '@/components/ui';
@@ -151,7 +154,9 @@ function LocationForm({
   const [locality, setLocality] = useState(initial.locality ?? '');
   const [city, setCity] = useState(initial.city);
   const [district, setDistrict] = useState(initial.district ?? '');
-  const [state, setState] = useState(initial.state);
+  // Rajasthan by default; an older store's own state is shown as saved (never
+  // silently replaced) and must be changed to Rajasthan to save.
+  const [state, setState] = useState(initial.state || SERVICE_STATE);
   const [pincode, setPincode] = useState(initial.pincode);
   const [landmark, setLandmark] = useState(initial.landmark ?? '');
   const [error, setError] = useState<string | null>(null);
@@ -180,13 +185,15 @@ function LocationForm({
   const latitude = Number(lat);
   const longitude = Number(lng);
   const pointProblem = lat.trim() && lng.trim() ? coordinateProblem(latitude, longitude, { requireIndia: true }) : 'MISSING';
-  const states = INDIAN_STATES.includes(state as (typeof INDIAN_STATES)[number]) || !state ? INDIAN_STATES : [state, ...INDIAN_STATES];
+  // Aadione operates only in Rajasthan — the one choice, plus a saved
+  // out-of-state value so it is visible rather than overwritten.
+  const states = state && state !== SERVICE_STATE ? [state, SERVICE_STATE] : [SERVICE_STATE];
 
   function submit(): void {
     if (addressLine.trim().length < 2) return setError('Enter the shop / building and street.');
     if (city.trim().length < 2) return setError('Enter the village, city or town.');
     if (district.trim().length < 2) return setError('Enter the district.');
-    if (state.trim().length < 2) return setError('Choose the state.');
+    if (state !== SERVICE_STATE) return setError('Aadione currently operates only in Rajasthan — the store must be in Rajasthan.');
     if (!isValidPincode(pincode)) return setError('Enter a valid 6-digit PIN code.');
     if (pointProblem) {
       return setError(

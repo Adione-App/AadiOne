@@ -39,7 +39,7 @@ import { hashPassword } from '../../src/common/crypto';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as otpService from '../../src/modules/auth/otp.service';
 import { MockPaymentProvider } from '../../src/infra/payment';
-import { FAR, seedAddress, seedProduct, seedStore } from '../helpers/fixtures';
+import { FAR, configureTestMerchantUpi, seedAddress, seedProduct, seedStore } from '../helpers/fixtures';
 
 const CUSTOMER_MOBILE = '9876543210';
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
@@ -103,6 +103,8 @@ beforeEach(async () => {
   await configService.invalidateAll();
   await otpService.clearOtpState(CUSTOMER_MOBILE);
   await cache.clear();
+  // The direct-UPI (mock provider) path needs a merchant VPA — a test-only placeholder.
+  await configureTestMerchantUpi();
 });
 
 describe('E2E — online payment, delivered', () => {
@@ -456,8 +458,12 @@ describe('E2E — rejection paths', () => {
     const settled = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
     expect(settled.paymentStatus).toBe('REFUNDED');
     // Every SellerOrder under this single-seller order was rejected, so the
-    // parent has nothing left to fulfil.
-    expect(settled.status).toBe(OrderStatus.CANCELLED);
+    // parent had nothing left to fulfil: it was CANCELLED, then — the refund
+    // having completed — REFUNDED (the state machine's terminal step for a
+    // cancelled, paid order; see order-state-machine.ts).
+    expect(settled.status).toBe(OrderStatus.REFUNDED);
+    const history = await prisma.orderStatusHistory.findMany({ where: { orderId }, orderBy: { createdAt: 'asc' } });
+    expect(history.map((h) => h.toStatus).slice(-2)).toEqual([OrderStatus.CANCELLED, OrderStatus.REFUNDED]);
 
     // And the goods went back on the shelf.
     const offer = await prisma.sellerListing.findUniqueOrThrow({

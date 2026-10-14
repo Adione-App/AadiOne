@@ -11,6 +11,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import sharp from 'sharp';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ApprovalStatus, PaymentMethod, SellerType, UnitType, UserRole } from '../../src/shared';
 import { api, bearer, expectError, expectSuccess, loginAs } from '../helpers/api';
@@ -21,6 +22,7 @@ import { cache } from '../../src/infra/cache';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as otpService from '../../src/modules/auth/otp.service';
 import { sellerImageFolder } from '../../src/modules/catalog/seller-image.service';
+import { storage } from '../../src/infra/storage';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
 
@@ -98,7 +100,17 @@ const as = (token: string) => ({
 });
 
 /** An upload key inside the seller's own image folder (what the presign flow hands out). */
-const imageKey = (seller: Seller) => `${sellerImageFolder(seller.id)}/${randomUUID()}.jpg`;
+/**
+ * A photo the seller has uploaded: a real JPEG at a key in the seller's own
+ * upload space. Attaching reads (and converts) the stored file, so a key with
+ * no file behind it is correctly refused ("could not be found").
+ */
+async function uploadedImageKey(seller: Seller): Promise<string> {
+  const key = `${sellerImageFolder(seller.id)}/${randomUUID()}.jpg`;
+  const jpeg = await sharp({ create: { width: 600, height: 600, channels: 3, background: '#2e7d32' } }).jpeg().toBuffer();
+  await storage.put(key, jpeg, 'image/jpeg');
+  return key;
+}
 
 const sku = () => `SKU-${randomUUID().slice(0, 8).toUpperCase()}`;
 
@@ -155,7 +167,7 @@ describe('A. an APPROVED marketplace product stays editable by its seller', () =
     const S = as(seller.token);
 
     await S.patch(`/seller/products/${id}`, { name: 'Desi Tomato 1 kg', description: 'Farm fresh' }).expect(200);
-    const keys = [1, 2].map(() => imageKey(seller));
+    const keys = [await uploadedImageKey(seller), await uploadedImageKey(seller)];
     // Images go through the seller's own upload space; attach two, reorder, remove one.
     for (const key of keys) expect([200, 201]).toContain((await S.post(`/seller/products/${id}/images`, { key })).status);
     let view = await product(seller, id);
@@ -191,7 +203,7 @@ describe('B. an APPROVED restaurant food item stays editable', () => {
     await approve(seller, admin, id);
 
     await S.patch(`/seller/products/${id}`, { name: 'Dal Tadka (Ghee)', description: 'Slow cooked', pricePaise: 13_000 }).expect(200);
-    for (let i = 0; i < 2; i += 1) expect([200, 201]).toContain((await S.post(`/seller/products/${id}/images`, { key: imageKey(seller) })).status);
+    for (let i = 0; i < 2; i += 1) expect([200, 201]).toContain((await S.post(`/seller/products/${id}/images`, { key: await uploadedImageKey(seller) })).status);
     let view = await product(seller, id);
     await S.put(`/seller/products/${id}/images/order`, { imageIds: view.images.map((i) => i.id).reverse() }).expect(200);
     await S.delete(`/seller/products/${id}/images/${view.images[0]!.id}`).expect(200);

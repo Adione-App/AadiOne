@@ -307,8 +307,11 @@ export async function verifyOtp(
       "OTP verification failed — incorrect code",
     );
 
+    // Says how many tries are left before the code is destroyed (the limit
+    // above), so the customer is not surprised by OTP_MAX_ATTEMPTS.
+    const remaining = env.OTP_MAX_ATTEMPTS - nextAttempts;
     throw new AppError(ErrorCode.OTP_INVALID, {
-      message: "The OTP you entered is incorrect.",
+      message: `The OTP you entered is incorrect. ${remaining} attempt${remaining === 1 ? "" : "s"} remaining.`,
       internalMessage: `invalid OTP for ${maskMobile(mobile)}`,
     });
   }

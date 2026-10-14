@@ -9,7 +9,7 @@
 
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { AuthResponse, ServiceabilityResult, UserDto } from '@shared';
+import type { AuthResponse, LiveLocationInput, ServiceabilityResult, UserDto } from '@shared';
 import { isValidCoordinates } from '@shared/distance';
 import { api, readRefreshToken, saveRefreshToken, setAccessToken } from './api';
 import { connectSocket, disconnectSocket } from './socket';
@@ -76,6 +76,8 @@ export const useAuth = create<AuthState>((set) => ({
     // A shared phone must not keep pushing the previous customer's order
     // updates to whoever logs in next.
     forgetPushRegistration();
+    // …nor offer them the previous customer's recipient / address.
+    useLocation.getState().forgetPersonalChoice();
     set({ user: null, status: 'anonymous' });
   },
 
@@ -86,6 +88,7 @@ export const useAuth = create<AuthState>((set) => ({
     // A shared phone must not keep pushing the previous customer's order
     // updates to whoever logs in next.
     forgetPushRegistration();
+    useLocation.getState().forgetPersonalChoice();
     set({ user: null, status: 'anonymous' });
   },
 }));
@@ -120,6 +123,28 @@ const LOCATION_CACHE_KEY = 'adione.location-cache';
 interface LocationCachePayload {
   location: ChosenLocation;
   serviceability: ServiceabilityResult;
+  /** The live-location details for `location` (GPS only), if confirmed. */
+  liveDestination?: LiveLocationInput | null;
+}
+
+function isValidLiveDestination(value: unknown): value is LiveLocationInput {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.latitude === 'number' &&
+    typeof v.longitude === 'number' &&
+    isValidCoordinates(v.latitude, v.longitude) &&
+    typeof v.fullName === 'string' &&
+    typeof v.mobile === 'string' &&
+    typeof v.city === 'string' &&
+    typeof v.state === 'string'
+  );
+}
+
+/** A live destination belongs to exactly this GPS point — never to any other. */
+function liveDestinationFor(location: ChosenLocation, live: LiveLocationInput | null | undefined): LiveLocationInput | null {
+  if (!live || location.source !== 'GPS') return null;
+  return live.latitude === location.latitude && live.longitude === location.longitude ? live : null;
 }
 
 function isValidCachedLocation(value: unknown): value is LocationCachePayload {
@@ -143,11 +168,12 @@ function isValidCachedLocation(value: unknown): value is LocationCachePayload {
 async function persistLocationCache(
   location: ChosenLocation,
   serviceability: ServiceabilityResult,
+  liveDestination: LiveLocationInput | null,
 ): Promise<void> {
   try {
     await AsyncStorage.setItem(
       LOCATION_CACHE_KEY,
-      JSON.stringify({ location, serviceability } satisfies LocationCachePayload),
+      JSON.stringify({ location, serviceability, liveDestination } satisfies LocationCachePayload),
     );
   } catch {
     // Best-effort — a failed write just means the next cold start falls back
@@ -160,12 +186,23 @@ interface LocationState {
   serviceability: ServiceabilityResult | null;
   /** Which saved address the customer is ordering to. */
   selectedAddressId: string | null;
+  /**
+   * The live location the customer confirmed (point + recipient + address
+   * details) — orders go to it directly, without saving an address. Only
+   * ever set for the current GPS `location`; choosing anything else clears
+   * it, so checkout can never send a stale point.
+   */
+  liveDestination: LiveLocationInput | null;
   checking: boolean;
   error: string | null;
   /** True once startup hydration from disk has run (whether or not it found anything). */
   hydrated: boolean;
   setLocation: (location: ChosenLocation) => Promise<void>;
   selectAddress: (addressId: string | null) => void;
+  /** Set BEFORE `setLocation` for the same point (which would otherwise clear it). */
+  setLiveDestination: (destination: LiveLocationInput | null) => void;
+  /** On logout: drops the recipient / chosen address (memory and disk); keeps the point. */
+  forgetPersonalChoice: () => void;
   /** Reads the persisted location/serviceability, if any valid one exists. */
   hydrate: () => Promise<void>;
   /**
@@ -185,6 +222,7 @@ export const useLocation = create<LocationState>((set, get) => ({
   location: null,
   serviceability: null,
   selectedAddressId: null,
+  liveDestination: null,
   checking: false,
   error: null,
   hydrated: false,
@@ -195,7 +233,14 @@ export const useLocation = create<LocationState>((set, get) => ({
     const samePoint = !!previous && previous.latitude === location.latitude && previous.longitude === location.longitude;
     // A different point must never show the previous point's answer meanwhile;
     // re-checking the same point keeps it while the fresh one loads.
-    set({ location, serviceability: samePoint ? get().serviceability : null, checking: true, error: null });
+    set({
+      location,
+      serviceability: samePoint ? get().serviceability : null,
+      // Any other point (or a saved address) is not the live destination.
+      liveDestination: liveDestinationFor(location, get().liveDestination),
+      checking: true,
+      error: null,
+    });
     try {
       // THE SERVER DECIDES. The app only displays the answer — it never
       // computes serviceability itself and never acts on a cached verdict.
@@ -205,7 +250,7 @@ export const useLocation = create<LocationState>((set, get) => ({
       // A slower answer for a location the customer has since changed is stale.
       if (check !== latestCheck) return;
       set({ serviceability: result, checking: false });
-      void persistLocationCache(location, result);
+      void persistLocationCache(location, result, get().liveDestination);
     } catch (error) {
       if (check !== latestCheck) return;
       set({
@@ -216,7 +261,18 @@ export const useLocation = create<LocationState>((set, get) => ({
   },
 
   selectAddress(addressId) {
-    set({ selectedAddressId: addressId });
+    // A saved address replaces the live destination.
+    set(addressId ? { selectedAddressId: addressId, liveDestination: null } : { selectedAddressId: null });
+  },
+
+  setLiveDestination(destination) {
+    set(destination ? { liveDestination: destination, selectedAddressId: null } : { liveDestination: null });
+  },
+
+  forgetPersonalChoice() {
+    set({ liveDestination: null, selectedAddressId: null });
+    const { location, serviceability } = get();
+    if (location && serviceability) void persistLocationCache(location, serviceability, null);
   },
 
   async hydrate() {
@@ -225,9 +281,12 @@ export const useLocation = create<LocationState>((set, get) => ({
       if (raw) {
         const parsed: unknown = JSON.parse(raw);
         if (isValidCachedLocation(parsed)) {
+          const location: ChosenLocation = { ...parsed.location, source: parsed.location.source === 'ADDRESS' ? 'ADDRESS' : 'GPS' };
           set({
-            location: { ...parsed.location, source: parsed.location.source === 'ADDRESS' ? 'ADDRESS' : 'GPS' },
+            location,
             serviceability: parsed.serviceability,
+            // Restored only when it is complete and for this very point.
+            liveDestination: isValidLiveDestination(parsed.liveDestination) ? liveDestinationFor(location, parsed.liveDestination) : null,
           });
         }
       }

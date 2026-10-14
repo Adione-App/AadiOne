@@ -8,6 +8,7 @@ import {
   ScrollView,
   SectionList,
   StyleSheet,
+  useWindowDimensions,
   View,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -16,7 +17,7 @@ import {
 import { Image } from "expo-image";
 import { ArrowLeft, ChevronDown, ChevronUp, Clock, MapPin, Triangle, UtensilsCrossed } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { RestaurantDto, RestaurantMenuItemDto } from "@shared";
+import { prepTimeRange, type RestaurantDto, type RestaurantMenuItemDto } from "@shared";
 import { formatPaise } from "@shared/money";
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { DietBadge } from "@/components/FoodRestaurantCard";
@@ -30,8 +31,11 @@ import { Bone, useShimmer } from "@/screens/home/sections/HomeSkeleton";
 
 /** Room for MiniCartBar, which rests above the tab bar on this screen. */
 const MINI_CART_ROOM = 84;
-const COVER_HEIGHT = 230;
-const TABS_HEIGHT = 64;
+/** The menu image's height: 56% of the screen width, kept between these. */
+const HERO_MIN = 190;
+const HERO_MAX = 260;
+/** The pinned tab strip: 36 dp tabs + 8 dp padding above and below. */
+const TABS_HEIGHT = 52;
 
 type Cart = ReturnType<typeof useCartActions>;
 
@@ -83,7 +87,6 @@ const MenuItemRow = memo(function MenuItemRow({
   return (
     <View style={styles.item}>
       <View style={styles.itemCopy}>
-        <DietBadge diet={item.diet} size={20} />
         <AppText style={styles.itemName} numberOfLines={2}>
           {item.name}
         </AppText>
@@ -110,6 +113,12 @@ const MenuItemRow = memo(function MenuItemRow({
           ) : (
             <UtensilsCrossed size={30} color={palette.green600} strokeWidth={1.5} />
           )}
+          {/* The item's own veg / non-veg mark, in the image's upper corner. */}
+          {item.diet ? (
+            <View style={styles.itemDiet}>
+              <DietBadge diet={item.diet} size={15} />
+            </View>
+          ) : null}
         </View>
         <View style={styles.action}>
           {!item.inStock ? (
@@ -193,17 +202,20 @@ function RestaurantHero({
   topInset: number;
   onBack: () => void;
 }) {
+  const { width } = useWindowDimensions();
+  const heroHeight = Math.round(Math.min(HERO_MAX, Math.max(HERO_MIN, width * 0.56)));
   const logo = resolveImageUrl(restaurant.logoUrl ?? null);
+  const time = prepTimeRange(restaurant.avgPrepMins);
   const cuisine = restaurant.cuisine.filter((entry) => entry.trim()).join(", ");
   const address = [restaurant.addressLine, restaurant.city].filter(Boolean).join(", ");
   return (
     <View>
-      <View style={[styles.cover, { height: COVER_HEIGHT + topInset }]}>
+      <View style={[styles.cover, { height: heroHeight + topInset }]}>
         {coverUrl ? (
           <Image source={{ uri: coverUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} cachePolicy="memory-disk" />
         ) : (
           <View style={styles.coverFallback}>
-            <UtensilsCrossed size={56} color={palette.green300} strokeWidth={1.25} />
+            <UtensilsCrossed size={48} color={palette.green300} strokeWidth={1.25} />
           </View>
         )}
         <Pressable
@@ -213,7 +225,7 @@ function RestaurantHero({
           accessibilityRole="button"
           accessibilityLabel="Back"
         >
-          <ArrowLeft size={24} color={colors.textPrimary} strokeWidth={2.25} />
+          <ArrowLeft size={22} color={colors.textPrimary} strokeWidth={2.25} />
         </Pressable>
       </View>
 
@@ -243,16 +255,16 @@ function RestaurantHero({
                 {restaurant.isOpen ? "Open now" : restaurant.nextOpenText ?? "Closed now"}
               </AppText>
             </View>
-            {restaurant.avgPrepMins !== null && (
+            {time ? (
               <View style={styles.metaItem}>
-                <Clock size={15} color={colors.textSecondary} strokeWidth={2.25} />
-                <AppText style={styles.metaText}>{restaurant.avgPrepMins} min prep</AppText>
+                <Clock size={14} color={colors.textSecondary} strokeWidth={2.25} />
+                <AppText style={[styles.metaText, styles.timeText]}>{time.label}</AppText>
               </View>
-            )}
+            ) : null}
           </View>
           {address ? (
             <View style={[styles.metaItem, { marginTop: spacing.xs }]}>
-              <MapPin size={15} color={colors.textSecondary} strokeWidth={2.25} />
+              <MapPin size={14} color={colors.textSecondary} strokeWidth={2.25} />
               <AppText style={[styles.metaText, { flex: 1 }]} numberOfLines={2}>
                 {address}
               </AppText>
@@ -313,7 +325,7 @@ function MenuSkeleton() {
   const progress = useShimmer();
   return (
     <View style={{ gap: spacing.base }}>
-      <Bone progress={progress} width="100%" height={COVER_HEIGHT} rounded={0} />
+      <Bone progress={progress} width="100%" height={HERO_MIN} rounded={0} />
       <View style={{ paddingHorizontal: spacing.base, gap: spacing.base }}>
         <Bone progress={progress} width="60%" height={22} />
         <Bone progress={progress} width="40%" height={14} />
@@ -339,10 +351,13 @@ function MenuSkeleton() {
 export default function RestaurantMenuScreen({
   sellerId,
   fallbackName,
+  initialDiet,
   onBack,
 }: {
   sellerId: string;
   fallbackName?: string | undefined;
+  /** The Food list filter it was opened under; the menu starts filtered the same way. */
+  initialDiet?: "VEG" | "NON_VEG" | undefined;
   onBack: () => void;
 }) {
   const insets = useSafeAreaInsets();
@@ -357,12 +372,20 @@ export default function RestaurantMenuScreen({
   // While a tab tap scrolls the list, the scroll must not move the highlight back.
   const jumping = useRef(false);
 
+  // All / Veg / Non-Veg — by each item's own mark; items without a mark only show under All.
+  const [dietFilter, setDietFilter] = useState<"ALL" | "VEG" | "NON_VEG">(initialDiet ?? "ALL");
+  const menuDiets = useMemo(() => {
+    const items = (menu.data?.menus ?? []).flatMap((entry) => entry.sections.flatMap((section) => section.items));
+    return { veg: items.some((item) => item.diet === "VEG"), nonVeg: items.some((item) => item.diet === "NON_VEG") };
+  }, [menu.data]);
+
   const allSections = useMemo(() => {
     const data = menu.data;
     if (!data) return [];
     const multipleMenus = data.menus.length > 1;
     return data.menus.flatMap((entry) =>
       entry.sections
+        .map((section) => ({ ...section, items: section.items.filter((item) => dietFilter === "ALL" || item.diet === dietFilter) }))
         .filter((section) => section.items.length > 0)
         .map((section) => {
           // A dish listed with several variants (Half / Full) shows which one each line is.
@@ -379,7 +402,7 @@ export default function RestaurantMenuScreen({
           };
         }),
     );
-  }, [menu.data]);
+  }, [menu.data, dietFilter]);
 
   const sections = useMemo(
     () => allSections.map((section) => (collapsed.has(section.key) ? { ...section, data: [] as RestaurantMenuItemDto[] } : section)),
@@ -389,13 +412,16 @@ export default function RestaurantMenuScreen({
     () => allSections.map((section) => ({ key: section.key, title: section.title, count: section.items.length, imageUrl: section.imageUrl })),
     [allSections],
   );
-  const activeKey = active ?? tabs[0]?.key ?? null;
+  // A tab hidden by the Veg / Non-Veg switch falls back to the first one still shown.
+  const activeKey = (active && tabs.some((tab) => tab.key === active) ? active : null) ?? tabs[0]?.key ?? null;
 
-  const servesNonVeg = useMemo(() => allSections.some((section) => section.items.some((item) => item.diet === "NON_VEG")), [allSections]);
+  // From the whole menu, not the filtered view, so the header label never flips with the Veg switch.
+  const servesNonVeg = menuDiets.nonVeg;
   const coverUrl = useMemo(() => {
-    const own = resolveImageUrl(menu.data?.restaurant.coverImageUrl ?? null);
+    // Its own menu image — never the cover, which is the Food list card's.
+    const own = resolveImageUrl(menu.data?.restaurant.menuImageUrl ?? null);
     if (own) return own;
-    // No cover set: a real photo from its own menu, else the plain placeholder.
+    // No menu image set: a real photo from its own menu, else the plain placeholder.
     const photo = allSections.flatMap((section) => section.items).find((item) => item.imageUrl)?.imageUrl ?? null;
     return resolveImageUrl(photo);
   }, [menu.data, allSections]);
@@ -517,6 +543,28 @@ export default function RestaurantMenuScreen({
                 <NoticeStrip message={cart.error} />
               </View>
             )}
+            {/* Shown when the menu has both kinds, or a filter came from the Food list. */}
+            {(menuDiets.veg && menuDiets.nonVeg) || dietFilter !== "ALL" ? (
+              <View style={styles.dietSwitch} accessibilityRole="tablist">
+                {(["ALL", "VEG", "NON_VEG"] as const).map((key) => {
+                  const selected = dietFilter === key;
+                  return (
+                    <Pressable
+                      key={key}
+                      onPress={() => setDietFilter(key)}
+                      style={[styles.dietChip, selected && styles.dietChipActive]}
+                      accessibilityRole="tab"
+                      accessibilityState={{ selected }}
+                    >
+                      {key !== "ALL" ? <DietBadge diet={key} size={13} /> : null}
+                      <AppText style={[styles.dietChipText, selected && styles.dietChipTextActive]}>
+                        {key === "ALL" ? "All" : key === "VEG" ? "Veg" : "Non-Veg"}
+                      </AppText>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : null}
             {tabs.length > 0 && (
               <View
                 onLayout={(event) => {
@@ -553,7 +601,16 @@ export default function RestaurantMenuScreen({
           );
         }}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
-        ListEmptyComponent={<EmptyState title="The menu is being updated" hint="This place hasn't listed any items yet. Check back soon." />}
+        ListEmptyComponent={
+          dietFilter !== "ALL" ? (
+            <EmptyState
+              title={dietFilter === "VEG" ? "No veg items here" : "No non-veg items here"}
+              hint="Switch to All to see the whole menu."
+            />
+          ) : (
+            <EmptyState title="The menu is being updated" hint="This place hasn't listed any items yet. Check back soon." />
+          )
+        }
         contentContainerStyle={{ paddingBottom: tabBarClearance + MINI_CART_ROOM }}
         initialNumToRender={12}
         maxToRenderPerBatch={10}
@@ -604,44 +661,44 @@ const styles = StyleSheet.create({
   coverBack: {
     position: "absolute",
     left: spacing.base,
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: colors.surface,
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
     shadowOpacity: 0.15,
-    shadowRadius: 8,
+    shadowRadius: 6,
     shadowOffset: { width: 0, height: 2 },
     elevation: 4,
   },
   infoCard: {
     flexDirection: "row",
     gap: spacing.md,
-    marginTop: -64,
+    marginTop: -40,
     marginHorizontal: spacing.base,
     padding: spacing.md,
-    borderRadius: radius.xl,
+    borderRadius: radius.lg,
     backgroundColor: colors.surface,
     shadowColor: "#0F2A1A",
     shadowOpacity: 0.1,
-    shadowRadius: 14,
+    shadowRadius: 12,
     shadowOffset: { width: 0, height: 4 },
     elevation: 4,
   },
   logo: {
-    width: 84,
-    height: 84,
-    borderRadius: 42,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
     overflow: "hidden",
     backgroundColor: palette.green800,
     alignItems: "center",
     justifyContent: "center",
   },
   logoInitials: {
-    fontSize: 26,
-    lineHeight: 32,
+    fontSize: 20,
+    lineHeight: 26,
     fontWeight: "800",
     color: "#F5C451",
   },
@@ -658,8 +715,8 @@ const styles = StyleSheet.create({
   },
   infoName: {
     flexShrink: 1,
-    fontSize: 22,
-    lineHeight: 27,
+    fontSize: 19,
+    lineHeight: 24,
     fontWeight: "800",
     color: colors.textPrimary,
   },
@@ -687,9 +744,9 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   cuisine: {
-    marginTop: 4,
-    fontSize: 14,
-    lineHeight: 19,
+    marginTop: 2,
+    fontSize: 13,
+    lineHeight: 18,
     color: colors.textSecondary,
   },
   infoMeta: {
@@ -697,11 +754,11 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     alignItems: "center",
     gap: spacing.sm,
-    marginTop: spacing.sm,
+    marginTop: 6,
   },
   statusPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
     borderRadius: radius.pill,
   },
   statusOpen: {
@@ -711,19 +768,62 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceSunken,
   },
   statusText: {
-    fontSize: 13,
-    lineHeight: 17,
+    fontSize: 12,
+    lineHeight: 16,
     fontWeight: "700",
   },
   metaItem: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
+    gap: 4,
   },
   metaText: {
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 12,
+    lineHeight: 16,
     color: colors.textSecondary,
+  },
+  itemDiet: {
+    position: "absolute",
+    top: 6,
+    left: 6,
+    padding: 2,
+    borderRadius: 4,
+    backgroundColor: colors.surface,
+  },
+  dietSwitch: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.base,
+    paddingTop: spacing.md,
+  },
+  dietChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    height: 32,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  dietChipActive: {
+    borderColor: palette.green700,
+    backgroundColor: palette.green50,
+  },
+  dietChipText: {
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: "600",
+    color: colors.textPrimary,
+  },
+  dietChipTextActive: {
+    color: palette.green700,
+    fontWeight: "700",
+  },
+  timeText: {
+    fontWeight: "700",
+    color: colors.textPrimary,
   },
   notice: {
     paddingHorizontal: spacing.base,
@@ -731,15 +831,15 @@ const styles = StyleSheet.create({
   },
   tabs: {
     paddingHorizontal: spacing.base,
-    paddingVertical: spacing.md,
+    paddingVertical: spacing.sm,
     gap: spacing.sm,
   },
   tab: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    height: 44,
-    paddingHorizontal: spacing.base,
+    gap: 6,
+    height: 36,
+    paddingHorizontal: spacing.md,
     borderRadius: radius.pill,
     backgroundColor: colors.surface,
     borderWidth: 1,
@@ -750,13 +850,13 @@ const styles = StyleSheet.create({
     borderColor: palette.green600,
   },
   tabImage: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
   },
   tabText: {
-    fontSize: 15,
-    lineHeight: 20,
+    fontSize: 13,
+    lineHeight: 18,
     fontWeight: "600",
     color: colors.textPrimary,
   },
@@ -798,20 +898,20 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: spacing.sm,
-    paddingHorizontal: spacing.base,
-    height: 56,
-    borderRadius: radius.lg,
+    paddingHorizontal: spacing.md,
+    height: 44,
+    borderRadius: radius.md,
     backgroundColor: palette.green50,
   },
   sectionTitle: {
     flex: 1,
-    fontSize: 20,
-    lineHeight: 26,
+    fontSize: 16,
+    lineHeight: 21,
     fontWeight: "800",
     color: colors.textPrimary,
   },
   sectionCount: {
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: "500",
     color: colors.textSecondary,
   },
@@ -823,18 +923,18 @@ const styles = StyleSheet.create({
   item: {
     flexDirection: "row",
     paddingHorizontal: spacing.base,
-    paddingVertical: spacing.base,
+    paddingVertical: spacing.md,
     gap: spacing.md,
   },
   itemCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 4,
+    gap: 3,
   },
   itemName: {
-    marginTop: 4,
-    fontSize: 17,
-    lineHeight: 22,
+    marginTop: 2,
+    fontSize: 15,
+    lineHeight: 20,
     fontWeight: "700",
     color: colors.textPrimary,
   },
@@ -844,30 +944,30 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   price: {
-    fontSize: 17,
-    lineHeight: 22,
+    fontSize: 15,
+    lineHeight: 20,
     fontWeight: "800",
     color: colors.textPrimary,
   },
   mrp: {
-    fontSize: 13,
-    lineHeight: 17,
+    fontSize: 12,
+    lineHeight: 16,
     color: colors.textMuted,
     textDecorationLine: "line-through",
   },
   description: {
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 13,
+    lineHeight: 18,
     color: colors.textSecondary,
   },
   itemSide: {
-    width: 132,
+    width: 112,
     alignItems: "center",
   },
   itemImageBox: {
-    width: 132,
-    height: 112,
-    borderRadius: radius.lg,
+    width: 112,
+    height: 96,
+    borderRadius: radius.md,
     backgroundColor: palette.green50,
     overflow: "hidden",
     alignItems: "center",
@@ -881,17 +981,17 @@ const styles = StyleSheet.create({
     height: "100%",
   },
   action: {
-    marginTop: -20,
-    minWidth: 110,
+    marginTop: -17,
+    minWidth: 96,
     alignItems: "center",
   },
   stepperSize: {
-    width: 110,
-    height: 40,
+    width: 96,
+    height: 34,
   },
   addButton: {
-    minWidth: 110,
-    height: 40,
+    minWidth: 96,
+    height: 34,
     borderRadius: radius.md,
     borderWidth: 1.5,
     borderColor: colors.primary,
@@ -908,22 +1008,22 @@ const styles = StyleSheet.create({
     opacity: 0.8,
   },
   addText: {
-    fontSize: 16,
-    lineHeight: 20,
+    fontSize: 14,
+    lineHeight: 18,
     fontWeight: "800",
     color: colors.primary,
   },
   soldOut: {
-    minWidth: 110,
-    height: 40,
+    minWidth: 96,
+    height: 34,
     borderRadius: radius.md,
     backgroundColor: colors.surfaceSunken,
     alignItems: "center",
     justifyContent: "center",
   },
   soldOutText: {
-    fontSize: 13,
-    lineHeight: 17,
+    fontSize: 12,
+    lineHeight: 16,
     fontWeight: "700",
     color: colors.textSecondary,
   },

@@ -144,6 +144,7 @@ export function HomeStack() {
           <RestaurantMenuScreen
             sellerId={route.params.sellerId}
             fallbackName={route.params.name}
+            initialDiet={route.params.diet}
             onBack={() => navigation.goBack()}
           />
         )}
@@ -209,19 +210,23 @@ export function HomeStack() {
           <SelectLocationScreen
             onBack={() => navigation.goBack()}
             onAddAddress={() => navigation.navigate("AddressForm")}
+            onLiveLocation={(live) => navigation.navigate("AddressForm", { live })}
           />
         )}
       </CatalogStack.Screen>
 
       {/* ---------------------------------------------------------------
-          ADDRESS FORM
+          ADDRESS FORM (also live-location delivery details)
       --------------------------------------------------------------- */}
 
       <CatalogStack.Screen name="AddressForm">
         {({ navigation, route }) => (
           <AddressFormScreen
             addressId={route.params?.addressId}
+            live={route.params?.live}
             onBack={() => navigation.goBack()}
+            // Past Select Location, back to where the choice began.
+            onLiveConfirmed={() => navigation.popTo("HomeFeed")}
           />
         )}
       </CatalogStack.Screen>
@@ -329,8 +334,8 @@ export function FoodStack() {
       <FoodNav.Screen name="FoodHome">
         {({ navigation }) => (
           <FoodScreen
-            onOpenRestaurant={(sellerId) =>
-              navigation.navigate("RestaurantMenu", { sellerId })
+            onOpenRestaurant={(sellerId, diet) =>
+              navigation.navigate("RestaurantMenu", { sellerId, ...(diet ? { diet } : {}) })
             }
             // The Food tab is a root screen: "back" returns to Home.
             onBack={() =>
@@ -350,6 +355,7 @@ export function FoodStack() {
           <RestaurantMenuScreen
             sellerId={route.params.sellerId}
             fallbackName={route.params.name}
+            initialDiet={route.params.diet}
             onBack={() => navigation.goBack()}
           />
         )}
@@ -408,6 +414,7 @@ export function CartStack() {
         {({ navigation }) => (
           <CartScreen
             onAddAddress={() => navigation.navigate("AddressForm")}
+            onChangeLocation={() => navigation.navigate("SelectLocation")}
             onBrowse={() => navigation.getParent()?.navigate("Home")}
             onOpenSearch={() =>
               navigation.getParent()?.navigate("Home", { screen: "SearchHome" })
@@ -488,11 +495,29 @@ export function CartStack() {
           ADDRESS FORM
       --------------------------------------------------------------- */}
 
+      {/* ---------------------------------------------------------------
+          SELECT LOCATION — the checkout's "Change": a saved address or
+          the live location, without leaving the Cart tab
+      --------------------------------------------------------------- */}
+
+      <CartNav.Screen name="SelectLocation">
+        {({ navigation }) => (
+          <SelectLocationScreen
+            onBack={() => navigation.goBack()}
+            onAddAddress={() => navigation.navigate("AddressForm")}
+            onLiveLocation={(live) => navigation.navigate("AddressForm", { live })}
+          />
+        )}
+      </CartNav.Screen>
+
       <CartNav.Screen name="AddressForm">
         {({ navigation, route }) => (
           <AddressFormScreen
             addressId={route.params?.addressId}
+            live={route.params?.live}
             onBack={() => navigation.goBack()}
+            // Straight back to checkout with the live location selected.
+            onLiveConfirmed={() => navigation.popTo("CartHome")}
           />
         )}
       </CartNav.Screen>

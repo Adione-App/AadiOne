@@ -11,7 +11,7 @@ import { memo } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Image } from "expo-image";
 import { Clock, MapPin } from "lucide-react-native";
-import type { RestaurantSummaryDto } from "@shared";
+import { prepTimeRange, type RestaurantSummaryDto } from "@shared";
 import { formatDistance } from "@shared/distance";
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { AppText } from "@/components/ui";
@@ -82,10 +82,11 @@ function RestaurantCardImpl({
         ) : null}
 
         <View style={styles.meta}>
-          {restaurant.avgPrepMins !== null && (
+          {/* The same configured-time range as the Food list and menu page (30 → "25–35 min"). */}
+          {prepTimeRange(restaurant.avgPrepMins) && (
             <View style={styles.metaItem}>
               <Clock size={12} color={colors.textSecondary} strokeWidth={2.25} />
-              <AppText style={styles.metaText}>{restaurant.avgPrepMins} min</AppText>
+              <AppText style={styles.metaText}>{prepTimeRange(restaurant.avgPrepMins)!.label}</AppText>
             </View>
           )}
           {restaurant.distanceKm !== null && (

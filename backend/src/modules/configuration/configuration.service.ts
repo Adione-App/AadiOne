@@ -66,13 +66,30 @@ async function loadResolved(sellerId: string | null): Promise<ConfigValues> {
   return resolved;
 }
 
+/**
+ * The effective map: the GLOBAL map, with — for a seller — that seller's own
+ * overrides on top.
+ *
+ * The two are cached SEPARATELY and merged on every read. A seller's scope
+ * used to cache the already-merged map, so a change to a global value (say
+ * ALLOW_ORDERS_WHEN_CLOSED or the delivery radius) invalidated only the
+ * global entry, and every seller kept reading the old global value until its
+ * own entry expired.
+ */
 export async function getAll(sellerId: string | null = null): Promise<ConfigValues> {
-  const cacheKey = CacheKey.config(scopeOf(sellerId));
+  const global = await cachedMap(GLOBAL_SCOPE, () => loadResolved(null));
+  if (!sellerId) return global as ConfigValues;
+  const overrides = await cachedMap(sellerId, () => loadOverrides(sellerId));
+  return { ...global, ...overrides } as ConfigValues;
+}
+
+async function cachedMap(scope: string, load: () => Promise<Partial<ConfigValues>>): Promise<Partial<ConfigValues>> {
+  const cacheKey = CacheKey.config(scope);
 
   const cached = await cache.get(cacheKey);
   if (cached) {
     try {
-      return JSON.parse(cached) as ConfigValues;
+      return JSON.parse(cached) as Partial<ConfigValues>;
     } catch {
       // Corrupt cache entry must never take the site down — fall through and
       // reload from the database.
@@ -80,9 +97,20 @@ export async function getAll(sellerId: string | null = null): Promise<ConfigValu
     }
   }
 
-  const resolved = await loadResolved(sellerId);
-  await cache.set(cacheKey, JSON.stringify(resolved), CONFIG_CACHE_TTL_SECONDS);
-  return resolved;
+  const loaded = await load();
+  await cache.set(cacheKey, JSON.stringify(loaded), CONFIG_CACHE_TTL_SECONDS);
+  return loaded;
+}
+
+/** Only the seller's OWN rows — merged over the global map by `getAll`. */
+async function loadOverrides(sellerId: string): Promise<Partial<ConfigValues>> {
+  const rows = await repository.findAllForSeller(sellerId);
+  const overrides: Record<string, unknown> = {};
+  for (const row of rows) {
+    if (row.sellerId !== sellerId || !VALID_KEYS.has(row.key)) continue;
+    overrides[row.key] = row.value;
+  }
+  return overrides as Partial<ConfigValues>;
 }
 
 /**

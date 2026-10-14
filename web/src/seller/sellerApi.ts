@@ -318,6 +318,20 @@ export function uploadSellerImage(file: File): Promise<string> {
   );
 }
 
+/** The restaurant's own photos: cover = the place (Food list card); menu = the food hero atop its menu page. */
+export type SellerRestaurantImageKind = 'cover' | 'menu';
+
+/** Uploads the file (seller pipeline), then attaches it: PUT /seller/restaurant/images/:kind. */
+export async function setOwnRestaurantImage(kind: SellerRestaurantImageKind, file: File): Promise<void> {
+  const key = await uploadSellerImage(file);
+  await sellerApi.put(`/seller/restaurant/images/${kind}`, { key });
+}
+
+/** DELETE /seller/restaurant/images/:kind */
+export async function removeOwnRestaurantImage(kind: SellerRestaurantImageKind): Promise<void> {
+  await sellerApi.delete(`/seller/restaurant/images/${kind}`);
+}
+
 /** POST /seller/products — the new product, its default variant and its listing. */
 export interface CreatedSellerProduct {
   id: string;
@@ -607,7 +621,14 @@ export interface SellerOnboarding {
     expiresAt: string | null;
     createdAt: string;
   }[];
-  restaurantProfile: { cuisine: string[]; isVegOnly: boolean; avgPrepMins: number | null } | null;
+  restaurantProfile: {
+    cuisine: string[];
+    isVegOnly: boolean;
+    avgPrepMins: number | null;
+    /** Customer-facing photos: the place (Food list card) and the food hero (menu page). Absent from older servers. */
+    coverImageUrl?: string | null;
+    menuImageUrl?: string | null;
+  } | null;
   /** The store address (read-only). Absent from older responses. */
   storeAddress?: { addressLine: string; city: string; state: string; pincode: string } | null;
 }
@@ -667,6 +688,8 @@ export function toSellerOnboarding(raw: SellerOnboarding): SellerOnboarding {
           cuisine: raw.restaurantProfile.cuisine,
           isVegOnly: raw.restaurantProfile.isVegOnly,
           avgPrepMins: raw.restaurantProfile.avgPrepMins,
+          coverImageUrl: raw.restaurantProfile.coverImageUrl ?? null,
+          menuImageUrl: raw.restaurantProfile.menuImageUrl ?? null,
         }
       : null,
     storeAddress: raw.storeAddress

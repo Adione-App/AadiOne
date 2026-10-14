@@ -24,6 +24,7 @@ import {
   type BannerDto,
   type RestaurantMenuDto,
   type RestaurantSummaryDto,
+  prepTimeRange,
 } from '../../src/shared';
 import { api, bearer, expectSuccess, loginAs } from '../helpers/api';
 import { prisma, truncateAll } from '../helpers/db';
@@ -142,13 +143,13 @@ beforeEach(async () => {
   await truncateAll();
   await configService.invalidateAll();
   await cache.clear();
-  for (const mobile of [ADMIN.mobile, '9400000952']) await otpService.clearOtpState(mobile);
+  for (const mobile of [ADMIN.mobile, '9400000952', '9400000953']) await otpService.clearOtpState(mobile);
 });
 
 /* -------------------------------------------------------------------------- */
 
 describe('GET /restaurants — Food filters and card data', () => {
-  it('filters on the server and says which kitchens are pure veg or serve non-veg', async () => {
+  it('marks and filters veg / non-veg from the real item marks; a place with both shows both', async () => {
     const veg = await kitchen('Shree Veg Kitchen', 'RESTAURANT', { vegOnly: true, items: [{ name: 'Paneer Burger', diet: 'VEG' }] });
     const nonVeg = await kitchen('Ha Hokam Food', 'RESTAURANT', { items: [{ name: 'Veg Burger', diet: 'VEG' }, { name: 'Chicken Burger', diet: 'NON_VEG' }] });
     const cafe = await kitchen('Daily Cafe', 'CAFE', { items: [{ name: 'Cold Coffee', diet: null }] });
@@ -163,9 +164,20 @@ describe('GET /restaurants — Food filters and card data', () => {
     expect(byId.get(cafe)!.diet).toBeNull();
     expect(byId.get(offOnly)!.diet).toBeNull();
 
+    // Green / red marks from the real item marks: a place with both kinds shows both;
+    // an unmarked item (the cafe's coffee) and a switched-off item count as neither.
+    const marks = (id: string) => [byId.get(id)!.servesVeg, byId.get(id)!.servesNonVeg];
+    expect(marks(veg)).toEqual([true, false]);
+    expect(marks(nonVeg)).toEqual([true, true]);
+    expect(marks(cafe)).toEqual([false, false]);
+    expect(marks(offOnly)).toEqual([true, false]);
+
+    // The filters mean exactly the marks: Veg = serves veg, Non-Veg = serves non-veg.
     const ids = (rows: RestaurantSummaryDto[]) => rows.map((r) => r.sellerId).sort();
-    expect(ids(await list('?diet=VEG'))).toEqual([veg]);
+    expect(ids(await list('?diet=VEG'))).toEqual([veg, nonVeg, offOnly].sort());
     expect(ids(await list('?diet=NON_VEG'))).toEqual([nonVeg]);
+    expect((await list('?diet=NON_VEG')).every((r) => r.servesNonVeg)).toBe(true);
+    expect((await list('?diet=VEG')).every((r) => r.servesVeg)).toBe(true);
     expect(ids(await list('?type=CAFE'))).toEqual([cafe]);
     expect(ids(await list('?type=RESTAURANT'))).toEqual([veg, nonVeg, offOnly].sort());
     expect(ids(await list('?type=CAFE&diet=VEG'))).toEqual([]);
@@ -271,5 +283,96 @@ describe('Food hero banners', () => {
     await as(admin).patch(`/admin/banners/${hero.id}`, { ctaLabel: null }).expect(200);
     expect(expectSuccess<BannerDto[]>((await api().get('/api/v1/banners?placement=food').expect(200)).body).data[0]!.ctaLabel).toBeNull();
     await as(admin).patch(`/admin/banners/${hero.id}`, { ctaLabel: 'x'.repeat(41) }).expect(400);
+  });
+});
+
+/** The restaurant's own upload: POST /seller/uploads/presign, then the bytes. */
+async function sellerUpload(token: string, body: Buffer): Promise<string> {
+  const presigned = expectSuccess<{ uploadUrl: string; key: string }>(
+    (await as(token).post('/seller/uploads/presign', { fileName: 'photo.jpg', contentType: 'image/jpeg' }).expect(200)).body,
+  ).data;
+  const target = new URL(presigned.uploadUrl);
+  await api().put(`${target.pathname}${target.search}`).set('Authorization', bearer(token)).set('Content-Type', 'image/jpeg').send(body).expect(200);
+  return presigned.key;
+}
+
+describe('restaurant cover and menu images, and preparation time', () => {
+  it('the restaurant sets its own cover and menu image; the card shows the cover, the menu page the menu image', async () => {
+    const sellerId = await kitchen('Ha Hokam Food', 'RESTAURANT', { items: [{ name: 'Burger', diet: 'VEG' }], ownerMobile: '9400000952' });
+    const seller = (await loginAs('9400000952')).accessToken;
+
+    const cover = expectSuccess<{ coverImageUrl: string }>(
+      (await as(seller).put('/seller/restaurant/images/cover', { key: await sellerUpload(seller, await jpeg(1600, 900)) }).expect(200)).body,
+    ).data.coverImageUrl;
+    const menuImage = expectSuccess<{ menuImageUrl: string }>(
+      (await as(seller).put('/seller/restaurant/images/menu', { key: await sellerUpload(seller, await jpeg(1600, 900, '#c62828')) }).expect(200)).body,
+    ).data.menuImageUrl;
+    expect(cover).toMatch(/\.webp$/);
+    expect(menuImage).toMatch(/\.webp$/);
+    expect(menuImage).not.toBe(cover);
+    expect(expectSuccess<{ coverImageUrl: string; menuImageUrl: string }>((await as(seller).get('/seller/restaurant/branding').expect(200)).body).data).toMatchObject({
+      coverImageUrl: cover,
+      menuImageUrl: menuImage,
+    });
+
+    // Food list card: the cover — never the menu image. Menu page: both, separately.
+    expect((await list())[0]!.coverImageUrl).toBe(cover);
+    const page = expectSuccess<RestaurantMenuDto>((await api().get(`/api/v1/restaurants/${sellerId}`).expect(200)).body).data;
+    expect(page.restaurant).toMatchObject({ coverImageUrl: cover, menuImageUrl: menuImage });
+
+    // Replacing one leaves the other alone; removing clears only it.
+    await as(seller).put('/seller/restaurant/images/menu', { key: await sellerUpload(seller, await jpeg(1600, 900, '#2e7d32')) }).expect(200);
+    expect(await stored(menuImage)).toBeNull();
+    await as(seller).delete('/seller/restaurant/images/menu').expect(200);
+    const profile = await prisma.restaurantProfile.findUniqueOrThrow({ where: { sellerId } });
+    expect(profile.coverImageUrl).toBe(cover);
+    expect(profile.menuImageUrl).toBeNull();
+  });
+
+  it("keeps each restaurant to its own images and its own uploads", async () => {
+    await kitchen('Ha Hokam Food', 'RESTAURANT', { ownerMobile: '9400000952' });
+    const other = await kitchen('Other Cafe', 'CAFE', { ownerMobile: '9400000953' });
+    const seller = (await loginAs('9400000952')).accessToken;
+    const otherToken = (await loginAs('9400000953')).accessToken;
+
+    // The logo stays an Admin decision; another seller's upload is refused.
+    const key = await sellerUpload(seller, await jpeg(1600, 900));
+    await as(seller).put('/seller/restaurant/images/logo', { key }).expect(400);
+    await as(otherToken).put('/seller/restaurant/images/cover', { key }).expect(403); // "This upload does not belong to your account."
+    expect((await prisma.restaurantProfile.findUniqueOrThrow({ where: { sellerId: other } })).coverImageUrl).toBeNull();
+    // A seller cannot use the admin routes for anyone, itself included.
+    await as(seller).put(`/admin/restaurants/${other}/images/cover`, { key }).expect(403);
+    await as(seller).put(`/admin/restaurants/${other}/prep-time`, { avgPrepMins: 30 }).expect(403);
+  });
+
+  it('admin sets the menu image and preparation time; customers see it as the ±5 min range', async () => {
+    const admin = await loginAdmin();
+    const sellerId = await kitchen('Ha Hokam Food', 'RESTAURANT', { items: [{ name: 'Burger', diet: 'VEG' }] });
+
+    const menuImage = expectSuccess<{ menuImageUrl: string }>(
+      (await as(admin).put(`/admin/restaurants/${sellerId}/images/menu`, { key: await adminUpload(admin, await jpeg(1600, 900), 'restaurant') }).expect(200)).body,
+    ).data.menuImageUrl;
+    expect(menuImage).toMatch(/\.webp$/);
+
+    for (const bad of [0, 241, 2.5, -5]) {
+      await as(admin).put(`/admin/restaurants/${sellerId}/prep-time`, { avgPrepMins: bad }).expect(400);
+    }
+    await as(admin).put(`/admin/restaurants/${sellerId}/prep-time`, { avgPrepMins: 30 }).expect(200);
+    const card = (await list())[0]!;
+    const page = expectSuccess<RestaurantMenuDto>((await api().get(`/api/v1/restaurants/${sellerId}`).expect(200)).body).data;
+    expect(card.avgPrepMins).toBe(30);
+    expect(page.restaurant.avgPrepMins).toBe(30);
+    // The one display rule both screens use.
+    expect(prepTimeRange(card.avgPrepMins)?.label).toBe('25–35 min');
+    expect(prepTimeRange(page.restaurant.avgPrepMins)?.label).toBe(prepTimeRange(card.avgPrepMins)?.label);
+    expect([10, 20, 30, 35, 45, 3].map((m) => prepTimeRange(m)?.label)).toEqual([
+      '5–15 min',
+      '15–25 min',
+      '25–35 min',
+      '30–40 min',
+      '40–50 min',
+      '1–8 min',
+    ]);
+    expect(prepTimeRange(null)).toBeNull();
   });
 });

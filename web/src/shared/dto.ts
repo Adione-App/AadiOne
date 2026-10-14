@@ -20,6 +20,7 @@ import type {
   CodPolicy,
   CouponOrigin,
   CouponType,
+  DeliveryMode,
   DeliveryTaskStatus,
   DocumentStatus,
   NotificationType,
@@ -287,7 +288,27 @@ export interface ReviewSellerDocumentRequest {
 export interface RestaurantProfileDto {
   cuisine: string[];
   isVegOnly: boolean;
+  /** Configured preparation time in minutes; customers see prepTimeRange() of it. */
   avgPrepMins: number | null;
+  /** Customer-facing images (see RestaurantDto); absent from older servers. */
+  logoUrl?: string | null;
+  coverImageUrl?: string | null;
+  menuImageUrl?: string | null;
+}
+
+/**
+ * A restaurant's time as customers see it, from its configured preparation
+ * time: that time − 5 to + 5 minutes (never below 1) — 30 → "25–35 min",
+ * 20 → "15–25 min". The ONE rule for every customer-facing restaurant time
+ * (Food list card, menu page, Home) and the panels' previews. Null when the
+ * restaurant has not set a time — nothing is invented.
+ */
+export function prepTimeRange(avgPrepMins: number | null | undefined): { min: number; max: number; label: string } | null {
+  if (typeof avgPrepMins !== 'number' || !Number.isFinite(avgPrepMins) || avgPrepMins <= 0) return null;
+  const minutes = Math.round(avgPrepMins);
+  const min = Math.max(1, minutes - 5);
+  const max = minutes + 5;
+  return { min, max, label: `${min}–${max} min` };
 }
 
 export interface UpsertRestaurantProfileRequest {
@@ -1171,8 +1192,10 @@ export interface RestaurantDto {
   nextOpenText: string | null;
   /** The restaurant's own logo (Admin Panel → Seller → Restaurant); null when none. Absent from older servers. */
   logoUrl?: string | null;
-  /** Its own cover photo; null when none was set. Absent from older servers. */
+  /** The place itself (storefront / interior) — the Food list card; null when none was set. Absent from older servers. */
   coverImageUrl?: string | null;
+  /** The food / menu hero at the top of its menu page — never the Food list card; null when none. Absent from older servers. */
+  menuImageUrl?: string | null;
 }
 
 /** One row of GET /restaurants. */
@@ -1187,6 +1210,13 @@ export interface RestaurantSummaryDto extends RestaurantDto {
    * menu; null = neither is known. Absent from older servers.
    */
   diet?: FoodDiet | null;
+  /**
+   * What its live menu offers, from the veg / non-veg mark on each item (a
+   * pure-veg kitchen serves veg): the card's green / red marks — a place with
+   * both shows both — and what the Veg / Non-Veg filters mean. Absent from older servers.
+   */
+  servesVeg?: boolean;
+  servesNonVeg?: boolean;
   /** Delivery fee to the customer's location (the configured fee slabs); null without a location. Absent from older servers. */
   deliveryFeePaise?: number | null;
   /** Delivery time range to the customer's location (the same estimate checkout promises); null without a location. */
@@ -1196,7 +1226,7 @@ export interface RestaurantSummaryDto extends RestaurantDto {
 
 /** GET /restaurants filters. */
 export interface RestaurantListQuery {
-  /** VEG = pure-veg kitchens; NON_VEG = places that serve non-veg. */
+  /** VEG = places that serve veg (servesVeg); NON_VEG = places that serve non-veg (servesNonVeg). */
   diet?: FoodDiet;
   /** RESTAURANT or CAFE. */
   type?: 'RESTAURANT' | 'CAFE';
@@ -1632,8 +1662,42 @@ export type UpsertAddressRequest = Omit<
 /* Checkout & orders                                                          */
 /* -------------------------------------------------------------------------- */
 
-export interface CheckoutQuoteRequest {
-  addressId: string;
+/**
+ * A LIVE_LOCATION destination: the GPS point the customer is at, plus the
+ * recipient and whatever address details they confirmed. Used for this
+ * order only — never saved as an address. House / street, locality,
+ * district and PIN may be missing (the customer may not know them); the
+ * point is what the rider goes to.
+ */
+export interface LiveLocationInput {
+  latitude: number;
+  longitude: number;
+  /** The device's accuracy radius for the fix, metres. */
+  accuracyM?: number | null;
+  fullName: string;
+  mobile: string;
+  houseNo?: string | null;
+  street?: string | null;
+  /** Locality / mohalla / colony. */
+  area?: string | null;
+  /** Village / city / town. */
+  city: string;
+  district?: string | null;
+  state: string;
+  pincode?: string | null;
+}
+
+/**
+ * Checkout and order placement take exactly ONE destination: a saved
+ * address the customer owns (`addressId`) or a live location
+ * (`liveLocation`). Sending both, or neither, is rejected.
+ */
+export interface DeliveryDestinationRequest {
+  addressId?: string;
+  liveLocation?: LiveLocationInput;
+}
+
+export interface CheckoutQuoteRequest extends DeliveryDestinationRequest {
   couponCode?: string | null;
 }
 
@@ -1650,8 +1714,7 @@ export interface CheckoutQuoteResponse {
   etaMaxMinutes: number;
 }
 
-export interface PlaceOrderRequest {
-  addressId: string;
+export interface PlaceOrderRequest extends DeliveryDestinationRequest {
   paymentMethod: PaymentMethod;
   couponCode?: string | null;
   notes?: string | null;
@@ -1758,6 +1821,8 @@ export interface OrderDetailDto extends OrderSummaryDto {
   items: OrderItemDto[];
   sellerOrders: SellerOrderSummaryDto[];
   bill: BillDto;
+  /** SAVED_ADDRESS, or LIVE_LOCATION: delivered to `deliveryAddress`'s GPS point. */
+  deliveryMode: DeliveryMode;
   deliveryAddress: AddressDto;
   distanceKm: number;
   etaMinutes: number | null;
@@ -2011,6 +2076,10 @@ export interface AdminOrderSummaryDto extends OrderSummaryDto {
   customerMobile: string;
   distanceKm: number;
   addressSummary: string;
+  /** LIVE_LOCATION orders go to the GPS point below, not a saved address. */
+  deliveryMode: DeliveryMode;
+  deliveryLatitude: number;
+  deliveryLongitude: number;
   deliveryAgentName: string | null;
   minutesSincePlaced: number;
   /**

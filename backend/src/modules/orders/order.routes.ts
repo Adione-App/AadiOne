@@ -1,12 +1,20 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { OrderStatus, PaymentMethod, Permission, PAGINATION_MAX_LIMIT } from '../../shared';
+import {
+  OrderStatus,
+  PaymentMethod,
+  Permission,
+  PAGINATION_MAX_LIMIT,
+  type CheckoutQuoteRequest,
+  type PlaceOrderRequest,
+} from '../../shared';
 import { asyncHandler, created, ok, okCursorPage } from '../../common/response';
 import { validate, validatedQuery } from '../../middleware/validate';
 import { authenticate, requirePermission, requireUser } from '../../middleware/auth';
 import { orderCreationPerUser } from '../../middleware/rateLimit';
 import { idempotency } from '../../middleware/idempotency';
 import * as service from './order.service';
+import { deliveryDestinationFields, destinationFrom, requireOneDestination } from './delivery-destination';
 
 const uuid = z.string().uuid();
 
@@ -29,17 +37,18 @@ checkoutRouter.use(authenticate, requirePermission(Permission.ORDER_CREATE));
 checkoutRouter.post(
   '/quote',
   validate({
-    body: z.object({
-      addressId: uuid,
-      couponCode: z.string().trim().min(2).max(40).nullable().optional(),
-    }),
+    body: z
+      .object({
+        // A saved address the customer owns, OR a live location for this
+        // order only — exactly one (see delivery-destination.ts).
+        ...deliveryDestinationFields,
+        couponCode: z.string().trim().min(2).max(40).nullable().optional(),
+      })
+      .superRefine(requireOneDestination),
   }),
   asyncHandler(async (req: Request, res: Response) => {
-    const { addressId, couponCode } = req.body as {
-      addressId: string;
-      couponCode?: string | null;
-    };
-    ok(res, await service.getCheckoutQuote(requireUser(req).id, addressId, couponCode));
+    const body = req.body as CheckoutQuoteRequest;
+    ok(res, await service.getCheckoutQuote(requireUser(req).id, destinationFrom(body), body.couponCode));
   }),
 );
 
@@ -64,8 +73,10 @@ orderRouter.post(
   requirePermission(Permission.ORDER_CREATE),
   orderCreationPerUser,
   validate({
-    body: z.object({
-      addressId: uuid,
+    body: z
+      .object({
+      // Exactly one destination — see the quote route above.
+      ...deliveryDestinationFields,
       paymentMethod: z.nativeEnum(PaymentMethod),
       couponCode: z.string().trim().min(2).max(40).nullable().optional(),
       notes: z.string().trim().max(500).nullable().optional(),
@@ -83,23 +94,17 @@ orderRouter.post(
           }),
         )
         .optional(),
-    }),
+      })
+      .superRefine(requireOneDestination),
   }),
   idempotency('POST /orders'),
   asyncHandler(async (req: Request, res: Response) => {
     const user = requireUser(req);
-    const body = req.body as {
-      addressId: string;
-      paymentMethod: PaymentMethod;
-      couponCode?: string | null;
-      notes?: string | null;
-      expectedTotalPaise?: number;
-      expectedItems?: { sellerListingId: string; unitPricePaise: number }[];
-    };
+    const body = req.body as PlaceOrderRequest;
 
     const result = await service.placeOrder({
       userId: user.id,
-      addressId: body.addressId,
+      destination: destinationFrom(body),
       paymentMethod: body.paymentMethod,
       couponCode: body.couponCode ?? null,
       notes: body.notes ?? null,

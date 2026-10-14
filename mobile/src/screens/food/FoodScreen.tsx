@@ -51,7 +51,7 @@ const FILTERS: { key: FilterKey; label: string; query: RestaurantListQuery }[] =
 ];
 
 function FilterIcon({ filter, active }: { filter: FilterKey; active: boolean }) {
-  const size = 17;
+  const size = 15;
   if (filter === "VEG") return <Leaf size={size} color={active ? colors.textOnPrimary : palette.green600} strokeWidth={2.25} />;
   if (filter === "NON_VEG") return <Drumstick size={size} color={active ? colors.textOnPrimary : "#E8590C"} strokeWidth={2.25} />;
   if (filter === "RESTAURANT") return <Utensils size={size} color={active ? colors.textOnPrimary : colors.textPrimary} strokeWidth={2.25} />;
@@ -82,7 +82,8 @@ export default function FoodScreen({
   onBack,
   onOpenLocation,
 }: {
-  onOpenRestaurant: (sellerId: string) => void;
+  /** `diet`: the active Veg / Non-Veg filter, so the menu opens filtered the same way. */
+  onOpenRestaurant: (sellerId: string, diet?: "VEG" | "NON_VEG") => void;
   onBack?: (() => void) | undefined;
   onOpenLocation?: (() => void) | undefined;
 }) {
@@ -94,6 +95,10 @@ export default function FoodScreen({
   const [filterKey, setFilterKey] = useState<FilterKey>("ALL");
   const filter = FILTERS.find((f) => f.key === filterKey)!;
   const query = useRestaurants(near, filter.query);
+  const openRestaurant = useCallback(
+    (sellerId: string) => onOpenRestaurant(sellerId, filter.query.diet),
+    [onOpenRestaurant, filter.query.diet],
+  );
   const heroBanners = useBanners(FOOD_BANNER_PLACEMENTS.HERO);
   const background = useBanners(FOOD_BANNER_PLACEMENTS.BACKGROUND);
 
@@ -224,7 +229,7 @@ export default function FoodScreen({
         renderItem={({ item, index }) => (
           <>
             <View style={styles.cardWrap}>
-              <FoodRestaurantCard restaurant={item} onPress={onOpenRestaurant} />
+              <FoodRestaurantCard restaurant={item} onPress={openRestaurant} />
             </View>
             {/* "food_list" banners: after the second place (or the only one). */}
             {index === Math.min(1, visible.length - 1) ? <PromoSlot placement={FOOD_BANNER_PLACEMENTS.LIST} style={styles.listBanner} /> : null}
@@ -286,8 +291,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   title: {
-    fontSize: 28,
-    lineHeight: 34,
+    fontSize: 24,
+    lineHeight: 30,
     fontWeight: "800",
     color: palette.green800,
   },
@@ -345,17 +350,19 @@ const styles = StyleSheet.create({
   listBanner: {
     marginBottom: spacing.md,
   },
+  // A compact, consistent row: 36 dp chips, 13 dp labels, 15 dp icons.
   chips: {
     paddingHorizontal: spacing.base,
-    paddingVertical: spacing.md,
+    paddingVertical: spacing.sm + 2,
     gap: spacing.sm,
+    alignItems: "center",
   },
   chip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: spacing.base,
-    height: 44,
+    gap: 5,
+    paddingHorizontal: spacing.md,
+    height: 36,
     borderRadius: radius.pill,
     backgroundColor: colors.surface,
     borderWidth: 1,
@@ -371,8 +378,8 @@ const styles = StyleSheet.create({
     borderColor: palette.green700,
   },
   chipText: {
-    fontSize: 15,
-    lineHeight: 20,
+    fontSize: 13,
+    lineHeight: 18,
     fontWeight: "600",
     color: colors.textPrimary,
   },

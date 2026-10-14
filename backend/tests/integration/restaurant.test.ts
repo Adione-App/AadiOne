@@ -14,7 +14,7 @@ import { cache } from '../../src/infra/cache';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as otpService from '../../src/modules/auth/otp.service';
 import { MockPaymentProvider } from '../../src/infra/payment';
-import { seedAddress, seedProduct, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
+import { configureTestMerchantUpi, seedAddress, seedProduct, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
 
@@ -106,6 +106,8 @@ beforeEach(async () => {
   await truncateAll();
   await configService.invalidateAll();
   await cache.clear();
+  // Online orders here pay through the direct-UPI (mock) path.
+  await configureTestMerchantUpi();
 });
 
 describe('restaurant profile + authorization', () => {
@@ -181,8 +183,11 @@ describe('food catalog, approval and listing gating', () => {
 
     expect((await createProduct(a.token, bSection, 'Stolen')).status).toBe(404);
     expect((await createProduct(general.token, aSection, 'Sneaky')).status).toBe(404);
+    // V2 has no shared category tree: every category belongs to a seller, and
+    // one that is not the restaurant's own is reported as missing — exactly
+    // like another restaurant's section above.
     const shared = await createProduct(a.token, grocery.categoryId, 'Grocery by restaurant');
-    expect(shared.status).toBe(400);
+    expect(shared.status).toBe(404);
 
     const aItem = await approvedMenuItem(adminToken, a.token, aSection, 'Paneer Tikka');
     const crossListing = await api()
@@ -190,16 +195,20 @@ describe('food catalog, approval and listing gating', () => {
       .set('Authorization', bearer(b.token))
       .send({ variantId: aItem.variantId, mrpPaise: 16000, pricePaise: 15000, stockQty: 5 });
     expect(crossListing.status).toBe(404);
+    // Nor can an admin list one seller's item for another: catalogues are
+    // seller-owned and the admin "create listing" route no longer exists.
     const adminCross = await api()
       .post(`/api/v1/admin/sellers/${b.id}/listings`)
       .set('Authorization', bearer(adminToken))
       .send({ variantId: aItem.variantId, mrpPaise: 16000, pricePaise: 15000, stockQty: 5 });
-    expect(adminCross.status).toBe(400);
+    expect(adminCross.status).toBe(404);
     const adminGrocery = await api()
       .post(`/api/v1/admin/sellers/${a.id}/listings`)
       .set('Authorization', bearer(adminToken))
       .send({ variantId: grocery.variantId, mrpPaise: 6000, pricePaise: 5000, stockQty: 5 });
-    expect(adminGrocery.status).toBe(400);
+    expect(adminGrocery.status).toBe(404);
+    expect(await prisma.sellerListing.count({ where: { sellerId: b.id, variantId: aItem.variantId } })).toBe(0);
+    expect(await prisma.sellerListing.count({ where: { sellerId: a.id, variantId: grocery.variantId } })).toBe(0);
   });
 
   it("a restaurant can update its own listings but not another restaurant's", async () => {

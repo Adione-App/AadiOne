@@ -12,7 +12,9 @@ import {
 } from "lucide-react-native";
 import type { AddressDto, PublicConfig } from "@shared";
 import { formatIndianMobile } from "@shared/phone";
-import { formatAddressOneLine } from "@shared/address";
+import { landmarkPhrase } from "@shared/address";
+import { addressDetailLines, distinctLandmark } from "@/lib/addressDisplay";
+import { isHomeState } from "@/lib/liveLocation";
 import { colors, radius, shadow, spacing } from "@shared/theme";
 import { api } from "@/lib/api";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
@@ -183,8 +185,13 @@ function AddressCard({
 }) {
   const TypeIcon = TYPE_ICON[address.label as keyof typeof TYPE_ICON] ?? MapPin;
 
-  // One compact line: house / street / locality, landmark, village-city, district, state PIN.
-  const fullAddress = formatAddressOneLine(address);
+  // House + street, locality, village / city, district, state PIN — the same
+  // lines checkout shows — then an older address's landmark when it adds
+  // something (it often repeated the locality).
+  const landmark = distinctLandmark(address);
+  const fullAddress = [...addressDetailLines(address), landmark ? landmarkPhrase(landmark) : null]
+    .filter(Boolean)
+    .join(", ");
   // Never present a point as exact when it is not.
   const pointNote =
     address.locationSource === "GEOCODED"
@@ -253,7 +260,6 @@ function AddressCard({
       <AppText
         variant="caption"
         color={colors.textSecondary}
-        numberOfLines={2}
         style={styles.addressText}
       >
         {fullAddress}
@@ -269,10 +275,17 @@ function AddressCard({
         {formatIndianMobile(address.mobile)}
       </AppText>
 
-      {!address.isServiceable && (
+      {!isHomeState(address.state) ? (
+        // An older address outside Rajasthan: kept as saved, never ordered to.
         <AppText variant="caption" color={colors.danger} style={styles.serviceability}>
-          We don't deliver to this address yet
+          Outside Rajasthan — Aadione delivers only in Rajasthan
         </AppText>
+      ) : (
+        !address.isServiceable && (
+          <AppText variant="caption" color={colors.danger} style={styles.serviceability}>
+            We don't deliver to this address yet
+          </AppText>
+        )
       )}
 
       {!address.isDefault && (

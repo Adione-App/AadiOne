@@ -105,29 +105,37 @@ export function idempotency(endpoint: string): RequestHandler {
       req.idempotencyKey = key;
 
       // Capture the response so a later retry can replay it.
+      //
+      // The key's outcome is recorded BEFORE the response leaves. Sent first
+      // (as it used to be), a client that got its 201 — or timed out just as
+      // it arrived — and retried at once could still find the key IN_PROGRESS
+      // and be told "still in progress" (409) for an order that already
+      // existed. Recording first means any retry after a response replays it.
       const originalJson = res.json.bind(res);
       res.json = (body: unknown): Response => {
         const status = res.statusCode;
         // Only successful responses are stored. A failed attempt must be
         // retryable — otherwise a transient error would permanently lock the
         // customer out of placing that order.
-        if (status >= 200 && status < 300) {
-          void prisma.idempotencyKey
-            .update({
-              where: { userId_key: { userId: user.id, key } },
-              data: {
-                status: IdempotencyStatus.COMPLETED,
-                responseStatus: status,
-                responseBody: body as never,
-              },
-            })
-            .catch((error) => log.error({ err: error, key }, 'failed to store response'));
-        } else {
-          void prisma.idempotencyKey
-            .delete({ where: { userId_key: { userId: user.id, key } } })
-            .catch(() => undefined);
-        }
-        return originalJson(body);
+        const settled =
+          status >= 200 && status < 300
+            ? prisma.idempotencyKey
+                .update({
+                  where: { userId_key: { userId: user.id, key } },
+                  data: {
+                    status: IdempotencyStatus.COMPLETED,
+                    responseStatus: status,
+                    responseBody: body as never,
+                  },
+                })
+                .catch((error) => log.error({ err: error, key }, 'failed to store response'))
+            : prisma.idempotencyKey
+                .delete({ where: { userId_key: { userId: user.id, key } } })
+                .catch(() => undefined);
+        // Sent either way — a failed bookkeeping write is logged, never
+        // turned into a failed request for something that already happened.
+        void settled.finally(() => originalJson(body));
+        return res;
       };
 
       next();

@@ -18,6 +18,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, X } from 'lucide-react-native';
 import {
+  ActivityIndicator,
   BackHandler,
   FlatList,
   Pressable,
@@ -33,7 +34,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { CategoryDto, ProductSummaryDto } from '@shared';
 import { colors, radius, spacing } from '@shared/theme';
 import { useQueryClient } from '@tanstack/react-query';
-import { prefetchProducts, useCategories, useProducts } from '@/lib/queries';
+import { prefetchProducts, useCategories, useCategoryListing, useProducts } from '@/lib/queries';
 import { useCartActions } from '@/lib/useCartActions';
 import { useGridColumns } from '@/lib/useGridColumns';
 import { useTabBarClearance } from '@/lib/tabBarVisibility';
@@ -54,7 +55,10 @@ import { PromoSlot } from '@/components/PromoBanner';
 
 type Drill =
   | { level: 'root' }
-  | { level: 'category'; parent: CategoryDto; selectedChildId: string }
+  /** A main category's full listing: its subcategories, then all its products. */
+  | { level: 'main'; category: CategoryDto }
+  /** A subcategory in the sidebar view; `from` = the main listing to go back to. */
+  | { level: 'category'; parent: CategoryDto; selectedChildId: string; from?: CategoryDto }
   | { level: 'products'; category: CategoryDto };
 
 export default function CategoriesScreen({
@@ -79,12 +83,10 @@ export default function CategoriesScreen({
 
   const [drill, setDrill] = useState<Drill>({ level: 'root' });
 
+  // A main category opens its full listing (its subcategories + every product
+  // under it); one without subcategories, its own products.
   const openCategory = (category: CategoryDto) => {
-    setDrill(
-      category.children?.length
-        ? { level: 'category', parent: category, selectedChildId: category.children[0]!.id }
-        : { level: 'products', category },
-    );
+    setDrill(category.children?.length ? { level: 'main', category } : { level: 'products', category });
   };
 
   const selectSidebarChild = (childId: string) => {
@@ -93,7 +95,9 @@ export default function CategoriesScreen({
     );
   };
 
-  const goBack = () => setDrill({ level: 'root' });
+  // Back from a subcategory opened inside a main listing returns to that listing.
+  const goBack = () =>
+    setDrill((current) => (current.level === 'category' && current.from ? { level: 'main', category: current.from } : { level: 'root' }));
 
   // This screen stays mounted inside its own tab stack, so `initialCategoryId`
   // has to be re-applied on every change, not just on first mount — otherwise
@@ -326,6 +330,16 @@ export default function CategoriesScreen({
         </View>
       )}
 
+      {drill.level === 'main' && (
+        <MainCategoryListing
+          category={drill.category}
+          columns={columns}
+          cartError={cart.error}
+          renderProduct={renderProduct}
+          onOpenSubcategory={(child) => setDrill({ level: 'category', parent: drill.category, selectedChildId: child.id, from: drill.category })}
+        />
+      )}
+
       {drill.level === 'products' && (
         <View style={{ flex: 1 }}>
           {cart.error && (
@@ -338,6 +352,109 @@ export default function CategoriesScreen({
       )}
 
     </Screen>
+  );
+}
+
+/* =====================================================================
+   MAIN CATEGORY LISTING — subcategories, then every product under it
+===================================================================== */
+
+/**
+ * A main category's full listing: its subcategories as chips (each opens the
+ * existing subcategory view), then ALL its products — its own and every
+ * subcategory's — page by page from GET /products?categoryId=<main>, which
+ * matches the category's whole path across sellers. Loads more on scroll.
+ */
+function MainCategoryListing({
+  category,
+  columns,
+  cartError,
+  renderProduct,
+  onOpenSubcategory,
+}: {
+  category: CategoryDto;
+  columns: number;
+  cartError: string | null;
+  renderProduct: ({ item }: { item: ProductSummaryDto }) => React.ReactElement;
+  onOpenSubcategory: (child: CategoryDto) => void;
+}) {
+  const tabBarClearance = useTabBarClearance();
+  const listing = useCategoryListing(category.id);
+  const children = category.children ?? [];
+  // Once each, even if a product moves between pages while scrolling.
+  const items = useMemo(() => {
+    const seen = new Set<string>();
+    return (listing.data?.pages ?? []).flatMap((page) => page.items).filter((item) => (seen.has(item.id) ? false : (seen.add(item.id), true)));
+  }, [listing.data]);
+
+  const header = (
+    <View>
+      {cartError ? (
+        <View style={{ paddingHorizontal: spacing.sm, paddingBottom: spacing.sm }}>
+          <NoticeStrip message={cartError} />
+        </View>
+      ) : null}
+      {children.length > 0 ? (
+        <View style={styles.subcategoryBlock}>
+          <AppText variant="caption" color={colors.textSecondary} style={styles.subcategoryHeading}>
+            Subcategories
+          </AppText>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.subcategoryRow}>
+            {children.map((child) => (
+              <Pressable
+                key={child.id}
+                onPress={() => onOpenSubcategory(child)}
+                style={({ pressed }) => [styles.subcategoryChip, pressed && styles.tilePressed]}
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${child.name}`}
+              >
+                <CategoryIcon name={child.name} imageUrl={child.imageUrl} size={26} />
+                <AppText variant="caption" numberOfLines={1} style={styles.subcategoryChipText}>
+                  {child.name}
+                </AppText>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      ) : null}
+      <AppText variant="bodyStrong" style={styles.allProductsHeading}>
+        All products in {category.name}
+      </AppText>
+    </View>
+  );
+
+  return (
+    <FlatList
+      key={`main-${columns}`}
+      data={items}
+      keyExtractor={(item) => item.id}
+      renderItem={renderProduct}
+      numColumns={columns}
+      ListHeaderComponent={header}
+      ListEmptyComponent={
+        listing.isError && items.length === 0 ? (
+          <ErrorState
+            message="We could not load these products."
+            offline={(listing.error as { isOffline?: boolean } | null)?.isOffline === true}
+            onRetry={() => void listing.refetch()}
+          />
+        ) : listing.isPending ? (
+          <ProductsPlaceholder columns={columns} />
+        ) : (
+          <EmptyState title="Nothing here yet" hint="No products in this category right now." />
+        )
+      }
+      onEndReached={() => {
+        if (listing.hasNextPage && !listing.isFetchingNextPage) void listing.fetchNextPage();
+      }}
+      onEndReachedThreshold={0.6}
+      ListFooterComponent={listing.isFetchingNextPage ? <ActivityIndicator color={colors.primary} style={{ margin: spacing.base }} /> : null}
+      contentContainerStyle={{ padding: spacing.xs, paddingBottom: tabBarClearance + spacing.xxl }}
+      showsVerticalScrollIndicator={false}
+      initialNumToRender={8}
+      maxToRenderPerBatch={8}
+      windowSize={7}
+    />
   );
 }
 
@@ -419,15 +536,10 @@ function CategoryLanding({
   const tileWidth = Math.floor((innerWidth - TILE_GAP * (columns - 1)) / columns);
   const imageSize = tileWidth - TILE_PADDING * 2;
 
-  // A root with subcategories scrolls to its section; one without opens its products.
+  // A main category opens its full product listing (its subcategories + all its products).
   const openRoot = (root: CategoryDto) => {
-    const y = sectionY.current.get(root.id);
-    if (y === undefined) {
-      onOpenRoot(root);
-      return;
-    }
     setActiveRootId(root.id);
-    scrollRef.current?.scrollTo({ y: Math.max(0, y - spacing.sm), animated: true });
+    onOpenRoot(root);
   };
 
   // The strip's highlight follows the section being read.
@@ -626,6 +738,25 @@ const styles = StyleSheet.create({
   },
 
   promoTop: { marginBottom: spacing.sm },
+
+  /* Main category listing */
+  subcategoryBlock: { paddingTop: spacing.xs, paddingBottom: spacing.sm },
+  subcategoryHeading: { paddingHorizontal: spacing.sm, marginBottom: spacing.xs, fontWeight: '700' },
+  subcategoryRow: { paddingHorizontal: spacing.sm, gap: spacing.sm },
+  subcategoryChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 40,
+    paddingLeft: 6,
+    paddingRight: spacing.md,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.primarySurface,
+  },
+  subcategoryChipText: { fontWeight: '600', color: colors.textPrimary, maxWidth: 140 },
+  allProductsHeading: { paddingHorizontal: spacing.sm, paddingTop: spacing.xs, paddingBottom: spacing.xs },
   promoMid: { marginBottom: spacing.md },
 
   /* Landing: search bar, root strip, results */

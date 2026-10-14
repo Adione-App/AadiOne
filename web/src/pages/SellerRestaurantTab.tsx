@@ -1,11 +1,13 @@
 /**
  * Seller detail — Restaurant tab (RESTAURANT / CAFE sellers only).
  *
- * Editable here: the restaurant's customer-facing PHOTOS — its logo and cover
- * (PUT/DELETE /admin/restaurants/:sellerId/images/:kind, through the admin
- * upload + image pipeline), shown on the Food list and the menu page. Admins
- * with catalogue rights only. Everything else on the tab is read-only: the
- * restaurant manages its profile and menu in the Seller Panel.
+ * Editable here (admins with catalogue rights): the restaurant's customer-
+ * facing PHOTOS — logo, cover (the Food list card) and menu image (the top of
+ * its menu page), each on its own (PUT/DELETE
+ * /admin/restaurants/:sellerId/images/:kind, through the admin upload + image
+ * pipeline) — and its PREPARATION TIME (PUT …/prep-time), which customers see
+ * as that time ± 5 min (prepTimeRange). The restaurant can change its cover,
+ * menu image and time itself in the Seller Panel. Everything else is read-only.
  *
  * One read: GET /admin/restaurants/:sellerId (admin session) — the existing
  * admin restaurant view: profile fields plus every menu section and item,
@@ -21,12 +23,12 @@
 
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { ApprovalStatus, Permission, formatPaise, roleHasPermission, type AdminSellerDetailDto } from '@shared';
+import { ApprovalStatus, Permission, formatPaise, prepTimeRange, roleHasPermission, type AdminSellerDetailDto } from '@shared';
 import { adminSellerKeys, sellerErrorMessage, useAdminRestaurant, type AdminRestaurantSection } from '@/lib/sellers';
 import { useAuth } from '@/lib/auth';
 import { imageSrc } from '@/lib/image';
 import { ACCEPTED_IMAGE_TYPES, validateImage } from '@/lib/upload';
-import { removeRestaurantImage, setRestaurantImage, uploadAdminImage } from '@/lib/content';
+import { removeRestaurantImage, setRestaurantImage, setRestaurantPrepTime, uploadAdminImage, type RestaurantImageKind } from '@/lib/content';
 import { DetailRow } from '@/components/SellerBadges';
 import { Button, EmptyState, ErrorBanner, Panel, Pill, Spinner, Td, Th, type Tone } from '@/components/ui';
 
@@ -56,7 +58,12 @@ export default function SellerRestaurantTab({ seller }: { seller: AdminSellerDet
 
   return (
     <div className="space-y-5">
-      <RestaurantPhotos sellerId={seller.id} logoUrl={profile.logoUrl ?? null} coverImageUrl={profile.coverImageUrl ?? null} />
+      <RestaurantPhotos
+        sellerId={seller.id}
+        logoUrl={profile.logoUrl ?? null}
+        coverImageUrl={profile.coverImageUrl ?? null}
+        menuImageUrl={profile.menuImageUrl ?? null}
+      />
 
       <Panel title="Restaurant profile">
         {seller.restaurantProfile === null ? (
@@ -67,8 +74,8 @@ export default function SellerRestaurantTab({ seller }: { seller: AdminSellerDet
             <DetailRow label="Veg only">
               <Pill tone={profile.isVegOnly ? 'brand' : 'gray'}>{profile.isVegOnly ? 'Yes — pure veg' : 'No'}</Pill>
             </DetailRow>
-            <DetailRow label="Average preparation time">
-              {profile.avgPrepMins !== null ? `${profile.avgPrepMins} min` : '—'}
+            <DetailRow label="Preparation time">
+              <PrepTimeEditor sellerId={seller.id} avgPrepMins={profile.avgPrepMins} />
             </DetailRow>
           </dl>
         )}
@@ -171,26 +178,102 @@ export default function SellerRestaurantTab({ seller }: { seller: AdminSellerDet
 /* Customer-facing photos                                                      */
 /* -------------------------------------------------------------------------- */
 
-const PHOTO_COPY = {
-  cover: { title: 'Cover photo', hint: 'Wide photo across the top of the menu page and on the Food list card. At least 600 px wide; landscape works best.' },
+const PHOTO_COPY: Record<RestaurantImageKind, { title: string; hint: string }> = {
+  cover: {
+    title: 'Cover photo — Food list',
+    hint: 'The place itself (storefront or interior). Shown on the restaurant card in the Food list. At least 600 px wide; landscape works best.',
+  },
+  menu: {
+    title: 'Menu image — menu page',
+    hint: 'A food / menu photo shown at the top of the restaurant\'s menu page. Never used on the Food list. At least 600 px wide; landscape works best.',
+  },
   logo: { title: 'Logo', hint: 'Shown in a circle on the menu page. A square image works best.' },
-} as const;
+};
 
-function RestaurantPhotos({ sellerId, logoUrl, coverImageUrl }: { sellerId: string; logoUrl: string | null; coverImageUrl: string | null }) {
+function RestaurantPhotos({
+  sellerId,
+  logoUrl,
+  coverImageUrl,
+  menuImageUrl,
+}: {
+  sellerId: string;
+  logoUrl: string | null;
+  coverImageUrl: string | null;
+  menuImageUrl: string | null;
+}) {
   const role = useAuth((state) => state.user?.role);
   const canEdit = role ? roleHasPermission(role, Permission.CATALOG_WRITE) : false;
   return (
     <Panel title="Customer-facing photos">
-      <div className="grid gap-4 md:grid-cols-[2fr_1fr]">
+      <div className="grid gap-4 lg:grid-cols-[1fr_1fr_0.7fr]">
         <PhotoSlot sellerId={sellerId} kind="cover" url={coverImageUrl} canEdit={canEdit} />
+        <PhotoSlot sellerId={sellerId} kind="menu" url={menuImageUrl} canEdit={canEdit} />
         <PhotoSlot sellerId={sellerId} kind="logo" url={logoUrl} canEdit={canEdit} />
       </div>
-      {!coverImageUrl && <p className="mt-3 text-xs text-gray-500">Without a cover photo the app shows a photo from the restaurant's menu.</p>}
+      <p className="mt-3 text-xs text-gray-500">
+        {!coverImageUrl && 'Without a cover photo the Food list shows a photo from the restaurant\'s menu. '}
+        {!menuImageUrl && 'Without a menu image the menu page shows a photo from its menu.'}
+      </p>
     </Panel>
   );
 }
 
-function PhotoSlot({ sellerId, kind, url, canEdit }: { sellerId: string; kind: 'logo' | 'cover'; url: string | null; canEdit: boolean }) {
+/** The configured preparation time, editable, with the range customers see. */
+function PrepTimeEditor({ sellerId, avgPrepMins }: { sellerId: string; avgPrepMins: number | null }) {
+  const role = useAuth((state) => state.user?.role);
+  const canEdit = role ? roleHasPermission(role, Permission.CATALOG_WRITE) : false;
+  const queryClient = useQueryClient();
+  const [value, setValue] = useState(avgPrepMins?.toString() ?? '');
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const minutes = value.trim() === '' ? null : Number(value);
+  const valid = minutes === null || (Number.isInteger(minutes) && minutes >= 1 && minutes <= 240);
+  const range = valid ? prepTimeRange(minutes) : null;
+
+  if (!canEdit) {
+    return <span>{avgPrepMins !== null ? `${avgPrepMins} min — customers see ${prepTimeRange(avgPrepMins)?.label}` : '—'}</span>;
+  }
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          className="w-24 rounded-xl border border-gray-300 px-3 py-1.5 text-sm"
+          inputMode="numeric"
+          value={value}
+          placeholder="min"
+          aria-label="Preparation time in minutes"
+          onChange={(event) => setValue(event.target.value.replace(/[^0-9]/g, ''))}
+        />
+        <span className="text-sm text-gray-600">minutes</span>
+        <Button
+          variant="secondary"
+          disabled={busy || !valid || minutes === avgPrepMins}
+          onClick={async () => {
+            setBusy(true);
+            setNotice(null);
+            try {
+              await setRestaurantPrepTime(sellerId, minutes);
+              await queryClient.invalidateQueries({ queryKey: adminSellerKeys.restaurant(sellerId) });
+              setNotice({ ok: true, text: 'Preparation time saved. The app shows it on its next refresh.' });
+            } catch (failure) {
+              setNotice({ ok: false, text: sellerErrorMessage(failure, 'The preparation time could not be saved.') });
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? 'Saving…' : 'Save'}
+        </Button>
+      </div>
+      <p className={`text-xs ${valid ? 'text-gray-500' : 'text-danger-600'}`}>
+        {!valid ? 'A whole number of minutes, 1–240.' : range ? `Customers see “${range.label}”.` : 'Not set — no time is shown to customers.'}
+      </p>
+      {notice && <p className={`text-xs font-medium ${notice.ok ? 'text-brand-700' : 'text-danger-600'}`}>{notice.text}</p>}
+    </div>
+  );
+}
+
+function PhotoSlot({ sellerId, kind, url, canEdit }: { sellerId: string; kind: RestaurantImageKind; url: string | null; canEdit: boolean }) {
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);

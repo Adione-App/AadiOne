@@ -36,6 +36,7 @@ import {
   type SellerOnboardingStage,
 } from '../../shared';
 import { isValidCoordinates } from '../../shared/distance';
+import { normalizeServiceState, pointInServiceState } from '../addresses/service-state';
 import { normalizeIndianMobile } from '../../shared/phone';
 
 /* -------------------------------------------------------------------------- */
@@ -239,15 +240,19 @@ export function buildOnboardingChecklist(input: ChecklistInput): SellerOnboardin
       met:
         store.addressLine.trim().length >= 2 &&
         store.city.trim().length >= 2 &&
-        store.state.trim().length >= 2 &&
+        // Aadione operates only in Rajasthan.
+        normalizeServiceState(store.state) !== null &&
         /^\d{6}$/.test(store.pincode),
-      hint: 'Add the full store address with city, state and 6-digit pincode.',
+      hint: 'Add the full store address in Rajasthan with city and 6-digit pincode.',
     },
     {
       key: 'storeLocation',
       label: 'Store location on map',
-      met: isValidCoordinates(store.latitude, store.longitude) && !(store.latitude === 0 && store.longitude === 0),
-      hint: 'Set your store’s location (use current location or enter the coordinates).',
+      met:
+        isValidCoordinates(store.latitude, store.longitude) &&
+        !(store.latitude === 0 && store.longitude === 0) &&
+        pointInServiceState(store.latitude, store.longitude),
+      hint: 'Set your store’s location in Rajasthan (use current location or enter the coordinates).',
     },
     {
       key: 'bank',

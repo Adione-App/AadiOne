@@ -8,7 +8,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ErrorCode, PaymentMethod, SellerOrderStatus, UserRole } from '../../src/shared';
+import { ConfigKey, ErrorCode, PaymentMethod, SellerOrderStatus, UserRole } from '../../src/shared';
 import { api, bearer, expectError, expectSuccess, loginAs } from '../helpers/api';
 import { prisma, truncateAll } from '../helpers/db';
 import { hashPassword } from '../../src/common/crypto';
@@ -18,7 +18,7 @@ import * as otpService from '../../src/modules/auth/otp.service';
 import { MockPaymentProvider } from '../../src/infra/payment';
 import * as paymentsInfra from '../../src/infra/payment';
 import * as paymentService from '../../src/modules/payments/payment.service';
-import { seedAddress, seedProduct, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
+import { configureTestMerchantUpi, seedAddress, seedProduct, seedSellerListing, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
 import { SETTLEMENT_CLOSE_LAG_MS } from '../../src/modules/sellers/seller-settlement.service';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
@@ -71,13 +71,9 @@ async function loginSeller(mobile: string): Promise<string> {
   return session.accessToken;
 }
 
-async function addListing(adminToken: string, sellerId: string, variantId: string, pricePaise: number, stockQty = 50) {
-  const res = await api()
-    .post(`/api/v1/admin/sellers/${sellerId}/listings`)
-    .set('Authorization', bearer(adminToken))
-    .send({ variantId, mrpPaise: pricePaise + 100, pricePaise, stockQty })
-    .expect(201);
-  return expectSuccess<{ id: string }>(res.body).data.id;
+/** The seller's listing for `variantId` (see `seedSellerListing`). */
+function addListing(sellerId: string, variantId: string, pricePaise: number, stockQty = 50) {
+  return seedSellerListing(sellerId, variantId, { mrpPaise: pricePaise + 100, pricePaise, stockQty });
 }
 
 async function advanceSellerOrderToReady(adminToken: string, sellerOrderId: string) {
@@ -192,6 +188,12 @@ beforeEach(async () => {
   await truncateAll();
   await configService.invalidateAll();
   await cache.clear();
+  // This suite checks settlement arithmetic on small, hand-computable
+  // orders. The ₹99 minimum order is its own rule, tested in order.test.ts
+  // ("enforces the minimum order value"), so it is lifted here.
+  await configService.set({ key: ConfigKey.MIN_ORDER_VALUE_PAISE, value: 0 as never });
+  // Online orders here pay through the direct-UPI (mock) path.
+  await configureTestMerchantUpi();
 });
 
 afterEach(() => {
@@ -245,7 +247,7 @@ async function deliveredSeller(mobile: string, name: string, pricePaise: number,
   const platformSellerId = await seedStore();
   const sellerId = await seedSellerWithOwner(mobile, name);
   const product = await seedProduct(platformSellerId, { pricePaise, stockQty: 10 });
-  const listingId = await addListing(adminToken, sellerId, product.variantId, pricePaise);
+  const listingId = await addListing(sellerId, product.variantId, pricePaise);
   const { token, addressId } = await customerAndAddress();
   const placed = await placeMixedOrder(token, addressId, [{ listingId, qty: 1 }], method);
   for (const so of placed.sellerOrders) await advanceSellerOrderToReady(adminToken, so.id);
@@ -263,7 +265,7 @@ async function paidSingleSellerOrder(mobile: string, name: string, pricePaise: n
   const platformSellerId = await seedStore();
   const sellerId = await seedSellerWithOwner(mobile, name);
   const product = await seedProduct(platformSellerId, { pricePaise, stockQty: 10 });
-  const listingId = await addListing(adminToken, sellerId, product.variantId, pricePaise);
+  const listingId = await addListing(sellerId, product.variantId, pricePaise);
   const { token, addressId } = await customerAndAddress();
   const placed = await placeMixedOrder(token, addressId, [{ listingId, qty: 1 }], PaymentMethod.ONLINE);
   expect(placed.sellerOrders).toHaveLength(1);
@@ -282,7 +284,7 @@ describe('earnings + commission reuse', () => {
     const qaSellerId = await seedSellerWithOwner('9400000010', 'Settlement Seller QA', 500); // 5%
     // 5% GST INSIDE the price: 238 of the 5000 is tax, extracted, never added on top.
     const qaProduct = await seedProduct(platformSellerId, { pricePaise: 5000, stockQty: 20, taxRateBp: 500 });
-    const qaListingId = await addListing(adminToken, qaSellerId, qaProduct.variantId, 5000);
+    const qaListingId = await addListing(qaSellerId, qaProduct.variantId, 5000);
 
     const { token, addressId } = await customerAndAddress();
     const placed = await placeMixedOrder(
@@ -397,7 +399,7 @@ describe('settlement eligibility', () => {
     const platformSellerId = await seedStore();
     const qaSellerId = await seedSellerWithOwner('9400000020', 'Undelivered Seller');
     const product = await seedProduct(platformSellerId, { pricePaise: 3000, stockQty: 10 });
-    const listingId = await addListing(adminToken, qaSellerId, product.variantId, 3000);
+    const listingId = await addListing(qaSellerId, product.variantId, 3000);
 
     const { token, addressId } = await customerAndAddress();
     await placeMixedOrder(token, addressId, [{ listingId, qty: 1 }], PaymentMethod.ONLINE);
@@ -418,7 +420,7 @@ describe('settlement eligibility', () => {
     const platformSellerId = await seedStore();
     const qaSellerId = await seedSellerWithOwner('9400000021', 'COD Undelivered Seller');
     const product = await seedProduct(platformSellerId, { pricePaise: 2500, stockQty: 10 });
-    const listingId = await addListing(adminToken, qaSellerId, product.variantId, 2500);
+    const listingId = await addListing(qaSellerId, product.variantId, 2500);
 
     const { token, addressId } = await customerAndAddress();
     const placed = await placeMixedOrder(token, addressId, [{ listingId, qty: 1 }], PaymentMethod.COD);
@@ -465,7 +467,7 @@ describe('unpaid online order whose payment expires', () => {
     const platformSellerId = await seedStore();
     const sellerId = await seedSellerWithOwner('9400000090', 'Expiry Seller', 1000);
     const product = await seedProduct(platformSellerId, { pricePaise: 2600, stockQty: 10 });
-    const listingId = await addListing(adminToken, sellerId, product.variantId, 2600);
+    const listingId = await addListing(sellerId, product.variantId, 2600);
     const sellerToken = await loginSeller('9400000090');
 
     // Place an ONLINE order and never pay it.
@@ -523,7 +525,7 @@ describe('partial cancellation / refund impact', () => {
     const platformProduct = await seedProduct(platformSellerId, { pricePaise: 1500, stockQty: 20 });
     const qaSellerId = await seedSellerWithOwner('9400000030', 'Partial Refund Seller', 1000);
     const qaProduct = await seedProduct(platformSellerId, { pricePaise: 4200, stockQty: 20, taxRateBp: 500 });
-    const qaListingId = await addListing(adminToken, qaSellerId, qaProduct.variantId, 4200);
+    const qaListingId = await addListing(qaSellerId, qaProduct.variantId, 4200);
 
     const { token, addressId } = await customerAndAddress();
     const placed = await placeMixedOrder(
@@ -579,7 +581,8 @@ describe('partial cancellation / refund impact', () => {
   it('refuses to cancel a seller portion once the parent is delivered', async () => {
     const adminToken = await loginAdmin();
     const platformSellerId = await seedStore();
-    const product = await seedProduct(platformSellerId, { pricePaise: 1100, stockQty: 10 });
+    // Above the ₹99 minimum order (not what this test is about).
+    const product = await seedProduct(platformSellerId, { pricePaise: 11000, stockQty: 10 });
     const { token, addressId } = await customerAndAddress();
     const placed = await placeMixedOrder(
       token,
@@ -742,8 +745,8 @@ describe('multi-seller refunds (partial refunds, full-cancellation final refund)
     const productA = await seedProduct(platformSellerId, { pricePaise: 3000, stockQty: 10, taxRateBp: 1800 });
     const productB = await seedProduct(platformSellerId, { pricePaise: 2000, stockQty: 10, taxRateBp: 500 });
     const productC = await seedProduct(platformSellerId, { pricePaise: 1500, stockQty: 10 });
-    const listingA = await addListing(adminToken, sellerAId, productA.variantId, 3000);
-    const listingB = await addListing(adminToken, sellerBId, productB.variantId, 2000);
+    const listingA = await addListing(sellerAId, productA.variantId, 3000);
+    const listingB = await addListing(sellerBId, productB.variantId, 2000);
 
     const { token, addressId } = await customerAndAddress();
     const placed = await placeMixedOrder(
@@ -811,7 +814,7 @@ describe('multi-seller refunds (partial refunds, full-cancellation final refund)
     const sellerAId = await seedSellerWithOwner('9400000062', 'All Cancel Seller A', 1000);
     const productA = await seedProduct(platformSellerId, { pricePaise: 2500, stockQty: 10 });
     const productP = await seedProduct(platformSellerId, { pricePaise: 1700, stockQty: 10 });
-    const listingA = await addListing(adminToken, sellerAId, productA.variantId, 2500);
+    const listingA = await addListing(sellerAId, productA.variantId, 2500);
 
     const { token, addressId } = await customerAndAddress();
     const placed = await placeMixedOrder(
@@ -975,7 +978,7 @@ describe('multi-seller refunds (partial refunds, full-cancellation final refund)
     const sellerAId = await seedSellerWithOwner('9400000068', 'Ready Pair Seller A');
     const productA = await seedProduct(platformSellerId, { pricePaise: 2400, stockQty: 10 });
     const productP = await seedProduct(platformSellerId, { pricePaise: 1900, stockQty: 10 });
-    const listingA = await addListing(adminToken, sellerAId, productA.variantId, 2400);
+    const listingA = await addListing(sellerAId, productA.variantId, 2400);
     const { token, addressId } = await customerAndAddress();
     const placed = await placeMixedOrder(
       token,
@@ -1004,7 +1007,7 @@ describe('multi-seller refunds (partial refunds, full-cancellation final refund)
     const platformSellerId = await seedStore();
     const sellerId = await seedSellerWithOwner('9400000069', 'Ready COD Seller');
     const product = await seedProduct(platformSellerId, { pricePaise: 2300, stockQty: 10 });
-    const listingId = await addListing(adminToken, sellerId, product.variantId, 2300);
+    const listingId = await addListing(sellerId, product.variantId, 2300);
     const { token, addressId } = await customerAndAddress();
     const placed = await placeMixedOrder(token, addressId, [{ listingId, qty: 1 }], PaymentMethod.COD);
     await advanceSellerOrderToReady(adminToken, placed.sellerOrders[0]!.id);
@@ -1091,7 +1094,7 @@ describe('rider release when an order is fully cancelled before pickup', () => {
 
     // A second order on the same rider, to prove only the cancelled one is released.
     const product = await seedProduct((await prisma.seller.findFirstOrThrow({ where: { isPlatformOwned: true } })).id, { pricePaise: 2000, stockQty: 10 });
-    const listingId = await addListing(adminToken, sellerId, product.variantId, 2000);
+    const listingId = await addListing(sellerId, product.variantId, 2000);
     const { token, addressId } = await customerAndAddress();
     const other = await placeMixedOrder(token, addressId, [{ listingId, qty: 1 }], PaymentMethod.ONLINE);
     await assign(adminToken, other.orderId, rider);
@@ -1141,7 +1144,7 @@ describe('rider release when an order is fully cancelled before pickup', () => {
     const sellerAId = await seedSellerWithOwner('9400000073', 'Rider Partial Seller A');
     const productA = await seedProduct(platformSellerId, { pricePaise: 2200, stockQty: 10 });
     const productP = await seedProduct(platformSellerId, { pricePaise: 1800, stockQty: 10 });
-    const listingA = await addListing(adminToken, sellerAId, productA.variantId, 2200);
+    const listingA = await addListing(sellerAId, productA.variantId, 2200);
     const { token, addressId } = await customerAndAddress();
     const placed = await placeMixedOrder(
       token,

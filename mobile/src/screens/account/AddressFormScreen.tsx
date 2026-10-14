@@ -1,80 +1,105 @@
 /**
- * Add / Edit Address (Task 14.13) — an Indian address in its own fields
- * (@shared/address): house / building, street, locality, village / city /
- * town, district, state, PIN, landmark — and, SEPARATELY, the point that
- * every distance is measured from.
+ * Add / Edit Address (Task 14.13) — an Indian address in its own fields:
+ * house no. + street (one field), locality, village / city / town, district,
+ * state (Rajasthan — the only state served), PIN — and, SEPARATELY, the point
+ * the address is delivered to.
  *
- * WHERE THE POINT COMES FROM — and what it is honestly worth:
+ * HOUSE NO. + STREET is one field over the two existing columns, with no
+ * migration: new or edited text is stored whole in `street` (houseNo null);
+ * an older address that filled both is shown joined and, while the text is
+ * left as it was, neither column is sent — so it is never rewritten. Landmark
+ * is no longer collected; an existing one is never sent, so it is kept.
  *
- *   GPS        "Use my current location (I'm at this address)": one fresh
- *              fix with its accuracy (@/lib/deviceLocation). The OS
- *              geocoder's reading of that point is offered as SUGGESTED
- *              address fields — applied only when the customer says so.
- *   GEOCODED   "Find location from address": the device's forward geocoder
- *              on the typed address. That is the centre of whatever area the
- *              text names — saved and shown as APPROXIMATE, never as the door.
- *
- * Nothing else is ever used: not the app's current location, not a city
- * centre, not (0, 0). (Falling back to the app's current GPS position — a
- * different place when the address is someone else's — was the old bug.)
- * A PIN code covers many villages; it validates the address, it never
- * places it. The server re-checks serviceability at checkout regardless.
+ * WHERE THE POINT COMES FROM: one fresh GPS fix from "Use my current
+ * location", taken while the customer is at the address (@/lib/deviceLocation).
+ * The OS geocoder's reading of that point fills only EMPTY fields — never
+ * what was typed. Nothing else is ever used: not the app's current location,
+ * not a city centre, not (0, 0). On a failed fix nothing is set and the
+ * customer can try again. The server checks serviceability on save and again
+ * at checkout and order placement — this screen shows no distance.
  */
 
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { AddressDto, ServiceabilityResult } from '@shared';
+import type { AddressDto, LiveLocationInput } from '@shared';
 import { normalizeIndianMobile } from '@shared/phone';
-import { ADDRESS_FIELD_LABEL, INDIAN_STATES, isValidPincode, missingAddressFields } from '@shared/address';
-import { coordinateProblem, formatStraightLineDistance } from '@shared/distance';
-import { DETECT_MESSAGE, describeAccuracy, type AddressSuggestion, type LocationSource } from '@shared/location';
+import { ADDRESS_FIELD_LABEL, isValidPincode, missingAddressFields } from '@shared/address';
+import { DETECT_MESSAGE, type DetectStatus, type LocationSource } from '@shared/location';
 import { colors, radius, spacing } from '@shared/theme';
-import { api, ApiRequestError } from '@/lib/api';
-import { detectDeviceLocation, geocodeAddressText, suggestAddressFor } from '@/lib/deviceLocation';
+import { api } from '@/lib/api';
+import { houseAndStreet } from '@/lib/addressDisplay';
+import { detectDeviceLocation, suggestAddressFor } from '@/lib/deviceLocation';
+import { HOME_STATE, isHomeState, liveLocationLabel, liveState, stateFromGeocoder } from '@/lib/liveLocation';
+import { useAuth, useLocation } from '@/lib/store';
 import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, Button, Input, NoticeStrip, Screen } from '@/components/ui';
+import type { LiveFixParams } from '@/navigation/types';
 
 /** Address Type chips from the mockup. Stored in `label`. */
 const ADDRESS_TYPES = ['Home', 'Work', 'Other'] as const;
 type AddressType = (typeof ADDRESS_TYPES)[number];
 
-/** The point this address is measured from. `source` null = saved before origins were recorded. */
+/** Aadione delivers in Rajasthan only, so a saved address's state is fixed. */
+const FIXED_STATE = HOME_STATE;
+
+/** The `street` column's limit — the combined field is stored there. */
+const HOUSE_STREET_MAX = 160;
+
+/** The point this address is delivered to. `source` null = saved before origins were recorded. */
 interface Point {
   latitude: number;
   longitude: number;
   source: LocationSource | null;
   accuracyM: number | null;
+  /** Captured on this screen just now (not loaded from the saved address). */
+  fresh: boolean;
 }
 
 type Fields = {
-  houseNo: string;
-  street: string;
+  houseStreet: string;
   area: string;
   city: string;
   district: string;
-  state: string;
   pincode: string;
-  landmark: string;
 };
 
-const EMPTY_FIELDS: Fields = { houseNo: '', street: '', area: '', city: '', district: '', state: '', pincode: '', landmark: '' };
+const EMPTY_FIELDS: Fields = { houseStreet: '', area: '', city: '', district: '', pincode: '' };
 
-/** Fields that say WHERE the address is (a change makes an approximate point stale). */
-const PLACE_FIELDS: (keyof Fields)[] = ['houseNo', 'street', 'area', 'city', 'district', 'state', 'pincode'];
+/**
+ * Fields that move the address to another place. Changing one drops a saved
+ * point that did not come from GPS at the address (it was found from the old
+ * text), so the location has to be captured again.
+ */
+const PLACE_FIELDS: (keyof Fields)[] = ['city', 'district', 'pincode'];
 
 export default function AddressFormScreen({
   addressId,
+  live,
   onBack,
+  onLiveConfirmed,
 }: {
   addressId?: string;
+  /**
+   * LIVE MODE — "Delivery details" for a fresh GPS fix: the order goes to
+   * this point directly, without saving an address (unless the customer
+   * ticks "Also save"). Fields come only from the reverse geocoder and the
+   * verified profile; whatever is missing the customer fills in.
+   */
+  live?: LiveFixParams;
   onBack: () => void;
+  /** Live mode: after "Deliver to this location" — back to where it began. */
+  onLiveConfirmed?: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
   const queryClient = useQueryClient();
   const isEditing = addressId !== undefined;
+  const isLive = live !== undefined && !isEditing;
+  const user = useAuth((s) => s.user);
+  const { liveDestination, setLiveDestination, setLocation, selectAddress } = useLocation();
 
   // Reuses the same cached list AddressesScreen already fetched — editing
   // opens instantly instead of waiting on a network round trip for data the
@@ -89,35 +114,64 @@ export default function AddressFormScreen({
   const [fullName, setFullName] = useState('');
   const [mobile, setMobile] = useState('');
   const [fields, setFields] = useState<Fields>(EMPTY_FIELDS);
+  /** A saved address keeps its own state; new ones are Rajasthan. Never editable here. */
+  const [state, setState] = useState(FIXED_STATE);
+  /** The combined text as loaded — unchanged means houseNo / street are left alone. */
+  const [originalHouseStreet, setOriginalHouseStreet] = useState('');
   const [addressType, setAddressType] = useState<AddressType>('Home');
   const [isDefault, setIsDefault] = useState(true);
-  const [statePickerOpen, setStatePickerOpen] = useState(false);
 
   const [point, setPoint] = useState<Point | null>(null);
   const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState<{ status: Exclude<DetectStatus, 'OK'>; message: string } | null>(null);
   const [locationNote, setLocationNote] = useState<{ ok: boolean; message: string } | null>(null);
-  /** Address fields read from the GPS point, waiting for the customer to apply them. */
-  const [suggestion, setSuggestion] = useState<AddressSuggestion | null>(null);
-  const [delivery, setDelivery] = useState<{ ok: boolean; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [seeded, setSeeded] = useState(false);
+
+  /* --- live mode ------------------------------------------------------- */
+  /** Off by default: a live location is for this order only. */
+  const [saveAsAddress, setSaveAsAddress] = useState(false);
+
+  // Live mode: prefill once from the GPS fix's geocoded address and the
+  // VERIFIED profile (or the details confirmed for this point before).
+  // Missing parts stay empty for the customer — nothing is made up.
+  useEffect(() => {
+    if (!isLive || !live || seeded) return;
+    const s = live.suggestion;
+    const previous =
+      liveDestination && liveDestination.latitude === live.latitude && liveDestination.longitude === live.longitude
+        ? liveDestination
+        : null;
+    setFullName(previous?.fullName ?? user?.fullName ?? '');
+    // The account's number only when it was verified by OTP.
+    setMobile(previous?.mobile ?? (user?.mobileVerified ? user.mobile : ''));
+    setFields({
+      houseStreet: s ? houseAndStreet(s) : '',
+      area: s?.area ?? '',
+      city: s?.city ?? '',
+      district: s?.district ?? '',
+      pincode: s?.pincode ?? '',
+    });
+    setState(liveState(s?.state, live.latitude, live.longitude));
+    setPoint({ latitude: live.latitude, longitude: live.longitude, source: 'GPS', accuracyM: live.accuracyM, fresh: true });
+    setSeeded(true);
+  }, [isLive, live, seeded, liveDestination, user]);
 
   // Prefill once the address to edit has loaded, without clobbering typing afterwards.
   useEffect(() => {
     if (!existing || seeded) return;
+    const houseStreet = houseAndStreet(existing);
     setFullName(existing.fullName);
     setMobile(existing.mobile);
     setFields({
-      houseNo: existing.houseNo ?? '',
-      street: existing.street ?? '',
+      houseStreet,
       area: existing.area,
       city: existing.city,
       district: existing.district ?? '',
-      state: existing.state,
       pincode: existing.pincode,
-      // Older addresses stored "line 2" as both locality and landmark; keep it once.
-      landmark: existing.landmark && existing.landmark !== existing.area ? existing.landmark : '',
     });
+    setOriginalHouseStreet(houseStreet);
+    setState(existing.state.trim() || FIXED_STATE);
     setAddressType(ADDRESS_TYPES.includes(existing.label as AddressType) ? (existing.label as AddressType) : 'Other');
     setIsDefault(existing.isDefault);
     setPoint({
@@ -125,149 +179,116 @@ export default function AddressFormScreen({
       longitude: existing.longitude,
       source: existing.locationSource,
       accuracyM: existing.locationAccuracyM,
+      fresh: false,
     });
     setSeeded(true);
   }, [existing, seeded]);
 
-  /** Typing changes the address; an APPROXIMATE / unrecorded point for the old text is dropped. */
   function setField(key: keyof Fields, value: string): void {
     setFields((current) => ({ ...current, [key]: value }));
-    if (PLACE_FIELDS.includes(key) && point && point.source !== 'GPS') {
+    if (PLACE_FIELDS.includes(key) && point && !point.fresh && point.source !== 'GPS') {
       setPoint(null);
-      setDelivery(null);
-      setLocationNote({ ok: false, message: 'The address changed — set its location again below.' });
+      setLocationNote({
+        ok: false,
+        message: 'The village / city, district or PIN changed — use your current location again while you are at this address.',
+      });
     }
   }
 
-  // Every new point gets the server's delivery answer for THAT point.
-  useEffect(() => {
-    if (!point) return;
-    let cancelled = false;
-    setDelivery(null);
-    api
-      .get<ServiceabilityResult>(`/store/serviceability?lat=${point.latitude}&lng=${point.longitude}`)
-      .then((result) => {
-        if (cancelled) return;
-        setDelivery(
-          result.serviceable
-            ? { ok: true, message: `We deliver here — about ${formatStraightLineDistance(result.distanceKm)} from the nearest store.` }
-            : { ok: false, message: `We don't deliver here yet: ${formatStraightLineDistance(result.distanceKm)} away; we deliver up to ${result.maxRadiusKm} km.` },
-        );
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setDelivery({ ok: false, message: err instanceof ApiRequestError ? err.message : 'Could not check delivery right now.' });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [point]);
-
-  /** "I'm at this address": a fresh fix + suggested fields (not applied yet). */
+  /** One fresh fix at the address; its reverse-geocoded text fills only the empty fields. */
   async function useCurrentLocation(): Promise<void> {
     setLocating(true);
+    setLocationError(null);
     setLocationNote(null);
-    setSuggestion(null);
     try {
       const result = await detectDeviceLocation();
       if (result.status !== 'OK') {
-        setLocationNote({ ok: false, message: DETECT_MESSAGE[result.status] });
+        // No fallback point: whatever was set before stays, nothing is invented.
+        setLocationError({ status: result.status, message: DETECT_MESSAGE[result.status] });
         return;
       }
-      setPoint({ latitude: result.latitude, longitude: result.longitude, source: 'GPS', accuracyM: result.accuracyM });
+      setPoint({ latitude: result.latitude, longitude: result.longitude, source: 'GPS', accuracyM: result.accuracyM, fresh: true });
+
       const suggested = await suggestAddressFor(result.latitude, result.longitude);
-      setSuggestion(suggested);
-      // Consistency: the point's PIN / district against what was typed.
+      // Live mode: the state follows the NEW point (it is never typed there).
+      if (isLive) setState(liveState(suggested?.state, result.latitude, result.longitude));
+      // Where the phone says this point is, when that is not Rajasthan.
+      const gpsState = stateFromGeocoder(suggested?.state);
+      const outsideHomeState = gpsState !== null && !isHomeState(gpsState);
+      const fill: Partial<Fields> = {};
+      if (suggested) {
+        const offered: Fields = {
+          houseStreet: houseAndStreet(suggested),
+          area: suggested.area ?? '',
+          city: suggested.city ?? '',
+          district: suggested.district ?? '',
+          pincode: suggested.pincode ?? '',
+        };
+        for (const key of Object.keys(offered) as (keyof Fields)[]) {
+          if (offered[key] && !fields[key].trim()) fill[key] = offered[key];
+        }
+        // Re-checked against the latest state: anything typed meanwhile wins.
+        setFields((current) => {
+          const next = { ...current };
+          for (const key of Object.keys(fill) as (keyof Fields)[]) {
+            if (!current[key].trim()) next[key] = fill[key]!;
+          }
+          return next;
+        });
+      }
+      const filled = Object.keys(fill);
+
+      // The phone's PIN / district against what was typed — a hint that the
+      // customer is not at this address. Only compared when both exist.
       const mismatch = [
         suggested?.pincode && isValidPincode(fields.pincode) && suggested.pincode !== fields.pincode ? `PIN ${suggested.pincode}` : null,
         suggested?.district && fields.district.trim() && suggested.district.toLowerCase() !== fields.district.trim().toLowerCase()
           ? `district ${suggested.district}`
           : null,
       ].filter(Boolean);
-      setLocationNote({
-        ok: result.quality !== 'POOR' && mismatch.length === 0,
-        message:
-          `Location set from your phone — ${describeAccuracy(result.accuracyM)}.` +
-          (result.quality === 'POOR' ? ' That is approximate: make sure you are at this address, or try again outdoors.' : '') +
-          (mismatch.length > 0
-            ? ` Your phone places you in ${mismatch.join(' / ')}, which differs from the address entered — check that you are at this address.`
-            : ''),
-      });
+
+      const notes = [
+        // A saved address is checked by the server too; say it here first.
+        !isLive && outsideHomeState
+          ? `Your phone places you in ${gpsState}. Aadione currently delivers only in Rajasthan, so this location cannot be saved.`
+          : null,
+        filled.length > 0 ? 'Empty fields were filled from your location — please check them.' : null,
+        result.quality === 'POOR' ? 'Your phone could only find an approximate location. For exact delivery, try again outdoors.' : null,
+        mismatch.length > 0
+          ? `Your phone places you in ${mismatch.join(' / ')}, which differs from the address above — make sure you are at this address.`
+          : null,
+      ].filter(Boolean);
+      setLocationNote(
+        notes.length > 0
+          ? { ok: result.quality !== 'POOR' && mismatch.length === 0 && !outsideHomeState, message: notes.join(' ') }
+          : null,
+      );
     } finally {
       setLocating(false);
     }
   }
 
-  /** Apply the suggested fields: only into empty ones, or replacing everything — the customer chooses. */
-  function applySuggestion(mode: 'empty' | 'all'): void {
-    if (!suggestion) return;
-    setFields((current) => {
-      const next = { ...current };
-      const put = (key: keyof Fields, value: string | null) => {
-        if (value && (mode === 'all' || !current[key].trim())) next[key] = value;
-      };
-      put('houseNo', suggestion.houseNo);
-      put('street', suggestion.street);
-      put('area', suggestion.area);
-      put('city', suggestion.city);
-      put('district', suggestion.district);
-      put('state', INDIAN_STATES.find((s) => s.toLowerCase() === suggestion.state?.toLowerCase()) ?? suggestion.state);
-      put('pincode', suggestion.pincode);
-      return next;
-    });
-    setSuggestion(null);
-  }
-
-  /** The typed address → its APPROXIMATE point (area centre), or an honest failure. */
-  async function findFromAddress(): Promise<void> {
-    const missing = missingAddressFields(fields);
-    if (missing.length > 0) {
-      setLocationNote({ ok: false, message: `First fill in: ${missing.map((key) => ADDRESS_FIELD_LABEL[key]).join(', ')}.` });
-      return;
-    }
-    setLocating(true);
-    setLocationNote(null);
-    setSuggestion(null);
-    try {
-      const text = [fields.houseNo, fields.street, fields.area, fields.city, fields.district, fields.state, fields.pincode, 'India']
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .join(', ');
-      const hit = await geocodeAddressText(text);
-      if (!hit || coordinateProblem(hit.latitude, hit.longitude, { requireIndia: true })) {
-        setLocationNote({
-          ok: false,
-          message:
-            "This address could not be found on the map. Your details are kept — to set the location, use your current location while you are at this address.",
-        });
-        return;
-      }
-      setPoint({ latitude: hit.latitude, longitude: hit.longitude, source: 'GEOCODED', accuracyM: null });
-      setLocationNote({
-        ok: true,
-        message:
-          'Approximate location found from the address (the centre of the area, not your door). For exact delivery, use your current location while you are at this address.',
-      });
-    } finally {
-      setLocating(false);
-    }
-  }
+  const houseStreet = fields.houseStreet.trim().replace(/\s+/g, ' ');
+  const houseStreetChanged = houseStreet !== originalHouseStreet;
 
   const save = useMutation({
     mutationFn: async () => {
-      if (!point) throw new Error('Set the location of this address first.');
+      if (!point) throw new Error('Use your current location to set where this address is.');
+      if (houseStreetChanged && houseStreet.length > HOUSE_STREET_MAX) {
+        throw new Error(`Keep House No. + Street / Road under ${HOUSE_STREET_MAX} characters.`);
+      }
       const body = {
         label: addressType,
         fullName: fullName.trim(),
         mobile,
-        houseNo: fields.houseNo.trim() || null,
-        street: fields.street.trim() || null,
+        // Left out while unchanged, so an older address keeps its own two columns.
+        ...(isEditing && !houseStreetChanged ? {} : { houseNo: null, street: houseStreet || null }),
         area: fields.area.trim(),
         city: fields.city.trim(),
         district: fields.district.trim(),
-        state: fields.state,
+        state,
         pincode: fields.pincode,
-        landmark: fields.landmark.trim() || null,
-        // The point decides serviceability — always the one confirmed above.
+        // The point decides serviceability — always the one shown on this screen.
         latitude: point.latitude,
         longitude: point.longitude,
         locationSource: point.source,
@@ -283,18 +304,113 @@ export default function AddressFormScreen({
     onError: (err: Error) => setError(err.message || 'Could not save the address.'),
   });
 
-  const missing = missingAddressFields(fields, { requireArea: true });
-  const complete = fullName.trim().length >= 2 && normalizeIndianMobile(mobile) !== null && missing.length === 0 && point !== null;
+  /**
+   * Live mode's "Deliver to this location": the order goes to THIS point
+   * with these details — kept in the location store (not saved anywhere)
+   * and sent as `liveLocation` at checkout. With "Also save" ticked, it is
+   * saved as an address first and ordered to as one.
+   */
+  const confirmLive = useMutation({
+    mutationFn: async () => {
+      if (!point) throw new Error('Your current location is not available. Tap “Use my current location” to try again.');
+      if (houseStreet.length > HOUSE_STREET_MAX) throw new Error(`Keep House No. + Street / Road under ${HOUSE_STREET_MAX} characters.`);
+      const normalizedMobile = normalizeIndianMobile(mobile);
+      if (!normalizedMobile) throw new Error('Enter a valid 10-digit mobile number.');
+      const destination: LiveLocationInput = {
+        latitude: point.latitude,
+        longitude: point.longitude,
+        accuracyM: point.accuracyM,
+        fullName: fullName.trim(),
+        mobile: normalizedMobile,
+        houseNo: null,
+        street: houseStreet || null,
+        area: fields.area.trim() || null,
+        city: fields.city.trim(),
+        district: fields.district.trim() || null,
+        state: state.trim(),
+        pincode: fields.pincode || null,
+      };
 
-  const pointSummary = !point
-    ? 'Location not set yet.'
-    : point.source === 'GPS'
-      ? `From your phone at this address — ${describeAccuracy(point.accuracyM)}.`
-      : point.source === 'GEOCODED'
-        ? 'Approximate — found from the address text, not the exact door.'
-        : point.source === 'MAP_PIN'
-          ? 'Pin confirmed on the map.'
-          : 'Saved earlier; where it came from was not recorded. Set it again to be sure.';
+      if (saveAsAddress) {
+        const saved = await api.post<AddressDto>('/addresses', {
+          label: addressType,
+          fullName: destination.fullName,
+          mobile: destination.mobile,
+          houseNo: null,
+          street: destination.street,
+          area: fields.area.trim(),
+          city: destination.city,
+          district: fields.district.trim(),
+          state: destination.state,
+          pincode: fields.pincode,
+          latitude: point.latitude,
+          longitude: point.longitude,
+          locationSource: 'GPS',
+          locationAccuracyM: point.accuracyM,
+          isDefault: false,
+        });
+        void queryClient.invalidateQueries({ queryKey: ['addresses'] });
+        selectAddress(saved.id);
+        void setLocation({ latitude: saved.latitude, longitude: saved.longitude, label: liveLocationLabel(destination), source: 'ADDRESS' });
+        return;
+      }
+
+      // Order matters: the details first, then the point they belong to.
+      setLiveDestination(destination);
+      void setLocation({
+        latitude: destination.latitude,
+        longitude: destination.longitude,
+        label: liveLocationLabel(destination),
+        source: 'GPS',
+        accuracyM: destination.accuracyM,
+      });
+    },
+    onSuccess: () => (onLiveConfirmed ?? onBack)(),
+    onError: (err: Error) => setError(err.message || 'Could not use this location.'),
+  });
+
+  const missing = isLive && !saveAsAddress
+    ? // A live order needs only where (the point), who, and the village / town;
+      // a PIN is optional but must be valid when given.
+      [
+        ...(fields.city.trim().length >= 2 ? [] : (['city'] as const)),
+        ...(state.trim().length >= 2 ? [] : (['state'] as const)),
+        ...(!fields.pincode || isValidPincode(fields.pincode) ? [] : (['pincode'] as const)),
+      ]
+    : missingAddressFields(
+        { area: fields.area, city: fields.city, district: fields.district, state, pincode: fields.pincode },
+        { requireArea: true },
+      );
+  /**
+   * Rajasthan only. A live point the phone places elsewhere (or cannot place
+   * at all outside Rajasthan) is refused here; an older saved address outside
+   * Rajasthan is shown as it is — never rewritten — and cannot be saved or
+   * ordered to. The server checks the point itself either way.
+   */
+  const stateBlock = !isHomeState(state)
+    ? isLive
+      ? state
+        ? `Aadione currently delivers only in Rajasthan. Your phone places this location in ${state}.`
+        : 'Aadione currently delivers only in Rajasthan, and this location appears to be outside Rajasthan.'
+      : isEditing
+        ? `This address is in ${state || 'another state'}. Aadione currently delivers only in Rajasthan, so it cannot be used for orders — delete it, or add an address in Rajasthan.`
+        : null
+    : null;
+  const complete =
+    fullName.trim().length >= 2 && normalizeIndianMobile(mobile) !== null && missing.length === 0 && point !== null && !stateBlock;
+
+  /** Live mode (not saving): locality, district and PIN may be left empty. */
+  const liveOptional = isLive && !saveAsAddress ? 'Optional' : undefined;
+
+  const pointStatus = !point
+    ? { ok: false, text: 'Location not set yet — tap below while you are at this address.' }
+    : isLive
+      ? { ok: true, text: 'Live location captured — your order is delivered to this exact spot.' }
+      : point.fresh
+      ? { ok: true, text: 'Current location captured.' }
+      : point.source === 'GPS' || point.source === 'MAP_PIN'
+        ? { ok: true, text: 'Location saved for this address.' }
+        : { ok: false, text: 'Location saved earlier. At this address? Update it for exact delivery.' };
 
   return (
     <Screen>
@@ -303,9 +419,13 @@ export default function AddressFormScreen({
           <AppText variant="h2">←</AppText>
         </Pressable>
         <View>
-          <AppText variant="h3">{isEditing ? 'Edit Address' : 'Add New Address'}</AppText>
+          <AppText variant="h3">{isLive ? 'Delivery details' : isEditing ? 'Edit Address' : 'Add New Address'}</AppText>
           <AppText variant="caption" color={colors.textSecondary}>
-            {isEditing ? 'Update your address details' : 'Enter your address details'}
+            {isLive
+              ? 'Check the details for your current location'
+              : isEditing
+                ? 'Update your address details'
+                : 'Enter your address details'}
           </AppText>
         </View>
       </View>
@@ -318,200 +438,223 @@ export default function AddressFormScreen({
         </View>
       )}
 
-      <ScrollView
-        contentContainerStyle={{
-          padding: spacing.base,
-          // The tab bar floats over this screen now (see MainTabs.tsx's
-          // `AnimatedTabBar`) rather than reserving its own flex space.
-          paddingBottom: tabBarClearance + spacing.xxl,
-          gap: spacing.base,
-        }}
-        keyboardShouldPersistTaps="handled"
-      >
-        {error && <NoticeStrip message={error} />}
+      {/* Shrinks the scroll area by whatever the keyboard covers (0 when the
+          window has already been resized for it), so every field and Save
+          can be scrolled into view while typing. */}
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+        <ScrollView
+          contentContainerStyle={{
+            padding: spacing.base,
+            // The tab bar floats over this screen now (see MainTabs.tsx's
+            // `AnimatedTabBar`) rather than reserving its own flex space.
+            paddingBottom: tabBarClearance + spacing.xl,
+            gap: spacing.md,
+          }}
+          keyboardShouldPersistTaps="handled"
+        >
+          {error && <NoticeStrip message={error} />}
 
-        <Field label="Full Name">
-          <Input value={fullName} onChangeText={setFullName} placeholder="Enter full name" />
-        </Field>
-
-        <Field label="Phone Number">
-          <Input value={mobile} onChangeText={setMobile} placeholder="Enter phone number" keyboardType="phone-pad" maxLength={15} />
-        </Field>
-
-        <Field label="House / building / shop no." hint="Optional">
-          <Input value={fields.houseNo} onChangeText={(v) => setField('houseNo', v)} placeholder="e.g. 12, Shree Niwas" />
-        </Field>
-
-        <Field label="Street / road" hint="Optional">
-          <Input value={fields.street} onChangeText={(v) => setField('street', v)} placeholder="e.g. Station Road" />
-        </Field>
-
-        <Field label="Locality / mohalla / colony">
-          <Input value={fields.area} onChangeText={(v) => setField('area', v)} placeholder="e.g. Shastri Nagar" />
-        </Field>
-
-        <Field label="Village / City / Town">
-          <Input value={fields.city} onChangeText={(v) => setField('city', v)} placeholder="Your village, or your city / town" />
-        </Field>
-
-        <Field label="District">
-          <Input value={fields.district} onChangeText={(v) => setField('district', v)} placeholder="e.g. Sikar" />
-        </Field>
-
-        <View style={{ flexDirection: 'row', gap: spacing.md }}>
-          <View style={{ flex: 1 }}>
-            <Field label="State">
-              <Pressable onPress={() => setStatePickerOpen(!statePickerOpen)} style={styles.select}>
-                <AppText variant="body" color={fields.state ? colors.textPrimary : colors.textMuted}>
-                  {fields.state || 'Select state'}
-                </AppText>
-                <AppText variant="body" color={colors.textSecondary}>
-                  ⌄
-                </AppText>
-              </Pressable>
-            </Field>
-          </View>
-          <View style={{ flex: 1 }}>
-            <Field label="PIN code">
-              <Input
-                value={fields.pincode}
-                onChangeText={(value) => setField('pincode', value.replace(/\D/g, ''))}
-                placeholder="6 digits"
-                keyboardType="number-pad"
-                maxLength={6}
-              />
-            </Field>
-          </View>
-        </View>
-
-        {statePickerOpen && (
-          // A plain View clipped the list at maxHeight; it has to be a
-          // ScrollView, and on Android a same-axis scroller nested in the
-          // form's ScrollView only receives drags with nestedScrollEnabled.
-          <ScrollView style={styles.stateList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
-            {INDIAN_STATES.map((item) => (
-              <Pressable
-                key={item}
-                onPress={() => {
-                  setField('state', item);
-                  setStatePickerOpen(false);
-                }}
-                style={styles.stateItem}
-              >
-                <AppText variant="body" color={item === fields.state ? colors.primary : colors.textPrimary}>
-                  {item}
-                </AppText>
-              </Pressable>
-            ))}
-          </ScrollView>
-        )}
-
-        {fields.pincode.length === 6 && !isValidPincode(fields.pincode) && (
-          <AppText variant="caption" color={colors.danger}>
-            Enter a valid 6-digit PIN code.
-          </AppText>
-        )}
-
-        <Field label="Landmark" hint="Optional">
-          <Input value={fields.landmark} onChangeText={(v) => setField('landmark', v)} placeholder="e.g. Near Shiv Mandir" />
-        </Field>
-
-        {/* The point — separate from the text above */}
-        <View style={styles.locationBox}>
-          <AppText variant="bodyStrong">Delivery location</AppText>
-          <AppText variant="caption" color={point?.source === 'GPS' ? colors.primary : colors.textSecondary} style={{ marginTop: spacing.xs }}>
-            {pointSummary}
-          </AppText>
-          <Button
-            label={locating ? 'Finding location…' : "Use my current location (I'm at this address)"}
-            onPress={() => void useCurrentLocation()}
-            disabled={locating}
-            style={{ marginTop: spacing.md }}
-          />
-          <Button
-            label="Find location from the address"
-            variant="secondary"
-            onPress={() => void findFromAddress()}
-            disabled={locating}
-            style={{ marginTop: spacing.sm }}
-          />
-          {locationNote && (
-            <AppText variant="caption" color={locationNote.ok ? colors.primary : colors.danger} style={{ marginTop: spacing.sm }}>
-              {locationNote.message}
-            </AppText>
+          {isLive && !live?.suggestion && (
+            <NoticeStrip
+              tone="info"
+              message="Your location was found, but its address could not be read. Please fill in the details below — or tap “Use my current location” to try reading it again."
+            />
           )}
-          {suggestion && (
-            <View style={styles.suggestion}>
-              <AppText variant="bodyStrong">Address at your location</AppText>
-              <AppText variant="caption" color={colors.textSecondary} style={{ marginTop: spacing.xs }}>
-                {[suggestion.houseNo, suggestion.street, suggestion.area, suggestion.city, suggestion.district, suggestion.state, suggestion.pincode]
-                  .filter(Boolean)
-                  .join(', ')}
-              </AppText>
-              <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm, flexWrap: 'wrap' }}>
-                <Button label="Fill empty fields" variant="secondary" onPress={() => applySuggestion('empty')} />
-                <Button label="Replace all" variant="ghost" onPress={() => applySuggestion('all')} />
-                <Button label="Ignore" variant="ghost" onPress={() => setSuggestion(null)} />
-              </View>
+          {isLive && live?.quality === 'POOR' && (
+            <NoticeStrip message="Your phone could only find an approximate location. For exact delivery, try again outdoors." />
+          )}
+          {stateBlock && <NoticeStrip message={stateBlock} />}
+
+          <Field label="Full Name">
+            <Input value={fullName} onChangeText={setFullName} placeholder="Enter full name" autoCapitalize="words" />
+          </Field>
+
+          <Field label="Phone Number">
+            <Input value={mobile} onChangeText={setMobile} placeholder="Enter phone number" keyboardType="phone-pad" maxLength={15} />
+          </Field>
+
+          <Field label="House No. + Street / Road" hint="Optional">
+            <Input
+              value={fields.houseStreet}
+              onChangeText={(v) => setField('houseStreet', v)}
+              placeholder="e.g. 12, Shree Niwas, Station Road"
+              autoCapitalize="words"
+              // An older address can be longer when left as it was; edited text must fit the column.
+              maxLength={Math.max(HOUSE_STREET_MAX, originalHouseStreet.length)}
+            />
+          </Field>
+
+          <Field label="Locality / Mohalla / Colony" hint={liveOptional}>
+            <Input value={fields.area} onChangeText={(v) => setField('area', v)} placeholder="e.g. Shastri Nagar" autoCapitalize="words" />
+          </Field>
+
+          <Field label="Village / City / Town">
+            <Input value={fields.city} onChangeText={(v) => setField('city', v)} placeholder="Your village, or your city / town" autoCapitalize="words" />
+          </Field>
+
+          <View style={styles.row}>
+            <View style={{ flex: 1 }}>
+              <Field label="District" hint={liveOptional}>
+                <Input value={fields.district} onChangeText={(v) => setField('district', v)} placeholder="e.g. Rajsamand" autoCapitalize="words" />
+              </Field>
             </View>
-          )}
-          {delivery && (
-            <AppText variant="caption" color={delivery.ok ? colors.primary : colors.danger} style={{ marginTop: spacing.sm }}>
-              {delivery.message}
+            <View style={{ flex: 1 }}>
+              <Field label="PIN Code" hint={liveOptional}>
+                <Input
+                  value={fields.pincode}
+                  onChangeText={(value) => setField('pincode', value.replace(/\D/g, ''))}
+                  placeholder="6 digits"
+                  keyboardType="number-pad"
+                  maxLength={6}
+                />
+              </Field>
+            </View>
+          </View>
+
+          {fields.pincode.length === 6 && !isValidPincode(fields.pincode) && (
+            <AppText variant="caption" color={colors.danger}>
+              Enter a valid 6-digit PIN code.
             </AppText>
           )}
-        </View>
 
-        {!complete && (missing.length > 0 || !point) && (
-          <AppText variant="caption" color={colors.textSecondary}>
-            Still needed: {[...missing.map((key) => ADDRESS_FIELD_LABEL[key]), ...(point ? [] : ['Delivery location'])].join(', ')}
-          </AppText>
-        )}
+          {/* Never editable: Rajasthan for new addresses, the phone's reading
+              for a live point, an older address's own state as saved. */}
+          <Field label="State">
+            <View style={styles.fixedValue} accessible accessibilityLabel={`State, ${state || 'not in Rajasthan'}, cannot be changed`}>
+              <AppText variant="body" color={stateBlock ? colors.danger : colors.textSecondary}>
+                {state || 'Outside Rajasthan'}
+              </AppText>
+              <Ionicons name="lock-closed-outline" size={16} color={colors.textMuted} />
+            </View>
+          </Field>
 
-        <Field label="Address Type">
-          <View style={{ flexDirection: 'row', gap: spacing.md }}>
-            {ADDRESS_TYPES.map((type) => {
-              const active = type === addressType;
-              return (
-                <Pressable
-                  key={type}
-                  onPress={() => setAddressType(type)}
-                  style={[
-                    styles.typeChip,
-                    active && { borderColor: colors.primary, backgroundColor: colors.primarySurface },
-                  ]}
-                >
-                  <AppText
-                    variant="bodyStrong"
-                    color={active ? colors.primary : colors.textSecondary}
-                  >
-                    {type}
-                  </AppText>
-                </Pressable>
-              );
-            })}
+          {/* The point — separate from the text above */}
+          <View style={styles.locationBox}>
+            <View style={styles.locationStatus}>
+              <Ionicons
+                name={pointStatus.ok ? 'checkmark-circle' : 'location-outline'}
+                size={18}
+                color={pointStatus.ok ? colors.primary : colors.textSecondary}
+              />
+              <AppText variant="caption" color={pointStatus.ok ? colors.primary : colors.textSecondary} style={{ flex: 1 }}>
+                {pointStatus.text}
+              </AppText>
+            </View>
+            <Button
+              label={locating ? 'Getting your location…' : locationError ? 'Try again' : 'Use my current location'}
+              onPress={() => void useCurrentLocation()}
+              loading={locating}
+              style={{ marginTop: spacing.sm }}
+            />
+            {locationError && (
+              <View style={{ marginTop: spacing.sm }}>
+                <AppText variant="caption" color={colors.danger}>
+                  {locationError.message}
+                </AppText>
+                {locationError.status === 'PERMISSION_DENIED' && (
+                  <Pressable onPress={() => void Linking.openSettings()} hitSlop={8} style={{ marginTop: spacing.xs }}>
+                    <AppText variant="bodyStrong" color={colors.primary}>
+                      Open settings
+                    </AppText>
+                  </Pressable>
+                )}
+              </View>
+            )}
+            {locationNote && (
+              <AppText variant="caption" color={locationNote.ok ? colors.primary : colors.danger} style={{ marginTop: spacing.sm }}>
+                {locationNote.message}
+              </AppText>
+            )}
           </View>
-        </Field>
 
-        <Pressable onPress={() => setIsDefault(!isDefault)} style={styles.toggleRow}>
-          <View style={{ flex: 1 }}>
-            <AppText variant="bodyStrong">Make it Default Address</AppText>
+          {!complete && (missing.length > 0 || !point) && (
             <AppText variant="caption" color={colors.textSecondary}>
-              This address will be used as default
+              Still needed:{' '}
+              {[...missing.map((key) => ADDRESS_FIELD_LABEL[key]), ...(point ? [] : ['Current location'])].join(', ')}
             </AppText>
-          </View>
-          <View style={[styles.toggle, isDefault && { backgroundColor: colors.primary }]}>
-            <View style={[styles.toggleKnob, isDefault && { alignSelf: 'flex-end' }]} />
-          </View>
-        </Pressable>
+          )}
 
-        <Button
-          label={isEditing ? 'Save Changes' : 'Save Address'}
-          onPress={() => save.mutate()}
-          loading={save.isPending}
-          disabled={!complete}
-        />
-      </ScrollView>
+          {/* Live mode: saving is the customer's explicit choice, off by default. */}
+          {isLive && (
+            <Pressable
+              onPress={() => setSaveAsAddress(!saveAsAddress)}
+              style={styles.toggleRow}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: saveAsAddress }}
+            >
+              <View style={{ flex: 1 }}>
+                <AppText variant="bodyStrong">Also save this address</AppText>
+                <AppText variant="caption" color={colors.textSecondary}>
+                  {saveAsAddress
+                    ? 'Saved to your addresses — needs locality, district and PIN.'
+                    : 'Not needed to order — this location is used for this order only.'}
+                </AppText>
+              </View>
+              <View style={[styles.toggle, saveAsAddress && { backgroundColor: colors.primary }]}>
+                <View style={[styles.toggleKnob, saveAsAddress && { alignSelf: 'flex-end' }]} />
+              </View>
+            </Pressable>
+          )}
+
+          {(!isLive || saveAsAddress) && (
+            <Field label="Address Type">
+              <View style={styles.row}>
+                {ADDRESS_TYPES.map((type) => {
+                  const active = type === addressType;
+                  return (
+                    <Pressable
+                      key={type}
+                      onPress={() => setAddressType(type)}
+                      style={[styles.typeChip, active && { borderColor: colors.primary, backgroundColor: colors.primarySurface }]}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected: active }}
+                    >
+                      <AppText variant="bodyStrong" color={active ? colors.primary : colors.textSecondary}>
+                        {type}
+                      </AppText>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </Field>
+          )}
+
+          {!isLive && (
+            <Pressable
+              onPress={() => setIsDefault(!isDefault)}
+              style={styles.toggleRow}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: isDefault }}
+            >
+              <View style={{ flex: 1 }}>
+                <AppText variant="bodyStrong">Make it Default Address</AppText>
+                <AppText variant="caption" color={colors.textSecondary}>
+                  This address will be used as default
+                </AppText>
+              </View>
+              <View style={[styles.toggle, isDefault && { backgroundColor: colors.primary }]}>
+                <View style={[styles.toggleKnob, isDefault && { alignSelf: 'flex-end' }]} />
+              </View>
+            </Pressable>
+          )}
+
+          {isLive ? (
+            <Button
+              label="Deliver to this location"
+              onPress={() => confirmLive.mutate()}
+              loading={confirmLive.isPending}
+              disabled={!complete}
+            />
+          ) : (
+            <Button
+              label={isEditing ? 'Save Changes' : 'Save Address'}
+              onPress={() => save.mutate()}
+              loading={save.isPending}
+              disabled={!complete}
+            />
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </Screen>
   );
 }
@@ -553,20 +696,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   back: { width: 40, height: 40, justifyContent: 'center' },
-  locationBox: {
-    padding: spacing.base,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.lg,
-    backgroundColor: colors.surface,
-  },
-  suggestion: {
-    marginTop: spacing.md,
-    padding: spacing.md,
-    borderRadius: radius.lg,
-    backgroundColor: colors.surfaceMuted,
-  },
-  select: {
+  row: { flexDirection: 'row', gap: spacing.md },
+  fixedValue: {
     minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
@@ -575,26 +706,23 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radius.lg,
-    backgroundColor: colors.surface,
+    backgroundColor: colors.surfaceMuted,
   },
-  stateList: {
-    maxHeight: 260,
+  locationBox: {
+    padding: spacing.md,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radius.lg,
     backgroundColor: colors.surface,
-    overflow: 'hidden',
   },
-  stateItem: {
-    minHeight: 48,
-    justifyContent: 'center',
-    paddingHorizontal: spacing.base,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
+  locationStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
   },
   typeChip: {
     flex: 1,
-    minHeight: 56,
+    minHeight: 48,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: radius.lg,
@@ -606,7 +734,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.base,
-    minHeight: 56,
+    minHeight: 52,
   },
   toggle: {
     width: 52,

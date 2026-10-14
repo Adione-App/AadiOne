@@ -15,7 +15,7 @@ import { cache } from '../../src/infra/cache';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as otpService from '../../src/modules/auth/otp.service';
 import * as sellerService from '../../src/modules/sellers/seller.service';
-import { seedAddress, seedProduct, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
+import { seedAddress, seedProduct, seedSellerListing, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
 
@@ -130,7 +130,8 @@ describe('seller availability API authorization', () => {
 
     const g = await api().get('/api/v1/seller/availability').set('Authorization', bearer(general.token)).expect(200);
     const r = await api().get('/api/v1/seller/availability').set('Authorization', bearer(restaurant.token)).expect(200);
-    expect(expectSuccess<{ sellerId: string; sellerType: string }>(g.body).data).toMatchObject({ sellerId: general.id, sellerType: 'GENERAL' });
+    // A seller created without a type is OTHER (the schema default; there is no "GENERAL" type).
+    expect(expectSuccess<{ sellerId: string; sellerType: string }>(g.body).data).toMatchObject({ sellerId: general.id, sellerType: 'OTHER' });
     expect(expectSuccess<{ sellerId: string; sellerType: string }>(r.body).data).toMatchObject({ sellerId: restaurant.id, sellerType: 'RESTAURANT' });
   });
 });
@@ -142,9 +143,7 @@ describe('orderability', () => {
     const grocery = await seedProduct(platformId, { pricePaise: 8000, stockQty: 10 });
     const r = await seedSeller('9700000030', 'Restaurant R');
     const product = await seedProduct(platformId, { pricePaise: 12000, stockQty: 10 });
-    const listing = expectSuccess<{ id: string }>(
-      (await api().post(`/api/v1/admin/sellers/${r.id}/listings`).set('Authorization', bearer(adminToken)).send({ variantId: product.variantId, mrpPaise: 13000, pricePaise: 12000, stockQty: 10 }).expect(201)).body,
-    ).data.id;
+    const listing = await seedSellerListing(r.id, product.variantId, { mrpPaise: 13000, pricePaise: 12000, stockQty: 10 });
     await otpService.clearOtpState('9700000099');
     const customer = await loginAs('9700000099');
     return { r, listing, grocery, platformId, customer: { token: customer.accessToken, addressId: await seedAddress(customer.userId) } };

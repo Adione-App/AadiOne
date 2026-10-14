@@ -241,6 +241,9 @@ export async function listOrders(options: {
         ]
           .filter(Boolean)
           .join(', '),
+        deliveryMode: order.deliveryMode,
+        deliveryLatitude: order.deliveryLatitude,
+        deliveryLongitude: order.deliveryLongitude,
         deliveryAgentName: order.deliveryTasks[0]?.agent.name ?? null,
         minutesSincePlaced: Math.floor(
           (now - (order.placedAt ?? order.createdAt).getTime()) / 60_000,

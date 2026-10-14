@@ -13,7 +13,7 @@ import { hashPassword } from '../../src/common/crypto';
 import { cache } from '../../src/infra/cache';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as otpService from '../../src/modules/auth/otp.service';
-import { seedAddress, seedProduct, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
+import { seedAddress, seedProduct, seedSellerListing, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
 
@@ -57,9 +57,7 @@ async function setup() {
   const platformId = await seedStore();
   const seller = await seedSeller('9800000010', 1000); // 10% default
   const product = await seedProduct(platformId, { pricePaise: 10000, stockQty: 20 });
-  const listingId = expectSuccess<{ id: string }>(
-    (await api().post(`/api/v1/admin/sellers/${seller.id}/listings`).set('Authorization', bearer(adminToken)).send({ variantId: product.variantId, mrpPaise: 11000, pricePaise: 10000, stockQty: 20 }).expect(201)).body,
-  ).data.id;
+  const listingId = await seedSellerListing(seller.id, product.variantId, { mrpPaise: 11000, pricePaise: 10000, stockQty: 20 });
   return { adminToken, seller, product, listingId };
 }
 

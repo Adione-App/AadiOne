@@ -13,6 +13,7 @@ import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import * as configService from '../configuration/configuration.service';
 import * as sellerService from '../sellers/seller.service';
+import { assertServiceState, normalizeServiceState, serviceStateProblem } from './service-state';
 
 export function toAddressDto(address: Address): AddressDto {
   return {
@@ -36,7 +37,12 @@ export function toAddressDto(address: Address): AddressDto {
       : null,
     locationAccuracyM: address.locationAccuracyM,
     isDefault: address.isDefault,
-    isServiceable: address.isServiceable,
+    // The cached radius answer AND Rajasthan-only, evaluated on read: an
+    // older out-of-state address (cached before the rule) is never offered as
+    // deliverable — and its row is left exactly as it is.
+    isServiceable:
+      address.isServiceable &&
+      serviceStateProblem({ state: address.state, latitude: address.latitude, longitude: address.longitude }) === null,
     distanceKm: address.distanceKm,
     createdAt: address.createdAt.toISOString(),
   };
@@ -92,9 +98,13 @@ export async function getOwnedAddress(userId: string, addressId: string): Promis
 async function evaluateServiceability(
   latitude: number,
   longitude: number,
+  state: string,
 ): Promise<{ isServiceable: boolean; distanceKm: number }> {
   const result = await sellerService.getServiceability(latitude, longitude);
-  return { isServiceable: result.serviceable, distanceKm: result.distanceKm };
+  // getServiceability already refuses a point outside Rajasthan; the state
+  // TEXT counts too, so an older out-of-state address never shows as deliverable.
+  const inState = serviceStateProblem({ state, latitude, longitude }) === null;
+  return { isServiceable: result.serviceable && inState, distanceKm: result.distanceKm };
 }
 
 export async function createAddress(
@@ -110,7 +120,13 @@ export async function createAddress(
     });
   }
 
-  const serviceability = await evaluateServiceability(input.latitude, input.longitude);
+  // Rajasthan only — the state AND the point. Unlike being beyond a seller's
+  // radius (saved below, ordering blocked), an address outside Rajasthan can
+  // never be delivered to, so it is not stored at all.
+  assertServiceState(input, 'destination');
+  const state = normalizeServiceState(input.state) ?? input.state;
+
+  const serviceability = await evaluateServiceability(input.latitude, input.longitude, state);
 
   // An out-of-area address is SAVED rather than rejected: the customer may be
   // adding their parents' address for later, and refusing to store it teaches
@@ -139,7 +155,7 @@ export async function createAddress(
         area: input.area,
         city: input.city,
         district: input.district ?? null,
-        state: input.state,
+        state,
         pincode: input.pincode,
         landmark: input.landmark ?? null,
         latitude: input.latitude,
@@ -167,6 +183,13 @@ export async function updateAddress(
   const latitude = input.latitude ?? existing.latitude;
   const longitude = input.longitude ?? existing.longitude;
   const pinMoved = latitude !== existing.latitude || longitude !== existing.longitude;
+
+  // The address as it would be after this edit must be in Rajasthan. An older
+  // out-of-state address is refused with a clear reason — never quietly
+  // rewritten as Rajasthan; the customer can delete it or add a new one.
+  const resultingState = input.state ?? existing.state;
+  assertServiceState({ state: resultingState, latitude, longitude }, 'destination');
+  const state = normalizeServiceState(resultingState) ?? resultingState;
   // A moved point carries its new origin (unrecorded if the client did not say);
   // an unmoved point keeps its own unless the client confirms a new one.
   const locationSource = pinMoved || input.locationSource !== undefined ? (input.locationSource ?? null) : existing.locationSource;
@@ -180,8 +203,8 @@ export async function updateAddress(
   // Recompute whenever the pin moved — an edited address that keeps a stale
   // "serviceable" flag is how an undeliverable order gets accepted.
   const serviceability =
-    pinMoved
-      ? await evaluateServiceability(latitude, longitude)
+    pinMoved || state !== existing.state
+      ? await evaluateServiceability(latitude, longitude, state)
       : { isServiceable: existing.isServiceable, distanceKm: existing.distanceKm ?? 0 };
 
   const address = await runInTransaction(async (tx) => {
@@ -203,7 +226,7 @@ export async function updateAddress(
         ...(input.area !== undefined ? { area: input.area } : {}),
         ...(input.city !== undefined ? { city: input.city } : {}),
         ...(input.district !== undefined ? { district: input.district } : {}),
-        ...(input.state !== undefined ? { state: input.state } : {}),
+        ...(input.state !== undefined ? { state } : {}),
         ...(input.pincode !== undefined ? { pincode: input.pincode } : {}),
         ...(input.landmark !== undefined ? { landmark: input.landmark } : {}),
         ...(input.isDefault !== undefined ? { isDefault: input.isDefault } : {}),
@@ -275,7 +298,7 @@ export async function setDefaultAddress(
 export async function refreshServiceability(userId: string): Promise<void> {
   const addresses = await prisma.address.findMany({ where: { userId, deletedAt: null } });
   for (const address of addresses) {
-    const result = await evaluateServiceability(address.latitude, address.longitude);
+    const result = await evaluateServiceability(address.latitude, address.longitude, address.state);
     await prisma.address.update({
       where: { id: address.id },
       data: { isServiceable: result.isServiceable, distanceKm: result.distanceKm },

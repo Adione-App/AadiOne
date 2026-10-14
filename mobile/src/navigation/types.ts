@@ -7,6 +7,23 @@
  */
 
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import type { AddressSuggestion, FixQuality } from "@shared/location";
+
+/**
+ * A fresh GPS fix from Select Location, handed to the delivery-details form
+ * (AddressForm in live mode). `suggestion` is the reverse-geocoded address —
+ * null when the geocoder found nothing (the form then asks for it).
+ */
+export interface LiveFixParams {
+  latitude: number;
+  longitude: number;
+  accuracyM: number | null;
+  quality: FixQuality;
+  suggestion: AddressSuggestion | null;
+}
+
+/** Edit a saved address, add one, or (with `live`) confirm a live location. */
+type AddressFormParams = { addressId?: string; live?: LiveFixParams } | undefined;
 
 export type AuthStackParamList = {
   Splash: undefined;
@@ -35,7 +52,7 @@ export type CatalogStackParamList = {
   SearchHome: undefined;
   ProductDetail: { productId: string };
   SelectLocation: undefined;
-  AddressForm: { addressId?: string } | undefined;
+  AddressForm: AddressFormParams;
   RailProducts: {
     key: "POPULAR" | "DAILY_ESSENTIALS" | "BEST_SELLERS" | "RECENTLY_ADDED" | "OFFERS";
     title: string;
@@ -43,7 +60,8 @@ export type CatalogStackParamList = {
   OrderTracking: { orderId: string };
   Notifications: undefined;
   /** A restaurant's / cafe's menu, opened from Home's food rail. */
-  RestaurantMenu: { sellerId: string; name?: string };
+  /** `diet`: the Food list filter it was opened under — the menu opens filtered the same way. */
+  RestaurantMenu: { sellerId: string; name?: string; diet?: "VEG" | "NON_VEG" };
   /** A marketplace seller's store page, opened from Home's stores rail. */
   Store: { sellerId: string };
 };
@@ -51,7 +69,8 @@ export type CatalogStackParamList = {
 /** The Food tab's own stack: restaurants & cafes, then a menu. */
 export type FoodStackParamList = {
   FoodHome: undefined;
-  RestaurantMenu: { sellerId: string; name?: string };
+  /** `diet`: the Food list filter it was opened under — the menu opens filtered the same way. */
+  RestaurantMenu: { sellerId: string; name?: string; diet?: "VEG" | "NON_VEG" };
 };
 
 export type CartStackParamList = {
@@ -59,7 +78,9 @@ export type CartStackParamList = {
   UpiPayment: { orderId: string };
   OrderTracking: { orderId: string };
   Addresses: undefined;
-  AddressForm: { addressId?: string } | undefined;
+  /** "Change" on the checkout address — a saved address or the live location. */
+  SelectLocation: undefined;
+  AddressForm: AddressFormParams;
   ProductDetail: { productId: string };
 };
 
@@ -68,7 +89,7 @@ export type AccountStackParamList = {
   Orders: undefined;
   OrderTracking: { orderId: string };
   Addresses: undefined;
-  AddressForm: { addressId?: string } | undefined;
+  AddressForm: AddressFormParams;
   PersonalInfo: undefined;
   Help: undefined;
   About: undefined;

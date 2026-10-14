@@ -16,7 +16,7 @@ import * as configService from '../../src/modules/configuration/configuration.se
 import * as otpService from '../../src/modules/auth/otp.service';
 import { MockPaymentProvider } from '../../src/infra/payment';
 import { releaseExpiredReservations } from '../../src/jobs';
-import { seedAddress, seedProduct, seedStore } from '../helpers/fixtures';
+import { configureTestMerchantUpi, seedAddress, seedProduct, seedStore } from '../helpers/fixtures';
 
 const MOBILE = '9876543210';
 
@@ -73,6 +73,8 @@ beforeEach(async () => {
   await configService.invalidateAll();
   await otpService.clearOtpState(MOBILE);
   await cache.clear();
+  // The direct-UPI (mock provider) path needs a merchant VPA — a test-only placeholder.
+  await configureTestMerchantUpi();
 });
 
 describe('online payment — fast path', () => {

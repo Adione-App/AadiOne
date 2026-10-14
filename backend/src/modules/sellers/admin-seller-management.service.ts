@@ -55,6 +55,7 @@ import * as onboardingService from './seller-onboarding.service';
 import * as sellerService from './seller.service';
 import { SellerAuditAction } from './seller-audit';
 import { stageFor } from './seller-lifecycle-rules';
+import { assertServiceState } from '../addresses/service-state';
 
 export interface CreateSellerResult {
   sellerId: string;
@@ -189,6 +190,8 @@ export async function createSeller(
       message: 'Those coordinates are not valid.',
     });
   }
+  // Rajasthan only: the store's state AND point.
+  assertServiceState(input, 'store');
 
   return runInTransaction(async (tx) => {
     // Duplicate-ownership / duplicate-identity check, race-safe: this runs

@@ -7,6 +7,8 @@
 
 /** String, slug and identifier helpers. */
 
+import { landmarkPhrase } from './address';
+
 /** URL-safe slug: "Atta, Rice & Dal" -> "atta-rice-dal". */
 export function slugify(input: string): string {
   return input
@@ -88,7 +90,9 @@ export function formatAddressLine(parts: {
   pincode?: string | null;
 }): string {
   const head = [
-    parts.landmark ? `Near ${parts.landmark}` : null,
+    // "Near Shiv Mandir" — a landmark already saying "Near" / "Opposite" is
+    // kept as typed (it used to become "Near Near Shiv Mandir").
+    parts.landmark?.trim() ? landmarkPhrase(parts.landmark.trim()) : null,
     parts.houseNo,
     parts.street,
     parts.area,

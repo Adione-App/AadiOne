@@ -247,6 +247,12 @@ enum PaymentMethod {
   COD
 }
 
+/// Where an order's delivery snapshot came from.
+enum DeliveryMode {
+  SAVED_ADDRESS
+  LIVE_LOCATION
+}
+
 /// Money view of an order.
 enum OrderPaymentStatus {
   PENDING
@@ -870,11 +876,15 @@ model RestaurantProfile {
   isVegOnly   Boolean  @default(false) @map("is_veg_only")
   avgPrepMins Int?     @map("avg_prep_mins")
 
-  /// Customer-facing branding, managed from the Admin Panel (Seller → Restaurant):
-  /// the round logo on the menu page and the wide cover photo behind it / on the
-  /// Food list card. Optimised WebP in public storage, like every content image.
+  /// Customer-facing branding (Admin Panel → Seller → Restaurant; cover and menu
+  /// image also by the restaurant itself in the Seller Panel), optimised WebP in
+  /// public storage like every content image:
+  ///   logoUrl        the round logo on the menu page
+  ///   coverImageUrl  the place itself (storefront / interior) — the Food list card
+  ///   menuImageUrl   the food / menu hero at the top of its menu page
   logoUrl       String? @map("logo_url") @db.VarChar(500)
   coverImageUrl String? @map("cover_image_url") @db.VarChar(500)
+  menuImageUrl  String? @map("menu_image_url") @db.VarChar(500)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
@@ -1548,6 +1558,17 @@ model Order {
   currentPayablePaise Int @map("current_payable_paise")
 
   // --- immutable delivery address snapshot --------------------------------
+  /// SAVED_ADDRESS: copied from the customer's saved address (`addressId`).
+  /// LIVE_LOCATION: a GPS point and details given for THIS order only — no
+  /// saved address (`addressId` is NULL; a CHECK constraint enforces it).
+  /// Orders placed before this existed were all SAVED_ADDRESS (the default).
+  deliveryMode        DeliveryMode @default(SAVED_ADDRESS) @map("delivery_mode")
+  /// The device's accuracy radius (metres) for a LIVE_LOCATION point.
+  deliveryLocationAccuracyM Float? @map("delivery_location_accuracy_m")
+  /// The saved address's label ("Home", "Work") at order time. NULL for
+  /// LIVE_LOCATION and for orders placed before it was recorded (those fall
+  /// back to the address row's current label).
+  deliveryLabel       String? @map("delivery_label") @db.VarChar(30)
   deliveryFullName    String  @map("delivery_full_name") @db.VarChar(120)
   deliveryMobile      String  @map("delivery_mobile") @db.VarChar(15)
   deliveryAddressLine String  @map("delivery_address_line") @db.VarChar(500)
@@ -1555,6 +1576,8 @@ model Order {
   deliveryCity        String  @map("delivery_city") @db.VarChar(80)
   deliveryDistrict    String? @map("delivery_district") @db.VarChar(80)
   deliveryState       String  @map("delivery_state") @db.VarChar(80)
+  /// '' when the customer did not know it (LIVE_LOCATION only — the point
+  /// itself is what the rider goes to).
   deliveryPincode     String  @map("delivery_pincode") @db.VarChar(6)
   deliveryLatitude    Float   @map("delivery_latitude")
   deliveryLongitude   Float   @map("delivery_longitude")

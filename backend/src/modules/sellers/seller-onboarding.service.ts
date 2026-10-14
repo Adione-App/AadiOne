@@ -504,10 +504,24 @@ export async function upsertRestaurantProfile(
 }
 
 function toRestaurantProfileDto(
-  profile: { cuisine: string[]; isVegOnly: boolean; avgPrepMins: number | null } | null,
+  profile: {
+    cuisine: string[];
+    isVegOnly: boolean;
+    avgPrepMins: number | null;
+    logoUrl?: string | null;
+    coverImageUrl?: string | null;
+    menuImageUrl?: string | null;
+  } | null,
 ) {
   if (!profile) return null;
-  return { cuisine: profile.cuisine, isVegOnly: profile.isVegOnly, avgPrepMins: profile.avgPrepMins };
+  return {
+    cuisine: profile.cuisine,
+    isVegOnly: profile.isVegOnly,
+    avgPrepMins: profile.avgPrepMins,
+    logoUrl: profile.logoUrl ?? null,
+    coverImageUrl: profile.coverImageUrl ?? null,
+    menuImageUrl: profile.menuImageUrl ?? null,
+  };
 }
 
 /* -------------------------------------------------------------------------- */

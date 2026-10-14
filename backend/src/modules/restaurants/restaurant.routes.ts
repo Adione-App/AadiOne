@@ -106,6 +106,45 @@ sellerRestaurantRouter.put(
   }),
 );
 
+/**
+ * The restaurant's own customer-facing images: its cover (the Food list card)
+ * and its menu hero (the top of its menu page) — uploaded through
+ * POST /seller/uploads/presign, then attached here. Only its OWN uploads, for
+ * its OWN profile (the seller comes from the session, never from the URL).
+ * Its preparation time is part of PUT /seller/onboarding/restaurant-profile.
+ */
+sellerRestaurantRouter.use('/restaurant', attachSellerContext);
+
+const sellerImageParams = z.object({ kind: z.enum(branding.SELLER_IMAGE_KINDS) });
+
+sellerRestaurantRouter.get(
+  '/restaurant/branding',
+  requirePermission(Permission.SELLER_PROFILE_MANAGE),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await branding.getRestaurantBranding(requireSellerId(req)));
+  }),
+);
+
+sellerRestaurantRouter.put(
+  '/restaurant/images/:kind',
+  requirePermission(Permission.SELLER_PROFILE_MANAGE),
+  validate({ params: sellerImageParams, body: z.object({ key: z.string().trim().min(1).max(400) }).strict() }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { kind } = req.params as { kind: (typeof branding.SELLER_IMAGE_KINDS)[number] };
+    ok(res, await branding.setOwnRestaurantImage(requireSellerId(req), kind, req.body.key, requireUser(req).id));
+  }),
+);
+
+sellerRestaurantRouter.delete(
+  '/restaurant/images/:kind',
+  requirePermission(Permission.SELLER_PROFILE_MANAGE),
+  validate({ params: sellerImageParams }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { kind } = req.params as { kind: (typeof branding.SELLER_IMAGE_KINDS)[number] };
+    ok(res, await branding.removeRestaurantImage(requireSellerId(req), kind, requireUser(req).id));
+  }),
+);
+
 /* admin ----------------------------------------------------------------------- */
 
 export const adminRestaurantRouter: Router = Router();
@@ -119,17 +158,18 @@ adminRestaurantRouter.get(
 );
 
 /**
- * Admin-managed restaurant branding (logo / cover photo) — uploaded through
- * POST /admin/uploads/presign { purpose: 'restaurant' }, then attached here.
+ * Admin-managed restaurant branding (logo, cover photo, menu hero) — uploaded
+ * through POST /admin/uploads/presign { purpose: 'restaurant' }, then attached
+ * here — and its preparation time.
  */
-const imageParams = z.object({ sellerId: uuid, kind: z.enum(['logo', 'cover']) });
+const imageParams = z.object({ sellerId: uuid, kind: z.enum(['logo', 'cover', 'menu']) });
 
 adminRestaurantRouter.put(
   '/restaurants/:sellerId/images/:kind',
   requirePermission(Permission.CATALOG_WRITE),
   validate({ params: imageParams, body: z.object({ key: z.string().trim().min(1).max(400) }).strict() }),
   asyncHandler(async (req: Request, res: Response) => {
-    const { sellerId, kind } = req.params as { sellerId: string; kind: 'logo' | 'cover' };
+    const { sellerId, kind } = req.params as { sellerId: string; kind: branding.RestaurantImageKind };
     ok(res, await branding.setRestaurantImage(sellerId, kind, req.body.key, requireUser(req).id));
   }),
 );
@@ -139,8 +179,20 @@ adminRestaurantRouter.delete(
   requirePermission(Permission.CATALOG_WRITE),
   validate({ params: imageParams }),
   asyncHandler(async (req: Request, res: Response) => {
-    const { sellerId, kind } = req.params as { sellerId: string; kind: 'logo' | 'cover' };
+    const { sellerId, kind } = req.params as { sellerId: string; kind: branding.RestaurantImageKind };
     ok(res, await branding.removeRestaurantImage(sellerId, kind, requireUser(req).id));
+  }),
+);
+
+adminRestaurantRouter.put(
+  '/restaurants/:sellerId/prep-time',
+  requirePermission(Permission.CATALOG_WRITE),
+  validate({
+    params: z.object({ sellerId: uuid }),
+    body: z.object({ avgPrepMins: z.number().int().min(branding.PREP_MINUTES.min).max(branding.PREP_MINUTES.max).nullable() }).strict(),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await branding.setPrepTime(req.params['sellerId'] as string, req.body.avgPrepMins, requireUser(req).id));
   }),
 );
 

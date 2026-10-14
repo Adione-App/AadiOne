@@ -35,6 +35,7 @@ import {
 } from '../../shared/datetime';
 import { AppError } from '../../common/errors';
 import * as configService from '../configuration/configuration.service';
+import { pointInServiceState } from '../addresses/service-state';
 import * as repository from './seller.repository';
 import type { SellerWithHours } from './seller.repository';
 
@@ -406,7 +407,11 @@ export async function getServiceability(latitude: number, longitude: number): Pr
     sellers.map(async (seller) => ({ seller, check: await checkServiceability(latitude, longitude, seller) })),
   );
   const byDistance = [...checks].sort((a, b) => a.check.distanceKm - b.check.distanceKm);
-  const serving = byDistance.filter((entry) => entry.check.serviceable);
+  // Rajasthan only: a point outside it (or too near its border to confirm)
+  // is served by nobody, however near a seller is.
+  const serving = pointInServiceState(latitude, longitude)
+    ? byDistance.filter((entry) => entry.check.serviceable)
+    : [];
   const nearest = serving[0] ?? byDistance[0] ?? null;
 
   if (!nearest || serving.length === 0) {

@@ -16,8 +16,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radius, spacing } from '@shared/theme';
-import { formatStraightLineDistance } from '@shared/distance';
-import { DETECT_MESSAGE, describeAccuracy, suggestionLabel, type DetectResult } from '@shared/location';
+import { DETECT_MESSAGE, suggestionLabel, type DetectResult } from '@shared/location';
 import { detectDeviceLocation, suggestAddressFor } from '@/lib/deviceLocation';
 import { useLocation } from '@/lib/store';
 import { AppText, Button, Card, Loading, Screen } from '@/components/ui';
@@ -100,9 +99,6 @@ export default function LocationScreen({
         <AppText variant="display">Is this where you are?</AppText>
         <Card style={{ marginTop: spacing.lg }}>
           <AppText variant="bodyStrong">{fix.label}</AppText>
-          <AppText variant="caption" color={colors.textSecondary} style={{ marginTop: spacing.xs }}>
-            {describeAccuracy(fix.accuracyM)} · {fix.latitude.toFixed(5)}, {fix.longitude.toFixed(5)}
-          </AppText>
           {fix.quality === 'POOR' && (
             <AppText variant="caption" color={colors.danger} style={{ marginTop: spacing.sm }}>
               Your phone could only find an approximate location. If this is not right, try again outdoors or enter your
@@ -141,8 +137,7 @@ export default function LocationScreen({
           color={colors.textSecondary}
           style={{ textAlign: 'center', marginTop: spacing.md }}
         >
-          This location is {formatStraightLineDistance(serviceability.distanceKm)} from our nearest store. We
-          currently deliver up to {serviceability.maxRadiusKm} km (straight line).
+          This location is outside the area our stores deliver to right now.
         </AppText>
 
         <Card style={{ marginTop: spacing.xl }}>

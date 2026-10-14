@@ -51,6 +51,8 @@ import {
   type BillDto,
   type CartItemDto,
   type CheckoutQuoteResponse,
+  type DeliveryDestinationRequest,
+  type LiveLocationInput,
   type OrderDetailDto,
   type RewardCouponDto,
 } from "@shared";
@@ -58,7 +60,10 @@ import { formatPaise } from "@shared/money";
 import { colors, radius, shadow, spacing } from "@shared/theme";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { addressPrimaryLine } from "@shared/text";
-import { formatAddressOneLine } from "@shared/address";
+import { formatIndianMobile } from "@shared/phone";
+import type { StructuredAddress } from "@shared/address";
+import { addressDetailLines } from "@/lib/addressDisplay";
+import { isActiveLiveDestination } from "@/lib/liveLocation";
 
 import { api, ApiRequestError, resolveImageUrl } from "@/lib/api";
 import {
@@ -160,11 +165,14 @@ function buildSyncNoticeMessage(err: ApiRequestError): string {
 export default function CartScreen({
   onPlaced,
   onAddAddress,
+  onChangeLocation,
   onBrowse,
   onOpenSearch,
 }: {
   onPlaced: (order: OrderDetailDto, requiresPayment: boolean) => void;
   onAddAddress: () => void;
+  /** Select Location: a saved address, or the live (current) location. */
+  onChangeLocation: () => void;
   onBrowse: () => void;
   onOpenSearch: () => void;
 }) {
@@ -172,8 +180,14 @@ export default function CartScreen({
   const tabBarClearance = useTabBarClearance();
   const queryClient = useQueryClient();
 
-  const { serviceability, selectedAddressId, selectAddress, setLocation } =
-    useLocation();
+  const {
+    location,
+    serviceability,
+    selectedAddressId,
+    liveDestination,
+    selectAddress,
+    setLocation,
+  } = useLocation();
 
   // The ONE cart source this screen reads — same optimistic, instantly-
   // updating data the product card / cart badge already read through this
@@ -188,6 +202,12 @@ export default function CartScreen({
 
   const [addressId, setAddressId] = useState<string | null>(null);
   const [addressPickerOpen, setAddressPickerOpen] = useState(false);
+  /**
+   * The floating checkout bar's measured height (0 until laid out). It
+   * grows with the delivery address, which is shown in full, so the list's
+   * bottom padding follows it instead of a fixed guess.
+   */
+  const [checkoutBarHeight, setCheckoutBarHeight] = useState(0);
   const [confirmOrderOpen, setConfirmOrderOpen] = useState(false);
   const [placing, setPlacing] = useState<PaymentMethod | null>(null);
 
@@ -305,6 +325,36 @@ export default function CartScreen({
   }, [addresses.data, selectedAddressId]);
 
   /**
+   * THE destination checkout quotes and orders to — exactly one of:
+   *   - the LIVE location confirmed for Home's current GPS point (its own
+   *     recipient and details; no saved address involved), or
+   *   - the saved address picked above.
+   * Everything below (quote, order, idempotency key, the address shown)
+   * follows this one value, so what is shown is what is sent.
+   */
+  const live = isActiveLiveDestination(liveDestination, location)
+    ? liveDestination
+    : null;
+  const destinationBody = useMemo<DeliveryDestinationRequest | null>(
+    () =>
+      live ? { liveLocation: live } : addressId ? { addressId } : null,
+    [live, addressId],
+  );
+  const destinationKey = destinationBody
+    ? JSON.stringify(destinationBody)
+    : null;
+
+  /**
+   * A new destination is a new checkout attempt: the server refuses one
+   * idempotency key with a different body (409), and must never replay an
+   * order placed to the previous destination. Retrying the SAME destination
+   * keeps the key, so a retried request returns the same order.
+   */
+  useEffect(() => {
+    setIdempotencyKey(Crypto.randomUUID());
+  }, [destinationKey]);
+
+  /**
    * `/checkout/quote` prices the SERVER's cart, so the quote is keyed on what
    * the server has confirmed (listing:qty per line), not on the address
    * alone. Keyed on the address alone, a quote fetched against an earlier
@@ -324,10 +374,10 @@ export default function CartScreen({
   );
 
   const quote = useQuery({
-    queryKey: ["checkout-quote", addressId, confirmedCartKey],
+    queryKey: ["checkout-quote", destinationKey, confirmedCartKey],
     queryFn: () =>
-      api.post<CheckoutQuoteResponse>("/checkout/quote", { addressId }),
-    enabled: addressId !== null && confirmedCartKey !== "",
+      api.post<CheckoutQuoteResponse>("/checkout/quote", destinationBody),
+    enabled: destinationBody !== null && confirmedCartKey !== "",
     // A quantity change re-keys this query. Without this the previous quote
     // vanished until the new one arrived, so BOTH pay buttons went disabled
     // for a full quote round trip after every tap. The previous quote stays
@@ -335,7 +385,11 @@ export default function CartScreen({
     // `bill` below), and the server re-prices everything at placement —
     // a fee that changed in between comes back as PRICE_CHANGED and is
     // resynced on the spot (see `placeOrder`).
-    placeholderData: keepPreviousData,
+    //
+    // Only for the SAME destination, though: a changed destination must be
+    // validated (serviceability, fees) by its own quote before Pay works.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === destinationKey ? previous : undefined,
   });
 
   /**
@@ -368,7 +422,7 @@ export default function CartScreen({
 
   const placeOrder = useCallback(
     async (method: PaymentMethod): Promise<void> => {
-      if (!addressId || !quote.data || !cart || placing) return;
+      if (!destinationBody || !quote.data || !cart || placing) return;
 
       setPlacing(method);
       setCheckoutError(null);
@@ -380,7 +434,9 @@ export default function CartScreen({
         }>(
           "/orders",
           {
-            addressId,
+            // The saved address id OR the live location — the same
+            // destination the quote on screen was computed for.
+            ...destinationBody,
             paymentMethod: method,
             // Safety check only — the server calculates the real amount. Uses
             // the merged bill (`bill`, not the possibly-stale `quote.data.bill`)
@@ -470,7 +526,7 @@ export default function CartScreen({
       }
     },
     [
-      addressId,
+      destinationBody,
       quote,
       placing,
       bill,
@@ -587,11 +643,39 @@ export default function CartScreen({
    * SERVICEABILITY / CHECKOUT READINESS
    * ============================================================== */
 
-  const outOfArea = serviceability !== null && !serviceability.serviceable;
+  // Only meaningful when the order goes to a saved address (no live location).
+  const selectedAddress = live
+    ? null
+    : (addresses.data?.find((item) => item.id === addressId) ?? null);
+
+  /**
+   * A live location IS Home's location. Otherwise the order goes to a saved
+   * address, and Home's location can be something else: a GPS point never
+   * confirmed as a live destination, or — after a restart, when the chosen
+   * address id is not restored — a different saved address. Then the
+   * delivery check here follows the address the order actually uses, and the
+   * bar says plainly that it is not Home's location.
+   */
+  const deliversToHomeLocation =
+    live !== null ||
+    selectedAddress === null ||
+    location === null ||
+    (selectedAddress.latitude === location.latitude &&
+      selectedAddress.longitude === location.longitude);
+  const addressNote =
+    selectedAddress && !deliversToHomeLocation
+      ? location?.source === "GPS"
+        ? "Not your current location — orders go to this saved address. Tap Change to deliver to where you are now."
+        : "Not the location shown on Home — orders go to this saved address."
+      : null;
+
+  // The server re-checks every cart seller against the address on quote and
+  // on order placement either way; this only decides what the screen shows.
+  const outOfArea = deliversToHomeLocation
+    ? serviceability !== null && !serviceability.serviceable
+    : !selectedAddress!.isServiceable;
   const canCheckout = cart.checkoutEnabled && !outOfArea;
 
-  const selectedAddress =
-    addresses.data?.find((item) => item.id === addressId) ?? null;
   const displayBill = bill ?? cart.bill;
 
   // Usable as soon as there is a quote — including the previous one while a
@@ -603,7 +687,7 @@ export default function CartScreen({
     canCheckout &&
     !placing &&
     !actions.busy &&
-    Boolean(addressId) &&
+    destinationBody !== null &&
     Boolean(quote.data);
   const canPlaceOrderCod = canPlaceOrderBase && quote.data?.codAllowed === true;
   const canPlaceOrderOnline = canPlaceOrderBase;
@@ -750,8 +834,12 @@ export default function CartScreen({
           // Details card is never hidden behind it. `tabBarClearance` added
           // on top now that the checkout bar itself rests `tabBarClearance`
           // above the true screen bottom (see `bottomCheckout`'s own
-          // comment) instead of flush against it.
-          paddingBottom: 290 + insets.bottom + tabBarClearance,
+          // comment) instead of flush against it. The bar's real height once
+          // measured (a long address wraps instead of being cut off).
+          paddingBottom:
+            (checkoutBarHeight > 0
+              ? checkoutBarHeight + spacing.lg
+              : 290 + insets.bottom) + tabBarClearance,
         }}
         ItemSeparatorComponent={() => <View style={styles.productSeparator} />}
         ListHeaderComponent={
@@ -784,8 +872,27 @@ export default function CartScreen({
             {outOfArea && (
               <View style={styles.noticeContainer}>
                 <NoticeStrip
-                  message="We don't deliver to your current location, so this order can't be placed yet."
+                  message={
+                    deliversToHomeLocation
+                      ? "We don't deliver to your current location, so this order can't be placed yet."
+                      : "We don't deliver to the selected address yet — choose another address below."
+                  }
                   tone="info"
+                />
+              </View>
+            )}
+
+            {/* The server's own answer for THIS address (e.g. a seller in
+                the cart doesn't deliver there). Without it the pay buttons
+                just stayed disabled with no reason given. */}
+            {quote.isError && !quote.isFetching && !outOfArea && (
+              <View style={styles.noticeContainer}>
+                <NoticeStrip
+                  message={
+                    quote.error instanceof ApiRequestError
+                      ? quote.error.message
+                      : "Could not check this delivery address. Please try again."
+                  }
                 />
               </View>
             )}
@@ -793,7 +900,7 @@ export default function CartScreen({
         }
         ListFooterComponent={
           <View>
-            <CouponSection bill={displayBill} addressId={addressId} />
+            <CouponSection bill={displayBill} destinationKey={destinationKey} />
             <BillDetails bill={displayBill} />
           </View>
         }
@@ -820,13 +927,22 @@ export default function CartScreen({
             paddingBottom: insets.bottom + spacing.sm,
           },
         ]}
+        onLayout={(event) => {
+          const height = Math.round(event.nativeEvent.layout.height);
+          setCheckoutBarHeight((current) =>
+            current === height ? current : height,
+          );
+        }}
       >
         <DeliveryAddressSection
+          live={live}
           address={selectedAddress}
-          loading={addresses.isLoading}
-          hasAny={(addresses.data?.length ?? 0) > 0}
+          note={addressNote}
+          loading={addresses.isLoading && !live}
+          hasAny={live !== null || (addresses.data?.length ?? 0) > 0}
           onChange={() => setAddressPickerOpen(true)}
-          onAdd={onAddAddress}
+          // Select Location offers both: the current location or a new address.
+          onAdd={onChangeLocation}
         />
         <View style={styles.bottomDivider} />
 
@@ -884,7 +1000,13 @@ export default function CartScreen({
       <AddressPickerModal
         visible={addressPickerOpen}
         addresses={addresses.data ?? []}
-        selectedId={addressId}
+        // While delivering to the live location, no saved address is chosen.
+        selectedId={live ? null : addressId}
+        live={live}
+        onUseCurrentLocation={() => {
+          setAddressPickerOpen(false);
+          onChangeLocation();
+        }}
         onSelect={(id) => {
           setAddressId(id);
           setAddressPickerOpen(false);
@@ -911,7 +1033,10 @@ export default function CartScreen({
 
       <ConfirmOrderModal
         visible={confirmOrderOpen}
-        address={selectedAddress}
+        address={live ?? selectedAddress}
+        heading={live ? "Deliver to your live location" : selectedAddress ? `Deliver to ${selectedAddress.label}` : ""}
+        isLive={live !== null}
+        addressNote={addressNote}
         itemCount={displayBill.itemCount}
         totalPaise={displayBill.totalPaise}
         busy={placing === PaymentMethod.COD}
@@ -945,19 +1070,86 @@ function addressVisual(label: string) {
 }
 
 /* ================================================================
+ * ADDRESS DETAILS — the selected address in full: its label, ITS OWN
+ * recipient name and phone (never another address's, never the
+ * account's), then house + street, locality, village / city, district,
+ * state and PIN. Wraps instead of truncating, so nothing that tells the
+ * customer where the order goes is hidden. Used by the checkout bar, the
+ * address picker and the COD confirmation.
+ * ================================================================ */
+
+/** A saved address or the live destination — both carry their own recipient. */
+type DeliveryDetails = StructuredAddress & { fullName: string; mobile: string };
+
+function AddressDetails({
+  address,
+  heading,
+  note,
+}: {
+  address: DeliveryDetails;
+  /** e.g. "Deliver to Home"; omitted when the caller shows its own. */
+  heading?: string;
+  /** Why this address may differ from Home's location (see CartScreen). */
+  note?: string | null;
+}) {
+  return (
+    <View>
+      {heading && (
+        <AppText variant="caption" color={colors.textSecondary}>
+          {heading}
+        </AppText>
+      )}
+      <AppText variant="bodyStrong" color={colors.textPrimary}>
+        {address.fullName}
+      </AppText>
+      <AppText variant="caption" color={colors.textPrimary}>
+        {formatIndianMobile(address.mobile)}
+      </AppText>
+      {addressDetailLines(address).map((line, index) => (
+        <AppText key={index} variant="caption" color={colors.textSecondary}>
+          {line}
+        </AppText>
+      ))}
+      {note && (
+        <AppText variant="caption" color={colors.warning} style={{ marginTop: 2 }}>
+          {note}
+        </AppText>
+      )}
+    </View>
+  );
+}
+
+/* ================================================================
  * DELIVERY ADDRESS SECTION — compact row at the top of the floating
  * checkout bar, not a bordered card of its own (the bar itself is the
  * card).
  * ================================================================ */
 
+/** The unmistakable marker that an order goes to a GPS point, not a saved address. */
+function LiveLocationBadge() {
+  return (
+    <View style={styles.liveBadge}>
+      <Ionicons name="navigate" size={11} color={colors.primary} />
+      <AppText variant="caption" color={colors.primary} style={styles.liveBadgeText}>
+        Live location
+      </AppText>
+    </View>
+  );
+}
+
 function DeliveryAddressSection({
+  live,
   address,
+  note,
   loading,
   hasAny,
   onChange,
   onAdd,
 }: {
+  /** Delivering to the live location — shown instead of any saved address. */
+  live: LiveLocationInput | null;
   address: AddressDto | null;
+  note: string | null;
   loading: boolean;
   hasAny: boolean;
   onChange: () => void;
@@ -990,13 +1182,38 @@ function DeliveryAddressSection({
         </View>
         <View style={{ flex: 1, minWidth: 0 }}>
           <AppText variant="bodyStrong" color={colors.primary}>
-            Add a delivery address
+            Choose where to deliver
           </AppText>
           <AppText variant="caption" color={colors.textSecondary}>
-            Required to place your order
+            Use your current location or add an address
           </AppText>
         </View>
         <Ionicons name="chevron-forward" size={18} color={colors.primary} />
+      </Pressable>
+    );
+  }
+
+  if (live) {
+    return (
+      <Pressable
+        style={[styles.addressRow, styles.addressRowFull]}
+        onPress={onChange}
+        accessibilityRole="button"
+        accessibilityLabel={`Deliver to your live location: ${live.fullName}, ${live.mobile}, ${addressDetailLines(live).join(", ")}. Change location`}
+      >
+        <View style={[styles.addressIconCircle, { backgroundColor: colors.primary + "15" }]}>
+          <Ionicons name="navigate" size={18} color={colors.primary} />
+        </View>
+        <View style={styles.addressCompactContent}>
+          <LiveLocationBadge />
+          <AddressDetails address={live} />
+        </View>
+        <View style={styles.addressChangeAction}>
+          <AppText variant="bodyStrong" color={colors.primary} numberOfLines={1}>
+            Change
+          </AppText>
+          <Ionicons name="chevron-forward" size={15} color={colors.primary} />
+        </View>
       </Pressable>
     );
   }
@@ -1005,27 +1222,32 @@ function DeliveryAddressSection({
 
   return (
     <Pressable
-      style={styles.addressRow}
+      style={[styles.addressRow, address && styles.addressRowFull]}
       onPress={onChange}
       accessibilityRole="button"
+      accessibilityLabel={
+        address
+          ? `Deliver to ${address.label}: ${address.fullName}, ${address.mobile}, ${addressDetailLines(address).join(", ")}.${note ? ` ${note}` : ""} Change address`
+          : "Choose a delivery address"
+      }
     >
       <View style={[styles.addressIconCircle, { backgroundColor: visual.bg }]}>
         <Ionicons name={visual.icon} size={18} color={visual.fg} />
       </View>
 
       <View style={styles.addressCompactContent}>
-        <AppText variant="bodyStrong" numberOfLines={1}>
-          {address?.label ?? "Select address"}
-        </AppText>
-        <AppText
-          variant="caption"
-          color={colors.textSecondary}
-          numberOfLines={1}
-        >
-          {address
-            ? `${addressPrimaryLine(address)}, ${address.city}`
-            : "Tap to choose a delivery address"}
-        </AppText>
+        {address ? (
+          <AddressDetails address={address} heading={`Deliver to ${address.label}`} note={note} />
+        ) : (
+          <>
+            <AppText variant="bodyStrong" numberOfLines={1}>
+              Select address
+            </AppText>
+            <AppText variant="caption" color={colors.textSecondary}>
+              Tap to choose a delivery address
+            </AppText>
+          </>
+        )}
       </View>
 
       {/* Fixed-size, never squeezed by a long address line — the content
@@ -1121,6 +1343,8 @@ function AddressPickerModal({
   visible,
   addresses,
   selectedId,
+  live,
+  onUseCurrentLocation,
   onSelect,
   onAdd,
   onClose,
@@ -1128,6 +1352,10 @@ function AddressPickerModal({
   visible: boolean;
   addresses: AddressDto[];
   selectedId: string | null;
+  /** The live location currently selected, if any (shown at the top). */
+  live: LiveLocationInput | null;
+  /** Select Location's GPS flow → delivery details → back here. */
+  onUseCurrentLocation: () => void;
   onSelect: (id: string) => void;
   onAdd: () => void;
   onClose: () => void;
@@ -1179,6 +1407,38 @@ function AddressPickerModal({
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.sheetListContent}
             ListHeaderComponent={
+              <View>
+              {/* Deliver to where the customer is now — no saved address needed. */}
+              <Pressable
+                style={[styles.addAddressPrompt, styles.currentLocationPrompt, { marginBottom: spacing.md }]}
+                onPress={onUseCurrentLocation}
+                accessibilityRole="button"
+              >
+                <View style={styles.addAddressPromptIcon}>
+                  <Ionicons name="navigate" size={20} color={colors.primary} />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  {live ? (
+                    <>
+                      <LiveLocationBadge />
+                      <AddressDetails address={live} />
+                      <AppText variant="caption" color={colors.primary} style={{ marginTop: 2 }}>
+                        Selected · tap to use a new current location
+                      </AppText>
+                    </>
+                  ) : (
+                    <>
+                      <AppText variant="bodyStrong" color={colors.primary}>
+                        Use current location
+                      </AppText>
+                      <AppText variant="caption" color={colors.textSecondary}>
+                        Deliver to where you are now — no need to save it
+                      </AppText>
+                    </>
+                  )}
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={colors.primary} />
+              </Pressable>
               <Pressable
                 style={[styles.addAddressPrompt, { marginBottom: spacing.md }]}
                 onPress={onAdd}
@@ -1201,6 +1461,7 @@ function AddressPickerModal({
                   color={colors.primary}
                 />
               </Pressable>
+              </View>
             }
             ItemSeparatorComponent={() => (
               <View style={{ height: spacing.md }} />
@@ -1234,24 +1495,7 @@ function AddressPickerModal({
                   <View
                     style={{ flex: 1, marginLeft: spacing.sm, minWidth: 0 }}
                   >
-                    <AppText variant="bodyStrong" numberOfLines={1}>
-                      {item.label}
-                      {item.fullName ? ` (${item.fullName})` : ""}
-                    </AppText>
-                    <AppText
-                      variant="caption"
-                      color={colors.textSecondary}
-                      numberOfLines={1}
-                    >
-                      {item.mobile}
-                    </AppText>
-                    <AppText
-                      variant="caption"
-                      color={colors.textSecondary}
-                      numberOfLines={1}
-                    >
-                      {formatAddressOneLine(item)}
-                    </AppText>
+                    <AddressDetails address={item} heading={item.label} />
                     {disabled && (
                       <AppText variant="caption" color={colors.danger}>
                         We don't deliver to this address
@@ -1300,6 +1544,9 @@ function AddressPickerModal({
 function ConfirmOrderModal({
   visible,
   address,
+  heading,
+  isLive,
+  addressNote,
   itemCount,
   totalPaise,
   busy,
@@ -1307,7 +1554,11 @@ function ConfirmOrderModal({
   onConfirm,
 }: {
   visible: boolean;
-  address: AddressDto | null;
+  /** The saved address or the live destination this order is sent to. */
+  address: DeliveryDetails | null;
+  heading: string;
+  isLive: boolean;
+  addressNote: string | null;
   itemCount: number;
   totalPaise: number;
   busy: boolean;
@@ -1350,21 +1601,21 @@ function ConfirmOrderModal({
 
           <View style={styles.confirmDetailsCard}>
             {address && (
-              <View style={styles.confirmDetailRow}>
+              <View style={styles.confirmAddressRow}>
                 <Ionicons
-                  name="location-outline"
+                  name={isLive ? "navigate" : "location-outline"}
                   size={17}
                   color={colors.primary}
+                  style={{ marginTop: 1 }}
                 />
-                <AppText
-                  variant="caption"
-                  color={colors.textPrimary}
-                  numberOfLines={1}
-                  style={{ marginLeft: spacing.xs, flex: 1 }}
-                >
-                  {address.label} • {addressPrimaryLine(address)},{" "}
-                  {address.city}
-                </AppText>
+                <View style={{ marginLeft: spacing.xs, flex: 1, minWidth: 0 }}>
+                  {isLive && <LiveLocationBadge />}
+                  <AddressDetails
+                    address={address}
+                    heading={heading}
+                    note={addressNote}
+                  />
+                </View>
               </View>
             )}
 
@@ -1417,10 +1668,11 @@ function ConfirmOrderModal({
 
 function CouponSection({
   bill,
-  addressId,
+  destinationKey,
 }: {
   bill: BillDto;
-  addressId: string | null;
+  /** The checkout quote's destination key (see CartScreen's `destinationKey`). */
+  destinationKey: string | null;
 }) {
   const queryClient = useQueryClient();
   const { serviceability } = useLocation();
@@ -1439,7 +1691,7 @@ function CouponSection({
     // coupon the mutation above just changed on the cart (see the `bill`
     // memo's own comment higher in this file).
     void queryClient.invalidateQueries({
-      queryKey: ["checkout-quote", addressId],
+      queryKey: ["checkout-quote", destinationKey],
     });
   };
 
@@ -2001,6 +2253,26 @@ const styles = StyleSheet.create({
     minHeight: 52,
   },
 
+  // A full, wrapping address: icon and "Change" stay at the top.
+  addressRowFull: {
+    alignItems: "flex-start",
+    paddingVertical: spacing.xs,
+  },
+
+  liveBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 3,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 1,
+    marginBottom: 2,
+    borderRadius: radius.pill,
+    backgroundColor: colors.primarySurface,
+  },
+
+  liveBadgeText: { fontWeight: "700" },
+
   addressIconCircle: {
     width: 38,
     height: 38,
@@ -2031,6 +2303,11 @@ const styles = StyleSheet.create({
     borderColor: colors.primary,
     backgroundColor: colors.primary + "08",
     gap: spacing.sm,
+  },
+
+  currentLocationPrompt: {
+    borderStyle: "solid",
+    paddingVertical: spacing.sm,
   },
 
   addAddressPromptIcon: {
@@ -2194,6 +2471,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+  },
+
+  confirmAddressRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    paddingBottom: spacing.xs,
+    marginBottom: spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
   },
 
   confirmButtonRow: {

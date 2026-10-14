@@ -18,6 +18,7 @@ import {
   ActorType,
   CodPolicy,
   ConfigKey,
+  DeliveryMode,
   ErrorCode,
   NotificationType,
   OrderPaymentStatus,
@@ -54,7 +55,7 @@ import { moduleLogger } from "../../common/logger";
 import * as configService from "../configuration/configuration.service";
 import * as sellerService from "../sellers/seller.service";
 import { unorderableMessage, unorderableReason } from "../cart/orderability";
-import * as addressService from "../addresses/address.service";
+import { resolveDestination, type DestinationInput } from "./delivery-destination";
 import * as pricingService from "../pricing/pricing.service";
 import * as inventoryService from "../inventory/inventory.service";
 import * as cartService from "../cart/cart.service";
@@ -142,7 +143,6 @@ interface CheckoutContextItem {
 }
 
 interface CheckoutContext {
-  addressId: string;
   distanceKm: number;
   delivery: sellerService.CartDelivery;
   items: CheckoutContextItem[];
@@ -156,17 +156,18 @@ interface CheckoutContext {
  * computed. This is why the app never needs to do arithmetic.
  *
  * Serviceability is per seller: every seller in the cart must deliver to the
- * address, and the delivery fee/ETA are priced on the farthest of them
+ * destination — a saved address or a live GPS point, checked the same way —
+ * and the delivery fee/ETA are priced on the farthest of them
  * (seller.service.ts `assertSellersServe`).
  */
 async function buildCheckoutContext(
   userId: string,
-  addressId: string,
+  destination: DestinationInput,
 ): Promise<CheckoutContext> {
   // Independent reads — together, not one after the other (each is a round
   // trip to the database).
   const [address, cart] = await Promise.all([
-    addressService.getOwnedAddress(userId, addressId),
+    resolveDestination(userId, destination),
     prisma.cart.findFirst({
       where: { userId, status: "ACTIVE" },
       include: {
@@ -204,7 +205,6 @@ async function buildCheckoutContext(
   );
 
   return {
-    addressId,
     distanceKm: delivery.check.distanceKm,
     delivery,
     items: cart.items.map((item) => {
@@ -237,7 +237,7 @@ async function buildCheckoutContext(
 
 export async function getCheckoutQuote(
   userId: string,
-  addressId: string,
+  destination: DestinationInput,
   couponCode?: string | null,
 ): Promise<CheckoutQuoteResponse> {
   // Every read below is independent of the others except where noted, so
@@ -245,7 +245,7 @@ export async function getCheckoutQuote(
   // database) they were the 2–4 s the app's Pay buttons waited on.
   const [context, { dto: cartDto }, coupon, categories, config, deliveredCount, user] =
     await Promise.all([
-      buildCheckoutContext(userId, addressId),
+      buildCheckoutContext(userId, destination),
       // Only its `changes` (lines revalidated since the cart was read) are
       // used here; they don't depend on the delivery distance.
       cartService.getCart(userId),
@@ -330,7 +330,8 @@ export async function getCheckoutQuote(
 
 export interface PlaceOrderInput {
   userId: string;
-  addressId: string;
+  /** A saved address the customer owns, or a live location for this order. */
+  destination: DestinationInput;
   paymentMethod: PaymentMethod;
   couponCode?: string | null;
   notes?: string | null;
@@ -532,7 +533,7 @@ export async function placeOrder(
   // stock always come from the rows it locks.
   const [address, preloaded, config, categories, user, deliveredCount] =
     await Promise.all([
-      addressService.getOwnedAddress(input.userId, input.addressId),
+      resolveDestination(input.userId, input.destination),
       loadCartForOrder(prisma, input.userId),
       configService.getMany([
         ConfigKey.DEFAULT_COD_POLICY,
@@ -954,7 +955,7 @@ export async function placeOrder(
         data: {
           orderNumber: generateOrderNumber(),
           userId: input.userId,
-          addressId: address.id,
+          addressId: address.addressId,
           status: parentStatus,
           paymentMethod: input.paymentMethod,
           paymentStatus: OrderPaymentStatus.PENDING,
@@ -972,7 +973,11 @@ export async function placeOrder(
           // portion is later cancelled/rejected (#9/#20).
           currentPayablePaise: bill.totalPaise,
 
-          // Immutable address snapshot.
+          // Immutable address snapshot — from the saved address or the live
+          // location, whichever was resolved above (never re-read later).
+          deliveryMode: address.mode,
+          deliveryLocationAccuracyM: address.accuracyM,
+          deliveryLabel: address.label,
           deliveryFullName: address.fullName,
           deliveryMobile: address.mobile,
           deliveryAddressLine: formatAddressLine({
@@ -1354,10 +1359,17 @@ export async function getOrderDetail(
       totalSavingsPaise: order.itemDiscountPaise + order.couponDiscountPaise,
     },
     // The saved address may have been edited or deleted since; the ORDER's
-    // snapshot is what is shown.
+    // snapshot is what is shown. A live-location order has no saved address
+    // at all — its snapshot is the only record of where it goes.
+    deliveryMode: order.deliveryMode,
     deliveryAddress: {
       id: order.addressId ?? "",
-      label: order.address?.label ?? "Delivery address",
+      // The label as it was at order time; older orders (recorded before the
+      // label was) fall back to the address row's current label.
+      label:
+        order.deliveryMode === DeliveryMode.LIVE_LOCATION
+          ? "Live location"
+          : (order.deliveryLabel ?? order.address?.label ?? "Delivery address"),
       fullName: order.deliveryFullName,
       mobile: order.deliveryMobile,
       houseNo: null,
@@ -1370,9 +1382,10 @@ export async function getOrderDetail(
       landmark: order.deliveryLandmark,
       latitude: order.deliveryLatitude,
       longitude: order.deliveryLongitude,
-      // The snapshot keeps the point, not its origin.
-      locationSource: null,
-      locationAccuracyM: null,
+      // A saved address's snapshot keeps the point, not its origin; a live
+      // location IS a device fix.
+      locationSource: order.deliveryMode === DeliveryMode.LIVE_LOCATION ? "GPS" : null,
+      locationAccuracyM: order.deliveryLocationAccuracyM,
       isDefault: false,
       isServiceable: true,
       distanceKm: order.distanceKm,

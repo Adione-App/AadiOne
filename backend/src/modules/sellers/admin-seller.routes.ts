@@ -413,10 +413,10 @@ adminSellerRouter.patch(
       body.rejectionReason,
       requireUser(req).id,
     );
-    ok(
-      res,
-      await onboardingService.getOnboardingDetail(req.params['sellerId'] as string, undefined, true),
-    );
+    // The MASKED summary, like bank verification: a decision's response never
+    // carries the raw PAN / Aadhaar / account number. The unmasked record is
+    // the reviewer's own explicit read (GET .../onboarding) only.
+    ok(res, await onboardingService.getOnboardingSummary(req.params['sellerId'] as string));
   }),
 );
 

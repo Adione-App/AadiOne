@@ -308,6 +308,16 @@ export const PaymentMethod = {
 } as const;
 export type PaymentMethod = (typeof PaymentMethod)[keyof typeof PaymentMethod];
 
+/**
+ * Where an order is delivered: a customer-owned saved address, or a live GPS
+ * point (with recipient and address details) given for that order only.
+ */
+export const DeliveryMode = {
+  SAVED_ADDRESS: 'SAVED_ADDRESS',
+  LIVE_LOCATION: 'LIVE_LOCATION',
+} as const;
+export type DeliveryMode = (typeof DeliveryMode)[keyof typeof DeliveryMode];
+
 /** Payment state at the ORDER level (the money view of an order). */
 export const OrderPaymentStatus = {
   PENDING: 'PENDING',

@@ -11,6 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  ConfigKey,
   ErrorCode,
   OrderStatus,
   PaymentMethod,
@@ -30,6 +31,17 @@ import * as otpService from '../../src/modules/auth/otp.service';
 import { seedAddress, seedProduct, seedStore } from '../helpers/fixtures';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
+
+/**
+ * Lifts the platform's own minimum ORDER value (MIN_ORDER_VALUE_PAISE, ₹99 by
+ * default), which would otherwise refuse a ₹98 order before it could ever be
+ * delivered. The referral's eligible-order minimum is a SEPARATE rule
+ * (REFERRAL_MIN_ORDER_PAISE, still ₹99) — that boundary is what these tests
+ * check, and it is left untouched.
+ */
+async function allowSubMinimumOrders(): Promise<void> {
+  await configService.set({ key: ConfigKey.MIN_ORDER_VALUE_PAISE, value: 0 as never });
+}
 
 async function loginAdmin(): Promise<string> {
   await prisma.user.create({
@@ -195,6 +207,7 @@ describe('Refer & Earn — normal referral', () => {
 
 describe('Refer & Earn — ₹99 minimum boundary', () => {
   it('does not reward a ₹98 eligible order', async () => {
+    await allowSubMinimumOrders();
     const storeId = await seedStore();
     const product = await seedProduct(storeId, { pricePaise: 9800, stockQty: 20 });
     const adminToken = await loginAdmin();
@@ -253,6 +266,7 @@ describe('Refer & Earn — ₹99 minimum boundary', () => {
 
 describe('Refer & Earn — first ELIGIBLE order, not just first order', () => {
   it('skips a below-minimum first order and rewards the next qualifying one', async () => {
+    await allowSubMinimumOrders();
     const storeId = await seedStore();
     const cheap = await seedProduct(storeId, { pricePaise: 8000, stockQty: 20 });
     const pricey = await seedProduct(storeId, { pricePaise: 15000, stockQty: 20 });

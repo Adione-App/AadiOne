@@ -7,12 +7,17 @@
  * ProductCard still skips every card whose own quantity didn't change.
  *
  * Which products a shelf shows is decided by the engine (homeEngine.ts); this
- * component only draws them.
+ * component only draws them. Every shelf with somewhere to go (its
+ * `viewAll`: the category, the rail or previous orders) ends with a
+ * full-width "See All" right under its own products, inside the same panel.
  */
 
 import { memo, useCallback } from "react";
-import { FlatList, StyleSheet, View } from "react-native";
+import { FlatList, Pressable, StyleSheet, View } from "react-native";
+import { ChevronRight } from "lucide-react-native";
 import type { ProductSummaryDto } from "@shared";
+import { colors, radius, spacing } from "@shared/theme";
+import { AppText } from "@/components/ui";
 import { ProductCard } from "@/components/ProductCard";
 import type { useCartActions } from "@/lib/useCartActions";
 import type { HomeAction, HomeSection } from "../homeEngine";
@@ -57,11 +62,8 @@ function ProductShelfImpl({
 
   return (
     <SectionPanel>
-      <SectionHeader
-        title={section.title}
-        subtitle={section.subtitle}
-        onViewAll={viewAll ? () => onAction(viewAll) : undefined}
-      />
+      {/* "See All" sits under the products (below), not in the header. */}
+      <SectionHeader title={section.title} subtitle={section.subtitle} />
       <FlatList
         horizontal
         data={section.products}
@@ -76,6 +78,17 @@ function ProductShelfImpl({
         windowSize={5}
         removeClippedSubviews
       />
+      {viewAll ? (
+        <Pressable
+          onPress={() => onAction(viewAll)}
+          style={({ pressed }) => [styles.seeAll, pressed && styles.seeAllPressed]}
+          accessibilityRole="button"
+          accessibilityLabel={`See all ${section.title}`}
+        >
+          <AppText style={styles.seeAllText}>See All</AppText>
+          <ChevronRight size={16} color={colors.textPrimary} strokeWidth={2.5} />
+        </Pressable>
+      ) : null}
     </SectionPanel>
   );
 }
@@ -97,5 +110,27 @@ const styles = StyleSheet.create({
   },
   productWrapper: {
     width: SHELF_CARD_WIDTH,
+  },
+  seeAll: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    height: 44,
+    marginHorizontal: PANEL_PADDING,
+    marginTop: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  seeAllPressed: {
+    backgroundColor: colors.surfaceMuted,
+  },
+  seeAllText: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "700",
+    color: colors.textPrimary,
   },
 });

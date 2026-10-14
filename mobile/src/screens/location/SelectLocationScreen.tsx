@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   ActivityIndicator,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,66 +12,71 @@ import { useQuery } from "@tanstack/react-query";
 import type { AddressDto } from "@shared";
 import { colors, radius, spacing } from "@shared/theme";
 import { formatAddressLines } from "@shared/address";
-import { DETECT_MESSAGE, describeAccuracy, suggestionLabel, type DetectResult } from "@shared/location";
+import { DETECT_MESSAGE, type DetectStatus } from "@shared/location";
+import { formatIndianMobile } from "@shared/phone";
+import { addressDetailLines } from "@/lib/addressDisplay";
+import { isActiveLiveDestination } from "@/lib/liveLocation";
 import { detectDeviceLocation, suggestAddressFor } from "@/lib/deviceLocation";
 import { api } from "@/lib/api";
 import { useLocation } from "@/lib/store";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { AppText, Button, Card, Loading, Screen } from "@/components/ui";
+import type { LiveFixParams } from "@/navigation/types";
 
 export default function SelectLocationScreen({
   onBack,
   onAddAddress,
+  onLiveLocation,
 }: {
   onBack: () => void;
   onAddAddress: () => void;
+  /** Opens the delivery-details form for a fresh GPS fix (see LiveFixParams). */
+  onLiveLocation: (fix: LiveFixParams) => void;
 }) {
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
 
-  const { location, selectedAddressId, setLocation, selectAddress, checking } =
-    useLocation();
+  const { selectedAddressId, setLocation, selectAddress, liveDestination, location } = useLocation();
 
-  const [detecting, setDetecting] = useState(false);
-  const [detectError, setDetectError] = useState<string | null>(null);
-  /** A fresh fix waiting for the customer to confirm it. */
-  const [pending, setPending] = useState<(Extract<DetectResult, { status: "OK" }> & { label: string }) | null>(null);
+  const [detecting, setDetecting] = useState<"gps" | "address" | null>(null);
+  const [detectError, setDetectError] = useState<{ status: Exclude<DetectStatus, "OK">; message: string } | null>(null);
 
   const addresses = useQuery({
     queryKey: ["addresses"],
     queryFn: () => api.get<AddressDto[]>("/addresses"),
   });
 
-  /** One fresh fix with its accuracy — shown for confirmation, never applied silently. */
+  /**
+   * Permission → one fresh GPS fix → reverse geocoding → the delivery
+   * details form, prefilled with whatever the geocoder found. A failed fix
+   * opens nothing and sets nothing (there is no fallback point); a failed
+   * geocode still opens the form, empty, for the customer to fill in.
+   */
   async function useCurrentLocation(): Promise<void> {
-    setDetecting(true);
+    setDetecting("gps");
     setDetectError(null);
-    setPending(null);
     try {
       const result = await detectDeviceLocation();
       if (result.status !== "OK") {
-        setDetectError(DETECT_MESSAGE[result.status]);
+        setDetectError({ status: result.status, message: DETECT_MESSAGE[result.status] });
         return;
       }
+      setDetecting("address");
       const suggestion = await suggestAddressFor(result.latitude, result.longitude);
-      setPending({ ...result, label: suggestionLabel(suggestion) });
+      onLiveLocation({
+        latitude: result.latitude,
+        longitude: result.longitude,
+        accuracyM: result.accuracyM,
+        quality: result.quality,
+        suggestion,
+      });
     } finally {
-      setDetecting(false);
+      setDetecting(null);
     }
   }
 
-  async function confirmCurrentLocation(): Promise<void> {
-    if (!pending) return;
-    selectAddress(null);
-    await setLocation({
-      latitude: pending.latitude,
-      longitude: pending.longitude,
-      label: pending.label,
-      source: "GPS",
-      accuracyM: pending.accuracyM,
-    });
-    onBack();
-  }
+  // The live location already confirmed, if it is still the chosen one.
+  const activeLive = isActiveLiveDestination(liveDestination, location) ? liveDestination : null;
 
   function selectSavedAddress(address: AddressDto): void {
     selectAddress(address.id);
@@ -119,11 +125,13 @@ export default function SelectLocationScreen({
         {/* Current location */}
         <Pressable
           onPress={() => void useCurrentLocation()}
-          disabled={detecting || checking}
+          // Only its own detection blocks it — not a background
+          // serviceability re-check of the location already chosen.
+          disabled={detecting !== null}
           style={styles.currentLocation}
         >
           <View style={styles.locationIcon}>
-            {detecting || checking ? (
+            {detecting ? (
               <ActivityIndicator color={colors.primary} />
             ) : (
               <AppText style={styles.locationIconText}>⌖</AppText>
@@ -140,7 +148,11 @@ export default function SelectLocationScreen({
               color={colors.textSecondary}
               style={{ marginTop: 2 }}
             >
-              Detect your location automatically
+              {detecting === "gps"
+                ? "Finding your location…"
+                : detecting === "address"
+                  ? "Reading the address…"
+                  : "Deliver to where you are now — no need to save it"}
             </AppText>
           </View>
 
@@ -150,25 +162,47 @@ export default function SelectLocationScreen({
         </Pressable>
 
         {detectError && (
-          <AppText variant="caption" color={colors.danger} style={{ marginTop: spacing.sm }}>
-            {detectError}
-          </AppText>
+          <Card style={{ marginTop: spacing.md }}>
+            <AppText variant="body" color={colors.danger}>
+              {detectError.message}
+            </AppText>
+            <Button
+              label="Try again"
+              onPress={() => void useCurrentLocation()}
+              loading={detecting !== null}
+              style={{ marginTop: spacing.md }}
+            />
+            {detectError.status === "PERMISSION_DENIED" && (
+              <Button
+                label="Open settings"
+                variant="ghost"
+                onPress={() => void Linking.openSettings()}
+                style={{ marginTop: spacing.xs }}
+              />
+            )}
+          </Card>
         )}
 
-        {pending && (
-          <Card style={{ marginTop: spacing.md }}>
-            <AppText variant="bodyStrong">{pending.label}</AppText>
-            <AppText variant="caption" color={colors.textSecondary} style={{ marginTop: spacing.xs }}>
-              {describeAccuracy(pending.accuracyM)} · {pending.latitude.toFixed(5)}, {pending.longitude.toFixed(5)}
-            </AppText>
-            {pending.quality === "POOR" && (
-              <AppText variant="caption" color={colors.danger} style={{ marginTop: spacing.xs }}>
-                Only an approximate location was found. If it is not right, try again outdoors or pick a saved address.
+        {/* The live location confirmed earlier — still the one orders go to. */}
+        {activeLive && (
+          <View style={[styles.addressCard, styles.addressCardSelected]}>
+            <View style={styles.addressContent}>
+              <View style={styles.addressTitleRow}>
+                <AppText variant="bodyStrong">Live location</AppText>
+                <View style={styles.selectedBadge}>
+                  <AppText variant="caption" color={colors.primary}>
+                    Selected
+                  </AppText>
+                </View>
+              </View>
+              <AppText variant="caption" color={colors.textPrimary} style={{ marginTop: 2 }}>
+                {activeLive.fullName} · {formatIndianMobile(activeLive.mobile)}
               </AppText>
-            )}
-            <Button label="Deliver here" onPress={() => void confirmCurrentLocation()} disabled={checking} style={{ marginTop: spacing.md }} />
-            <Button label="Cancel" variant="ghost" onPress={() => setPending(null)} style={{ marginTop: spacing.xs }} />
-          </Card>
+              <AppText variant="body" color={colors.textSecondary} style={{ marginTop: 2 }}>
+                {addressDetailLines(activeLive).join(", ")}
+              </AppText>
+            </View>
+          </View>
         )}
 
         {/* Saved addresses */}
@@ -213,18 +247,9 @@ export default function SelectLocationScreen({
                       <AppText
                         variant="body"
                         color={colors.textSecondary}
-                        numberOfLines={2}
                         style={{ marginTop: 2 }}
                       >
-                        {[
-                          address.houseNo,
-                          address.street,
-                          address.area,
-                          address.city,
-                          address.pincode,
-                        ]
-                          .filter(Boolean)
-                          .join(", ")}
+                        {addressDetailLines(address).join(", ")}
                       </AppText>
 
                       {!address.isServiceable && (

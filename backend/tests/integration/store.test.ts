@@ -17,7 +17,7 @@ import { api, expectError, expectSuccess } from '../helpers/api';
 import { prisma, truncateAll } from '../helpers/db';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as sellerService from '../../src/modules/sellers/seller.service';
-import { sellerLifecycleFields } from '../helpers/fixtures';
+import { seedProduct, sellerLifecycleFields } from '../helpers/fixtures';
 
 // Sikar, matching the seed.
 const STORE = { latitude: 27.6094, longitude: 75.1399 };
@@ -267,29 +267,31 @@ describe('store opening hours', () => {
   });
 });
 
-describe('GET /store', () => {
+/**
+ * V1 had one store at `GET /store`; V2 is a marketplace, and each store has
+ * its own page at `GET /stores/:sellerId` (the single-store route is gone).
+ */
+describe('GET /stores/:sellerId', () => {
   it('returns store details and whether it is open now', async () => {
-    await createStore();
-    const res = await api().get('/api/v1/store').expect(200);
+    const sellerId = await createStore();
+    await seedProduct(sellerId, { pricePaise: 15000 });
+    const res = await api().get(`/api/v1/stores/${sellerId}`).expect(200);
 
-    const data = expectSuccess<{
-      name: string;
-      city: string;
-      timezone: string;
-      isOpenNow: boolean;
-      todayHours: { opensAt: string } | null;
-    }>(res.body).data;
+    const data = expectSuccess<{ id: string; name: string; city: string; isOpen: boolean; nextOpenText: string | null; productCount: number }>(
+      res.body,
+    ).data;
 
-    expect(data.name).toBe('Test Store');
-    expect(data.city).toBe('Sikar');
-    expect(data.timezone).toBe('Asia/Kolkata');
-    expect(typeof data.isOpenNow).toBe('boolean');
-    expect(data.todayHours?.opensAt).toBe('08:00');
+    expect(data).toMatchObject({ id: sellerId, name: 'Test Store', city: 'Sikar', productCount: 1 });
+    expect(typeof data.isOpen).toBe('boolean');
+    // When closed, it says when it opens next (08:00–22:00 every day).
+    if (!data.isOpen) expect(data.nextOpenText).toMatch(/8:00 AM/);
   });
 
-  it('reports service unavailable when no active store exists', async () => {
-    const res = await api().get('/api/v1/store');
-    expect(res.status).toBe(503);
-    expect(expectError(res.body).code).toBe(ErrorCode.SELLER_INACTIVE);
+  it('does not serve the page of a store that is not active', async () => {
+    const sellerId = await createStore({ isActive: false });
+    await seedProduct(sellerId, { pricePaise: 15000 });
+    const res = await api().get(`/api/v1/stores/${sellerId}`);
+    expect(res.status).toBe(404);
+    expect(expectError(res.body).code).toBe(ErrorCode.NOT_FOUND);
   });
 });

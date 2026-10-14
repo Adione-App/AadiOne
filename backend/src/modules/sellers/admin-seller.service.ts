@@ -16,6 +16,7 @@ import { AppError } from '../../common/errors';
 import { ErrorCode, type SellerHoursDto } from '../../shared';
 import { COORDINATE_PROBLEM_MESSAGE, coordinateProblem } from '../../shared/distance';
 import * as sellerRepository from './seller.repository';
+import { assertServiceState } from '../addresses/service-state';
 
 export interface UpdateSellerLocationInput {
   latitude: number;
@@ -86,6 +87,9 @@ export async function updateSellerLocation(
   }
 
   const before = await getSellerLocation(sellerId);
+
+  // Rajasthan only: the store's resulting state AND point.
+  assertServiceState({ state: input.state ?? before.state, latitude: input.latitude, longitude: input.longitude }, 'store');
 
   const after = await prisma.seller.update({
     where: { id: sellerId },

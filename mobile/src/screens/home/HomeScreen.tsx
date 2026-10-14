@@ -30,7 +30,6 @@ import * as Clipboard from "expo-clipboard";
 
 import type { CategoryDto } from "@shared";
 import { colors, radius, spacing } from "@shared/theme";
-import { formatDistance } from "@shared/distance";
 
 import {
   useHomeFeed,
@@ -60,7 +59,7 @@ import {
   type HomeSection,
   type RailKey,
 } from "./homeEngine";
-import { BrandFooter } from "./sections/BrandFooter";
+
 import { CategoryGrid } from "./sections/CategoryGrid";
 import { FoodSection } from "./sections/FoodSection";
 import { HomeSkeleton } from "./sections/HomeSkeleton";
@@ -644,15 +643,15 @@ export default function HomeScreen({
           return <OfferSection offers={offers} />;
         case "shelf":
           return (
-            <ProductShelf
+            <ProductShelf 
               section={item}
               cart={cart}
               onOpenProduct={handlers.openProduct}
               onAction={handlers.action}
             />
           );
-        case "footer":
-          return <BrandFooter onShop={handlers.openSearch} />;
+        default:
+          return null;
       }
     },
     [restaurants, stores, offers, near, cart, handlers],
@@ -785,16 +784,6 @@ export default function HomeScreen({
                 >
                   {location?.label ?? "Select a location"}
                 </AppText>
-
-                {serviceability?.serviceable && (
-                  <AppText
-                    variant="caption"
-                    color={colors.primary}
-                    style={styles.distanceText}
-                  >
-                    {formatDistance(serviceability.distanceKm)} away from store
-                  </AppText>
-                )}
               </View>
 
               {/* Chevron */}
@@ -1168,14 +1157,6 @@ const styles = StyleSheet.create({
     maxWidth: "100%",
   },
 
-  distanceText: {
-    fontSize: 10,
-
-    lineHeight: 13,
-
-    marginTop: 0,
-  },
-
   /* ================================================================
      CHEVRON
   ================================================================ */
@@ -1411,8 +1392,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
 
- restaurantBannerImage: {
-  width: "100%",
-  height: 150,
-},
+  restaurantBannerImage: {
+    width: "100%",
+    height: 150,
+  },
 });

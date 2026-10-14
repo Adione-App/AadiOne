@@ -72,6 +72,7 @@ export const keys = {
   stores: (near: string) => ["stores", near] as const,
   store: (sellerId: string, near: string) => ["store", sellerId, near] as const,
   storeProducts: (sellerId: string) => ["store-products", sellerId] as const,
+  categoryListing: (categoryId: string) => ["category-listing", categoryId] as const,
   restaurants: (near: string, filter = "") => ["restaurants", near, filter] as const,
   banners: (placement: string) => ["banners", placement] as const,
   restaurantMenu: (sellerId: string) => ["restaurant-menu", sellerId] as const,
@@ -211,6 +212,26 @@ export function useStoreProducts(sellerId: string, pageSize = 20) {
     queryKey: keys.storeProducts(sellerId),
     queryFn: ({ pageParam, signal }) => {
       const query = new URLSearchParams({ sellerId, limit: String(pageSize) });
+      if (pageParam) query.set("cursor", pageParam);
+      return api.get<CursorPage<ProductSummaryDto>>(`/products?${query.toString()}`, { signal });
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => (last.hasMore && last.nextCursor ? last.nextCursor : undefined),
+    gcTime: 30 * 60_000,
+  });
+}
+
+/**
+ * A category's full product listing, page by page (GET /products?categoryId=):
+ * for a main category that is its own products AND every product in its
+ * subcategories — the server matches the category's whole path, merged
+ * across sellers. Used by the Categories screen's main-category listing.
+ */
+export function useCategoryListing(categoryId: string, pageSize = 20) {
+  return useInfiniteQuery({
+    queryKey: keys.categoryListing(categoryId),
+    queryFn: ({ pageParam, signal }) => {
+      const query = new URLSearchParams({ categoryId, limit: String(pageSize) });
       if (pageParam) query.set("cursor", pageParam);
       return api.get<CursorPage<ProductSummaryDto>>(`/products?${query.toString()}`, { signal });
     },

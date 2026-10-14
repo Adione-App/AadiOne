@@ -40,6 +40,8 @@ export const ErrorCode = {
 
   /* location / seller ----------------------------------------------------- */
   OUT_OF_SERVICE_AREA: 'OUT_OF_SERVICE_AREA',
+  /** Outside Rajasthan — the only state Aadione operates in (or too close to its border to confirm). */
+  OUTSIDE_SERVICE_STATE: 'OUTSIDE_SERVICE_STATE',
   SELLER_CLOSED: 'SELLER_CLOSED',
   SELLER_INACTIVE: 'SELLER_INACTIVE',
   SELLER_NOT_APPROVED: 'SELLER_NOT_APPROVED',
@@ -122,6 +124,7 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   OTP_SEND_FAILED: 502,
 
   OUT_OF_SERVICE_AREA: 422,
+  OUTSIDE_SERVICE_STATE: 422,
   SELLER_CLOSED: 409,
   SELLER_INACTIVE: 503,
   SELLER_NOT_APPROVED: 503,
@@ -200,6 +203,7 @@ export const ERROR_DEFAULT_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   OTP_SEND_FAILED: 'We could not send the OTP right now. Please try again.',
 
   OUT_OF_SERVICE_AREA: 'Sorry, we do not deliver to this location yet.',
+  OUTSIDE_SERVICE_STATE: 'Aadione currently delivers only in Rajasthan.',
   SELLER_CLOSED: 'The store is closed right now. Please order during working hours.',
   SELLER_INACTIVE: 'The store is not accepting orders at the moment.',
   SELLER_NOT_APPROVED: 'This seller is not yet approved to sell.',

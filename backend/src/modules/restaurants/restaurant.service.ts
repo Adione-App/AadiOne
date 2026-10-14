@@ -217,6 +217,7 @@ async function toRestaurantDto(seller: RestaurantRow): Promise<RestaurantDto> {
     nextOpenText: open.nextOpenText,
     logoUrl: seller.restaurantProfile?.logoUrl ?? null,
     coverImageUrl: seller.restaurantProfile?.coverImageUrl ?? null,
+    menuImageUrl: seller.restaurantProfile?.menuImageUrl ?? null,
   };
 }
 
@@ -355,22 +356,26 @@ async function coverImages(sellerIds: string[]): Promise<Map<string, string>> {
 }
 
 /**
- * Restaurants with at least one live NON_VEG item on the menu (the diet a
- * seller sets on each food item) — what the Food list's non-veg mark and
- * "Non-Veg" filter mean. Nothing is guessed from names.
+ * Which diets each restaurant's live menu actually has — from the veg /
+ * non-veg mark the seller sets on every food item (Product.attributes.diet).
+ * Nothing is guessed from names; an item without a mark counts as neither.
+ * One query for all restaurants.
  */
-async function servingNonVeg(sellerIds: string[]): Promise<Set<string>> {
-  if (sellerIds.length === 0) return new Set();
-  const rows = await prisma.$queryRaw<{ seller_id: string }[]>`
-    SELECT DISTINCT sl.seller_id
+async function menuDiets(sellerIds: string[]): Promise<{ veg: Set<string>; nonVeg: Set<string> }> {
+  const veg = new Set<string>();
+  const nonVeg = new Set<string>();
+  if (sellerIds.length === 0) return { veg, nonVeg };
+  const rows = await prisma.$queryRaw<{ seller_id: string; diet: string }[]>`
+    SELECT DISTINCT sl.seller_id, p.attributes->>'diet' AS diet
     FROM seller_listings sl
     JOIN product_variants v ON v.id = sl.variant_id AND v.status = 'ACTIVE' AND v.deleted_at IS NULL
     JOIN products p ON p.id = v.product_id
       AND p.status = 'ACTIVE' AND p.approval_status = 'APPROVED' AND p.deleted_at IS NULL
     WHERE sl.is_available
       AND sl.seller_id = ANY(${sellerIds}::uuid[])
-      AND p.attributes->>'diet' = 'NON_VEG'`;
-  return new Set(rows.map((row) => row.seller_id));
+      AND p.attributes->>'diet' IN ('VEG', 'NON_VEG')`;
+  for (const row of rows) (row.diet === 'VEG' ? veg : nonVeg).add(row.seller_id);
+  return { veg, nonVeg };
 }
 
 /**
@@ -380,8 +385,14 @@ async function servingNonVeg(sellerIds: string[]): Promise<Set<string>> {
  * delivery fee (the configured fee slabs) and delivery time (the same
  * estimate checkout promises).
  *
+ * Veg / non-veg — the Food list's green and red marks AND its filters, one
+ * definition for both:
+ *   serves veg      a pure-veg kitchen, or at least one live VEG item
+ *   serves non-veg  at least one live NON_VEG item
+ * A place with both kinds is in both filters and shows both marks.
+ *
  * Filters (GET /restaurants?diet=&type=): `type` = RESTAURANT / CAFE;
- * `diet` VEG = pure-veg kitchens, NON_VEG = places with a non-veg item.
+ * `diet` VEG = serves veg, NON_VEG = serves non-veg.
  */
 export async function listRestaurants(
   location: { lat: number; lng: number } | null = null,
@@ -391,15 +402,18 @@ export async function listRestaurants(
     where: {
       ...LIVE_RESTAURANT_WHERE,
       ...(filters.type ? { sellerType: filters.type } : {}),
-      ...(filters.diet === 'VEG' ? { restaurantProfile: { isVegOnly: true } } : {}),
     },
     include: RESTAURANT_INCLUDE,
     orderBy: { name: 'asc' },
   });
-  const nonVeg = await servingNonVeg(candidates.map((s) => s.id));
-  const sellers = filters.diet === 'NON_VEG' ? candidates.filter((s) => nonVeg.has(s.id)) : candidates;
+  const diets = await menuDiets(candidates.map((s) => s.id));
+  const servesVeg = (seller: (typeof candidates)[number]) => Boolean(seller.restaurantProfile?.isVegOnly) || diets.veg.has(seller.id);
+  const servesNonVeg = (seller: (typeof candidates)[number]) => diets.nonVeg.has(seller.id);
+  const sellers =
+    filters.diet === 'VEG' ? candidates.filter(servesVeg) : filters.diet === 'NON_VEG' ? candidates.filter(servesNonVeg) : candidates;
+  // Older apps read the single `diet`: pure veg → VEG, any non-veg → NON_VEG.
   const dietOf = (seller: (typeof sellers)[number]): FoodDiet | null =>
-    seller.restaurantProfile?.isVegOnly ? 'VEG' : nonVeg.has(seller.id) ? 'NON_VEG' : null;
+    seller.restaurantProfile?.isVegOnly ? 'VEG' : servesNonVeg(seller) ? 'NON_VEG' : null;
   const counts = await prisma.sellerListing.groupBy({
     by: ['sellerId'],
     where: {
@@ -443,6 +457,8 @@ export async function listRestaurants(
         coverImageUrl: dto.coverImageUrl ?? covers.get(seller.id) ?? null,
         distanceKm: trip?.distanceKm ?? null,
         diet: dietOf(seller),
+        servesVeg: servesVeg(seller),
+        servesNonVeg: servesNonVeg(seller),
         deliveryFeePaise: trip?.feePaise ?? null,
         etaMinMinutes: trip?.etaMin ?? null,
         etaMaxMinutes: trip?.etaMax ?? null,

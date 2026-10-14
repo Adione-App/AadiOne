@@ -551,7 +551,27 @@ export default function OrdersPage() {
                     </p>
 
                     <p className="text-sm text-gray-500">
+                      {/* A live-location order goes to a GPS point, not a
+                          saved address — the map link is the destination. */}
+                      {order.deliveryMode === "LIVE_LOCATION" && (
+                        <span className="mr-2 rounded bg-info-50 px-2 py-0.5 text-xs font-semibold text-info-500">
+                          Live location
+                        </span>
+                      )}
                       {order.addressSummary}
+                      {order.deliveryMode === "LIVE_LOCATION" && (
+                        <>
+                          {" · "}
+                          <a
+                            href={`https://www.google.com/maps/search/?api=1&query=${order.deliveryLatitude},${order.deliveryLongitude}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-semibold text-brand-600 hover:underline"
+                          >
+                            Open in Maps
+                          </a>
+                        </>
+                      )}
                     </p>
 
                     <p className="mt-1 text-xs text-gray-500">

@@ -12,7 +12,7 @@ import { hashPassword } from '../../src/common/crypto';
 import { cache } from '../../src/infra/cache';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as otpService from '../../src/modules/auth/otp.service';
-import { seedAddress, seedProduct, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
+import { seedAddress, seedProduct, seedSellerListing, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
 import { SETTLEMENT_CLOSE_LAG_MS } from '../../src/modules/sellers/seller-settlement.service';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
@@ -67,9 +67,7 @@ async function orderSetup() {
   const platformId = await seedStore();
   const a = await seedSeller('9900000010');
   const product = await seedProduct(platformId, { pricePaise: 15000, stockQty: 10 });
-  const listing = expectSuccess<{ id: string }>(
-    (await api().post(`/api/v1/admin/sellers/${a.id}/listings`).set('Authorization', bearer(adminToken)).send({ variantId: product.variantId, mrpPaise: 16000, pricePaise: 15000, stockQty: 10 }).expect(201)).body,
-  ).data.id;
+  const listing = await seedSellerListing(a.id, product.variantId, { mrpPaise: 16000, pricePaise: 15000, stockQty: 10 });
   await otpService.clearOtpState('9900000099');
   const customer = await loginAs('9900000099');
   const addressId = await seedAddress(customer.userId);
@@ -80,7 +78,8 @@ async function orderSetup() {
     .set('Idempotency-Key', randomUUID())
     .send({ addressId, paymentMethod: PaymentMethod.COD })
     .expect(201);
-  const order = expectSuccess<{ order: { id: string; sellerOrders: { id: string }[] } }>(placed.body).data.order;
+  // `deliveryOtp` is returned ONCE, here at creation (only its hash is kept).
+  const order = expectSuccess<{ order: { id: string; sellerOrders: { id: string }[]; deliveryOtp: string | null } }>(placed.body).data.order;
   return { adminToken, a, customer: customer.accessToken, order, soId: order.sellerOrders[0]!.id };
 }
 
@@ -173,12 +172,14 @@ describe('onboarding, product approval and settlement notifications', () => {
   });
 
   it('settlement created / processing / paid reach the seller once each', async () => {
-    const { adminToken, a, customer, order, soId } = await orderSetup();
+    const { adminToken, a, order, soId } = await orderSetup();
     for (const toStatus of ['ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP']) {
       await api().patch(`/api/v1/seller/orders/${soId}/status`).set('Authorization', bearer(a.token)).send({ toStatus }).expect(200);
     }
-    const detail = await api().get(`/api/v1/orders/${order.id}`).set('Authorization', bearer(customer)).expect(200);
-    const otp = expectSuccess<{ deliveryOtp: string }>(detail.body).data.deliveryOtp;
+    // The delivery OTP comes from the order-creation response — order detail
+    // never returns it again (only its hash is stored).
+    const otp = order.deliveryOtp!;
+    expect(otp).toMatch(/^\d{4}$/);
     const agent = expectSuccess<{ id: string }>((await api().post('/api/v1/admin/delivery-agents').set('Authorization', bearer(adminToken)).send({ name: 'Rider', mobile: '9876500001' }).expect(201)).body).data.id;
     await api().post(`/api/v1/admin/orders/${order.id}/assign`).set('Authorization', bearer(adminToken)).send({ agentId: agent }).expect(200);
     for (const toStatus of ['PICKED_UP', 'OUT_FOR_DELIVERY']) {

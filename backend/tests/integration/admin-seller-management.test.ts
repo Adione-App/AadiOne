@@ -25,7 +25,7 @@ import {
   type ProductApprovalBatchSummaryDto,
   type SellerListingDto,
   type SellerOnboardingDetailDto,
-  type SellerLifecycleStatus,
+  SellerLifecycleStatus,
   type SellerProductDto,
   type SellerType,
 } from '../../src/shared';
@@ -142,6 +142,19 @@ async function completeChecklist(sellerId: string): Promise<void> {
     where: { sellerId, type: 'PAN_CARD' },
     data: { documentNumber: RAW_PAN, fileKey: `seller-documents/${sellerId}/pan.pdf` },
   });
+}
+
+/** What a RESTAURANT needs on top of `completeChecklist`: an FSSAI number, its
+ * licence as an uploaded PDF, and at least one cuisine. Returns the FSSAI
+ * document id. */
+async function completeRestaurantChecklist(sellerId: string): Promise<string> {
+  await completeChecklist(sellerId);
+  await prisma.sellerProfile.update({ where: { sellerId }, data: { fssaiNumber: '12345678901234' } });
+  await prisma.restaurantProfile.create({ data: { sellerId, cuisine: ['North Indian'] } });
+  const fssai = await prisma.sellerDocument.create({
+    data: { sellerId, type: 'FSSAI_LICENSE', documentNumber: '12345678901234', fileKey: `seller-documents/${sellerId}/fssai.pdf` },
+  });
+  return fssai.id;
 }
 
 async function seedSellerWithOwner(mobile: string, name: string): Promise<string> {
@@ -285,7 +298,6 @@ describe('admin seller list', () => {
       code: 'DIRGROCERY',
       name: 'Directory Grocery',
       sellerType: 'GROCERY',
-      isPlatformOwned: false,
       city: 'Sikar',
       state: 'Rajasthan',
       onboardingStatus: 'PENDING',
@@ -438,7 +450,6 @@ describe('admin seller detail', () => {
       id: sellerId,
       name: 'Detail Seller',
       sellerType: 'GROCERY',
-      isPlatformOwned: false,
       addressLine: 'Test Address',
       city: 'Sikar',
       state: 'Rajasthan',
@@ -630,9 +641,15 @@ describe('document review', () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* Document link schemes                                                      */
+/* Document links — refused: documents are uploaded PDFs (V2)                 */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * V1 stored a document as a link; V2 takes only an uploaded PDF (multipart,
+ * ≤ 10 MB, `%PDF` bytes checked) kept in private storage — see
+ * seller-onboarding.test.ts "uploads a PDF document". A link of ANY scheme,
+ * http(s) included, is therefore refused and nothing is stored.
+ */
 describe('document links', () => {
   async function submitDocument(token: string, fileUrl: string) {
     return api()
@@ -652,15 +669,6 @@ describe('document links', () => {
     expect(await prisma.sellerDocument.count({ where: { sellerId } })).toBe(0);
   }
 
-  async function expectAccepted(mobile: string, fileUrl: string) {
-    const sellerId = await seedSellerWithOwner(mobile, `Link Seller ${mobile}`);
-    const token = await loginSeller(mobile);
-    const res = await submitDocument(token, fileUrl);
-    expect(res.status).toBe(201);
-    expect(expectSuccess<{ fileUrl: string }>(res.body).data.fileUrl).toBe(fileUrl);
-    expect(await prisma.sellerDocument.count({ where: { sellerId } })).toBe(1);
-  }
-
   it('rejects javascript: links', async () => {
     await expectRejected('9500000120', ['javascript:alert(1)', 'JaVaScRiPt:alert(document.cookie)']);
   });
@@ -673,12 +681,12 @@ describe('document links', () => {
     await expectRejected('9500000122', ['file:///etc/passwd']);
   });
 
-  it('accepts an http link', async () => {
-    await expectAccepted('9500000123', 'http://files.adione.test/pan-card.pdf');
+  it('refuses an http link too — only an uploaded PDF is a document', async () => {
+    await expectRejected('9500000123', ['http://files.adione.test/pan-card.pdf']);
   });
 
-  it('accepts an https link', async () => {
-    await expectAccepted('9500000124', 'https://files.adione.test/pan-card.pdf');
+  it('refuses an https link too — only an uploaded PDF is a document', async () => {
+    await expectRejected('9500000124', ['https://files.adione.test/pan-card.pdf']);
   });
 
   it('is also enforced by the service itself: a non-PDF upload is refused, nothing stored', async () => {
@@ -741,13 +749,24 @@ describe('create seller field lengths', () => {
     const res = await api()
       .post('/api/v1/admin/sellers')
       .set('Authorization', bearer(token))
-      .send(createBody({ name: 'N'.repeat(120), city: 'C'.repeat(80), state: 'S'.repeat(80) }))
+      .send(createBody({ name: 'N'.repeat(120), city: 'C'.repeat(80) }))
       .expect(201);
     const { sellerId } = expectSuccess<{ sellerId: string }>(res.body).data;
     const seller = await prisma.seller.findUniqueOrThrow({ where: { id: sellerId } });
     expect(seller.name).toHaveLength(120);
     expect(seller.city).toHaveLength(80);
-    expect(seller.state).toHaveLength(80);
+    expect(seller.state).toBe('Rajasthan');
+  });
+
+  it('accepts only Rajasthan as the state — any other (even within the column limit) is refused', async () => {
+    const token = await loginAdmin();
+    const res = await api()
+      .post('/api/v1/admin/sellers')
+      .set('Authorization', bearer(token))
+      .send(createBody({ state: 'S'.repeat(80) }));
+    expect(res.status).toBe(422);
+    expect(expectError(res.body).code).toBe(ErrorCode.OUTSIDE_SERVICE_STATE);
+    expect(await prisma.seller.count()).toBe(0);
   });
 });
 
@@ -874,12 +893,15 @@ describe('admin seller status', () => {
     expect(await auditRows('seller.activate')).toHaveLength(0);
   });
 
-  it('leaves the platform seller to its existing /admin/store/status route', async () => {
+  it('manages a platform-owned seller like any other seller (V2 has no separate store route)', async () => {
+    // V1's /admin/store/status for the single platform store is gone; refusing
+    // the platform-owned row here would leave no way to deactivate it.
     const token = await loginAdmin();
     const platformId = await seedSeller({ name: 'Platform Store', isPlatformOwned: true, onboardingStatus: 'APPROVED' });
 
-    const res = await setStatus(token, platformId, { isActive: false, reason: 'Wrong route' });
-    expect(res.status).toBe(400);
+    await setStatus(token, platformId, { isActive: false, reason: 'Paused by admin' }).expect(200);
+    expect((await prisma.seller.findUniqueOrThrow({ where: { id: platformId } })).isActive).toBe(false);
+    await setStatus(token, platformId, { isActive: true, reason: 'Back in business' }).expect(200);
     expect((await prisma.seller.findUniqueOrThrow({ where: { id: platformId } })).isActive).toBe(true);
   });
 
@@ -1359,24 +1381,19 @@ describe('Step 2 security', () => {
 
   it('never returns a full bank account number from any admin read or write', async () => {
     const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'No Leak Seller' });
+    const sellerId = await seedSellerWithOwner('9500000232', 'No Leak Seller');
     await seedCompleteOnboarding(sellerId);
+    // The payout account is the seller's own to enter (admin's data-entry
+    // routes are gone — see "Admin onboarding is read-only" below).
+    const sellerToken = await loginSeller('9500000232');
+    await api().put('/api/v1/seller/onboarding/bank-detail').set('Authorization', bearer(sellerToken)).send(adminBankBody()).expect(200);
 
-    const bankPut = (
-      await api()
-        .put(`/api/v1/admin/sellers/${sellerId}/onboarding/bank-detail`)
-        .set('Authorization', bearer(token))
-        .send(adminBankBody())
-        .expect(200)
-    ).body;
-    const reviewed = reviewedBank(expectSuccess<AdminSellerOnboardingSummaryDto>(bankPut).data);
+    const summary = (await api().get(`/api/v1/admin/sellers/${sellerId}/onboarding/summary`).set('Authorization', bearer(token)).expect(200)).body;
+    const reviewed = reviewedBank(expectSuccess<AdminSellerOnboardingSummaryDto>(summary).data);
 
     const bodies = [
-      bankPut,
+      summary,
       (await api().patch(`/api/v1/admin/sellers/${sellerId}/onboarding/bank-detail/verify`).set('Authorization', bearer(token)).send(reviewed).expect(200)).body,
-      (await api().post(`/api/v1/admin/sellers/${sellerId}/onboarding/documents`).set('Authorization', bearer(token)).send({ type: 'AADHAAR_CARD', fileUrl: 'https://files.adione.test/leak-check.pdf' }).expect(201)).body,
-      (await api().put(`/api/v1/admin/sellers/${sellerId}/onboarding/profile`).set('Authorization', bearer(token)).send(adminProfileBody()).expect(200)).body,
-      (await api().patch(`/api/v1/admin/sellers/${sellerId}`).set('Authorization', bearer(token)).send({ name: 'No Leak Seller 2' }).expect(200)).body,
       (await api().patch(`/api/v1/admin/sellers/${sellerId}/status`).set('Authorization', bearer(token)).send({ isActive: false, reason: 'Leak check' }).expect(200)).body,
       (await api().get(`/api/v1/admin/sellers/${sellerId}`).set('Authorization', bearer(token)).expect(200)).body,
       (await api().get('/api/v1/admin/sellers').set('Authorization', bearer(token)).expect(200)).body,
@@ -1389,33 +1406,24 @@ describe('Step 2 security', () => {
     }
   });
 
-  it('the four onboarding saves respond with the masked summary — no document links, no raw PAN/Aadhaar/account', async () => {
+  it("admin's onboarding decisions respond with the masked summary — no document links, no raw PAN/Aadhaar/account", async () => {
     const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Save Response Seller' });
-    await seedCompleteOnboarding(sellerId); // raw PAN/Aadhaar/account + a document at SECRET_DOC_URL
-    const newDocUrl = 'https://files.adione.test/save-response-check.pdf';
+    const sellerId = await seedSeller({ name: 'Decision Response Seller' });
+    const documentId = await seedCompleteOnboarding(sellerId); // raw PAN/Aadhaar/account + a legacy document link
     const base = `/api/v1/admin/sellers/${sellerId}/onboarding`;
 
-    const profile = await api().put(`${base}/profile`).set('Authorization', bearer(token)).send(adminProfileBody()).expect(200);
-    const bank = await api().put(`${base}/bank-detail`).set('Authorization', bearer(token)).send(adminBankBody()).expect(200);
-    const verified = await api()
-      .patch(`${base}/bank-detail/verify`)
-      .set('Authorization', bearer(token))
-      .send(reviewedBank(expectSuccess<AdminSellerOnboardingSummaryDto>(bank.body).data))
-      .expect(200);
-    const document = await api()
-      .post(`${base}/documents`)
-      .set('Authorization', bearer(token))
-      .send({ type: 'AADHAAR_CARD', fileUrl: newDocUrl })
-      .expect(201);
-    const summaryKeys = Object.keys(
-      expectSuccess<AdminSellerOnboardingSummaryDto>((await api().get(`${base}/summary`).set('Authorization', bearer(token)).expect(200)).body).data,
-    ).sort();
+    const summaryRes = await api().get(`${base}/summary`).set('Authorization', bearer(token)).expect(200);
+    const summary = expectSuccess<AdminSellerOnboardingSummaryDto>(summaryRes.body).data;
+    const summaryKeys = Object.keys(summary).sort();
 
-    for (const [label, res] of [['profile', profile], ['bank-detail', bank], ['verify', verified], ['documents', document]] as const) {
+    // V2 admin decides — bank verification and document review — but never
+    // enters the data itself.
+    const verified = await api().patch(`${base}/bank-detail/verify`).set('Authorization', bearer(token)).send(reviewedBank(summary)).expect(200);
+    const reviewedDoc = await api().patch(`${base}/documents/${documentId}/review`).set('Authorization', bearer(token)).send({ status: 'VERIFIED' }).expect(200);
+
+    for (const [label, res] of [['summary', summaryRes], ['verify', verified], ['document review', reviewedDoc]] as const) {
       const text = JSON.stringify(res.body);
       expect(text, label).not.toContain(SECRET_DOC_URL);
-      expect(text, label).not.toContain(newDocUrl);
       expect(text, label).not.toContain('"fileUrl"');
       expect(text, label).not.toContain(NEW_RAW_ACCOUNT);
       expectNoRawPii(res.body);
@@ -1423,35 +1431,41 @@ describe('Step 2 security', () => {
       expect(Object.keys(data).sort(), label).toEqual(summaryKeys);
       expect(data.documents.length, label).toBeGreaterThan(0);
     }
-    expect(expectSuccess<AdminSellerOnboardingSummaryDto>(document.body).data.documents.map((d) => d.type)).toContain('AADHAAR_CARD');
-    // The links are still stored — and only the reviewer's own read shows them.
-    expect(await prisma.sellerDocument.count({ where: { sellerId, fileUrl: newDocUrl } })).toBe(1);
+    expect(expectSuccess<AdminSellerOnboardingSummaryDto>(reviewedDoc.body).data.documents.find((d) => d.id === documentId)?.status).toBe('VERIFIED');
+    // An older document's stored link is left as it is — and shown nowhere.
+    expect(await prisma.sellerDocument.count({ where: { sellerId, fileUrl: SECRET_DOC_URL } })).toBe(1);
     const review = await api().get(base).set('Authorization', bearer(token)).expect(200);
-    expect(JSON.stringify(review.body)).toContain(newDocUrl);
+    expect(JSON.stringify(review.body)).not.toContain(SECRET_DOC_URL);
   });
 
   it('never writes a full bank account number (or PAN/Aadhaar) into the audit log', async () => {
     const token = await loginAdmin();
     const sellerId = await seedSellerWithOwner('9500000231', 'Audit Leak Seller');
-    await seedCompleteOnboarding(sellerId);
+    const documentId = await seedCompleteOnboarding(sellerId);
+    const sellerToken = await loginSeller('9500000231');
 
-    await api().put(`/api/v1/admin/sellers/${sellerId}/onboarding/profile`).set('Authorization', bearer(token)).send(adminProfileBody()).expect(200);
-    const bankPut = await api()
-      .put(`/api/v1/admin/sellers/${sellerId}/onboarding/bank-detail`)
-      .set('Authorization', bearer(token))
-      .send(adminBankBody())
+    // The seller enters its own details; admin verifies and reviews.
+    // (The seller's own form validates Aadhaar, so the placeholder number is
+    // left out of this save; the seeded profile still holds RAW_AADHAAR.)
+    await api()
+      .put('/api/v1/seller/onboarding/profile')
+      .set('Authorization', bearer(sellerToken))
+      .send(adminProfileBody({ aadhaarNumber: undefined }))
       .expect(200);
+    await api().put('/api/v1/seller/onboarding/bank-detail').set('Authorization', bearer(sellerToken)).send(adminBankBody()).expect(200);
+    const summary = expectSuccess<AdminSellerOnboardingSummaryDto>(
+      (await api().get(`/api/v1/admin/sellers/${sellerId}/onboarding/summary`).set('Authorization', bearer(token)).expect(200)).body,
+    ).data;
     await api()
       .patch(`/api/v1/admin/sellers/${sellerId}/onboarding/bank-detail/verify`)
       .set('Authorization', bearer(token))
-      .send(reviewedBank(expectSuccess<AdminSellerOnboardingSummaryDto>(bankPut.body).data))
+      .send(reviewedBank(summary))
       .expect(200);
     await api()
-      .post(`/api/v1/admin/sellers/${sellerId}/onboarding/documents`)
+      .patch(`/api/v1/admin/sellers/${sellerId}/onboarding/documents/${documentId}/review`)
       .set('Authorization', bearer(token))
-      .send({ type: 'PAN_CARD', fileUrl: 'https://files.adione.test/audit-leak-check.pdf' })
-      .expect(201);
-    const sellerToken = await loginSeller('9500000231');
+      .send({ status: 'VERIFIED' })
+      .expect(200);
     await api()
       .put('/api/v1/seller/onboarding/bank-detail')
       .set('Authorization', bearer(sellerToken))
@@ -1466,7 +1480,7 @@ describe('Step 2 security', () => {
     expect(text).not.toContain(RAW_PAN);
     expect(text).not.toContain(RAW_AADHAAR);
     // Document entries record type/status only — never the link.
-    expect(text).not.toContain('audit-leak-check.pdf');
+    expect(text).not.toContain(SECRET_DOC_URL);
   });
 });
 
@@ -1483,8 +1497,16 @@ describe('masked onboarding summary', () => {
 
   it('returns the masked onboarding record: masked PAN/Aadhaar/account, bank id + updatedAt, document metadata', async () => {
     const token = await loginAdmin();
-    const sellerId = await seedSeller({ name: 'Summary Seller', sellerType: 'RESTAURANT' });
+    // A complete application the seller has SUBMITTED (V2: stage SUBMITTED is
+    // the ONBOARDING_PENDING_REVIEW lifecycle state, not merely "all filled in").
+    const sellerId = await seedSeller({
+      name: 'Summary Seller',
+      sellerType: 'RESTAURANT',
+      lifecycleStatus: SellerLifecycleStatus.ONBOARDING_PENDING_REVIEW,
+    });
     const documentId = await seedCompleteOnboarding(sellerId);
+    // A restaurant's complete application also has its FSSAI licence and cuisine.
+    const fssaiDocumentId = await completeRestaurantChecklist(sellerId);
     const bank = await prisma.sellerBankDetail.findUniqueOrThrow({ where: { sellerId } });
 
     const { data } = await getSummary(token, sellerId);
@@ -1507,17 +1529,22 @@ describe('masked onboarding summary', () => {
         isVerified: false,
       },
     });
-    expect(data.documents).toEqual([
-      {
-        id: documentId,
-        type: 'PAN_CARD',
+    // Each entry carries (at least) this metadata — and never a link.
+    const metadata = (id: string, type: string) =>
+      expect.objectContaining({
+        id,
+        type,
         status: 'PENDING',
         rejectionReason: null,
         expiresAt: null,
         createdAt: expect.any(String),
         reviewedAt: null,
-      },
-    ]);
+      });
+    expect(data.documents).toHaveLength(2);
+    expect(data.documents).toEqual(
+      expect.arrayContaining([metadata(documentId, 'PAN_CARD'), metadata(fssaiDocumentId, 'FSSAI_LICENSE')]),
+    );
+    expect(JSON.stringify(data.documents)).not.toContain('fileUrl');
   });
 
   it('never carries full PAN, Aadhaar, account number or any document link', async () => {

@@ -9,8 +9,21 @@
  * schema.
  */
 
-import { ApprovalStatus, CodPolicy, ProductStatus, SellerLifecycleStatus, UnitType } from '../../src/shared';
+import { ApprovalStatus, CodPolicy, ConfigKey, ProductStatus, SellerLifecycleStatus, UnitType } from '../../src/shared';
 import { prisma } from '../../src/infra/db/prisma';
+import * as configService from '../../src/modules/configuration/configuration.service';
+
+/**
+ * A placeholder merchant VPA for tests on the direct-UPI path (mock payment
+ * provider, `ADIONE_UPI_ID`). Not a real account and not a secret — real
+ * values live only in the production configuration.
+ */
+export const TEST_MERCHANT_UPI_ID = 'aadione.test@upi';
+
+/** Configures {@link TEST_MERCHANT_UPI_ID}; call after `configService.invalidateAll()`. */
+export async function configureTestMerchantUpi(): Promise<void> {
+  await configService.set({ key: ConfigKey.ADIONE_UPI_ID, value: TEST_MERCHANT_UPI_ID as never });
+}
 
 /**
  * The `Seller` lifecycle columns for a seeded seller whose admin onboarding
@@ -156,10 +169,32 @@ export async function seedProduct(
   };
 }
 
+/**
+ * A seller's listing of an existing variant — the row the old admin "create a
+ * listing for a seller" route (POST /admin/sellers/:id/listings) used to
+ * write. That route was removed when catalogues became seller-owned (admin is
+ * read-only); sellers create listings themselves via POST /seller/listings,
+ * which is covered by the seller catalogue tests. Here it is only setup.
+ */
+export async function seedSellerListing(
+  sellerId: string,
+  variantId: string,
+  listing: { pricePaise: number; mrpPaise: number; stockQty: number },
+): Promise<string> {
+  const row = await prisma.sellerListing.create({
+    data: { sellerId, variantId, ...listing, isAvailable: true },
+  });
+  return row.id;
+}
+
 export async function seedAddress(
   userId: string,
   coords: { latitude: number; longitude: number } = NEARBY,
 ): Promise<string> {
+  // Default only when the customer has none yet — as the app does. The
+  // database allows ONE live default per user, so a second seeded address
+  // for the same customer must not claim it too.
+  const hasDefault = (await prisma.address.count({ where: { userId, isDefault: true, deletedAt: null } })) > 0;
   const address = await prisma.address.create({
     data: {
       userId,
@@ -172,7 +207,7 @@ export async function seedAddress(
       pincode: '332001',
       landmark: 'Near Shiv Mandir',
       ...coords,
-      isDefault: true,
+      isDefault: !hasDefault,
       isServiceable: true,
     },
   });

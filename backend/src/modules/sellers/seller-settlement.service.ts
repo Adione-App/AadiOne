@@ -424,7 +424,12 @@ async function resolvePeriod(
       message: `periodEnd must be at least ${SETTLEMENT_CLOSE_LAG_MS / 1000} seconds in the past.`,
     });
   }
-  if (periodStart >= periodEnd) {
+  // An empty default period right after the last settlement (no time has
+  // passed) is the caller's "cycle not due yet" (409) — not a malformed
+  // period the admin never sent. Only an explicit period, or a first
+  // settlement, is refused here.
+  const explicit = Boolean(input.periodStart || input.periodEnd);
+  if (periodStart >= periodEnd && (explicit || !lastPeriodEnd)) {
     throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'periodStart must be before periodEnd.' });
   }
   return { periodStart, periodEnd, lastPeriodEnd };

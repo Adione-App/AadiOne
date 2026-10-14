@@ -34,10 +34,13 @@ import {
 } from '@/components/ui';
 import {
   IFSC_PATTERN,
+  removeOwnRestaurantImage,
   sellerApi,
   sellerErrorMessage,
+  setOwnRestaurantImage,
   toSellerOnboarding,
   type SellerBankDetailInput,
+  type SellerRestaurantImageKind,
   type SellerOnboarding,
   type SellerRestaurantProfileInput,
 } from '../sellerApi';
@@ -55,7 +58,9 @@ import {
   type DocumentUploadValue,
 } from '@/components/SellerDocuments';
 import { documentFormData } from '@/lib/sellers';
-import type { SellerDocumentType } from '@shared';
+import { prepTimeRange, type SellerDocumentType } from '@shared';
+import { imageSrc } from '@/lib/image';
+import { ACCEPTED_IMAGE_TYPES, validateImage } from '@/lib/upload';
 
 /**
  * Sign-in & password: change the password Aadione issued (POST
@@ -466,11 +471,23 @@ export default function SellerProfilePage() {
             </div>
             <Row label="Vegetarian only" value={data.restaurantProfile.isVegOnly ? 'Yes' : 'No'} />
             <Row
-              label="Average preparation time"
-              value={data.restaurantProfile.avgPrepMins ? `${data.restaurantProfile.avgPrepMins} min` : null}
+              label="Preparation time"
+              value={
+                data.restaurantProfile.avgPrepMins
+                  ? `${data.restaurantProfile.avgPrepMins} min — customers see ${prepTimeRange(data.restaurantProfile.avgPrepMins)?.label}`
+                  : null
+              }
             />
           </dl>
         </Panel>
+      )}
+
+      {/* 7. Restaurant photos — the place (Food list) and the food hero (menu page) */}
+      {data.restaurantProfile && (
+        <RestaurantPhotosPanel
+          coverImageUrl={data.restaurantProfile.coverImageUrl ?? null}
+          menuImageUrl={data.restaurantProfile.menuImageUrl ?? null}
+        />
       )}
 
       {editing === 'bank' && (
@@ -664,11 +681,110 @@ export function RestaurantModal({
           <span className="text-sm font-medium text-gray-700">Vegetarian only</span>
           <Toggle checked={vegOnly} label="Vegetarian only" onChange={setVegOnly} />
         </div>
-        <Field label="Average preparation time (minutes)" hint="Leave empty if not set.">
+        <Field
+          label="Preparation time (minutes)"
+          hint={
+            prepTimeRange(prep.trim() ? Number(prep) : null)
+              ? `Customers see “${prepTimeRange(Number(prep))!.label}” (your time ± 5 minutes). 1–240.`
+              : 'Leave empty if not set — then no time is shown to customers.'
+          }
+        >
           <input value={prep} inputMode="numeric" onChange={(e) => setPrep(e.target.value.replace(/\D/g, ''))} className={inputClass} />
         </Field>
       </div>
     </Modal>
+  );
+}
+
+const PHOTO_COPY: Record<SellerRestaurantImageKind, { title: string; hint: string }> = {
+  cover: {
+    title: 'Cover photo — Food list',
+    hint: 'Your restaurant or cafe itself (storefront or interior). Customers see it on your card in the Food list.',
+  },
+  menu: {
+    title: 'Menu image — your menu page',
+    hint: 'A photo of your food. Customers see it at the top of your menu page. It is never used on the Food list.',
+  },
+};
+
+/** The restaurant's two customer-facing photos, each changed on its own. */
+function RestaurantPhotosPanel({ coverImageUrl, menuImageUrl }: { coverImageUrl: string | null; menuImageUrl: string | null }) {
+  return (
+    <Panel title="Restaurant Photos">
+      <div className="grid gap-4 md:grid-cols-2">
+        <RestaurantPhotoSlot kind="cover" url={coverImageUrl} />
+        <RestaurantPhotoSlot kind="menu" url={menuImageUrl} />
+      </div>
+      <p className="mt-3 text-xs text-gray-500">JPEG, PNG, WebP or AVIF, up to 5 MB, at least 600 px wide. Landscape photos work best.</p>
+    </Panel>
+  );
+}
+
+function RestaurantPhotoSlot({ kind, url }: { kind: SellerRestaurantImageKind; url: string | null }) {
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState<'Uploading…' | 'Removing…' | null>(null);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const copy = PHOTO_COPY[kind];
+
+  async function run(label: 'Uploading…' | 'Removing…', action: () => Promise<void>, done: string): Promise<void> {
+    setNotice(null);
+    setBusy(label);
+    try {
+      await action();
+      await queryClient.invalidateQueries({ queryKey: sellerKeys.onboarding });
+      setNotice({ ok: true, text: done });
+    } catch (failure) {
+      setNotice({ ok: false, text: sellerErrorMessage(failure) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-gray-100 p-3">
+      <p className="text-sm font-semibold text-gray-900">{copy.title}</p>
+      <p className="mb-2 text-xs text-gray-500">{copy.hint}</p>
+      <div className="flex aspect-[16/9] w-full items-center justify-center overflow-hidden rounded-xl border border-gray-200 bg-gray-50">
+        {url ? <img src={imageSrc(url)} alt={copy.title} className="h-full w-full object-cover" /> : <span className="text-xs text-gray-400">No photo yet</span>}
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <label
+          className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border border-gray-300 bg-white px-3 py-1.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 ${busy ? 'pointer-events-none opacity-50' : ''}`}
+        >
+          {busy === 'Uploading…' ? busy : url ? 'Replace' : 'Upload'}
+          <input
+            type="file"
+            accept={ACCEPTED_IMAGE_TYPES.join(',')}
+            className="sr-only"
+            disabled={Boolean(busy)}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = '';
+              if (!file) return;
+              const invalid = validateImage(file);
+              if (invalid) return setNotice({ ok: false, text: invalid });
+              void run('Uploading…', () => setOwnRestaurantImage(kind, file), 'Saved. Customers see it on the app\'s next refresh.');
+            }}
+          />
+        </label>
+        {url && (
+          <Button
+            variant="ghost"
+            disabled={Boolean(busy)}
+            onClick={() => {
+              if (window.confirm('Remove this photo? Customers will no longer see it.')) void run('Removing…', () => removeOwnRestaurantImage(kind), 'Photo removed.');
+            }}
+          >
+            {busy === 'Removing…' ? busy : 'Remove'}
+          </Button>
+        )}
+      </div>
+      {notice && (
+        <p role="status" className={`mt-2 text-xs font-medium ${notice.ok ? 'text-brand-700' : 'text-danger-600'}`}>
+          {notice.text}
+        </p>
+      )}
+    </div>
   );
 }
 

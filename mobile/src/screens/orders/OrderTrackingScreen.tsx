@@ -32,11 +32,12 @@ import {
 
 import { api, ApiRequestError } from "@/lib/api";
 
-import { OrderStatus, TERMINAL_ORDER_STATUSES } from "@shared";
+import { DeliveryMode, OrderStatus, TERMINAL_ORDER_STATUSES } from "@shared";
+import { formatIndianMobile } from "@shared/phone";
 
 import { formatPaise } from "@shared/money";
 import { formatDateTimeInZone } from "@shared/datetime";
-import { formatAddressOneLine } from "@shared/address";
+import { orderAddressText } from "@/lib/addressDisplay";
 
 import { colors, radius, spacing } from "@shared/theme";
 
@@ -822,19 +823,26 @@ export default function OrderTrackingScreen({
               )}
             </View>
 
+            {/* The order's own snapshot: who receives it, and — for a live
+                location — that it goes to a GPS point, not a saved address. */}
+            {order.deliveryMode === DeliveryMode.LIVE_LOCATION && (
+              <AppText variant="caption" color={colors.primary} style={styles.liveTag}>
+                ➤ Live location
+              </AppText>
+            )}
+            <AppText variant="bodyStrong" color={colors.textPrimary}>
+              {order.deliveryAddress.fullName} · {formatIndianMobile(order.deliveryAddress.mobile)}
+            </AppText>
+
             <AppText
               variant="body"
               color={colors.textSecondary}
               style={styles.addressText}
             >
-              {/* The snapshot line already carries house / street / locality and "Near landmark". */}
-              {formatAddressOneLine({
-                area: order.deliveryAddress.area,
-                city: order.deliveryAddress.city,
-                district: order.deliveryAddress.district,
-                state: order.deliveryAddress.state,
-                pincode: order.deliveryAddress.pincode,
-              })}
+              {/* The snapshot line already carries house / street / locality,
+                  "Near landmark" and usually town, state and PIN — only what
+                  it lacks is added (it used to repeat them all). */}
+              {orderAddressText(order.deliveryAddress.area, order.deliveryAddress)}
             </AppText>
           </View>
         </View>
@@ -1497,6 +1505,11 @@ const styles = StyleSheet.create({
     marginTop: 4,
     lineHeight: 22,
     fontSize: 13,
+  },
+
+  liveTag: {
+    fontWeight: "700",
+    marginTop: 2,
   },
 
   /*

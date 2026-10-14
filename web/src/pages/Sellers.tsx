@@ -626,7 +626,8 @@ const EMPTY_FORM: CreateForm = {
   locality: '',
   city: '',
   district: '',
-  state: '',
+  // Aadione operates only in Rajasthan (the server enforces it).
+  state: 'Rajasthan',
   pincode: '',
   landmark: '',
   latitude: '',
@@ -656,6 +657,7 @@ function validateCreate(form: CreateForm): { body?: CreateSellerRequest; errors:
   const city = text('city', 'Village / City / Town', 2, 80);
   const district = text('district', 'District', 2, 80);
   const state = text('state', 'State', 2, 80);
+  if (state && state.toLowerCase() !== 'rajasthan') errors.state = 'Aadione currently operates only in Rajasthan.';
   const landmark = form.landmark.trim();
   if (landmark.length > 160) errors.landmark = 'Landmark must be at most 160 characters.';
   const pincode = form.pincode.trim();
@@ -803,7 +805,9 @@ function CreateSellerModal({ onClose, onCreated }: { onClose: () => void; onCrea
             {input('district')}
           </Field>
           <Field label="State" required>
-            {input('state')}
+            {/* Fixed: Aadione operates only in Rajasthan. */}
+            <input value={form.state} readOnly aria-readonly className={inputClass} />
+            {errors.state && <span className="mt-1 block text-xs text-danger-600">{errors.state}</span>}
           </Field>
           <Field label="PIN code" required>
             {input('pincode', { inputMode: 'numeric', placeholder: '6 digits' })}

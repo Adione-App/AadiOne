@@ -130,15 +130,25 @@ export interface RestaurantBranding {
   sellerId: string;
   logoUrl: string | null;
   coverImageUrl: string | null;
+  menuImageUrl?: string | null;
+  avgPrepMins?: number | null;
 }
 
+/** logo = round logo on the menu page; cover = the place (Food list card); menu = the food hero atop its menu page. */
+export type RestaurantImageKind = 'logo' | 'cover' | 'menu';
+
 /** Attaches an admin upload (purpose "restaurant") as the restaurant's logo or cover. */
-export function setRestaurantImage(sellerId: string, kind: 'logo' | 'cover', key: string): Promise<RestaurantBranding> {
+export function setRestaurantImage(sellerId: string, kind: RestaurantImageKind, key: string): Promise<RestaurantBranding> {
   return api.put<RestaurantBranding>(`/admin/restaurants/${sellerId}/images/${kind}`, { key });
 }
 
-export function removeRestaurantImage(sellerId: string, kind: 'logo' | 'cover'): Promise<RestaurantBranding> {
+export function removeRestaurantImage(sellerId: string, kind: RestaurantImageKind): Promise<RestaurantBranding> {
   return api.delete<RestaurantBranding>(`/admin/restaurants/${sellerId}/images/${kind}`);
+}
+
+/** PUT /admin/restaurants/:sellerId/prep-time — minutes (1–240), or null to clear. */
+export function setRestaurantPrepTime(sellerId: string, avgPrepMins: number | null): Promise<RestaurantBranding> {
+  return api.put<RestaurantBranding>(`/admin/restaurants/${sellerId}/prep-time`, { avgPrepMins });
 }
 
 export function deleteBanner(id: string): Promise<{ id: string }> {

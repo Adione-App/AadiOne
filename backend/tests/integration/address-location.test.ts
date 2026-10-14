@@ -127,6 +127,31 @@ describe('structured addresses', () => {
     await as(session.accessToken).patch(`/addresses/${legacy.id}`, { label: 'Parents' }).expect(200);
     expect(await prisma.address.findUniqueOrThrow({ where: { id: legacy.id } })).toMatchObject({ district: null, locationSource: null });
   });
+
+  it('the app’s one House No. + Street field: an unchanged edit keeps both columns and the landmark; edited text is stored whole in street', async () => {
+    await seedStore();
+    const session = await customer('9400002005');
+    const created = expectSuccess<AddressDto>(
+      (await as(session.accessToken).post('/addresses', { ...RURAL, houseNo: '12', street: 'Station Road' }).expect(201)).body,
+    ).data;
+    // What the form sends on Save when the combined field was left as loaded:
+    // no houseNo / street / landmark keys at all.
+    const { houseNo: _h, street: _s, landmark: _l, ...withoutHouseStreet } = RURAL;
+    const kept = expectSuccess<AddressDto>(
+      (await as(session.accessToken).patch(`/addresses/${created.id}`, { ...withoutHouseStreet, fullName: 'Kamla Devi Jat' }).expect(200)).body,
+    ).data;
+    expect(kept).toMatchObject({ fullName: 'Kamla Devi Jat', houseNo: '12', street: 'Station Road', landmark: 'Near the government school' });
+
+    // Edited: houseNo cleared, the whole text in street; the landmark still untouched.
+    const edited = expectSuccess<AddressDto>(
+      (
+        await as(session.accessToken)
+          .patch(`/addresses/${created.id}`, { ...withoutHouseStreet, houseNo: null, street: '14, Station Road' })
+          .expect(200)
+      ).body,
+    ).data;
+    expect(edited).toMatchObject({ houseNo: null, street: '14, Station Road', landmark: 'Near the government school' });
+  });
 });
 
 describe('distance and the delivery radius', () => {

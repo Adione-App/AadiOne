@@ -325,6 +325,15 @@ export function FoodStack() {
             onOpenRestaurant={(sellerId) =>
               navigation.navigate("RestaurantMenu", { sellerId })
             }
+            // The Food tab is a root screen: "back" returns to Home.
+            onBack={() =>
+              navigation.getParent()?.navigate("Home", { screen: "HomeFeed" })
+            }
+            onOpenLocation={() =>
+              navigation
+                .getParent()
+                ?.navigate("Home", { screen: "SelectLocation", initial: false })
+            }
           />
         )}
       </FoodNav.Screen>

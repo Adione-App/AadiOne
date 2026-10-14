@@ -17,12 +17,13 @@ import { assertUploadable, storage, type PresignedUpload } from '../../infra/sto
 export const ADMIN_DIRECT_UPLOAD_PATH = '/api/v1/admin/uploads/direct';
 
 /** What an admin upload is for — decides its storage folder. */
-export const ADMIN_UPLOAD_PURPOSES = ['category', 'banner'] as const;
+export const ADMIN_UPLOAD_PURPOSES = ['category', 'banner', 'restaurant'] as const;
 export type AdminUploadPurpose = (typeof ADMIN_UPLOAD_PURPOSES)[number];
 
 const FOLDER: Record<AdminUploadPurpose, string> = {
   category: 'admin/categories',
   banner: 'admin/banners',
+  restaurant: 'admin/restaurants',
 };
 
 /** Throws unless `key` is a well-formed admin upload key. */

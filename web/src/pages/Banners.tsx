@@ -15,7 +15,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { HOME_BANNER_PLACEMENTS, Permission, roleHasPermission, type AdminBannerDto } from '@shared';
+import { FOOD_BANNER_PLACEMENTS, HOME_BANNER_PLACEMENTS, Permission, roleHasPermission, type AdminBannerDto } from '@shared';
 import { Button, EmptyState, ErrorBanner, Field, Icon, Modal, Pill, Spinner, Surface, Toggle, inputClass } from '@/components/ui';
 import { useAuth } from '@/lib/auth';
 import { imageSrc } from '@/lib/image';
@@ -196,6 +196,7 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
   const [customPlacement, setCustomPlacement] = useState(current && !presetValues.includes(current.placement) ? current.placement : '');
   const [title, setTitle] = useState(current?.title ?? '');
   const [subtitle, setSubtitle] = useState(current?.subtitle ?? '');
+  const [ctaLabel, setCtaLabel] = useState(current?.ctaLabel ?? '');
   const [actionType, setActionType] = useState<AdminBannerDto['actionType']>(current?.actionType ?? 'NONE');
   const [actionValue, setActionValue] = useState(current?.actionValue ?? '');
   const [displayOrder, setDisplayOrder] = useState(String(current?.displayOrder ?? 0));
@@ -242,6 +243,7 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
       placement,
       title: title.trim() || null,
       subtitle: subtitle.trim() || null,
+      ctaLabel: ctaLabel.trim() || null,
       actionType,
       actionValue: actionType === 'NONE' ? null : actionValue.trim(),
       displayOrder: order,
@@ -266,6 +268,7 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
   }
 
   const shown = preview ?? (current ? imageSrc(current.imageUrl) : undefined);
+  const chosenPlacement = placementChoice === 'OTHER' ? customPlacement.trim() : placementChoice;
 
   return (
     <Modal
@@ -286,6 +289,9 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
     >
       <div className="space-y-4">
         <ErrorBanner message={error} />
+        {chosenPlacement === FOOD_BANNER_PLACEMENTS.HERO && (
+          <FoodHeroPreview title={title} subtitle={subtitle} ctaLabel={ctaLabel} imageUrl={shown ?? null} />
+        )}
 
         <Field label="Banner image" required={!current} hint="JPEG, PNG, WebP or AVIF, up to 5 MB, at least 600 px wide.">
           <div className="space-y-2">
@@ -340,6 +346,9 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
           </Field>
           <Field label="Subtitle" hint="Optional.">
             <input className={inputClass} value={subtitle} maxLength={200} onChange={(event) => setSubtitle(event.target.value)} />
+          </Field>
+          <Field label="Button text" hint='Optional, e.g. "Order now". Empty = no button.'>
+            <input className={inputClass} value={ctaLabel} maxLength={40} onChange={(event) => setCtaLabel(event.target.value)} />
           </Field>
           <Field label="On tap">
             <select
@@ -520,5 +529,44 @@ function HomeCategoryOrder({ canEdit, onNotice }: { canEdit: boolean; onNotice: 
         </div>
       )}
     </Surface>
+  );
+}
+
+/**
+ * What the Food hero will look like in the app (FoodScreen.tsx HeroSlide):
+ * the title as the headline with its last two words in brand green, the
+ * subtitle, the optional button and the dish image on the right — so the
+ * banner can be checked before it is switched on.
+ */
+function FoodHeroPreview({ title, subtitle, ctaLabel, imageUrl }: { title: string; subtitle: string; ctaLabel: string; imageUrl: string | null }) {
+  const words = title.trim().split(/\s+/).filter(Boolean);
+  const head = words.length >= 3 ? words.slice(0, -2).join(' ') : words.join(' ');
+  const accent = words.length >= 3 ? words.slice(-2).join(' ') : '';
+  return (
+    <div>
+      <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500">Preview — Food screen</p>
+      <div className="mx-auto flex max-w-sm items-center gap-3 rounded-2xl bg-[#F1F9F3] p-4">
+        <div className="min-w-0 flex-[1.15]">
+          {words.length > 0 ? (
+            <p className="text-xl font-extrabold leading-tight text-gray-900">
+              {head} {accent && <span className="text-[#17762F]">{accent}</span>}
+            </p>
+          ) : (
+            <p className="text-sm italic text-gray-400">Add a title to show a headline</p>
+          )}
+          {subtitle.trim() && <p className="mt-1 text-sm text-gray-600">{subtitle}</p>}
+          {ctaLabel.trim() && (
+            <span className="mt-3 inline-block rounded-full bg-[#17762F] px-4 py-1.5 text-sm font-bold text-white">{ctaLabel}</span>
+          )}
+        </div>
+        <div className="flex flex-1 items-center justify-center">
+          {imageUrl ? (
+            <img src={imageUrl} alt="" className="max-h-36 w-full object-contain" />
+          ) : (
+            <span className="text-xs text-gray-400">Dish image</span>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

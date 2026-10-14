@@ -870,6 +870,12 @@ model RestaurantProfile {
   isVegOnly   Boolean  @default(false) @map("is_veg_only")
   avgPrepMins Int?     @map("avg_prep_mins")
 
+  /// Customer-facing branding, managed from the Admin Panel (Seller → Restaurant):
+  /// the round logo on the menu page and the wide cover photo behind it / on the
+  /// Food list card. Optimised WebP in public storage, like every content image.
+  logoUrl       String? @map("logo_url") @db.VarChar(500)
+  coverImageUrl String? @map("cover_image_url") @db.VarChar(500)
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
@@ -2059,6 +2065,8 @@ model Banner {
   placement String  @db.VarChar(60)
   title     String? @db.VarChar(120)
   subtitle  String? @db.VarChar(200)
+  /// Optional button text drawn on the banner (e.g. "Order now"); null = no button.
+  ctaLabel  String? @map("cta_label") @db.VarChar(40)
 
   imageUrl    String @map("image_url") @db.VarChar(500)
   /// Pixel size of the stored image, so a client can show the whole banner

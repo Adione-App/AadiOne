@@ -7,11 +7,11 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
-import { ConfigKey, HOME_BANNER_PLACEMENTS, type AdminBannerDto, type CategoryDto } from '@shared';
+import { ConfigKey, FOOD_BANNER_PLACEMENTS, HOME_BANNER_PLACEMENTS, type AdminBannerDto, type CategoryDto } from '@shared';
 import { api } from './api';
 import { uploadProductImage, type PresignedUpload } from './upload';
 
-export type AdminUploadPurpose = 'category' | 'banner';
+export type AdminUploadPurpose = 'category' | 'banner' | 'restaurant';
 
 /** POST /admin/uploads/presign, then the bytes; returns the key to attach. */
 export function uploadAdminImage(file: File, purpose: AdminUploadPurpose): Promise<string> {
@@ -54,8 +54,19 @@ export const BANNER_PLACEMENTS: { value: string; label: string; live: boolean; h
   },
   { value: HOME_BANNER_PLACEMENTS.EXPLORE, label: 'Home — explore more categories', live: true, hint: 'Shown above the subcategory grid.' },
   { value: HOME_BANNER_PLACEMENTS.BOTTOM, label: 'Home — final banner (bottom)', live: true, hint: 'The last banner on the page.' },
+  {
+    value: FOOD_BANNER_PLACEMENTS.HERO,
+    label: 'Food — hero banner',
+    live: true,
+    hint: 'The top of the Food screen: the dish image on the right, the title as the headline (its last two words in green), the subtitle under it, and an optional button. Several rotate.',
+  },
+  {
+    value: FOOD_BANNER_PLACEMENTS.BACKGROUND,
+    label: 'Food — page background',
+    live: true,
+    hint: 'An image only, drawn behind the Food header and hero. The first active one is used.',
+  },
   { value: 'home_middle', label: 'Home — middle section', live: false },
-  { value: 'food', label: 'Food screen', live: false },
 ];
 
 export function placementLabel(placement: string): string {
@@ -98,6 +109,8 @@ export interface BannerFields {
   placement: string;
   title: string | null;
   subtitle: string | null;
+  /** Optional button text on the banner; null = no button. */
+  ctaLabel: string | null;
   actionType: AdminBannerDto['actionType'];
   actionValue: string | null;
   displayOrder: number;
@@ -110,6 +123,23 @@ export function createBanner(fields: BannerFields & { imageKey: string }): Promi
 
 export function updateBanner(id: string, fields: Partial<BannerFields> & { imageKey?: string }): Promise<AdminBannerDto> {
   return api.patch<AdminBannerDto>(`/admin/banners/${id}`, fields);
+}
+
+/* Restaurant branding (logo / cover photo) ---------------------------------- */
+
+export interface RestaurantBranding {
+  sellerId: string;
+  logoUrl: string | null;
+  coverImageUrl: string | null;
+}
+
+/** Attaches an admin upload (purpose "restaurant") as the restaurant's logo or cover. */
+export function setRestaurantImage(sellerId: string, kind: 'logo' | 'cover', key: string): Promise<RestaurantBranding> {
+  return api.put<RestaurantBranding>(`/admin/restaurants/${sellerId}/images/${kind}`, { key });
+}
+
+export function removeRestaurantImage(sellerId: string, kind: 'logo' | 'cover'): Promise<RestaurantBranding> {
+  return api.delete<RestaurantBranding>(`/admin/restaurants/${sellerId}/images/${kind}`);
 }
 
 export function deleteBanner(id: string): Promise<{ id: string }> {

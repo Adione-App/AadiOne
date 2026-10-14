@@ -1,5 +1,11 @@
 /**
- * Seller detail — Restaurant tab (READ-ONLY; RESTAURANT sellers only).
+ * Seller detail — Restaurant tab (RESTAURANT / CAFE sellers only).
+ *
+ * Editable here: the restaurant's customer-facing PHOTOS — its logo and cover
+ * (PUT/DELETE /admin/restaurants/:sellerId/images/:kind, through the admin
+ * upload + image pipeline), shown on the Food list and the menu page. Admins
+ * with catalogue rights only. Everything else on the tab is read-only: the
+ * restaurant manages its profile and menu in the Seller Panel.
  *
  * One read: GET /admin/restaurants/:sellerId (admin session) — the existing
  * admin restaurant view: profile fields plus every menu section and item,
@@ -13,8 +19,14 @@
  * request is ever made for them.
  */
 
-import { ApprovalStatus, formatPaise, type AdminSellerDetailDto } from '@shared';
-import { sellerErrorMessage, useAdminRestaurant, type AdminRestaurantSection } from '@/lib/sellers';
+import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { ApprovalStatus, Permission, formatPaise, roleHasPermission, type AdminSellerDetailDto } from '@shared';
+import { adminSellerKeys, sellerErrorMessage, useAdminRestaurant, type AdminRestaurantSection } from '@/lib/sellers';
+import { useAuth } from '@/lib/auth';
+import { imageSrc } from '@/lib/image';
+import { ACCEPTED_IMAGE_TYPES, validateImage } from '@/lib/upload';
+import { removeRestaurantImage, setRestaurantImage, uploadAdminImage } from '@/lib/content';
 import { DetailRow } from '@/components/SellerBadges';
 import { Button, EmptyState, ErrorBanner, Panel, Pill, Spinner, Td, Th, type Tone } from '@/components/ui';
 
@@ -44,6 +56,8 @@ export default function SellerRestaurantTab({ seller }: { seller: AdminSellerDet
 
   return (
     <div className="space-y-5">
+      <RestaurantPhotos sellerId={seller.id} logoUrl={profile.logoUrl ?? null} coverImageUrl={profile.coverImageUrl ?? null} />
+
       <Panel title="Restaurant profile">
         {seller.restaurantProfile === null ? (
           <EmptyState title="No restaurant profile configured" hint="The restaurant adds cuisine, veg-only and preparation time in the Seller Panel." />
@@ -146,8 +160,115 @@ export default function SellerRestaurantTab({ seller }: { seller: AdminSellerDet
       </Panel>
 
       <p className="text-xs text-gray-500">
-        Read-only. Items are grouped by the restaurant's own menu sections; approval happens in Product Approvals.
+        Photos are managed here; the profile and menu are read-only (the restaurant manages them in the Seller Panel). Items are grouped by the
+        restaurant's own menu sections; approval happens in Product Approvals.
       </p>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Customer-facing photos                                                      */
+/* -------------------------------------------------------------------------- */
+
+const PHOTO_COPY = {
+  cover: { title: 'Cover photo', hint: 'Wide photo across the top of the menu page and on the Food list card. At least 600 px wide; landscape works best.' },
+  logo: { title: 'Logo', hint: 'Shown in a circle on the menu page. A square image works best.' },
+} as const;
+
+function RestaurantPhotos({ sellerId, logoUrl, coverImageUrl }: { sellerId: string; logoUrl: string | null; coverImageUrl: string | null }) {
+  const role = useAuth((state) => state.user?.role);
+  const canEdit = role ? roleHasPermission(role, Permission.CATALOG_WRITE) : false;
+  return (
+    <Panel title="Customer-facing photos">
+      <div className="grid gap-4 md:grid-cols-[2fr_1fr]">
+        <PhotoSlot sellerId={sellerId} kind="cover" url={coverImageUrl} canEdit={canEdit} />
+        <PhotoSlot sellerId={sellerId} kind="logo" url={logoUrl} canEdit={canEdit} />
+      </div>
+      {!coverImageUrl && <p className="mt-3 text-xs text-gray-500">Without a cover photo the app shows a photo from the restaurant's menu.</p>}
+    </Panel>
+  );
+}
+
+function PhotoSlot({ sellerId, kind, url, canEdit }: { sellerId: string; kind: 'logo' | 'cover'; url: string | null; canEdit: boolean }) {
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const copy = PHOTO_COPY[kind];
+
+  async function run(label: string, action: () => Promise<unknown>, done: string) {
+    setNotice(null);
+    setBusy(label);
+    try {
+      await action();
+      await queryClient.invalidateQueries({ queryKey: adminSellerKeys.restaurant(sellerId) });
+      setNotice({ ok: true, text: done });
+    } catch (failure) {
+      setNotice({ ok: false, text: sellerErrorMessage(failure, `The ${copy.title.toLowerCase()} could not be saved. Please try again.`) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function upload(file: File | undefined) {
+    if (!file) return;
+    const invalid = validateImage(file);
+    if (invalid) return setNotice({ ok: false, text: invalid });
+    void run(
+      'Uploading…',
+      async () => setRestaurantImage(sellerId, kind, await uploadAdminImage(file, 'restaurant')),
+      `${copy.title} saved. The app shows it on its next refresh.`,
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-gray-100 p-3">
+      <p className="text-sm font-semibold text-gray-900">{copy.title}</p>
+      <p className="mb-2 text-xs text-gray-500">{copy.hint}</p>
+      <div
+        className={`flex items-center justify-center overflow-hidden border border-gray-200 bg-gray-50 ${kind === 'logo' ? 'mx-auto h-28 w-28 rounded-full' : 'aspect-[16/7] w-full rounded-xl'}`}
+      >
+        {url ? (
+          <img src={imageSrc(url)} alt={copy.title} className="h-full w-full object-cover" />
+        ) : (
+          <span className="text-xs text-gray-400">No {copy.title.toLowerCase()}</span>
+        )}
+      </div>
+      {canEdit && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <label className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border border-gray-300 bg-white px-3 py-1.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 ${busy ? 'pointer-events-none opacity-50' : ''}`}>
+            {busy === 'Uploading…' ? busy : url ? 'Replace' : 'Upload'}
+            <input
+              type="file"
+              accept={ACCEPTED_IMAGE_TYPES.join(',')}
+              className="sr-only"
+              disabled={Boolean(busy)}
+              onChange={(event) => {
+                upload(event.target.files?.[0]);
+                event.target.value = '';
+              }}
+            />
+          </label>
+          {url && (
+            <Button
+              variant="ghost"
+              disabled={Boolean(busy)}
+              onClick={() => {
+                if (window.confirm(`Remove the ${copy.title.toLowerCase()}? Customers will no longer see it.`)) {
+                  void run('Removing…', () => removeRestaurantImage(sellerId, kind), `${copy.title} removed.`);
+                }
+              }}
+            >
+              {busy === 'Removing…' ? busy : 'Remove'}
+            </Button>
+          )}
+        </div>
+      )}
+      {notice && (
+        <p role="status" className={`mt-2 text-xs font-medium ${notice.ok ? 'text-brand-700' : 'text-danger-600'}`}>
+          {notice.text}
+        </p>
+      )}
     </div>
   );
 }

@@ -34,7 +34,9 @@ import {
   isFoodSellerType,
   optionGroupsOf,
   optionValuesOf,
+  type FoodDiet,
   type RestaurantDto,
+  type RestaurantListQuery,
   type RestaurantMenuDto,
   type RestaurantMenuItemDto,
   type RestaurantSummaryDto,
@@ -44,7 +46,7 @@ import { prisma, runInTransaction } from '../../infra/db/prisma';
 import { invalidateCategoryCache } from '../catalog/catalog.service';
 import { createOwnTopCategory } from '../catalog/seller-category.service';
 import { createOwnSubcategory } from '../catalog/seller-subcategory.service';
-import { checkServiceability, getSellerOpenState } from '../sellers/seller.service';
+import { checkServiceability, estimateEta, getSellerOpenState } from '../sellers/seller.service';
 
 /* -------------------------------------------------------------------------- */
 /* Seller — own menu sections                                                */
@@ -213,6 +215,8 @@ async function toRestaurantDto(seller: RestaurantRow): Promise<RestaurantDto> {
     avgPrepMins: seller.restaurantProfile?.avgPrepMins ?? null,
     isOpen: open.isOpen,
     nextOpenText: open.nextOpenText,
+    logoUrl: seller.restaurantProfile?.logoUrl ?? null,
+    coverImageUrl: seller.restaurantProfile?.coverImageUrl ?? null,
   };
 }
 
@@ -351,16 +355,51 @@ async function coverImages(sellerIds: string[]): Promise<Map<string, string>> {
 }
 
 /**
+ * Restaurants with at least one live NON_VEG item on the menu (the diet a
+ * seller sets on each food item) — what the Food list's non-veg mark and
+ * "Non-Veg" filter mean. Nothing is guessed from names.
+ */
+async function servingNonVeg(sellerIds: string[]): Promise<Set<string>> {
+  if (sellerIds.length === 0) return new Set();
+  const rows = await prisma.$queryRaw<{ seller_id: string }[]>`
+    SELECT DISTINCT sl.seller_id
+    FROM seller_listings sl
+    JOIN product_variants v ON v.id = sl.variant_id AND v.status = 'ACTIVE' AND v.deleted_at IS NULL
+    JOIN products p ON p.id = v.product_id
+      AND p.status = 'ACTIVE' AND p.approval_status = 'APPROVED' AND p.deleted_at IS NULL
+    WHERE sl.is_available
+      AND sl.seller_id = ANY(${sellerIds}::uuid[])
+      AND p.attributes->>'diet' = 'NON_VEG'`;
+  return new Set(rows.map((row) => row.seller_id));
+}
+
+/**
  * Customer: every live restaurant and cafe, each identified as its own
  * seller. With a location, only those that deliver there (each seller's own
- * radius — the rule checkout enforces), nearest first.
+ * radius — the rule checkout enforces), nearest first, each with its real
+ * delivery fee (the configured fee slabs) and delivery time (the same
+ * estimate checkout promises).
+ *
+ * Filters (GET /restaurants?diet=&type=): `type` = RESTAURANT / CAFE;
+ * `diet` VEG = pure-veg kitchens, NON_VEG = places with a non-veg item.
  */
-export async function listRestaurants(location: { lat: number; lng: number } | null = null): Promise<RestaurantSummaryDto[]> {
-  const sellers = await prisma.seller.findMany({
-    where: LIVE_RESTAURANT_WHERE,
+export async function listRestaurants(
+  location: { lat: number; lng: number } | null = null,
+  filters: RestaurantListQuery = {},
+): Promise<RestaurantSummaryDto[]> {
+  const candidates = await prisma.seller.findMany({
+    where: {
+      ...LIVE_RESTAURANT_WHERE,
+      ...(filters.type ? { sellerType: filters.type } : {}),
+      ...(filters.diet === 'VEG' ? { restaurantProfile: { isVegOnly: true } } : {}),
+    },
     include: RESTAURANT_INCLUDE,
     orderBy: { name: 'asc' },
   });
+  const nonVeg = await servingNonVeg(candidates.map((s) => s.id));
+  const sellers = filters.diet === 'NON_VEG' ? candidates.filter((s) => nonVeg.has(s.id)) : candidates;
+  const dietOf = (seller: (typeof sellers)[number]): FoodDiet | null =>
+    seller.restaurantProfile?.isVegOnly ? 'VEG' : nonVeg.has(seller.id) ? 'NON_VEG' : null;
   const counts = await prisma.sellerListing.groupBy({
     by: ['sellerId'],
     where: {
@@ -377,26 +416,38 @@ export async function listRestaurants(location: { lat: number; lng: number } | n
   const countBy = new Map(counts.map((c) => [c.sellerId, c._count._all]));
   const covers = await coverImages(sellers.map((s) => s.id));
 
-  const distances = new Map<string, number>();
+  const delivery = new Map<string, { distanceKm: number; feePaise: number; etaMin: number; etaMax: number }>();
   let visible = sellers;
   if (location) {
     const checks = await Promise.all(
       sellers.map(async (seller) => ({ seller, check: await checkServiceability(location.lat, location.lng, seller) })),
     );
-    for (const { seller, check } of checks) distances.set(seller.id, check.distanceKm);
-    visible = checks
-      .filter((entry) => entry.check.serviceable)
-      .sort((a, b) => a.check.distanceKm - b.check.distanceKm)
-      .map((entry) => entry.seller);
+    const serving = checks.filter((entry) => entry.check.serviceable).sort((a, b) => a.check.distanceKm - b.check.distanceKm);
+    await Promise.all(
+      serving.map(async ({ seller, check }) => {
+        const eta = await estimateEta({ distanceKm: check.distanceKm, itemCount: 0, sellerId: seller.id });
+        delivery.set(seller.id, { distanceKm: check.distanceKm, feePaise: check.deliveryFeePaise, etaMin: eta.etaMinMinutes, etaMax: eta.etaMaxMinutes });
+      }),
+    );
+    visible = serving.map((entry) => entry.seller);
   }
 
   return Promise.all(
-    visible.map(async (seller) => ({
-      ...(await toRestaurantDto(seller)),
-      menuItemCount: countBy.get(seller.id) ?? 0,
-      coverImageUrl: covers.get(seller.id) ?? null,
-      distanceKm: distances.get(seller.id) ?? null,
-    })),
+    visible.map(async (seller) => {
+      const dto = await toRestaurantDto(seller);
+      const trip = delivery.get(seller.id);
+      return {
+        ...dto,
+        menuItemCount: countBy.get(seller.id) ?? 0,
+        // Its own cover first; otherwise a real photo from its menu.
+        coverImageUrl: dto.coverImageUrl ?? covers.get(seller.id) ?? null,
+        distanceKm: trip?.distanceKm ?? null,
+        diet: dietOf(seller),
+        deliveryFeePaise: trip?.feePaise ?? null,
+        etaMinMinutes: trip?.etaMin ?? null,
+        etaMaxMinutes: trip?.etaMax ?? null,
+      };
+    }),
   );
 }
 

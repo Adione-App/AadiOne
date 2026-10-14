@@ -833,6 +833,8 @@ export interface BannerDto {
   imageHeight: number;
   title: string | null;
   subtitle: string | null;
+  /** Optional button text drawn on the banner (e.g. "Order now"); null = no button. Absent from older servers. */
+  ctaLabel?: string | null;
   actionType: 'CATEGORY' | 'PRODUCT' | 'COUPON' | 'NONE';
   /** Category id, product id or coupon code, by actionType; null for NONE. */
   actionValue: string | null;
@@ -869,6 +871,19 @@ export const HOME_BANNER_PLACEMENTS = {
 } as const;
 
 export type HomeBannerPlacement = (typeof HOME_BANNER_PLACEMENTS)[keyof typeof HOME_BANNER_PLACEMENTS];
+
+/**
+ * The admin banner placements the customer Food screen shows
+ * (GET /banners?placement=…):
+ *
+ *   food             the hero: image + headline (title), subtitle, optional
+ *                    button (ctaLabel); several rotate
+ *   food_background  an image-only backdrop behind the Food header and hero
+ */
+export const FOOD_BANNER_PLACEMENTS = {
+  HERO: 'food',
+  BACKGROUND: 'food_background',
+} as const;
 
 /**
  * Home placements delivered as HomeFeedDto.sectionBanners — everything except
@@ -962,15 +977,37 @@ export interface RestaurantDto {
   avgPrepMins: number | null;
   isOpen: boolean;
   nextOpenText: string | null;
+  /** The restaurant's own logo (Admin Panel → Seller → Restaurant); null when none. Absent from older servers. */
+  logoUrl?: string | null;
+  /** Its own cover photo; null when none was set. Absent from older servers. */
+  coverImageUrl?: string | null;
 }
 
 /** One row of GET /restaurants. */
 export interface RestaurantSummaryDto extends RestaurantDto {
   menuItemCount: number;
-  /** A real photo of one of its menu items; null when none has a photo. */
+  /** The restaurant's cover photo, else a real photo of one of its menu items; null when it has neither. */
   coverImageUrl: string | null;
   /** Straight-line km from the customer; null when no location was given. */
   distanceKm: number | null;
+  /**
+   * VEG = a pure-veg kitchen; NON_VEG = at least one live non-veg item on the
+   * menu; null = neither is known. Absent from older servers.
+   */
+  diet?: FoodDiet | null;
+  /** Delivery fee to the customer's location (the configured fee slabs); null without a location. Absent from older servers. */
+  deliveryFeePaise?: number | null;
+  /** Delivery time range to the customer's location (the same estimate checkout promises); null without a location. */
+  etaMinMinutes?: number | null;
+  etaMaxMinutes?: number | null;
+}
+
+/** GET /restaurants filters. */
+export interface RestaurantListQuery {
+  /** VEG = pure-veg kitchens; NON_VEG = places that serve non-veg. */
+  diet?: FoodDiet;
+  /** RESTAURANT or CAFE. */
+  type?: 'RESTAURANT' | 'CAFE';
 }
 
 /** One orderable entry on a restaurant menu (one per sellable variant). */

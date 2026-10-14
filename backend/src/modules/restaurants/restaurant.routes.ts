@@ -25,6 +25,7 @@ import { validate, validatedQuery } from '../../middleware/validate';
 import { requirePermission, requireUser } from '../../middleware/auth';
 import { attachSellerContext, requireSellerId } from '../../middleware/sellerAuth';
 import * as service from './restaurant.service';
+import * as branding from './restaurant-branding.service';
 
 const uuid = z.string().uuid();
 const sectionName = z.string().trim().min(2).max(120);
@@ -40,13 +41,22 @@ restaurantRouter.get(
       .object({
         lat: z.coerce.number().min(-90).max(90).optional(),
         lng: z.coerce.number().min(-180).max(180).optional(),
+        // Food list filters: pure-veg / serves non-veg, restaurant / cafe.
+        diet: z.enum(['VEG', 'NON_VEG']).optional(),
+        type: z.enum(['RESTAURANT', 'CAFE']).optional(),
       })
       .refine((q) => (q.lat === undefined) === (q.lng === undefined), { message: 'Send both lat and lng, or neither.' })
       .superRefine(refineQueryCoordinates),
   }),
   asyncHandler(async (req: Request, res: Response) => {
-    const { lat, lng } = validatedQuery<{ lat?: number; lng?: number }>(req);
-    ok(res, await service.listRestaurants(lat !== undefined && lng !== undefined ? { lat, lng } : null));
+    const { lat, lng, diet, type } = validatedQuery<{ lat?: number; lng?: number; diet?: 'VEG' | 'NON_VEG'; type?: 'RESTAURANT' | 'CAFE' }>(req);
+    ok(
+      res,
+      await service.listRestaurants(lat !== undefined && lng !== undefined ? { lat, lng } : null, {
+        ...(diet ? { diet } : {}),
+        ...(type ? { type } : {}),
+      }),
+    );
   }),
 );
 
@@ -105,6 +115,32 @@ adminRestaurantRouter.get(
   requirePermission(Permission.SELLER_ONBOARDING_REVIEW),
   asyncHandler(async (_req: Request, res: Response) => {
     ok(res, await service.listRestaurantsForAdmin());
+  }),
+);
+
+/**
+ * Admin-managed restaurant branding (logo / cover photo) — uploaded through
+ * POST /admin/uploads/presign { purpose: 'restaurant' }, then attached here.
+ */
+const imageParams = z.object({ sellerId: uuid, kind: z.enum(['logo', 'cover']) });
+
+adminRestaurantRouter.put(
+  '/restaurants/:sellerId/images/:kind',
+  requirePermission(Permission.CATALOG_WRITE),
+  validate({ params: imageParams, body: z.object({ key: z.string().trim().min(1).max(400) }).strict() }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { sellerId, kind } = req.params as { sellerId: string; kind: 'logo' | 'cover' };
+    ok(res, await branding.setRestaurantImage(sellerId, kind, req.body.key, requireUser(req).id));
+  }),
+);
+
+adminRestaurantRouter.delete(
+  '/restaurants/:sellerId/images/:kind',
+  requirePermission(Permission.CATALOG_WRITE),
+  validate({ params: imageParams }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { sellerId, kind } = req.params as { sellerId: string; kind: 'logo' | 'cover' };
+    ok(res, await branding.removeRestaurantImage(sellerId, kind, requireUser(req).id));
   }),
 );
 

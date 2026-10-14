@@ -76,6 +76,7 @@ export async function isStorageKeyReferenced(key: string): Promise<boolean> {
     prisma.productVariant.findFirst({ where: { imageUrl: suffix }, select: { id: true } }),
     prisma.brand.findFirst({ where: { logoUrl: suffix }, select: { id: true } }),
     prisma.banner.findFirst({ where: { imageUrl: suffix }, select: { id: true } }),
+    prisma.restaurantProfile.findFirst({ where: { OR: [{ logoUrl: suffix }, { coverImageUrl: suffix }] }, select: { id: true } }),
   ]);
   return hits.some(Boolean);
 }

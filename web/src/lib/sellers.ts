@@ -174,6 +174,9 @@ export interface AdminRestaurantDetail {
     isOpen: boolean;
     isActive: boolean;
     onboardingStatus: ApprovalStatus;
+    /** Customer-facing photos (admin-managed); absent from older servers. */
+    logoUrl?: string | null;
+    coverImageUrl?: string | null;
   };
   sections: AdminRestaurantSection[];
 }

@@ -15,6 +15,7 @@ import {
 import type { QueryClient } from "@tanstack/react-query";
 import Constants from "expo-constants";
 import type {
+  BannerDto,
   CartDto,
   CategoryDto,
   CursorPage,
@@ -25,6 +26,7 @@ import type {
   ProductDetailDto,
   ProductSummaryDto,
   ReferralSummaryDto,
+  RestaurantListQuery,
   RestaurantMenuDto,
   RestaurantSummaryDto,
   RewardCouponDto,
@@ -70,7 +72,8 @@ export const keys = {
   stores: (near: string) => ["stores", near] as const,
   store: (sellerId: string, near: string) => ["store", sellerId, near] as const,
   storeProducts: (sellerId: string) => ["store-products", sellerId] as const,
-  restaurants: (near: string) => ["restaurants", near] as const,
+  restaurants: (near: string, filter = "") => ["restaurants", near, filter] as const,
+  banners: (placement: string) => ["banners", placement] as const,
   restaurantMenu: (sellerId: string) => ["restaurant-menu", sellerId] as const,
   offers: ["offers"] as const,
   cart: ["cart"] as const,
@@ -202,11 +205,17 @@ export function useStoreProducts(sellerId: string, pageSize = 20) {
 }
 
 /** Live restaurants and cafes — only those that deliver to `location` when given. */
-export function useRestaurants(location: NearLocation) {
+/**
+ * Restaurants and cafes that deliver to `location`; `filters` narrow them on
+ * the SERVER (pure-veg / serves non-veg, restaurant / cafe).
+ */
+export function useRestaurants(location: NearLocation, filters: RestaurantListQuery = {}) {
   const near = nearQuery(location);
+  const filter = [filters.diet ? `diet=${filters.diet}` : "", filters.type ? `type=${filters.type}` : ""].filter(Boolean).join("&");
+  const query = [near, filter].filter(Boolean).join("&");
   return useQuery({
-    queryKey: keys.restaurants(near),
-    queryFn: () => api.get<RestaurantSummaryDto[]>(`/restaurants${near ? `?${near}` : ""}`),
+    queryKey: keys.restaurants(near, filter),
+    queryFn: () => api.get<RestaurantSummaryDto[]>(`/restaurants${query ? `?${query}` : ""}`),
     staleTime: 2 * 60_000,
     gcTime: 30 * 60_000,
   });
@@ -216,6 +225,20 @@ export function useRestaurantMenu(sellerId: string) {
   return useQuery({
     queryKey: keys.restaurantMenu(sellerId),
     queryFn: () => api.get<RestaurantMenuDto>(`/restaurants/${sellerId}`),
+    gcTime: 30 * 60_000,
+  });
+}
+
+/**
+ * Active admin banners of one placement, in order (GET /banners) — e.g. the
+ * Food screen's hero ("food") and its backdrop ("food_background"). An
+ * empty placement is an empty list; the screen then shows its fallback.
+ */
+export function useBanners(placement: string) {
+  return useQuery({
+    queryKey: keys.banners(placement),
+    queryFn: () => api.get<BannerDto[]>(`/banners?placement=${encodeURIComponent(placement)}`),
+    staleTime: 5 * 60_000,
     gcTime: 30 * 60_000,
   });
 }

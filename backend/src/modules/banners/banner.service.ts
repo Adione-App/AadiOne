@@ -36,6 +36,7 @@ function toDto(banner: Banner): BannerDto {
     imageHeight: banner.imageHeight,
     title: banner.title,
     subtitle: banner.subtitle,
+    ctaLabel: banner.ctaLabel,
     actionType: banner.actionType,
     actionValue: banner.actionValue,
   };
@@ -93,6 +94,8 @@ export interface BannerInput {
   placement: string;
   title: string | null;
   subtitle: string | null;
+  /** Optional button text on the banner; null = no button. */
+  ctaLabel: string | null;
   actionType: BannerActionType;
   actionValue: string | null;
   displayOrder: number;
@@ -181,6 +184,7 @@ export async function createBanner(input: BannerInput & { imageKey: string }, ac
       placement: input.placement,
       title: input.title,
       subtitle: input.subtitle,
+      ctaLabel: input.ctaLabel,
       imageUrl: image.url,
       imageWidth: image.width,
       imageHeight: image.height,
@@ -218,6 +222,7 @@ export async function updateBanner(
       ...(input.placement !== undefined ? { placement: input.placement } : {}),
       ...(input.title !== undefined ? { title: input.title } : {}),
       ...(input.subtitle !== undefined ? { subtitle: input.subtitle } : {}),
+      ...(input.ctaLabel !== undefined ? { ctaLabel: input.ctaLabel } : {}),
       ...(input.displayOrder !== undefined ? { displayOrder: input.displayOrder } : {}),
       ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
       actionType,

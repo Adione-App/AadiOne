@@ -41,7 +41,7 @@ export default function RailProductsScreen({
     <View style={[styles.cardWrapper, { width: `${100 / columns}%` }]}>
       <ProductCard
         product={item}
-        qtyInCart={item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0}
+        qtyInCart={cart.qtyForCard(item)}
         busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
         onPress={onOpenProduct}
         onAdd={cart.add}

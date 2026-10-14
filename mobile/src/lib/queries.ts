@@ -117,27 +117,43 @@ export function useCategories() {
   });
 }
 
+/** The first page of products (optionally of one category) — shared by `useProducts` and `prefetchProducts`. */
+function productsQueryOptions(params: { categoryId?: string; inStock?: boolean }) {
+  const query = new URLSearchParams({ limit: "30" });
+  if (params.categoryId) query.set("categoryId", params.categoryId);
+  if (params.inStock) query.set("inStock", "true");
+
+  return {
+    queryKey: keys.products(query.toString()),
+    queryFn: () =>
+      api.get<CursorPage<ProductSummaryDto>>(`/products?${query.toString()}`),
+    // Each category the customer has opened this session should stay ready
+    // to show instantly if they switch back to it — react-query's default
+    // 5-minute garbage-collect window is short enough that browsing several
+    // categories evicts the first ones before the customer circles back.
+    gcTime: 30 * 60_000,
+  };
+}
+
 export function useProducts(params: {
   categoryId?: string;
   inStock?: boolean;
   /** False skips the request entirely — e.g. while a category grid, not a product list, is on screen. */
   enabled?: boolean;
 }) {
-  const query = new URLSearchParams({ limit: "30" });
-  if (params.categoryId) query.set("categoryId", params.categoryId);
-  if (params.inStock) query.set("inStock", "true");
-
   return useQuery({
-    queryKey: keys.products(query.toString()),
-    queryFn: () =>
-      api.get<CursorPage<ProductSummaryDto>>(`/products?${query.toString()}`),
+    ...productsQueryOptions(params),
     enabled: params.enabled ?? true,
-    // Each category the customer has opened this session should stay ready
-    // to show instantly if they switch back to it — react-query's default
-    // 5-minute garbage-collect window is short enough that browsing several
-    // categories evicts the first ones before the customer circles back.
-    gcTime: 30 * 60_000,
   });
+}
+
+/**
+ * Warms the cache with a category's first products page (the same entry
+ * `useProducts` reads), so opening it next is instant. Skipped while that
+ * entry is still fresh; failures are silent — the screen fetches normally.
+ */
+export function prefetchProducts(queryClient: QueryClient, categoryId: string): void {
+  void queryClient.prefetchQuery(productsQueryOptions({ categoryId }));
 }
 
 export function useProduct(id: string) {
@@ -339,6 +355,15 @@ function bumpCartEpoch(): number {
   return cartEpoch;
 }
 
+/**
+ * Bumped every time a cart MUTATION's response is written to the cache.
+ * A plain `GET /cart` that started before such a write answers with the cart
+ * as it was before that change (e.g. qty 4 after the customer's + already
+ * made it 5) — written over the newer data, it brought the old quantity back
+ * on screen until the next refetch. Such a response is dropped below.
+ */
+let cartWriteSeq = 0;
+
 export function useCart(distanceKm: number | null = null) {
   const queryClient = useQueryClient();
   const queryKey = [...keys.cart, distanceKm];
@@ -362,6 +387,7 @@ export function useCart(distanceKm: number | null = null) {
       // bug this fixes for the query path (`resetPendingCartAfterOrder`
       // in useCartActions.ts covers the other, optimistic-overlay half).
       const epochAtStart = cartEpoch;
+      const writeSeqAtStart = cartWriteSeq;
 
       const data = await api.get<CartDto>(
         distanceKm !== null
@@ -376,6 +402,13 @@ export function useCart(distanceKm: number | null = null) {
         // back to the just-fetched `data` only if there's nothing cached
         // yet at all (shouldn't happen in practice, since
         // `clearCartAfterOrder` always writes something first).
+        const current = queryClient.getQueryData<CartDto>(queryKey);
+        if (current) return current;
+      }
+
+      if (cartWriteSeq !== writeSeqAtStart) {
+        // A quantity change's own (newer) response was written while this
+        // GET was in flight — keep it rather than this older snapshot.
         const current = queryClient.getQueryData<CartDto>(queryKey);
         if (current) return current;
       }
@@ -457,6 +490,7 @@ export function useCartMutations() {
   // correct and newer; this response is stale and must not overwrite it.
   const guardedWrite = (data: CartDto, context: MutationContext | undefined): void => {
     if (context && context.epoch !== cartEpoch) return;
+    cartWriteSeq += 1;
     write(data);
   };
 

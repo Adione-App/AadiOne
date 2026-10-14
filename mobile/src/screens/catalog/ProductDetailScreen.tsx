@@ -22,6 +22,7 @@ import { api, resolveImageUrl } from "@/lib/api";
 import { useProduct } from "@/lib/queries";
 import { snapshotFromProduct, useCartActions } from "@/lib/useCartActions";
 import { flyToCart } from "@/lib/flyToCart";
+import { quantityLimitOf } from "@/lib/quantityLimit";
 import { productDetailFooterHeight } from "@/lib/tabBarVisibility";
 import { useGridColumns } from "@/lib/useGridColumns";
 import {
@@ -309,11 +310,7 @@ export default function ProductDetailScreen({
                   >
                     <ProductCard
                       product={item}
-                      qtyInCart={
-                        item.defaultVariant
-                          ? cart.qtyFor(item.defaultVariant.id)
-                          : 0
-                      }
+                      qtyInCart={cart.qtyForCard(item)}
                       busy={
                         item.defaultVariant
                           ? cart.isBusy(item.defaultVariant.id)
@@ -413,11 +410,11 @@ export default function ProductDetailScreen({
                 qtyInCart > 0 ? (
                   <QuantityStepper
                     qty={qtyInCart}
-                    max={chosen.maxQtyPerOrder}
+                    max={quantityLimitOf(chosen).max}
                     busy={cart.isBusy(chosen.id)}
                     onIncrement={() => {
-                      flyToCart(flightImageUrl, chosen.id);
-                      cart.increment(chosen.id);
+                      // Only an accepted step flies into the cart.
+                      if (cart.increment(chosen.id)) flyToCart(flightImageUrl, chosen.id);
                     }}
                     onDecrement={() => {
                       // No "leaving the cart" flight here — matches
@@ -428,15 +425,13 @@ export default function ProductDetailScreen({
                       cart.decrement(chosen.id);
                     }}
                     fullWidth
-                    flatButtons
                     style={styles.footerRectShape}
                   />
                 ) : (
                   <Button
                     label="Add to Cart"
                     onPress={() => {
-                      flyToCart(flightImageUrl, chosen.id);
-                      cart.add(chosen.id, snapshotFromProduct(detail, chosen));
+                      if (cart.add(chosen.id, snapshotFromProduct(detail, chosen))) flyToCart(flightImageUrl, chosen.id);
                     }}
                     style={[styles.footerAddButton, styles.footerRectShape]}
                   />

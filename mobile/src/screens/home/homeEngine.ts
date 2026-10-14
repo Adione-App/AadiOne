@@ -22,7 +22,7 @@
  *   explore banner · explore subcategories · remaining category shelves ·
  *     more categories · stores near you
  *   top picks · offers (products, then coupons) · recently added ·
- *     previous orders · final banner · footer
+ *   previous orders · final banner · footer
  *
  * DUPLICATES: a category shelf always shows its own products (category
  * correctness first). The discovery rails after them prefer products the page
@@ -101,12 +101,16 @@ export type HomeSection =
 
 /** Products per shelf on Home — "View All" has the rest. */
 export const MAX_SHELF = 10;
+
 /** A discovery rail shows only new products while at least this many are left. */
 export const MIN_FRESH = 4;
+
 /** Top categories in the first grid (two rows of four); the rest go to "More categories". */
 export const TOP_CATEGORY_TILES = 8;
+
 /** Subcategories in "Explore subcategories" (two rows of five). */
 export const EXPLORE_SUBCATEGORY_TILES = 10;
+
 /** Tiles in the "More categories" grid before "View All". */
 export const MORE_CATEGORY_TILES = 12;
 
@@ -120,9 +124,16 @@ function isBuyable(product: ProductSummaryDto): boolean {
 }
 
 /** A category shelf: its own buyable products, whatever else the page shows. */
-function pickCategoryShelf(products: readonly ProductSummaryDto[], shown: Set<string>): ProductSummaryDto[] {
+function pickCategoryShelf(
+  products: readonly ProductSummaryDto[],
+  shown: Set<string>,
+): ProductSummaryDto[] {
   const picked = products.filter(isBuyable).slice(0, MAX_SHELF);
-  for (const product of picked) shown.add(product.id);
+
+  for (const product of picked) {
+    shown.add(product.id);
+  }
+
   return picked;
 }
 
@@ -131,12 +142,24 @@ function pickCategoryShelf(products: readonly ProductSummaryDto[], shown: Set<st
  * order. When fewer than MIN_FRESH are new, the rail's already-shown products
  * fill in after them rather than leaving it near-empty.
  */
-export function pickPreferFresh(products: readonly ProductSummaryDto[], shown: Set<string>): ProductSummaryDto[] {
+export function pickPreferFresh(
+  products: readonly ProductSummaryDto[],
+  shown: Set<string>,
+): ProductSummaryDto[] {
   const buyable = products.filter(isBuyable);
   const fresh = buyable.filter((product) => !shown.has(product.id));
-  const chosen = fresh.length >= MIN_FRESH ? fresh : [...fresh, ...buyable.filter((product) => shown.has(product.id))];
+
+  const chosen =
+    fresh.length >= MIN_FRESH
+      ? fresh
+      : [...fresh, ...buyable.filter((product) => shown.has(product.id))];
+
   const picked = chosen.slice(0, MAX_SHELF);
-  for (const product of picked) shown.add(product.id);
+
+  for (const product of picked) {
+    shown.add(product.id);
+  }
+
   return picked;
 }
 
@@ -150,23 +173,35 @@ export function pickPreferFresh(products: readonly ProductSummaryDto[], shown: S
  * grid spans as many different categories as possible. Order follows the
  * server's category order; nothing is shuffled.
  */
-export function spreadSubcategories(categories: readonly CategoryDto[], limit: number): CategoryDto[] {
+export function spreadSubcategories(
+  categories: readonly CategoryDto[],
+  limit: number,
+): CategoryDto[] {
   const lists = categories.map((category) => category.children ?? []);
   const picked: CategoryDto[] = [];
   const seen = new Set<string>();
+
   for (let round = 0; picked.length < limit; round += 1) {
     let tookAny = false;
+
     for (const list of lists) {
       const child = list[round];
+
       if (!child) continue;
+
       tookAny = true;
+
       if (seen.has(child.id)) continue;
+
       seen.add(child.id);
       picked.push(child);
+
       if (picked.length === limit) break;
     }
+
     if (!tookAny) break;
   }
+
   return picked;
 }
 
@@ -176,11 +211,14 @@ export function spreadSubcategories(categories: readonly CategoryDto[], limit: n
 
 function bannerAction(banner: BannerDto, whenNone: HomeAction): HomeAction {
   const value = banner.actionValue;
+
   switch (banner.actionType) {
     case "CATEGORY":
       return value ? { type: "category", categoryId: value } : whenNone;
+
     case "PRODUCT":
       return value ? { type: "product", productId: value } : whenNone;
+
     case "COUPON":
       return value ? { type: "coupon", code: value } : whenNone;
 
@@ -242,7 +280,9 @@ export function buildHomeSections(input: HomeLayoutInput): HomeSection[] {
   const shown = new Set<string>();
 
   const banners = (key: string, slides: PromoSlide[]) => {
-    if (slides.length > 0) sections.push({ kind: "banners", key, slides });
+    if (slides.length > 0) {
+      sections.push({ kind: "banners", key, slides });
+    }
   };
 
   /* A — main banner, top categories ---------------------------------------- */
@@ -250,6 +290,7 @@ export function buildHomeSections(input: HomeLayoutInput): HomeSection[] {
   banners("banners:top", bannerSlides(feed.banners, "top"));
 
   const topCategories = feed.categories.slice(0, TOP_CATEGORY_TILES);
+
   if (topCategories.length > 0) {
     sections.push({
       kind: "categoryGrid",
@@ -265,14 +306,31 @@ export function buildHomeSections(input: HomeLayoutInput): HomeSection[] {
 
   banners(
     "banners:food",
-    bannerSlides(feed.sectionBanners?.home_food, "food", input.hasFood ? { type: "food" } : { type: "none" }),
+    bannerSlides(
+      feed.sectionBanners?.home_food,
+      "food",
+      input.hasFood ? { type: "food" } : { type: "none" },
+    ),
   );
-  if (input.hasFood) sections.push({ kind: "food", key: "food" });
 
-  const bannersAbove = new Map((feed.categoryBanners ?? []).map((entry) => [entry.categoryId, entry.banners]));
+  const bannersAbove = new Map(
+    (feed.categoryBanners ?? []).map((entry) => [
+      entry.categoryId,
+      entry.banners,
+    ]),
+  );
+
   const categoryShelf = (rail: HomeFeedDto["categoryRails"][number]) => {
-    banners(`banners:category:${rail.categoryId}`, bannerSlides(bannersAbove.get(rail.categoryId), `category:${rail.categoryId}`));
+    banners(
+      `banners:category:${rail.categoryId}`,
+      bannerSlides(
+        bannersAbove.get(rail.categoryId),
+        `category:${rail.categoryId}`,
+      ),
+    );
+
     const products = pickCategoryShelf(rail.products, shown);
+
     if (products.length > 0) {
       sections.push({
         kind: "shelf",
@@ -280,21 +338,63 @@ export function buildHomeSections(input: HomeLayoutInput): HomeSection[] {
         title: rail.title,
         subtitle: null,
         products,
-        viewAll: { type: "category", categoryId: rail.categoryId },
+        viewAll: {
+          type: "category",
+          categoryId: rail.categoryId,
+        },
       });
     }
   };
 
+  // Keep Grocery and Vegetables & Fruits together at the top of category shelves.
+  // All remaining categories retain the order supplied by the backend.
+  const priorityTitles = ["Grocery", "Vegetables & Fruits"];
+
+  const priorityRails = priorityTitles
+    .map((title) =>
+      feed.categoryRails.find(
+        (rail) => rail.title.trim().toLowerCase() === title.toLowerCase(),
+      ),
+    )
+    .filter((rail): rail is (typeof feed.categoryRails)[number] =>
+      Boolean(rail),
+    );
+
+  const priorityIds = new Set(priorityRails.map((rail) => rail.categoryId));
+
   // No admin order (or an older server): every category shelf is a main one.
   const featuredIds = feed.featuredCategoryIds ?? [];
-  const featured = new Set(featuredIds.length > 0 ? featuredIds : feed.categoryRails.map((rail) => rail.categoryId));
-  for (const rail of feed.categoryRails) if (featured.has(rail.categoryId)) categoryShelf(rail);
+
+  const featured = new Set(
+    featuredIds.length > 0
+      ? featuredIds
+      : feed.categoryRails.map((rail) => rail.categoryId),
+  );
+
+  // Show Grocery first, then Vegetables & Fruits immediately after it.
+  for (const rail of priorityRails) {
+    categoryShelf(rail);
+  }
+
+  // Show the remaining featured shelves in their original backend order.
+  for (const rail of feed.categoryRails) {
+    if (featured.has(rail.categoryId) && !priorityIds.has(rail.categoryId)) {
+      categoryShelf(rail);
+    }
+  }
 
   /* C — category discovery --------------------------------------------------- */
 
-  banners("banners:explore", bannerSlides(feed.sectionBanners?.home_explore, "explore"));
+  banners(
+    "banners:explore",
+    bannerSlides(feed.sectionBanners?.home_explore, "explore"),
+  );
 
-  const explore = spreadSubcategories(feed.categories, EXPLORE_SUBCATEGORY_TILES);
+  const explore = spreadSubcategories(
+    feed.categories,
+    EXPLORE_SUBCATEGORY_TILES,
+  );
+
   if (explore.length > 0) {
     sections.push({
       kind: "categoryGrid",
@@ -306,17 +406,26 @@ export function buildHomeSections(input: HomeLayoutInput): HomeSection[] {
     });
   }
 
-  for (const rail of feed.categoryRails) if (!featured.has(rail.categoryId)) categoryShelf(rail);
+  // Remaining non-featured shelves keep their original order.
+  for (const rail of feed.categoryRails) {
+    if (!featured.has(rail.categoryId) && !priorityIds.has(rail.categoryId)) {
+      categoryShelf(rail);
+    }
+  }
 
   // Everything not already a tile above: top categories past the first grid,
   // then the subcategories "Explore" did not show.
-  const onGrid = new Set([...topCategories, ...explore].map((category) => category.id));
+  const onGrid = new Set(
+    [...topCategories, ...explore].map((category) => category.id),
+  );
+
   const more = [
     ...feed.categories.slice(TOP_CATEGORY_TILES),
     ...feed.categories.flatMap((category) => category.children ?? []),
   ]
     .filter((category) => !onGrid.has(category.id))
     .slice(0, MORE_CATEGORY_TILES);
+
   if (more.length > 0) {
     sections.push({
       kind: "categoryGrid",
@@ -328,32 +437,46 @@ export function buildHomeSections(input: HomeLayoutInput): HomeSection[] {
     });
   }
 
-  if (input.hasStores) sections.push({ kind: "stores", key: "stores" });
-
   /* D — product discovery ---------------------------------------------------- */
 
   const railByKey = new Map(feed.rails.map((rail) => [rail.key, rail]));
+
   const discoveryRail = (rail: HomeFeedDto["rails"][number] | undefined) => {
     if (!rail) return;
+
     const products = pickPreferFresh(rail.products, shown);
+
     if (products.length === 0) return;
+
     sections.push({
       kind: "shelf",
       key: `rail:${rail.key}`,
       title: rail.title,
       subtitle: null,
       products,
-      viewAll: { type: "rail", railKey: rail.key, title: rail.title },
+      viewAll: {
+        type: "rail",
+        railKey: rail.key,
+        title: rail.title,
+      },
     });
   };
 
   // Top Picks; a server without it still has real Best Sellers.
   discoveryRail(railByKey.get("TOP_PICKS") ?? railByKey.get("BEST_SELLERS"));
+
   discoveryRail(railByKey.get("OFFERS"));
-  if (input.hasOffers) sections.push({ kind: "offers", key: "offers" });
+
+  if (input.hasOffers) {
+    sections.push({ kind: "offers", key: "offers" });
+  }
+
   discoveryRail(railByKey.get("RECENTLY_ADDED"));
 
-  const previous = (input.previousOrders ?? []).filter(isBuyable).slice(0, MAX_SHELF);
+  const previous = (input.previousOrders ?? [])
+    .filter(isBuyable)
+    .slice(0, MAX_SHELF);
+
   if (previous.length > 0) {
     sections.push({
       kind: "shelf",
@@ -365,9 +488,13 @@ export function buildHomeSections(input: HomeLayoutInput): HomeSection[] {
     });
   }
 
-  banners("banners:bottom", bannerSlides(feed.sectionBanners?.home_bottom, "bottom"));
+  banners(
+    "banners:bottom",
+    bannerSlides(feed.sectionBanners?.home_bottom, "bottom"),
+  );
 
   sections.push({ kind: "footer", key: "footer" });
+
   return sections;
 }
 
@@ -387,31 +514,45 @@ export function typeLabel(type: string): string {
 }
 
 /** The cuisines across restaurants, most common first, for one summary line. */
-export function topCuisines(restaurants: readonly RestaurantSummaryDto[], count = 4): string[] {
+export function topCuisines(
+  restaurants: readonly RestaurantSummaryDto[],
+  count = 4,
+): string[] {
   const tally = new Map<string, number>();
+
   for (const restaurant of restaurants) {
     for (const cuisine of restaurant.cuisine) {
       const name = cuisine.trim();
-      if (name) tally.set(name, (tally.get(name) ?? 0) + 1);
+      if (name) {
+        tally.set(name, (tally.get(name) ?? 0) + 1);
+      }
     }
   }
+
   return [...tally.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .slice(0, count)
     .map(([name]) => name);
 }
 
-export function offerHeadline(offer: OfferDto, formatPaise: (paise: number) => string): string {
+export function offerHeadline(
+  offer: OfferDto,
+  formatPaise: (paise: number) => string,
+): string {
   switch (offer.type) {
     case "PERCENT":
       return `${offer.discountValue}% OFF`;
+
     case "FLAT":
       return `${formatPaise(offer.discountValue)} OFF`;
+
     default:
       return "FREE DELIVERY";
   }
 }
 
 export function storeSubtitle(store: StoreSummaryDto): string {
-  return store.categoryNames.length > 0 ? store.categoryNames.join(" · ") : typeLabel(store.sellerType);
+  return store.categoryNames.length > 0
+    ? store.categoryNames.join(" · ")
+    : typeLabel(store.sellerType);
 }

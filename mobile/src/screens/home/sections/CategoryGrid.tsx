@@ -10,14 +10,13 @@
 import { memo } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import type { CategoryDto } from "@shared";
-import { colors, spacing } from "@shared/theme";
+import { spacing } from "@shared/theme";
 import CategoryIcon from "@/components/CategoryIcon";
 import { AppText } from "@/components/ui";
 import { SectionHeader, SectionPanel } from "./SectionShell";
 
-/** Tile circle size per column count — five across stays readable on a 360 dp phone. */
-const CIRCLE = { 4: 64, 5: 54 } as const;
-
+/** Slightly larger rounded-square tiles for 4 or 5 columns. */
+const TILE_SIZE = { 4: 80, 5: 70 } as const;
 function CategoryGridImpl({
   title,
   categories,
@@ -32,23 +31,42 @@ function CategoryGridImpl({
   onViewAll?: (() => void) | undefined;
 }) {
   if (categories.length === 0) return null;
-  const circle = CIRCLE[columns];
+
+  const tileSize = TILE_SIZE[columns];
 
   return (
     <SectionPanel>
       <SectionHeader title={title} onViewAll={onViewAll} />
+
       <View style={styles.grid}>
         {categories.map((category) => (
           <Pressable
             key={category.id}
             onPress={() => onOpenCategory(category.id)}
-            style={({ pressed }) => [styles.tile, { width: `${100 / columns}%` }, pressed && styles.pressed]}
+            style={({ pressed }) => [
+              styles.tile,
+              { width: `${100 / columns}%` },
+              pressed && styles.pressed,
+            ]}
             accessibilityRole="button"
             accessibilityLabel={`Open ${category.name}`}
           >
-            <View style={[styles.circle, { width: circle, height: circle, borderRadius: circle / 2 }]}>
-              <CategoryIcon name={category.name} imageUrl={category.imageUrl} size={circle - 6} />
+            <View
+              style={[
+                styles.categoryImageBox,
+                {
+                  width: tileSize,
+                  height: tileSize,
+                },
+              ]}
+            >
+              <CategoryIcon
+                name={category.name}
+                imageUrl={category.imageUrl}
+                size={tileSize - 8}
+              />
             </View>
+
             <AppText variant="caption" numberOfLines={2} style={styles.name}>
               {category.name}
             </AppText>
@@ -58,7 +76,6 @@ function CategoryGridImpl({
     </SectionPanel>
   );
 }
-
 export const CategoryGrid = memo(CategoryGridImpl);
 
 const styles = StyleSheet.create({
@@ -67,26 +84,31 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     paddingHorizontal: spacing.xs,
   },
+
   tile: {
     alignItems: "center",
     paddingHorizontal: spacing.xs,
     marginBottom: spacing.md,
   },
+
   pressed: {
-    opacity: 0.7,
+    opacity: 0.75,
   },
-  circle: {
-    backgroundColor: colors.primarySurface,
+
+  categoryImageBox: {
+    backgroundColor: "#F0F8F0",
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
   },
+
   name: {
-    marginTop: spacing.xs,
+    marginTop: spacing.sm,
     textAlign: "center",
-    fontSize: 11,
+    fontSize: 12,
     lineHeight: 14,
     fontWeight: "600",
-    color: colors.textPrimary,
+    color: "#26382A",
   },
 });

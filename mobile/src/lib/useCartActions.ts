@@ -83,8 +83,11 @@ import type {
   ProductSummaryDto,
   VariantDto,
 } from "@shared";
+import { ErrorCode } from "@shared";
 import { ApiRequestError, resolveImageUrl } from "./api";
 import { flyFromCart } from "./flyToCart";
+import { showCartNotice } from "./cartNotice";
+import { quantityLimitMessage, quantityLimitOf, type QuantityLimit } from "./quantityLimit";
 import { useCart, useCartMutations } from "./queries";
 import { useLocation } from "@/lib/store";
 
@@ -763,11 +766,22 @@ export function useCartActions() {
       confirmedKnown = line ? { id: line.id, qty: line.qty } : null;
     } catch (err) {
       failed = true;
-      setError(
-        err instanceof ApiRequestError
-          ? err.message
-          : "Could not update your cart.",
-      );
+      if (
+        err instanceof ApiRequestError &&
+        (err.code === ErrorCode.QTY_LIMIT_EXCEEDED ||
+          err.code === ErrorCode.INSUFFICIENT_STOCK ||
+          err.code === ErrorCode.ITEM_OUT_OF_STOCK)
+      ) {
+        // The server's own limit / stock answer ("Only 3 left in stock."):
+        // the same popup as a limit caught on the device, not a banner.
+        showCartNotice(err.message);
+      } else {
+        setError(
+          err instanceof ApiRequestError
+            ? err.message
+            : "Could not update your cart.",
+        );
+      }
     } finally {
       usePendingCartStore.getState().setBusy(variantId, false);
 
@@ -828,22 +842,81 @@ export function useCartActions() {
     [],
   );
 
+  /**
+   * Every unit of one product in the cart, across all its sizes / options.
+   * Summed from `optimisticCart` — the same lines the Cart screen shows,
+   * pending first adds included — so it can never disagree with it.
+   */
+  const qtyForProduct = useCallback(
+    (productId: string): number =>
+      (optimisticCart?.items ?? []).reduce(
+        (sum, item) => (item.productId === productId ? sum + item.qty : sum),
+        0,
+      ),
+    [optimisticCart],
+  );
+
+  /**
+   * What a ProductCard shows: a simple item's own quantity, or — for a
+   * product with several sizes / options, whose card opens the variant
+   * sheet — the product's total across all of them.
+   */
+  const qtyForCard = useCallback(
+    (product: Pick<ProductSummaryDto, "id" | "variantCount" | "defaultVariant">): number =>
+      product.variantCount > 1
+        ? qtyForProduct(product.id)
+        : product.defaultVariant
+          ? qtyFor(product.defaultVariant.id)
+          : 0,
+    [qtyForProduct, qtyFor],
+  );
+
+  /**
+   * The most this variant may hold, for an instant answer to a tap — the
+   * server re-checks every change. From the server's own cart line when there
+   * is one (fresh per-order limit AND stock); otherwise only the per-order
+   * limit of the tapped item's snapshot — a stock figure cached on the device
+   * may be out of date, and refusing a valid add on it would be wrong.
+   */
+  const limitFor = (variantId: string, snapshot?: CartItemSnapshot): QuantityLimit | null => {
+    const line = linesRef.current.get(variantId);
+    if (line) return quantityLimitOf(line);
+    const known = snapshot ?? usePendingCartStore.getState().pendingSnapshots[variantId];
+    return known ? quantityLimitOf({ availableQty: Number.POSITIVE_INFINITY, maxQtyPerOrder: known.maxQtyPerOrder }) : null;
+  };
+
+  /** Refuses a step past the limit with the popup; true when the step may go ahead. */
+  const allowQty = (variantId: string, nextQty: number, snapshot?: CartItemSnapshot): boolean => {
+    const limit = limitFor(variantId, snapshot);
+    if (limit && nextQty > limit.max) {
+      showCartNotice(quantityLimitMessage(limit));
+      return false;
+    }
+    return true;
+  };
+
   const add = useCallback(
-    (variantId: string, snapshot?: CartItemSnapshot): void => {
+    (variantId: string, snapshot?: CartItemSnapshot): boolean => {
       // Stored BEFORE setPending so the same render pass that reacts to the
       // new pendingQty already has display data to synthesize a line with —
       // see `optimisticCart` above.
+      // Read from the latest pending qty, so fast repeated taps cannot get past the limit.
+      if (!allowQty(variantId, qtyForImpl(variantId) + 1, snapshot)) return false;
       if (snapshot)
         usePendingCartStore.getState().setSnapshot(variantId, snapshot);
       setPending(variantId, qtyForImpl(variantId) + 1);
       void dispatch(variantId);
+      return true;
     },
     [],
   );
 
-  const increment = useCallback((variantId: string): void => {
+  /** One more unit — refused (false, with the limit popup) at the variant's limit. */
+  const increment = useCallback((variantId: string): boolean => {
+    if (!allowQty(variantId, qtyForImpl(variantId) + 1)) return false;
     setPending(variantId, qtyForImpl(variantId) + 1);
     void dispatch(variantId);
+    return true;
   }, []);
 
   /**
@@ -966,6 +1039,8 @@ export function useCartActions() {
     clearError: () => setError(null),
 
     qtyFor,
+    qtyForProduct,
+    qtyForCard,
     isBusy,
 
     add,

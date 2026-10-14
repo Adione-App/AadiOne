@@ -30,11 +30,12 @@ import { hydrateCartFromDisk } from "@/lib/useCartActions";
 
 import { StartupLoading } from "@/components/ui";
 import { FlyToCartOverlay } from "@/lib/flyToCart";
+import { VariantSheetHost } from "@/components/VariantSheet";
+import { CartNoticeToast } from "@/components/CartNoticeToast";
 
 import SplashScreen from "@/screens/auth/SplashScreen";
 import MobileEntryScreen from "@/screens/auth/MobileEntryScreen";
 import OtpVerifyScreen from "@/screens/auth/OtpVerifyScreen";
-import LocationScreen from "@/screens/location/LocationScreen";
 
 import { MainTabs } from "@/navigation/MainTabs";
 import { navigationRef } from "@/navigation/navigationRef";
@@ -108,15 +109,15 @@ function AuthStack() {
 /* Main Flow                                                                  */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * A signed-in customer always lands on Home. The location is never asked for
+ * up front (no automatic GPS fix or permission prompt at launch): a returning
+ * customer's saved choice is restored by `hydrate()` above, and one without a
+ * location chooses it when they want to, from Home's location header / prompt
+ * → SelectLocation (detect current location, or pick / add an address).
+ * Ordering still needs a chosen address that the server confirms it delivers to.
+ */
 function MainFlow() {
-  const serviceability = useLocation((state) => state.serviceability);
-
-  const [locationDone, setLocationDone] = useState(false);
-
-  if (!locationDone && !serviceability) {
-    return <LocationScreen onReady={() => setLocationDone(true)} />;
-  }
-
   return <MainTabs />;
 }
 
@@ -312,6 +313,12 @@ export default function App() {
         {/* Mounted last so it paints above the tab bar/screens — see
             flyToCart.tsx for why this needs to be a root-level overlay. */}
         <FlyToCartOverlay />
+
+        {/* The variant sheet any product card opens (lib/variantSheet.ts). */}
+        <VariantSheetHost />
+
+        {/* Cart popups, e.g. a quantity limit reached (lib/cartNotice.ts). */}
+        <CartNoticeToast />
       </PersistQueryClientProvider>
     </SafeAreaProvider>
   );

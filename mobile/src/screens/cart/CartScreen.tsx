@@ -38,7 +38,11 @@ import {
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 
 import {
   ErrorCode,
@@ -57,7 +61,12 @@ import { addressPrimaryLine } from "@shared/text";
 import { formatAddressOneLine } from "@shared/address";
 
 import { api, ApiRequestError, resolveImageUrl } from "@/lib/api";
-import { clearCartAfterOrder, keys, useCartMutations, useMyCoupons } from "@/lib/queries";
+import {
+  clearCartAfterOrder,
+  keys,
+  useCartMutations,
+  useMyCoupons,
+} from "@/lib/queries";
 import {
   useCartActions,
   resetPendingCartAfterOrder,
@@ -77,6 +86,7 @@ import {
 } from "@/components/ui";
 
 import { QuantityStepper } from "@/components/ProductCard";
+import { quantityLimitOf } from "@/lib/quantityLimit";
 
 /**
  * Short, subtle animation for rows leaving the list — Clear Cart and
@@ -111,7 +121,10 @@ function buildSyncNoticeMessage(err: ApiRequestError): string {
 
   if (err.code === ErrorCode.PRICE_CHANGED) {
     const [first] = details;
-    const currentPrice = typeof first?.["currentPrice"] === "number" ? first["currentPrice"] : null;
+    const currentPrice =
+      typeof first?.["currentPrice"] === "number"
+        ? first["currentPrice"]
+        : null;
     const name = typeof first?.["name"] === "string" ? first["name"] : null;
 
     if (details.length === 1 && name && currentPrice !== null) {
@@ -123,9 +136,13 @@ function buildSyncNoticeMessage(err: ApiRequestError): string {
     return "Some prices were updated. Your cart total has been refreshed.";
   }
 
-  if (err.code === ErrorCode.ITEM_OUT_OF_STOCK || err.code === ErrorCode.INSUFFICIENT_STOCK) {
+  if (
+    err.code === ErrorCode.ITEM_OUT_OF_STOCK ||
+    err.code === ErrorCode.INSUFFICIENT_STOCK
+  ) {
     const [first] = details;
-    const available = typeof first?.["available"] === "number" ? first["available"] : null;
+    const available =
+      typeof first?.["available"] === "number" ? first["available"] : null;
 
     return available !== null
       ? `Only ${available} item${available === 1 ? "" : "s"} available. Your cart has been updated.`
@@ -155,7 +172,8 @@ export default function CartScreen({
   const tabBarClearance = useTabBarClearance();
   const queryClient = useQueryClient();
 
-  const { serviceability, selectedAddressId, selectAddress, setLocation } = useLocation();
+  const { serviceability, selectedAddressId, selectAddress, setLocation } =
+    useLocation();
 
   // The ONE cart source this screen reads — same optimistic, instantly-
   // updating data the product card / cart badge already read through this
@@ -193,10 +211,13 @@ export default function CartScreen({
    * screen the way `checkoutError` can be.
    */
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
-  const syncNoticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncNoticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   const showSyncNotice = useCallback((message: string) => {
-    if (syncNoticeTimeoutRef.current) clearTimeout(syncNoticeTimeoutRef.current);
+    if (syncNoticeTimeoutRef.current)
+      clearTimeout(syncNoticeTimeoutRef.current);
     setSyncNotice(message);
     syncNoticeTimeoutRef.current = setTimeout(() => {
       syncNoticeTimeoutRef.current = null;
@@ -206,7 +227,8 @@ export default function CartScreen({
 
   useEffect(() => {
     return () => {
-      if (syncNoticeTimeoutRef.current) clearTimeout(syncNoticeTimeoutRef.current);
+      if (syncNoticeTimeoutRef.current)
+        clearTimeout(syncNoticeTimeoutRef.current);
     };
   }, []);
 
@@ -265,13 +287,16 @@ export default function CartScreen({
    */
   useEffect(() => {
     if (!addresses.data) return;
-    const chosen = selectedAddressId ? addresses.data.find((item) => item.id === selectedAddressId) : undefined;
+    const chosen = selectedAddressId
+      ? addresses.data.find((item) => item.id === selectedAddressId)
+      : undefined;
     if (chosen) {
       setAddressId(chosen.id);
       return;
     }
     setAddressId((current) => {
-      if (current && addresses.data.some((item) => item.id === current)) return current;
+      if (current && addresses.data.some((item) => item.id === current))
+        return current;
       const preferred =
         addresses.data.find((item) => item.isDefault && item.isServiceable) ??
         addresses.data.find((item) => item.isServiceable);
@@ -291,14 +316,17 @@ export default function CartScreen({
   const confirmedCartKey = useMemo(
     () =>
       (actions.confirmedCart?.items ?? [])
-        .map((item) => `${sellerListingIdOf(item) ?? item.variantId}:${item.qty}`)
+        .map(
+          (item) => `${sellerListingIdOf(item) ?? item.variantId}:${item.qty}`,
+        )
         .join(","),
     [actions.confirmedCart],
   );
 
   const quote = useQuery({
     queryKey: ["checkout-quote", addressId, confirmedCartKey],
-    queryFn: () => api.post<CheckoutQuoteResponse>("/checkout/quote", { addressId }),
+    queryFn: () =>
+      api.post<CheckoutQuoteResponse>("/checkout/quote", { addressId }),
     enabled: addressId !== null && confirmedCartKey !== "",
     // A quantity change re-keys this query. Without this the previous quote
     // vanished until the new one arrived, so BOTH pay buttons went disabled
@@ -323,8 +351,10 @@ export default function CartScreen({
     const base = quote.data?.bill ?? cart?.bill ?? null;
     if (!base || !cart) return base;
 
-    const netItemsPaise = cart.bill.itemsSubtotalPaise - base.couponDiscountPaise;
-    const totalPaise = netItemsPaise + base.deliveryFeePaise + base.platformFeePaise;
+    const netItemsPaise =
+      cart.bill.itemsSubtotalPaise - base.couponDiscountPaise;
+    const totalPaise =
+      netItemsPaise + base.deliveryFeePaise + base.platformFeePaise;
 
     return {
       ...base,
@@ -336,106 +366,122 @@ export default function CartScreen({
     };
   }, [quote.data, cart]);
 
-  const placeOrder = useCallback(async (method: PaymentMethod): Promise<void> => {
-    if (!addressId || !quote.data || !cart || placing) return;
+  const placeOrder = useCallback(
+    async (method: PaymentMethod): Promise<void> => {
+      if (!addressId || !quote.data || !cart || placing) return;
 
-    setPlacing(method);
-    setCheckoutError(null);
+      setPlacing(method);
+      setCheckoutError(null);
 
-    try {
-      const result = await api.post<{
-        order: OrderDetailDto;
-        requiresPayment: boolean;
-      }>(
-        "/orders",
-        {
-          addressId,
-          paymentMethod: method,
-          // Safety check only — the server calculates the real amount. Uses
-          // the merged bill (`bill`, not the possibly-stale `quote.data.bill`)
-          // so it matches exactly what the customer is looking at on screen.
-          expectedTotalPaise: bill?.totalPaise ?? quote.data.bill.totalPaise,
-          // Same safety-check role, per item — lets the server's
-          // PRICE_CHANGED response say WHICH product changed and by how
-          // much (see order.service.ts) instead of only "the total didn't
-          // match". Built from the same optimistic `cart` the screen is
-          // currently displaying, so it always matches what the customer
-          // actually sees. V2 keys these by seller listing, not variant.
-          expectedItems: cart.items.flatMap((item) => {
-            const sellerListingId = sellerListingIdOf(item);
-            return sellerListingId
-              ? [{ sellerListingId, unitPricePaise: item.unitPricePaise }]
-              : [];
-          }),
-        },
-        idempotencyKey,
-      );
+      try {
+        const result = await api.post<{
+          order: OrderDetailDto;
+          requiresPayment: boolean;
+        }>(
+          "/orders",
+          {
+            addressId,
+            paymentMethod: method,
+            // Safety check only — the server calculates the real amount. Uses
+            // the merged bill (`bill`, not the possibly-stale `quote.data.bill`)
+            // so it matches exactly what the customer is looking at on screen.
+            expectedTotalPaise: bill?.totalPaise ?? quote.data.bill.totalPaise,
+            // Same safety-check role, per item — lets the server's
+            // PRICE_CHANGED response say WHICH product changed and by how
+            // much (see order.service.ts) instead of only "the total didn't
+            // match". Built from the same optimistic `cart` the screen is
+            // currently displaying, so it always matches what the customer
+            // actually sees. V2 keys these by seller listing, not variant.
+            expectedItems: cart.items.flatMap((item) => {
+              const sellerListingId = sellerListingIdOf(item);
+              return sellerListingId
+                ? [{ sellerListingId, unitPricePaise: item.unitPricePaise }]
+                : [];
+            }),
+          },
+          idempotencyKey,
+        );
 
-      // The order transaction already marked the cart CONVERTED server-side,
-      // so this is a known-correct state, not an optimistic guess — write it
-      // directly instead of only invalidating, so the badge and every
-      // cart-reading screen update in this same tick. `resetPendingCartAfterOrder`
-      // right alongside it is what actually fixes the just-placed order's
-      // items lingering in the Mini Cart/badge — see its own doc comment
-      // for why `clearCartAfterOrder` alone was never enough.
-      clearCartAfterOrder(queryClient);
-      resetPendingCartAfterOrder();
-      // The response already IS the placed order's full detail: seed it so
-      // the next screen (tracking or payment) shows the order at once
-      // instead of fetching it again, and refresh the orders list in the
-      // background — awaiting that refetch here used to hold the customer on
-      // this screen for a whole extra round trip after the order existed.
-      queryClient.setQueryData(keys.order(result.order.id), result.order);
-      void queryClient.invalidateQueries({ queryKey: keys.cart });
-      void queryClient.invalidateQueries({ queryKey: keys.orders });
-      void queryClient.invalidateQueries({ queryKey: keys.previouslyOrdered });
+        // The order transaction already marked the cart CONVERTED server-side,
+        // so this is a known-correct state, not an optimistic guess — write it
+        // directly instead of only invalidating, so the badge and every
+        // cart-reading screen update in this same tick. `resetPendingCartAfterOrder`
+        // right alongside it is what actually fixes the just-placed order's
+        // items lingering in the Mini Cart/badge — see its own doc comment
+        // for why `clearCartAfterOrder` alone was never enough.
+        clearCartAfterOrder(queryClient);
+        resetPendingCartAfterOrder();
+        // The response already IS the placed order's full detail: seed it so
+        // the next screen (tracking or payment) shows the order at once
+        // instead of fetching it again, and refresh the orders list in the
+        // background — awaiting that refetch here used to hold the customer on
+        // this screen for a whole extra round trip after the order existed.
+        queryClient.setQueryData(keys.order(result.order.id), result.order);
+        void queryClient.invalidateQueries({ queryKey: keys.cart });
+        void queryClient.invalidateQueries({ queryKey: keys.orders });
+        void queryClient.invalidateQueries({
+          queryKey: keys.previouslyOrdered,
+        });
 
-      onPlaced(result.order, result.requiresPayment);
-    } catch (err) {
-      if (err instanceof ApiRequestError) {
-        if (err.isOffline) {
-          // A genuine connectivity failure — the request may or may not
-          // have actually reached the server, so the idempotency key is
-          // deliberately NOT regenerated here (see its own comment above):
-          // retrying reuses it, so if the original attempt DID land
-          // server-side, the retry safely returns that same order instead
-          // of risking a second one.
-          setCheckoutError(err.message);
-        } else if (
-          err.code === ErrorCode.PRICE_CHANGED ||
-          err.code === ErrorCode.ITEM_OUT_OF_STOCK ||
-          err.code === ErrorCode.INSUFFICIENT_STOCK ||
-          err.code === ErrorCode.PRODUCT_UNAVAILABLE
-        ) {
-          // AUTO-RECOVERABLE — the server already knows exactly what
-          // changed (see order.service.ts's per-item `details` on
-          // PRICE_CHANGED/ITEM_OUT_OF_STOCK). Resync the ACTUAL cart (not
-          // just the delivery-fee quote — `bill` above reads its item
-          // figures straight from `cart`, so refetching only `quote`
-          // never touched what was actually displayed or actually sent as
-          // `expectedTotalPaise`/`expectedItems` on the next attempt,
-          // which is why retrying used to fail with the exact same error
-          // forever) and the quote together, then let the customer retry
-          // with a clean, genuinely-current cart. Never surfaced as a
-          // persistent `checkoutError` — see `syncNotice`.
-          await Promise.all([refetch(), quote.refetch()]);
-          setIdempotencyKey(Crypto.randomUUID());
-          showSyncNotice(buildSyncNoticeMessage(err));
+        onPlaced(result.order, result.requiresPayment);
+      } catch (err) {
+        if (err instanceof ApiRequestError) {
+          if (err.isOffline) {
+            // A genuine connectivity failure — the request may or may not
+            // have actually reached the server, so the idempotency key is
+            // deliberately NOT regenerated here (see its own comment above):
+            // retrying reuses it, so if the original attempt DID land
+            // server-side, the retry safely returns that same order instead
+            // of risking a second one.
+            setCheckoutError(err.message);
+          } else if (
+            err.code === ErrorCode.PRICE_CHANGED ||
+            err.code === ErrorCode.ITEM_OUT_OF_STOCK ||
+            err.code === ErrorCode.INSUFFICIENT_STOCK ||
+            err.code === ErrorCode.PRODUCT_UNAVAILABLE
+          ) {
+            // AUTO-RECOVERABLE — the server already knows exactly what
+            // changed (see order.service.ts's per-item `details` on
+            // PRICE_CHANGED/ITEM_OUT_OF_STOCK). Resync the ACTUAL cart (not
+            // just the delivery-fee quote — `bill` above reads its item
+            // figures straight from `cart`, so refetching only `quote`
+            // never touched what was actually displayed or actually sent as
+            // `expectedTotalPaise`/`expectedItems` on the next attempt,
+            // which is why retrying used to fail with the exact same error
+            // forever) and the quote together, then let the customer retry
+            // with a clean, genuinely-current cart. Never surfaced as a
+            // persistent `checkoutError` — see `syncNotice`.
+            await Promise.all([refetch(), quote.refetch()]);
+            setIdempotencyKey(Crypto.randomUUID());
+            showSyncNotice(buildSyncNoticeMessage(err));
+          } else {
+            // Everything else (bad coupon, minimum order not met, COD not
+            // allowed, unauthorized, a genuine server error, …) needs the
+            // customer's OWN action — nothing here can silently fix an
+            // invalid coupon or a store that doesn't allow COD.
+            setCheckoutError(err.message);
+          }
         } else {
-          // Everything else (bad coupon, minimum order not met, COD not
-          // allowed, unauthorized, a genuine server error, …) needs the
-          // customer's OWN action — nothing here can silently fix an
-          // invalid coupon or a store that doesn't allow COD.
-          setCheckoutError(err.message);
+          setCheckoutError("Could not place your order. Please try again.");
         }
-      } else {
-        setCheckoutError("Could not place your order. Please try again.");
+      } finally {
+        setPlacing(null);
+        setConfirmOrderOpen(false);
       }
-    } finally {
-      setPlacing(null);
-      setConfirmOrderOpen(false);
-    }
-  }, [addressId, quote, placing, bill, cart, refetch, idempotencyKey, queryClient, onPlaced, showSyncNotice]);
+    },
+    [
+      addressId,
+      quote,
+      placing,
+      bill,
+      cart,
+      refetch,
+      idempotencyKey,
+      queryClient,
+      onPlaced,
+      showSyncNotice,
+    ],
+  );
 
   // Double-tap / rapid re-press guard: tapping "Cash on Delivery" asks for
   // confirmation first (see the popup below); "Pay Online" goes straight to
@@ -497,7 +543,11 @@ export default function CartScreen({
               Your Cart
             </AppText>
 
-            <AppText variant="body" color={colors.textSecondary} style={styles.headerSubtitle}>
+            <AppText
+              variant="body"
+              color={colors.textSecondary}
+              style={styles.headerSubtitle}
+            >
               0 items in your cart
             </AppText>
           </View>
@@ -540,7 +590,8 @@ export default function CartScreen({
   const outOfArea = serviceability !== null && !serviceability.serviceable;
   const canCheckout = cart.checkoutEnabled && !outOfArea;
 
-  const selectedAddress = addresses.data?.find((item) => item.id === addressId) ?? null;
+  const selectedAddress =
+    addresses.data?.find((item) => item.id === addressId) ?? null;
   const displayBill = bill ?? cart.bill;
 
   // Usable as soon as there is a quote — including the previous one while a
@@ -549,7 +600,11 @@ export default function CartScreen({
   // placed from the SERVER's cart, so tapping Pay mid-save could order the
   // old quantity.
   const canPlaceOrderBase =
-    canCheckout && !placing && !actions.busy && Boolean(addressId) && Boolean(quote.data);
+    canCheckout &&
+    !placing &&
+    !actions.busy &&
+    Boolean(addressId) &&
+    Boolean(quote.data);
   const canPlaceOrderCod = canPlaceOrderBase && quote.data?.codAllowed === true;
   const canPlaceOrderOnline = canPlaceOrderBase;
 
@@ -582,7 +637,11 @@ export default function CartScreen({
         </View>
 
         <View style={styles.productInformation}>
-          <AppText variant="bodyStrong" numberOfLines={2} style={styles.productName}>
+          <AppText
+            variant="bodyStrong"
+            numberOfLines={2}
+            style={styles.productName}
+          >
             {item.productName}
           </AppText>
 
@@ -596,12 +655,20 @@ export default function CartScreen({
           </AppText>
 
           <View style={styles.priceRow}>
-            <AppText variant="h3" color={colors.textPrimary} style={styles.currentPrice}>
+            <AppText
+              variant="h3"
+              color={colors.textPrimary}
+              style={styles.currentPrice}
+            >
               {formatPaise(item.unitPricePaise)}
             </AppText>
 
             {hasDiscount && (
-              <AppText variant="body" color={colors.textMuted} style={styles.mrpPrice}>
+              <AppText
+                variant="body"
+                color={colors.textMuted}
+                style={styles.mrpPrice}
+              >
                 {formatPaise(item.mrpPaise)}
               </AppText>
             )}
@@ -623,11 +690,12 @@ export default function CartScreen({
 
           <QuantityStepper
             qty={qty}
-            max={item.maxQtyPerOrder}
+            max={quantityLimitOf(item).max}
             busy={itemBusy}
             onIncrement={() => void actions.increment(item.variantId)}
             onDecrement={() => {
-              if (qty <= 1) LayoutAnimation.configureNext(CART_ROW_REMOVE_ANIMATION);
+              if (qty <= 1)
+                LayoutAnimation.configureNext(CART_ROW_REMOVE_ANIMATION);
               void actions.decrement(item.variantId);
             }}
           />
@@ -648,8 +716,13 @@ export default function CartScreen({
             Your Cart
           </AppText>
 
-          <AppText variant="body" color={colors.textSecondary} style={styles.headerSubtitle}>
-            {displayItemCount} {displayItemCount === 1 ? "item" : "items"} in your cart
+          <AppText
+            variant="body"
+            color={colors.textSecondary}
+            style={styles.headerSubtitle}
+          >
+            {displayItemCount} {displayItemCount === 1 ? "item" : "items"} in
+            your cart
           </AppText>
         </View>
 
@@ -684,7 +757,10 @@ export default function CartScreen({
         ListHeaderComponent={
           <View>
             {cart.changes.map((change, index) => (
-              <View key={`${change.type}-${index}`} style={styles.noticeContainer}>
+              <View
+                key={`${change.type}-${index}`}
+                style={styles.noticeContainer}
+              >
                 <NoticeStrip message={change.message} />
               </View>
             ))}
@@ -739,7 +815,10 @@ export default function CartScreen({
       <View
         style={[
           styles.bottomCheckout,
-          { bottom: tabBarClearance, paddingBottom: insets.bottom + spacing.sm },
+          {
+            bottom: tabBarClearance,
+            paddingBottom: insets.bottom + spacing.sm,
+          },
         ]}
       >
         <DeliveryAddressSection
@@ -752,14 +831,22 @@ export default function CartScreen({
         <View style={styles.bottomDivider} />
 
         {!canCheckout && cart.checkoutBlockedReason && (
-          <AppText variant="caption" color={colors.warning} style={styles.checkoutBlockedText}>
+          <AppText
+            variant="caption"
+            color={colors.warning}
+            style={styles.checkoutBlockedText}
+          >
             {cart.checkoutBlockedReason}
           </AppText>
         )}
 
         <View style={styles.paymentBarRow}>
           <View style={styles.paymentBarTotal}>
-            <AppText variant="h2" color={colors.textPrimary} style={styles.paymentBarAmount}>
+            <AppText
+              variant="h2"
+              color={colors.textPrimary}
+              style={styles.paymentBarAmount}
+            >
               {formatPaise(displayBill.totalPaise)}
             </AppText>
             {quote.isFetching && quote.data && (
@@ -808,7 +895,9 @@ export default function CartScreen({
             void setLocation({
               latitude: picked.latitude,
               longitude: picked.longitude,
-              label: [addressPrimaryLine(picked), picked.city, picked.pincode].filter(Boolean).join(", "),
+              label: [addressPrimaryLine(picked), picked.city, picked.pincode]
+                .filter(Boolean)
+                .join(", "),
               source: "ADDRESS",
             });
           }
@@ -850,7 +939,9 @@ const ADDRESS_VISUALS: Record<
 };
 
 function addressVisual(label: string) {
-  return ADDRESS_VISUALS[label.trim().toLowerCase()] ?? ADDRESS_VISUALS["other"]!;
+  return (
+    ADDRESS_VISUALS[label.trim().toLowerCase()] ?? ADDRESS_VISUALS["other"]!
+  );
 }
 
 /* ================================================================
@@ -884,8 +975,17 @@ function DeliveryAddressSection({
 
   if (!hasAny) {
     return (
-      <Pressable style={styles.addressRow} onPress={onAdd} accessibilityRole="button">
-        <View style={[styles.addressIconCircle, { backgroundColor: colors.primary + "15" }]}>
+      <Pressable
+        style={styles.addressRow}
+        onPress={onAdd}
+        accessibilityRole="button"
+      >
+        <View
+          style={[
+            styles.addressIconCircle,
+            { backgroundColor: colors.primary + "15" },
+          ]}
+        >
           <Ionicons name="add" size={18} color={colors.primary} />
         </View>
         <View style={{ flex: 1, minWidth: 0 }}>
@@ -904,7 +1004,11 @@ function DeliveryAddressSection({
   const visual = addressVisual(address?.label ?? "");
 
   return (
-    <Pressable style={styles.addressRow} onPress={onChange} accessibilityRole="button">
+    <Pressable
+      style={styles.addressRow}
+      onPress={onChange}
+      accessibilityRole="button"
+    >
       <View style={[styles.addressIconCircle, { backgroundColor: visual.bg }]}>
         <Ionicons name={visual.icon} size={18} color={visual.fg} />
       </View>
@@ -913,7 +1017,11 @@ function DeliveryAddressSection({
         <AppText variant="bodyStrong" numberOfLines={1}>
           {address?.label ?? "Select address"}
         </AppText>
-        <AppText variant="caption" color={colors.textSecondary} numberOfLines={1}>
+        <AppText
+          variant="caption"
+          color={colors.textSecondary}
+          numberOfLines={1}
+        >
           {address
             ? `${addressPrimaryLine(address)}, ${address.city}`
             : "Tap to choose a delivery address"}
@@ -1034,14 +1142,22 @@ function AddressPickerModal({
   }, [visible, selectedId]);
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
       {/* Backdrop — tapping the dimmed area outside the sheet cancels,
           same as the X button. */}
       <Pressable style={styles.sheetBackdrop} onPress={onClose}>
         {/* Absorbs taps so they don't fall through to the backdrop above —
             the sheet itself is not a "cancel" target. */}
         <Pressable
-          style={[styles.sheetCard, { paddingBottom: insets.bottom + spacing.md }]}
+          style={[
+            styles.sheetCard,
+            { paddingBottom: insets.bottom + spacing.md },
+          ]}
           onPress={() => {}}
         >
           <View style={styles.sheetHandle} />
@@ -1079,10 +1195,16 @@ function AddressPickerModal({
                     Save a new address for faster checkout
                   </AppText>
                 </View>
-                <Ionicons name="chevron-forward" size={20} color={colors.primary} />
+                <Ionicons
+                  name="chevron-forward"
+                  size={20}
+                  color={colors.primary}
+                />
               </Pressable>
             }
-            ItemSeparatorComponent={() => <View style={{ height: spacing.md }} />}
+            ItemSeparatorComponent={() => (
+              <View style={{ height: spacing.md }} />
+            )}
             renderItem={({ item }) => {
               const selected = item.id === pick;
               const disabled = !item.isServiceable;
@@ -1100,19 +1222,34 @@ function AddressPickerModal({
                   accessibilityRole="radio"
                   accessibilityState={{ selected, disabled }}
                 >
-                  <View style={[styles.addressIconCircle, { backgroundColor: visual.bg }]}>
+                  <View
+                    style={[
+                      styles.addressIconCircle,
+                      { backgroundColor: visual.bg },
+                    ]}
+                  >
                     <Ionicons name={visual.icon} size={18} color={visual.fg} />
                   </View>
 
-                  <View style={{ flex: 1, marginLeft: spacing.sm, minWidth: 0 }}>
+                  <View
+                    style={{ flex: 1, marginLeft: spacing.sm, minWidth: 0 }}
+                  >
                     <AppText variant="bodyStrong" numberOfLines={1}>
                       {item.label}
                       {item.fullName ? ` (${item.fullName})` : ""}
                     </AppText>
-                    <AppText variant="caption" color={colors.textSecondary} numberOfLines={1}>
+                    <AppText
+                      variant="caption"
+                      color={colors.textSecondary}
+                      numberOfLines={1}
+                    >
                       {item.mobile}
                     </AppText>
-                    <AppText variant="caption" color={colors.textSecondary} numberOfLines={1}>
+                    <AppText
+                      variant="caption"
+                      color={colors.textSecondary}
+                      numberOfLines={1}
+                    >
                       {formatAddressOneLine(item)}
                     </AppText>
                     {disabled && (
@@ -1122,7 +1259,12 @@ function AddressPickerModal({
                     )}
                   </View>
 
-                  <View style={[styles.radioOuter, selected && styles.radioOuterSelected]}>
+                  <View
+                    style={[
+                      styles.radioOuter,
+                      selected && styles.radioOuterSelected,
+                    ]}
+                  >
                     {selected && <View style={styles.radioInner} />}
                   </View>
                 </Pressable>
@@ -1173,7 +1315,12 @@ function ConfirmOrderModal({
   onConfirm: () => void;
 }) {
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onCancel}
+    >
       <View style={styles.modalOverlay}>
         <Card style={styles.confirmCard}>
           <Pressable
@@ -1193,21 +1340,30 @@ function ConfirmOrderModal({
             Confirm Order
           </AppText>
 
-          <AppText variant="body" color={colors.textSecondary} style={styles.confirmSubtitle}>
+          <AppText
+            variant="body"
+            color={colors.textSecondary}
+            style={styles.confirmSubtitle}
+          >
             Pay {formatPaise(totalPaise)} on delivery?
           </AppText>
 
           <View style={styles.confirmDetailsCard}>
             {address && (
               <View style={styles.confirmDetailRow}>
-                <Ionicons name="location-outline" size={17} color={colors.primary} />
+                <Ionicons
+                  name="location-outline"
+                  size={17}
+                  color={colors.primary}
+                />
                 <AppText
                   variant="caption"
                   color={colors.textPrimary}
                   numberOfLines={1}
                   style={{ marginLeft: spacing.xs, flex: 1 }}
                 >
-                  {address.label} • {addressPrimaryLine(address)}, {address.city}
+                  {address.label} • {addressPrimaryLine(address)},{" "}
+                  {address.city}
                 </AppText>
               </View>
             )}
@@ -1259,7 +1415,13 @@ function ConfirmOrderModal({
  * "which coupon is active".
  * ================================================================ */
 
-function CouponSection({ bill, addressId }: { bill: BillDto; addressId: string | null }) {
+function CouponSection({
+  bill,
+  addressId,
+}: {
+  bill: BillDto;
+  addressId: string | null;
+}) {
   const queryClient = useQueryClient();
   const { serviceability } = useLocation();
   const distanceKm = serviceability?.distanceKm ?? null;
@@ -1276,7 +1438,9 @@ function CouponSection({ bill, addressId }: { bill: BillDto; addressId: string |
     // is its own separate query, so it needs its own refetch to pick up the
     // coupon the mutation above just changed on the cart (see the `bill`
     // memo's own comment higher in this file).
-    void queryClient.invalidateQueries({ queryKey: ["checkout-quote", addressId] });
+    void queryClient.invalidateQueries({
+      queryKey: ["checkout-quote", addressId],
+    });
   };
 
   const applying = applyCoupon.isPending || removeCoupon.isPending;
@@ -1288,7 +1452,11 @@ function CouponSection({ bill, addressId }: { bill: BillDto; addressId: string |
       setManualCode("");
       afterChange();
     } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : "Could not apply this coupon.");
+      setError(
+        err instanceof ApiRequestError
+          ? err.message
+          : "Could not apply this coupon.",
+      );
     }
   }
 
@@ -1298,11 +1466,17 @@ function CouponSection({ bill, addressId }: { bill: BillDto; addressId: string |
       await removeCoupon.mutateAsync({ distanceKm });
       afterChange();
     } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : "Could not remove this coupon.");
+      setError(
+        err instanceof ApiRequestError
+          ? err.message
+          : "Could not remove this coupon.",
+      );
     }
   }
 
-  const availableCoupons = (coupons.data ?? []).filter((c) => c.status === "ACTIVE");
+  const availableCoupons = (coupons.data ?? []).filter(
+    (c) => c.status === "ACTIVE",
+  );
 
   return (
     <View style={styles.billWrapper}>
@@ -1313,7 +1487,11 @@ function CouponSection({ bill, addressId }: { bill: BillDto; addressId: string |
           accessibilityRole="button"
         >
           <View style={styles.billIconContainer}>
-            <Ionicons name="pricetag-outline" size={18} color={colors.primary} />
+            <Ionicons
+              name="pricetag-outline"
+              size={18}
+              color={colors.primary}
+            />
           </View>
 
           <View style={styles.couponHeaderText}>
@@ -1341,13 +1519,25 @@ function CouponSection({ bill, addressId }: { bill: BillDto; addressId: string |
             {bill.couponCode ? (
               <View style={styles.appliedCouponRow}>
                 <View style={styles.appliedCouponBadge}>
-                  <Ionicons name="checkmark-circle" size={16} color={colors.primary} />
-                  <AppText variant="bodyStrong" color={colors.primary} style={{ marginLeft: 6 }}>
+                  <Ionicons
+                    name="checkmark-circle"
+                    size={16}
+                    color={colors.primary}
+                  />
+                  <AppText
+                    variant="bodyStrong"
+                    color={colors.primary}
+                    style={{ marginLeft: 6 }}
+                  >
                     {bill.couponCode}
                   </AppText>
                 </View>
 
-                <Pressable onPress={handleRemove} disabled={applying} hitSlop={8}>
+                <Pressable
+                  onPress={handleRemove}
+                  disabled={applying}
+                  hitSlop={8}
+                >
                   <AppText variant="caption" color={colors.danger}>
                     Remove
                   </AppText>
@@ -1382,11 +1572,16 @@ function CouponSection({ bill, addressId }: { bill: BillDto; addressId: string |
                     disabled={applying || manualCode.trim().length === 0}
                     style={[
                       styles.manualCouponApply,
-                      (applying || manualCode.trim().length === 0) && { opacity: 0.5 },
+                      (applying || manualCode.trim().length === 0) && {
+                        opacity: 0.5,
+                      },
                     ]}
                   >
                     {applying ? (
-                      <ActivityIndicator size="small" color={colors.onPrimary} />
+                      <ActivityIndicator
+                        size="small"
+                        color={colors.onPrimary}
+                      />
                     ) : (
                       <AppText variant="bodyStrong" color={colors.onPrimary}>
                         Apply
@@ -1398,7 +1593,11 @@ function CouponSection({ bill, addressId }: { bill: BillDto; addressId: string |
             )}
 
             {error && (
-              <AppText variant="caption" color={colors.danger} style={{ marginTop: spacing.xs }}>
+              <AppText
+                variant="caption"
+                color={colors.danger}
+                style={{ marginTop: spacing.xs }}
+              >
                 {error}
               </AppText>
             )}
@@ -1419,10 +1618,16 @@ function RewardCouponRow({
   onApply: () => void;
 }) {
   return (
-    <Pressable onPress={onApply} disabled={disabled} style={styles.rewardCouponRow}>
+    <Pressable
+      onPress={onApply}
+      disabled={disabled}
+      style={styles.rewardCouponRow}
+    >
       <View style={styles.rewardCouponRadio} />
       <View style={{ flex: 1 }}>
-        <AppText variant="bodyStrong">{formatPaise(coupon.discountValue)} OFF</AppText>
+        <AppText variant="bodyStrong">
+          {formatPaise(coupon.discountValue)} OFF
+        </AppText>
         <AppText variant="caption" color={colors.textSecondary}>
           Min order {formatPaise(coupon.minOrderPaise)}
           {coupon.expiresInLabel ? ` · ${coupon.expiresInLabel}` : ""}
@@ -1465,16 +1670,27 @@ function BillDetails({ bill }: { bill: BillDto }) {
           )}
           <BillRow
             label="Delivery Fee"
-            value={bill.deliveryFeePaise === 0 ? "FREE" : formatPaise(bill.deliveryFeePaise)}
+            value={
+              bill.deliveryFeePaise === 0
+                ? "FREE"
+                : formatPaise(bill.deliveryFeePaise)
+            }
             tone={bill.deliveryFeePaise === 0 ? "good" : "default"}
           />
 
           {bill.platformFeePaise > 0 && (
-            <BillRow label="Platform Fee" value={formatPaise(bill.platformFeePaise)} />
+            <BillRow
+              label="Platform Fee"
+              value={formatPaise(bill.platformFeePaise)}
+            />
           )}
 
           {bill.taxPaise > 0 && (
-            <BillRow label="Taxes (included)" value={formatPaise(bill.taxPaise)} tone="muted" />
+            <BillRow
+              label="Taxes (included)"
+              value={formatPaise(bill.taxPaise)}
+              tone="muted"
+            />
           )}
         </View>
 
@@ -1483,7 +1699,11 @@ function BillDetails({ bill }: { bill: BillDto }) {
             To Pay
           </AppText>
 
-          <AppText variant="h1" color={colors.primary} style={styles.totalAmount}>
+          <AppText
+            variant="h1"
+            color={colors.primary}
+            style={styles.totalAmount}
+          >
             {formatPaise(bill.totalPaise)}
           </AppText>
         </View>
@@ -1494,7 +1714,11 @@ function BillDetails({ bill }: { bill: BillDto }) {
               <TagIcon color={colors.primary} />
             </View>
 
-            <AppText variant="h3" color={colors.primary} style={styles.savingsText}>
+            <AppText
+              variant="h3"
+              color={colors.primary}
+              style={styles.savingsText}
+            >
               You save {formatPaise(bill.totalSavingsPaise)} on this order
             </AppText>
           </View>
@@ -1518,11 +1742,19 @@ function BillRow({
   tone?: "default" | "good" | "muted";
 }) {
   const valueColor: string =
-    tone === "good" ? colors.primary : tone === "muted" ? colors.textMuted : colors.textPrimary;
+    tone === "good"
+      ? colors.primary
+      : tone === "muted"
+        ? colors.textMuted
+        : colors.textPrimary;
 
   return (
     <View style={styles.billRow}>
-      <AppText variant="body" color={colors.textSecondary} style={styles.billLabel}>
+      <AppText
+        variant="body"
+        color={colors.textSecondary}
+        style={styles.billLabel}
+      >
         {label}
       </AppText>
 
@@ -1550,7 +1782,9 @@ function TrashIcon({ color }: { color: string }) {
       <View style={[styles.trashLid, { backgroundColor: color }]} />
       <View style={[styles.trashBody, { borderColor: color }]}>
         <View style={[styles.trashLine, { backgroundColor: color, left: 3 }]} />
-        <View style={[styles.trashLine, { backgroundColor: color, right: 3 }]} />
+        <View
+          style={[styles.trashLine, { backgroundColor: color, right: 3 }]}
+        />
       </View>
     </View>
   );
@@ -1661,8 +1895,8 @@ const styles = StyleSheet.create({
   productSeparator: { height: spacing.sm },
 
   productImageBox: {
-    width: 52,
-    height: 52,
+    width: 62,
+    height: 62,
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
@@ -1670,11 +1904,11 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
   },
 
-  productImage: { width: 44, height: 44 },
+  productImage: { width: 58, height: 58 },
 
   imagePlaceholder: {
-    width: 44,
-    height: 44,
+    width: 58,
+    height: 58,
     borderRadius: radius.md,
     backgroundColor: colors.skeleton,
   },
@@ -1697,7 +1931,11 @@ const styles = StyleSheet.create({
   },
 
   currentPrice: { fontSize: 14, lineHeight: 20, fontWeight: "800" },
-  mrpPrice: { fontSize: 12, lineHeight: 20, textDecorationLine: "line-through" },
+  mrpPrice: {
+    fontSize: 12,
+    lineHeight: 20,
+    textDecorationLine: "line-through",
+  },
 
   productActions: {
     alignItems: "flex-end",
@@ -1706,15 +1944,37 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
 
-  deleteButton: { width: 28, height: 28, alignItems: "center", justifyContent: "center" },
+  deleteButton: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 
   /* ============================================================
    * TRASH ICON
    * ============================================================ */
 
-  trashIcon: { width: 21, height: 23, position: "relative", alignItems: "center" },
-  trashHandle: { position: "absolute", top: 0, width: 7, height: 3, borderRadius: 2 },
-  trashLid: { position: "absolute", top: 4, width: 19, height: 2, borderRadius: 2 },
+  trashIcon: {
+    width: 21,
+    height: 23,
+    position: "relative",
+    alignItems: "center",
+  },
+  trashHandle: {
+    position: "absolute",
+    top: 0,
+    width: 7,
+    height: 3,
+    borderRadius: 2,
+  },
+  trashLid: {
+    position: "absolute",
+    top: 4,
+    width: 19,
+    height: 2,
+    borderRadius: 2,
+  },
   trashBody: {
     position: "absolute",
     top: 7,
@@ -1723,7 +1983,13 @@ const styles = StyleSheet.create({
     borderWidth: 1.8,
     borderRadius: 2,
   },
-  trashLine: { position: "absolute", top: 2, width: 1.5, height: 8, borderRadius: 1 },
+  trashLine: {
+    position: "absolute",
+    top: 2,
+    width: 1.5,
+    height: 8,
+    borderRadius: 1,
+  },
 
   /* ============================================================
    * DELIVERY ADDRESS ROW — inside the floating checkout bar
@@ -1951,7 +2217,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary + "08",
   },
 
-  billHeader: { flexDirection: "row", alignItems: "center", marginBottom: spacing.md },
+  billHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: spacing.md,
+  },
 
   billIconContainer: {
     width: 40,
@@ -1962,7 +2232,12 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary + "15",
   },
 
-  billTitle: { marginLeft: spacing.md, fontSize: 16, lineHeight: 24, fontWeight: "800" },
+  billTitle: {
+    marginLeft: spacing.md,
+    fontSize: 16,
+    lineHeight: 24,
+    fontWeight: "800",
+  },
 
   /* --------------------------------------------------------------
      COUPONS & OFFERS
@@ -2050,7 +2325,12 @@ const styles = StyleSheet.create({
   },
 
   billLabel: { flex: 1, fontSize: 14, lineHeight: 24 },
-  billValue: { fontSize: 15, lineHeight: 24, marginLeft: spacing.md, textAlign: "right" },
+  billValue: {
+    fontSize: 15,
+    lineHeight: 24,
+    marginLeft: spacing.md,
+    textAlign: "right",
+  },
 
   totalRow: {
     flexDirection: "row",
@@ -2075,7 +2355,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary + "13",
   },
 
-  savingsIcon: { width: 34, height: 34, alignItems: "center", justifyContent: "center", marginRight: spacing.sm },
+  savingsIcon: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: spacing.sm,
+  },
   savingsText: { flex: 1, fontSize: 13, lineHeight: 24, fontWeight: "700" },
 
   /* ============================================================
@@ -2102,7 +2388,14 @@ const styles = StyleSheet.create({
     position: "relative",
     transform: [{ rotate: "-20deg" }],
   },
-  tagDot: { position: "absolute", right: 3, top: 4, width: 4, height: 4, borderRadius: 2 },
+  tagDot: {
+    position: "absolute",
+    right: 3,
+    top: 4,
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+  },
 
   /* ============================================================
    * BOTTOM CHECKOUT

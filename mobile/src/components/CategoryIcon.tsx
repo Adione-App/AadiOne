@@ -1,24 +1,3 @@
-/**
- * Category icon.
- *
- * Categories carry an optional `imageUrl` that the shop can set from the admin
- * panel. Until they do, the app showed an empty grey circle for every
- * category, which is worse than useless — it reads as a broken image and gives
- * the customer nothing to scan for.
- *
- * The fallback is a Lucide vector icon chosen by matching keywords in the
- * category name, each on its own tinted background. Vector icons over emoji
- * because emoji render inconsistently across Android OEM keyboards/fonts (some
- * show as outlined placeholders), while a vector icon looks identical and
- * crisp on every device and can carry the app's own colour system instead of
- * the phone's stock emoji palette — the difference between "looks like a
- * grocery list" and "looks like a shopping app". A real uploaded image always
- * wins when one exists.
- *
- * Matching is on the name rather than a fixed id map so a category the shop
- * adds later still gets a sensible icon instead of the generic bag.
- */
-
 import { StyleSheet, View } from "react-native";
 import { Image } from "expo-image";
 import type { LucideIcon } from "lucide-react-native";
@@ -42,59 +21,15 @@ import {
   SprayCan,
   Wheat,
 } from "lucide-react-native";
-import { palette, radius } from "@shared/theme";
 import { resolveImageUrl } from "@/lib/api";
 
-/** A tinted background paired with the icon colour drawn on top of it. */
-type Tint = { bg: string; fg: string };
-
-const TINTS = {
-  green: { bg: palette.green50, fg: palette.green600 },
-  amber: { bg: palette.amber50, fg: palette.amber500 },
-  blue: { bg: palette.blue50, fg: palette.blue500 },
-  purple: { bg: palette.purple50, fg: palette.purple500 },
-  red: { bg: palette.red50, fg: palette.red500 },
-  grey: { bg: palette.grey100, fg: palette.grey600 },
-} as const satisfies Record<string, Tint>;
-
-interface Rule {
-  match: RegExp;
+type CategoryVisual = {
   icon: LucideIcon;
-  tint: Tint;
-}
-
-/**
- * Ordered: the first match wins, so put specific terms before generic ones.
- * "baby" must beat "care", and "ice cream" must beat "cream".
- */
-const RULES: Rule[] = [
-  { match: /baby|diaper|infant/i, icon: Baby, tint: TINTS.purple },
-  { match: /atta|flour|rice|dal|pulse|grain|staple/i, icon: Wheat, tint: TINTS.amber },
-  { match: /oil|ghee|vanaspati/i, icon: Droplet, tint: TINTS.amber },
-  { match: /masala|spice|salt|namak/i, icon: Flame, tint: TINTS.red },
-  { match: /tea|coffee|drink|beverage|juice|water/i, icon: CupSoda, tint: TINTS.blue },
-  { match: /biscuit|snack|namkeen|chips|cookie/i, icon: Cookie, tint: TINTS.amber },
-  { match: /milk|dairy|curd|paneer|butter|cheese/i, icon: Milk, tint: TINTS.blue },
-  { match: /noodle|pasta|vermicelli|maggi/i, icon: Soup, tint: TINTS.amber },
-  { match: /sauce|spread|ketchup|jam|pickle|achar/i, icon: Soup, tint: TINTS.red },
-  { match: /sweet|sugar|honey|jaggery|gur/i, icon: Candy, tint: TINTS.amber },
-  { match: /packaged|ready|instant|frozen/i, icon: Snowflake, tint: TINTS.blue },
-  { match: /household|clean|detergent|utensil|dishwash/i, icon: SprayCan, tint: TINTS.blue },
-  { match: /personal|soap|shampoo|toothpaste|hygiene|care/i, icon: ShowerHead, tint: TINTS.purple },
-  { match: /fruit|vegetable|veg|sabzi|fresh/i, icon: Carrot, tint: TINTS.green },
-  { match: /egg|meat|chicken|fish|non.?veg/i, icon: Egg, tint: TINTS.red },
-  { match: /bread|bakery|cake|bun/i, icon: Croissant, tint: TINTS.amber },
-  { match: /chocolate|candy|confection/i, icon: Candy, tint: TINTS.red },
-  { match: /pet|dog|cat/i, icon: PawPrint, tint: TINTS.purple },
-  { match: /stationer|office|book/i, icon: Pencil, tint: TINTS.grey },
-];
-
-/** Generic enough to never look wrong, specific enough to read as "goods". */
-const FALLBACK: Rule = { match: /.*/, icon: ShoppingBag, tint: TINTS.green };
-
-function resolveCategoryVisual(name: string): Rule {
-  return RULES.find((rule) => rule.match.test(name)) ?? FALLBACK;
-}
+  tint: {
+    bg: string;
+    fg: string;
+  };
+};
 
 export default function CategoryIcon({
   name,
@@ -108,17 +43,17 @@ export default function CategoryIcon({
   const box = {
     width: size,
     height: size,
-    borderRadius: radius.circle,
+    borderRadius: 10,
   };
 
-  if (imageUrl) {
+  const imageSource = imageUrl ? resolveImageUrl(imageUrl) : undefined;
+
+  if (imageSource) {
     return (
       <Image
-        source={{
-          uri: resolveImageUrl(imageUrl) ?? undefined,
-        }}
+        source={{ uri: imageSource }}
         style={[box, styles.image]}
-        contentFit="cover"
+        contentFit="contain"
         transition={150}
         cachePolicy="memory-disk"
         accessibilityLabel={name}
@@ -138,10 +73,172 @@ export default function CategoryIcon({
   );
 }
 
+function resolveCategoryVisual(name: string): CategoryVisual {
+  const value = name.toLowerCase();
+
+  if (
+    value.includes("baby") ||
+    value.includes("kid") ||
+    value.includes("child")
+  ) {
+    return {
+      icon: Baby,
+      tint: { bg: "#E8F5E9", fg: "#388E3C" },
+    };
+  }
+
+  if (
+    value.includes("fruit") ||
+    value.includes("vegetable") ||
+    value.includes("sabzi")
+  ) {
+    return {
+      icon: Carrot,
+      tint: { bg: "#E8F5E9", fg: "#388E3C" },
+    };
+  }
+
+  if (
+    value.includes("rice") ||
+    value.includes("atta") ||
+    value.includes("wheat")
+  ) {
+    return {
+      icon: Wheat,
+      tint: { bg: "#FFF3E0", fg: "#A66A00" },
+    };
+  }
+
+  if (value.includes("oil") || value.includes("ghee")) {
+    return {
+      icon: Droplet,
+      tint: { bg: "#FFF8E1", fg: "#B8860B" },
+    };
+  }
+
+  if (value.includes("masala") || value.includes("spice")) {
+    return {
+      icon: Flame,
+      tint: { bg: "#FBE9E7", fg: "#D84315" },
+    };
+  }
+
+  if (value.includes("salt") || value.includes("sugar")) {
+    return {
+      icon: Soup,
+      tint: { bg: "#F3E5F5", fg: "#8E24AA" },
+    };
+  }
+
+  if (value.includes("biscuit") || value.includes("cookie")) {
+    return {
+      icon: Cookie,
+      tint: { bg: "#FFF3E0", fg: "#8D6E63" },
+    };
+  }
+
+  if (value.includes("snack") || value.includes("candy")) {
+    return {
+      icon: Candy,
+      tint: { bg: "#FCE4EC", fg: "#C2185B" },
+    };
+  }
+
+  if (
+    value.includes("drink") ||
+    value.includes("juice") ||
+    value.includes("beverage")
+  ) {
+    return {
+      icon: CupSoda,
+      tint: { bg: "#E3F2FD", fg: "#1976D2" },
+    };
+  }
+
+  if (value.includes("dairy") || value.includes("milk")) {
+    return {
+      icon: Milk,
+      tint: { bg: "#E3F2FD", fg: "#1565C0" },
+    };
+  }
+
+  if (value.includes("egg")) {
+    return {
+      icon: Egg,
+      tint: { bg: "#FFF8E1", fg: "#8D6E63" },
+    };
+  }
+
+  if (value.includes("ice cream") || value.includes("icecream")) {
+    return {
+      icon: Snowflake,
+      tint: { bg: "#E1F5FE", fg: "#0288D1" },
+    };
+  }
+
+  if (
+    value.includes("clothing") ||
+    value.includes("cloth") ||
+    value.includes("fashion") ||
+    value.includes("men") ||
+    value.includes("women")
+  ) {
+    return {
+      icon: ShoppingBag,
+      tint: { bg: "#F3E5F5", fg: "#7B1FA2" },
+    };
+  }
+
+  if (value.includes("pet")) {
+    return {
+      icon: PawPrint,
+      tint: { bg: "#FFF3E0", fg: "#8D6E63" },
+    };
+  }
+
+  if (value.includes("clean") || value.includes("household")) {
+    return {
+      icon: SprayCan,
+      tint: { bg: "#E0F2F1", fg: "#00796B" },
+    };
+  }
+
+  if (
+    value.includes("personal care") ||
+    value.includes("bath") ||
+    value.includes("shower")
+  ) {
+    return {
+      icon: ShowerHead,
+      tint: { bg: "#E3F2FD", fg: "#1976D2" },
+    };
+  }
+
+  if (
+    value.includes("stationery") ||
+    value.includes("pencil") ||
+    value.includes("school")
+  ) {
+    return {
+      icon: Pencil,
+      tint: { bg: "#FFF8E1", fg: "#F9A825" },
+    };
+  }
+
+  return {
+    icon: Croissant,
+    tint: { bg: "#E8F5E9", fg: "#388E3C" },
+  };
+}
+
 const styles = StyleSheet.create({
-  image: { backgroundColor: palette.grey50 },
+  image: {
+    backgroundColor: "transparent",
+    borderRadius: 10,
+  },
   iconBox: {
     alignItems: "center",
     justifyContent: "center",
+    borderRadius: 10,
   },
 });

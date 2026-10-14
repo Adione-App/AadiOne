@@ -91,7 +91,7 @@ export default function SearchScreen({
     <View style={[styles.popularCell, { width: `${100 / columns}%` }]}>
       <ProductCard
         product={item}
-        qtyInCart={item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0}
+        qtyInCart={cart.qtyForCard(item)}
         busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
         onPress={onOpenProduct}
         onAdd={cart.add}
@@ -114,7 +114,7 @@ export default function SearchScreen({
         <View key={item.id} style={[styles.popularCell, { width: `${100 / columns}%` }]}>
           <ProductCard
             product={item}
-            qtyInCart={item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0}
+            qtyInCart={cart.qtyForCard(item)}
             busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
             onPress={onOpenProduct}
             onAdd={cart.add}

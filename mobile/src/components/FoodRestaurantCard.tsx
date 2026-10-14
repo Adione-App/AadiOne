@@ -12,9 +12,8 @@
 import { memo } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Image } from "expo-image";
-import { Bike, ChevronRight, Clock, UtensilsCrossed } from "lucide-react-native";
+import { ChevronRight, Clock, UtensilsCrossed } from "lucide-react-native";
 import type { RestaurantSummaryDto } from "@shared";
-import { formatPaise } from "@shared/money";
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { AppText } from "@/components/ui";
 import { resolveImageUrl } from "@/lib/api";
@@ -22,33 +21,64 @@ import { resolveImageUrl } from "@/lib/api";
 const MAX_TAGS = 3;
 
 /** The square veg / non-veg mark used on Indian menus (green dot / red dot). */
-export function DietBadge({ diet, size = 22 }: { diet: RestaurantSummaryDto["diet"] | "VEG" | "NON_VEG" | null | undefined; size?: number }) {
+export function DietBadge({
+  diet,
+  size = 22,
+}: {
+  diet: RestaurantSummaryDto["diet"] | "VEG" | "NON_VEG" | null | undefined;
+  size?: number;
+}) {
   if (!diet) return null;
   const tone = diet === "VEG" ? palette.green600 : palette.red500;
   return (
     <View
-      style={[styles.dietBox, { width: size, height: size, borderColor: tone, borderRadius: size * 0.22 }]}
+      style={[
+        styles.dietBox,
+        {
+          width: size,
+          height: size,
+          borderColor: tone,
+          borderRadius: size * 0.22,
+        },
+      ]}
       accessibilityLabel={diet === "VEG" ? "Pure veg" : "Serves non-veg"}
     >
-      <View style={{ width: size * 0.46, height: size * 0.46, borderRadius: size * 0.23, backgroundColor: tone }} />
+      <View
+        style={{
+          width: size * 0.46,
+          height: size * 0.46,
+          borderRadius: size * 0.23,
+          backgroundColor: tone,
+        }}
+      />
     </View>
   );
 }
 
 /** "25–35 min" from the delivery estimate, else the kitchen's prep time. */
+/** Show only the delivery ETA received from the server. */
 export function timeText(restaurant: RestaurantSummaryDto): string | null {
   const min = restaurant.etaMinMinutes ?? null;
   const max = restaurant.etaMaxMinutes ?? null;
-  if (min !== null && max !== null) return min === max ? `${min} min` : `${min}–${max} min`;
-  if (restaurant.avgPrepMins !== null) return `${restaurant.avgPrepMins} min prep`;
-  return null;
+
+  if (min === null || max === null) return null;
+
+  return min === max ? `${min} min` : `${min}–${max} min`;
 }
 
-function FoodRestaurantCardImpl({ restaurant, onPress }: { restaurant: RestaurantSummaryDto; onPress: (sellerId: string) => void }) {
+function FoodRestaurantCardImpl({
+  restaurant,
+  onPress,
+}: {
+  restaurant: RestaurantSummaryDto;
+  onPress: (sellerId: string) => void;
+}) {
   const image = resolveImageUrl(restaurant.coverImageUrl);
-  const tags = restaurant.cuisine.map((c) => c.trim()).filter(Boolean).slice(0, MAX_TAGS);
+  const tags = restaurant.cuisine
+    .map((c) => c.trim())
+    .filter(Boolean)
+    .slice(0, MAX_TAGS);
   const time = timeText(restaurant);
-  const fee = restaurant.deliveryFeePaise ?? null;
 
   return (
     <Pressable
@@ -59,10 +89,20 @@ function FoodRestaurantCardImpl({ restaurant, onPress }: { restaurant: Restauran
     >
       <View style={styles.photo}>
         {image ? (
-          <Image source={{ uri: image }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} cachePolicy="memory-disk" />
+          <Image
+            source={{ uri: image }}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            transition={150}
+            cachePolicy="memory-disk"
+          />
         ) : (
           <View style={styles.photoFallback}>
-            <UtensilsCrossed size={34} color={palette.green600} strokeWidth={1.75} />
+            <UtensilsCrossed
+              size={34}
+              color={palette.green600}
+              strokeWidth={1.75}
+            />
           </View>
         )}
         {restaurant.diet ? (
@@ -77,14 +117,32 @@ function FoodRestaurantCardImpl({ restaurant, onPress }: { restaurant: Restauran
           <AppText style={styles.name} numberOfLines={2}>
             {restaurant.name}
           </AppText>
-          <View style={[styles.status, restaurant.isOpen ? styles.statusOpen : styles.statusClosed]}>
-            <AppText style={[styles.statusText, { color: restaurant.isOpen ? palette.green700 : colors.textSecondary }]}>
+          <View
+            style={[
+              styles.status,
+              restaurant.isOpen ? styles.statusOpen : styles.statusClosed,
+            ]}
+          >
+            <AppText
+              style={[
+                styles.statusText,
+                {
+                  color: restaurant.isOpen
+                    ? palette.green700
+                    : colors.textSecondary,
+                },
+              ]}
+            >
               {restaurant.isOpen ? "Open" : "Closed"}
             </AppText>
           </View>
         </View>
         {!restaurant.isOpen && restaurant.nextOpenText ? (
-          <AppText variant="caption" color={colors.textSecondary} numberOfLines={1}>
+          <AppText
+            variant="caption"
+            color={colors.textSecondary}
+            numberOfLines={1}
+          >
             {restaurant.nextOpenText}
           </AppText>
         ) : null}
@@ -105,23 +163,23 @@ function FoodRestaurantCardImpl({ restaurant, onPress }: { restaurant: Restauran
           <View style={styles.meta}>
             {time ? (
               <View style={styles.metaItem}>
-                <Clock size={14} color={colors.textSecondary} strokeWidth={2.25} />
+                <Clock
+                  size={14}
+                  color={colors.textSecondary}
+                  strokeWidth={2.25}
+                />
                 <AppText style={styles.metaText} numberOfLines={1}>
                   {time}
                 </AppText>
               </View>
             ) : null}
-            {fee !== null ? (
-              <View style={styles.metaItem}>
-                <Bike size={15} color={palette.green700} strokeWidth={2.25} />
-                <AppText style={[styles.metaText, styles.feeText]} numberOfLines={1}>
-                  {fee === 0 ? "Free delivery" : `${formatPaise(fee)} delivery`}
-                </AppText>
-              </View>
-            ) : null}
           </View>
           <View style={styles.chevron}>
-            <ChevronRight size={18} color={palette.green700} strokeWidth={2.5} />
+            <ChevronRight
+              size={18}
+              color={palette.green700}
+              strokeWidth={2.5}
+            />
           </View>
         </View>
       </View>
@@ -258,9 +316,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: colors.textSecondary,
   },
-  feeText: {
-    color: palette.green700,
-  },
+
   chevron: {
     width: 32,
     height: 32,

@@ -1,24 +1,4 @@
-/**
- * A restaurant's / cafe's page — its cover photo, an information card
- * (logo, name, veg / non-veg, cuisine, open status, prep time, address), the
- * menu's sections as tabs, and the menu itself: Menu → Menu Section → Food
- * Item, exactly as the seller arranged it (GET /restaurants/:sellerId).
- *
- *   tabs       one per section that has items, with its item count; tapping
- *              one scrolls to it, and the active tab follows the scroll. Once
- *              the in-page tabs scroll away, the same tabs stay pinned at the
- *              top.
- *   sections   collapsible (header with count and chevron).
- *   items      ordinary seller listings through the SAME cart as everything
- *              else (`useCartActions`): server-checked price and stock, the
- *              shared optimistic quantities, MiniCartBar and checkout. A
- *              tap is ignored while that item's previous change is still
- *              being saved, so nothing is added twice. Each entry is one
- *              sellable variant ("Half" / "Full" are separate lines).
- *
- * Nothing is invented: a missing logo, cover or photo shows a plain
- * placeholder, and a value the restaurant has not set is left out.
- */
+
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -143,6 +123,8 @@ const MenuItemRow = memo(function MenuItemRow({
               busy={busy}
               onIncrement={() => onIncrement(item.variantId)}
               onDecrement={() => onDecrement(item.variantId)}
+              // The shared control, sized like this menu's ADD button so the swap never shifts the row.
+              style={styles.stepperSize}
             />
           ) : (
             <Pressable
@@ -902,6 +884,10 @@ const styles = StyleSheet.create({
     marginTop: -20,
     minWidth: 110,
     alignItems: "center",
+  },
+  stepperSize: {
+    width: 110,
+    height: 40,
   },
   addButton: {
     minWidth: 110,

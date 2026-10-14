@@ -1,19 +1,21 @@
-/**
- * The white rounded panel every Home section sits in, with its title row
- * and optional "View All" — the card-on-grey rhythm of the reference design.
- */
 
 import { memo, type ReactNode } from "react";
-import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
+import {
+  Pressable,
+  StyleSheet,
+  View,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
 import { ChevronRight } from "lucide-react-native";
-import { colors, radius, spacing } from "@shared/theme";
+import { colors, spacing } from "@shared/theme";
 import { AppText } from "@/components/ui";
 
-/** Page background behind the panels. */
-export const HOME_BACKGROUND = "#F2F4F3";
-/** Gap between a panel and the screen edge. */
+/** One consistent background for the complete Home page. */
+export const HOME_BACKGROUND = "#FFFFFF";
+
+/** Kept for compatibility with existing section imports. */
 export const PANEL_INSET = spacing.sm;
-/** Inner horizontal padding of a panel. */
 export const PANEL_PADDING = spacing.md;
 
 export const SectionHeader = memo(function SectionHeader({
@@ -31,8 +33,13 @@ export const SectionHeader = memo(function SectionHeader({
         <AppText style={styles.title} numberOfLines={1}>
           {title}
         </AppText>
+
         {subtitle ? (
-          <AppText variant="caption" color={colors.textSecondary} numberOfLines={1}>
+          <AppText
+            variant="caption"
+            color={colors.textSecondary}
+            numberOfLines={1}
+          >
             {subtitle}
           </AppText>
         ) : null}
@@ -49,6 +56,7 @@ export const SectionHeader = memo(function SectionHeader({
           <AppText style={styles.viewAllText} color={colors.primary}>
             View All
           </AppText>
+
           <ChevronRight size={14} color={colors.primary} strokeWidth={2.5} />
         </Pressable>
       )}
@@ -68,13 +76,13 @@ export function SectionPanel({
 
 const styles = StyleSheet.create({
   panel: {
-    marginHorizontal: PANEL_INSET,
+    marginHorizontal: 0,
     marginTop: spacing.sm,
     paddingVertical: spacing.md,
-    borderRadius: radius.xl,
-    backgroundColor: colors.surface,
+    backgroundColor: HOME_BACKGROUND,
     overflow: "hidden",
   },
+
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -83,21 +91,25 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     gap: spacing.sm,
   },
+
   titleWrap: {
     flex: 1,
     minWidth: 0,
   },
+
   title: {
     fontSize: 17,
     lineHeight: 23,
     fontWeight: "800",
     color: colors.textPrimary,
   },
+
   viewAll: {
     flexDirection: "row",
     alignItems: "center",
     gap: 1,
   },
+
   viewAllText: {
     fontSize: 13,
     lineHeight: 18,

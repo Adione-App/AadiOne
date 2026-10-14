@@ -105,6 +105,11 @@ export function HomeStack() {
             onOpenCart={() =>
               navigation.getParent()?.navigate("Cart", { screen: "CartHome" })
             }
+            onOpenProfile={() =>
+              navigation.getParent()?.navigate("Account", {
+                screen: "AccountHome",
+              })
+            }
             onOpenOrders={() =>
               navigation.getParent()?.navigate("Account", {
                 screen: "Orders",
@@ -119,7 +124,9 @@ export function HomeStack() {
             onOpenRestaurant={(sellerId) =>
               navigation.navigate("RestaurantMenu", { sellerId })
             }
-            onOpenStore={(sellerId) => navigation.navigate("Store", { sellerId })}
+            onOpenStore={(sellerId) =>
+              navigation.navigate("Store", { sellerId })
+            }
             onOpenFood={() =>
               navigation.getParent()?.navigate("Food", { screen: "FoodHome" })
             }

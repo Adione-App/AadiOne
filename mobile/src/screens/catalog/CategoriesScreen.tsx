@@ -15,31 +15,33 @@
  * exactly the kind of per-screen duplicate the shared overlay replaced.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Search, X } from 'lucide-react-native';
 import {
-  Animated,
   BackHandler,
   FlatList,
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
   View,
   useWindowDimensions,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native';
-import { Image } from 'expo-image';
-import ReanimatedAnimated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { CategoryDto, ProductSummaryDto } from '@shared';
 import { colors, radius, spacing } from '@shared/theme';
-import { useCategories, useProducts } from '@/lib/queries';
+import { useQueryClient } from '@tanstack/react-query';
+import { prefetchProducts, useCategories, useProducts } from '@/lib/queries';
 import { useCartActions } from '@/lib/useCartActions';
 import { useGridColumns } from '@/lib/useGridColumns';
 import { useTabBarClearance } from '@/lib/tabBarVisibility';
-import { resolveImageUrl } from '@/lib/api';
 import { AppText, EmptyState, ErrorState, Loading, NoticeStrip, Screen } from '@/components/ui';
 import { ProductCard } from '@/components/ProductCard';
-import { ProductGridSkeleton } from '@/components/ProductCardSkeleton';
 import CategoryIcon from '@/components/CategoryIcon';
+import { buildCategoryTree, searchCategories } from './categorySections';
+import { PromoSlot } from '@/components/PromoBanner';
 
 /* =====================================================================
    DRILL STATE
@@ -134,6 +136,21 @@ export default function CategoriesScreen({
         ? drill.category.id
         : undefined;
 
+  // Opening a category with a sidebar warms the cache for its other
+  // subcategories (up to 8, first page each), so tapping through the sidebar
+  // is instant instead of waiting on a request per tap. Once per opened
+  // category; fresh entries are skipped, and the open one loads as usual.
+  const queryClient = useQueryClient();
+  const sidebarParentId = drill.level === 'category' ? drill.parent.id : null;
+  useEffect(() => {
+    if (drill.level !== 'category') return;
+    for (const child of (drill.parent.children ?? []).slice(0, 8)) {
+      if (child.id !== drill.selectedChildId) prefetchProducts(queryClient, child.id);
+    }
+    // Only when a different category is opened — not on every sidebar tap.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebarParentId, queryClient]);
+
   const products = useProducts(
     activeCategoryId ? { categoryId: activeCategoryId, enabled: true } : { enabled: false },
   );
@@ -171,7 +188,7 @@ export default function CategoriesScreen({
     <View style={[styles.productCell, { width: `${100 / productGridColumns}%` }]}>
       <ProductCard
         product={item}
-        qtyInCart={item.defaultVariant ? cart.qtyFor(item.defaultVariant.id) : 0}
+        qtyInCart={cart.qtyForCard(item)}
         busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
         onPress={onOpenProduct}
         onAdd={cart.add}
@@ -181,39 +198,26 @@ export default function CategoriesScreen({
     </View>
   );
 
+  // The product pane's state comes ONLY from the selected category's own
+  // query (one cache entry per category, so a late response for a category
+  // the customer already left can never land here):
+  //   data          → the grid at once (cached data paints immediately while
+  //                   any background refresh runs; a failed refresh keeps it)
+  //   error, no data → error + retry
+  //   otherwise      → the static placeholder, only in this pane
+  // No layout animations or timers sit between the data and the screen:
+  // the cross-fade wrappers that used to (Reanimated `entering`/`exiting`
+  // around the skeleton and the grid) could leave the old skeleton on
+  // screen or the new grid at zero opacity — the stuck / blank pane.
+  const productItems = products.data?.items;
   const productPane =
-    products.isLoading ? (
-      // `exiting`/`entering` below give this hand-off a short, deliberate
-      // cross-fade instead of the skeleton just vanishing the instant real
-      // data arrives — Reanimated's own layout-animation system (not a
-      // manual timer), so it costs nothing on the JS thread and can never
-      // delay `products.data` actually rendering underneath it.
-      <ReanimatedAnimated.View style={styles.productPaneFill} exiting={FadeOut.duration(130)}>
-        <ProductGridSkeleton columns={productGridColumns} />
-      </ReanimatedAnimated.View>
-    ) : products.isError && !products.data ? (
-      // Only reachable with NOTHING cached for this category — `data`
-      // stays whatever was last cached through a failed BACKGROUND
-      // refetch (see `useProducts`), so a cache-exists-but-API-failed
-      // case never hits this branch at all; it just keeps rendering the
-      // FlatList below with the (still perfectly good) cached items,
-      // exactly as if nothing had gone wrong.
-      <ErrorState
-        message="We could not load these products."
-        onRetry={() => void products.refetch()}
-      />
-    ) : (products.data?.items.length ?? 0) === 0 ? (
-      <EmptyState title="Nothing here yet" hint="Try another category." />
-    ) : (
-      // `entering` — a short fade-in as real data actually replaces the
-      // skeleton (see the skeleton branch's own comment above for the
-      // other half of this cross-fade). Never delays `products.data`
-      // itself; the FlatList is already rendering below with the real
-      // items the instant this mounts, only its OWN opacity ramps in.
-      <ReanimatedAnimated.View style={styles.productPaneFill} entering={FadeIn.duration(200)}>
+    productItems ? (
+      productItems.length === 0 ? (
+        <EmptyState title="Nothing here yet" hint="Try another category." />
+      ) : (
         <FlatList
           key={`grid-${productGridColumns}`}
-          data={products.data?.items ?? []}
+          data={productItems}
           keyExtractor={(item) => item.id}
           renderItem={renderProduct}
           numColumns={productGridColumns}
@@ -232,16 +236,25 @@ export default function CategoriesScreen({
             paddingBottom: tabBarClearance + spacing.xxl,
           }}
           showsVerticalScrollIndicator={false}
-          // Off-screen rows get unmounted from the native tree instead of
-          // staying rendered — a real memory/scroll-cost win on a long grid,
-          // safe here since every row is a fixed, uniform ProductCard height.
-          removeClippedSubviews
+          // No `removeClippedSubviews`: on Android it can leave rows blank
+          // after a layout change (sidebar switch, column change) — the page
+          // is capped at 30 products, so the windowing below is enough.
           initialNumToRender={8}
           maxToRenderPerBatch={8}
           windowSize={7}
           updateCellsBatchingPeriod={50}
         />
-      </ReanimatedAnimated.View>
+      )
+    ) : products.isError ? (
+      // Nothing cached for this category and the request failed (or timed
+      // out — every API call has one): stop loading, offer a retry.
+      <ErrorState
+        message="We could not load these products."
+        offline={(products.error as { isOffline?: boolean } | null)?.isOffline === true}
+        onRetry={() => void products.refetch()}
+      />
+    ) : (
+      <ProductsPlaceholder columns={productGridColumns} />
     );
 
   return (
@@ -264,7 +277,11 @@ export default function CategoriesScreen({
       </View>
 
       {drill.level === 'root' && (
-        <CategoryGrid categories={categories.data} onSelect={openCategory} />
+        <CategoryLanding
+          categories={categories.data}
+          onOpenRoot={openCategory}
+          onOpenChild={(category, parent) => setDrill({ level: 'category', parent, selectedChildId: category.id })}
+        />
       )}
 
       {drill.level === 'category' && (
@@ -325,122 +342,268 @@ export default function CategoriesScreen({
 }
 
 /* =====================================================================
-   CATEGORY SHOWCASE GRID — the landing view, big images
+   PRODUCTS PLACEHOLDER — only while a category with nothing cached loads
 ===================================================================== */
 
-function CategoryGrid({
+/**
+ * Soft light-green card shapes in the product pane only (the header,
+ * sidebar and tab bar stay as they are). Static on purpose: no shimmer, no
+ * entrance animation, nothing that can outlive the data — it is simply
+ * replaced by the grid the moment the category's products arrive. Sized
+ * like a ProductCard (image area, price, two name lines, size) so the grid
+ * does not jump when it takes over.
+ */
+function ProductsPlaceholder({ columns }: { columns: number }) {
+  return (
+    <View
+      style={styles.placeholderGrid}
+      pointerEvents="none"
+      accessible
+      accessibilityRole="progressbar"
+      accessibilityLabel="Loading products"
+    >
+      {Array.from({ length: columns * 3 }, (_, index) => (
+        <View key={index} style={[styles.productCell, { width: `${100 / columns}%` }]}>
+          <View style={styles.placeholderImage} />
+          <View style={[styles.placeholderLine, { width: '40%', height: 14, marginTop: 24 }]} />
+          <View style={[styles.placeholderLine, { width: '90%', marginTop: 26 }]} />
+          <View style={[styles.placeholderLine, { width: '60%', marginTop: 6 }]} />
+          <View style={[styles.placeholderLine, { width: '35%', height: 10, marginTop: 10 }]} />
+        </View>
+      ))}
+    </View>
+  );
+}
+
+/* =====================================================================
+   CATEGORY SECTIONS — the landing view
+===================================================================== */
+
+/** Tile columns: as many as fit at MIN_TILE_WIDTH (3 on the narrowest phones, up to 6). */
+function tileColumns(innerWidth: number): number {
+  return Math.max(3, Math.min(6, Math.floor((innerWidth + TILE_GAP) / (MIN_TILE_WIDTH + TILE_GAP))));
+}
+
+/**
+ * The landing view: a search bar that stays put, then (scrolling) every
+ * root category in a strip and one section per root with its direct
+ * subcategories — all from `buildCategoryTree` (categorySections.ts). While
+ * searching, the matching categories replace the strip and sections; the
+ * search runs over the category tree already loaded, with no request.
+ */
+function CategoryLanding({
   categories,
-  onSelect,
+  onOpenRoot,
+  onOpenChild,
 }: {
   categories: CategoryDto[];
-  onSelect: (category: CategoryDto) => void;
+  onOpenRoot: (category: CategoryDto) => void;
+  onOpenChild: (category: CategoryDto, parent: CategoryDto) => void;
 }) {
-  // The tab bar is a floating overlay now (see MainTabs.tsx's
-  // `AnimatedTabBar`), not a flex sibling that reserves its own space — this
-  // is the landing view for the Categories tab, so its last row needs its
-  // own clearance to not sit underneath the bar's visible plate at rest,
-  // same as every other tab root (see HomeScreen's identical `paddingTop`).
+  // The tab bar floats over the screen (MainTabs.tsx), so the content needs
+  // its own clearance, like every other tab root.
   const tabBarClearance = useTabBarClearance();
+  const { width } = useWindowDimensions();
+  const tree = useMemo(() => buildCategoryTree(categories), [categories]);
+  const [query, setQuery] = useState('');
+  const results = useMemo(() => searchCategories(tree, query), [tree, query]);
+  const searching = query.trim().length > 0;
 
-  if (categories.length === 0) {
-    return <EmptyState title="Nothing here yet" hint="Check back in a little while." />;
-  }
+  const scrollRef = useRef<ScrollView>(null);
+  /** Each section's y inside the scroll content (from onLayout). */
+  const sectionY = useRef(new Map<string, number>());
+  const [activeRootId, setActiveRootId] = useState<string | null>(null);
 
-  return (
-    <FlatList
-      data={categories}
-      keyExtractor={(item) => item.id}
-      numColumns={2}
-      columnWrapperStyle={styles.categoryRow}
-      contentContainerStyle={[
-        styles.categoryGrid,
-        { paddingBottom: tabBarClearance + spacing.xxl },
-      ]}
-      renderItem={({ item }) => (
-        <CategoryGridCard category={item} onPress={() => onSelect(item)} />
-      )}
-      showsVerticalScrollIndicator={false}
-    />
-  );
-}
+  const innerWidth = width - SECTION_MARGIN * 2 - SECTION_PADDING * 2 - 2;
+  const columns = tileColumns(innerWidth);
+  const tileWidth = Math.floor((innerWidth - TILE_GAP * (columns - 1)) / columns);
+  const imageSize = tileWidth - TILE_PADDING * 2;
 
-function CategoryGridCard({
-  category,
-  onPress,
-}: {
-  category: CategoryDto;
-  onPress: () => void;
-}) {
-  const scale = useRef(new Animated.Value(1)).current;
-
-  const pressIn = () => {
-    Animated.timing(scale, { toValue: 0.96, duration: 100, useNativeDriver: true }).start();
-  };
-  const pressOut = () => {
-    Animated.timing(scale, { toValue: 1, duration: 100, useNativeDriver: true }).start();
+  // A root with subcategories scrolls to its section; one without opens its products.
+  const openRoot = (root: CategoryDto) => {
+    const y = sectionY.current.get(root.id);
+    if (y === undefined) {
+      onOpenRoot(root);
+      return;
+    }
+    setActiveRootId(root.id);
+    scrollRef.current?.scrollTo({ y: Math.max(0, y - spacing.sm), animated: true });
   };
 
-  // A parent category's own product count only reflects products assigned to
-  // IT directly (see countProductsByCategory), not the total beneath its
-  // children — showing that number on a category that holds all its items in
-  // subcategories would misleadingly read as "0 items" or near it. Only leaf
-  // cards, whose count is exactly what tapping them shows, get the badge.
-  const isLeaf = !category.children?.length;
-  const showCount = isLeaf && (category.productCount ?? 0) > 0;
-  const resolvedImage = category.imageUrl ? resolveImageUrl(category.imageUrl) : null;
+  // The strip's highlight follows the section being read.
+  const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const y = event.nativeEvent.contentOffset.y + spacing.xl;
+    let current: string | null = null;
+    for (const section of tree.sections) {
+      const top = sectionY.current.get(section.key);
+      if (top !== undefined && top <= y) current = section.key;
+    }
+    if (current !== activeRootId) setActiveRootId(current);
+  };
 
   return (
-    <Pressable
-      onPress={onPress}
-      onPressIn={pressIn}
-      onPressOut={pressOut}
-      style={styles.categoryCard}
-      accessibilityRole="button"
-      accessibilityLabel={`Open ${category.name}`}
-    >
-      <Animated.View style={[styles.categoryCardInner, { transform: [{ scale }] }]}>
-        <View style={styles.categoryImageBox}>
-          {resolvedImage ? (
-            // Full-size, uncropped-by-a-circle image — a category photo read
-            // as a small round icon (the old CategoryIcon shape) is exactly
-            // what looked unclear here. Vector-icon fallback (no real image
-            // yet) still uses the round icon since it's decorative, not a
-            // photo losing detail.
-            <Image
-              source={{ uri: resolvedImage }}
-              style={styles.categoryImage}
-              contentFit="cover"
-              transition={150}
-              cachePolicy="memory-disk"
-              accessibilityLabel={category.name}
-            />
-          ) : (
-            <CategoryIcon name={category.name} imageUrl={null} size={64} />
-          )}
+    <View style={{ flex: 1 }}>
+      <View style={styles.searchWrap}>
+        <View style={styles.searchBar}>
+          <Search size={18} color={colors.textMuted} strokeWidth={2.25} />
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search categories"
+            placeholderTextColor={colors.textMuted}
+            style={styles.searchInput}
+            returnKeyType="search"
+            autoCorrect={false}
+            accessibilityLabel="Search categories"
+          />
+          {query ? (
+            <Pressable onPress={() => setQuery('')} hitSlop={10} accessibilityRole="button" accessibilityLabel="Clear search">
+              <X size={18} color={colors.textSecondary} strokeWidth={2.25} />
+            </Pressable>
+          ) : null}
         </View>
+      </View>
 
-        <AppText variant="bodyStrong" numberOfLines={2} style={styles.categoryCardName}>
-          {category.name}
-        </AppText>
+      <ScrollView
+        ref={scrollRef}
+        onScroll={searching ? undefined : onScroll}
+        scrollEventThrottle={64}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: tabBarClearance + spacing.xxl }}
+      >
+        {searching ? (
+          results.length === 0 ? (
+            <EmptyState title="No categories found" hint={`Nothing matches "${query.trim()}".`} />
+          ) : (
+            <View style={styles.results}>
+              {results.map(({ category, parent }) => (
+                <Pressable
+                  key={category.id}
+                  onPress={() => (parent ? onOpenChild(category, parent) : onOpenRoot(category))}
+                  style={({ pressed }) => [styles.resultRow, pressed && styles.tilePressed]}
+                  accessibilityRole="button"
+                  accessibilityLabel={parent ? `Open ${category.name} in ${parent.name}` : `Open ${category.name}`}
+                >
+                  <View style={styles.resultIcon}>
+                    <CategoryIcon name={category.name} imageUrl={category.imageUrl} size={36} />
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <AppText variant="bodyStrong" numberOfLines={1}>
+                      {category.name}
+                    </AppText>
+                    <AppText variant="caption" color={colors.textSecondary} numberOfLines={1}>
+                      {parent ? `in ${parent.name}` : 'Category'}
+                    </AppText>
+                  </View>
+                </Pressable>
+              ))}
+            </View>
+          )
+        ) : tree.roots.length === 0 ? (
+          <EmptyState title="Nothing here yet" hint="Check back in a little while." />
+        ) : (
+          <>
+            {/* Admin banners (Banners → "Categories — top"); nothing when none is live. */}
+            <PromoSlot placement="categories_top" style={styles.promoTop} />
 
-        {showCount && (
-          <AppText variant="caption" color={colors.textSecondary}>
-            {category.productCount} item{category.productCount === 1 ? '' : 's'}
-          </AppText>
+            {/* Every root category, in API order. */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rootStrip}>
+              {tree.roots.map((root) => {
+                const active = root.id === activeRootId;
+                return (
+                  <Pressable
+                    key={root.id}
+                    onPress={() => openRoot(root)}
+                    style={({ pressed }) => [styles.rootItem, pressed && styles.tilePressed]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={`${root.name}`}
+                  >
+                    <View style={[styles.rootImage, active && styles.rootImageActive]}>
+                      <CategoryIcon name={root.name} imageUrl={root.imageUrl} size={48} />
+                    </View>
+                    <AppText
+                      variant="caption"
+                      numberOfLines={2}
+                      color={active ? colors.primary : colors.textPrimary}
+                      style={[styles.rootLabel, active && styles.rootLabelActive]}
+                    >
+                      {root.name}
+                    </AppText>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            {/* One section per root with subcategories: only its own direct children. */}
+            {tree.sections.map((section, sectionIndex) => (
+              // The outer wrapper sits directly in the scroll content, so its y is the section's offset.
+              <View key={section.key} onLayout={(event) => sectionY.current.set(section.key, event.nativeEvent.layout.y)}>
+              <View style={styles.section}>
+                <Pressable
+                  onPress={() => onOpenRoot(section.parent)}
+                  style={styles.sectionHeader}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${section.title}`}
+                >
+                  <View style={styles.sectionIcon}>
+                    <CategoryIcon name={section.parent.name} imageUrl={section.parent.imageUrl} size={34} />
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <AppText variant="h3" numberOfLines={1}>
+                      {section.title}
+                    </AppText>
+                    <AppText variant="caption" color={colors.textSecondary} numberOfLines={1}>
+                      {section.subtitle}
+                    </AppText>
+                  </View>
+                </Pressable>
+
+                <View style={styles.tileGrid}>
+                  {section.tiles.map((category) => (
+                    <Pressable
+                      key={category.id}
+                      onPress={() => onOpenChild(category, section.parent)}
+                      style={({ pressed }) => [styles.tile, { width: tileWidth }, pressed && styles.tilePressed]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open ${category.name}`}
+                    >
+                      <View style={[styles.tileImage, { height: imageSize }]}>
+                        <CategoryIcon name={category.name} imageUrl={category.imageUrl} size={imageSize - 6} />
+                      </View>
+                      <AppText variant="caption" numberOfLines={2} style={styles.tileLabel}>
+                        {category.name}
+                      </AppText>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+              {/* "Categories — between sections" banners, once: after the second section (or the last). */}
+              {sectionIndex === Math.min(1, tree.sections.length - 1) ? <PromoSlot placement="categories_mid" style={styles.promoMid} /> : null}
+              </View>
+            ))}
+          </>
         )}
-      </Animated.View>
-    </Pressable>
+      </ScrollView>
+    </View>
   );
 }
+
+/** Landing layout spacing — tile width is computed from these and the screen width. */
+const SECTION_MARGIN = spacing.md;
+const SECTION_PADDING = spacing.md;
+const TILE_GAP = spacing.sm;
+const TILE_PADDING = 6;
+/** Narrowest a tile may get before a column is dropped. */
+const MIN_TILE_WIDTH = 68;
 
 const styles = StyleSheet.create({
   // Wraps the skeleton/FlatList swap (see `productPane`'s own comments) —
   // `flex: 1` so it fills the same space its `<View style={{flex:1}}>`
   // parent always gave the content directly before this wrapper existed;
   // the fade transition is purely cosmetic on top, not a layout change.
-  productPaneFill: {
-    flex: 1,
-  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -462,46 +625,140 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
 
-  /* Category showcase grid — big images. `paddingBottom` is overridden
-     inline (see `CategoryGrid`) with the tab bar's own clearance added on
-     top — this base value is never actually used, kept only so the other
-     three sides of `padding` above don't need repeating inline. */
-  categoryGrid: {
-    padding: spacing.base,
+  promoTop: { marginBottom: spacing.sm },
+  promoMid: { marginBottom: spacing.md },
+
+  /* Landing: search bar, root strip, results */
+  searchWrap: {
+    paddingHorizontal: SECTION_MARGIN,
+    paddingBottom: spacing.sm,
   },
-  categoryRow: {
-    gap: spacing.md,
-  },
-  categoryCard: {
-    flex: 1,
-    marginBottom: spacing.md,
-  },
-  categoryCardInner: {
-    backgroundColor: colors.surface,
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    height: 44,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radius.lg,
-    padding: spacing.sm,
-    alignItems: 'center',
-    overflow: 'hidden',
+    backgroundColor: colors.surface,
   },
-  categoryImageBox: {
-    width: '100%',
-    aspectRatio: 1,
-    borderRadius: radius.md,
-    backgroundColor: colors.surfaceMuted,
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.textPrimary,
+    paddingVertical: 0,
+  },
+  rootStrip: {
+    paddingHorizontal: SECTION_MARGIN,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  rootItem: {
+    width: 76,
+    alignItems: 'center',
+  },
+  rootImage: {
+    width: 64,
+    height: 64,
+    borderRadius: radius.lg,
+    borderWidth: 2,
+    borderColor: 'transparent',
+    backgroundColor: colors.primarySurface,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: spacing.sm,
     overflow: 'hidden',
   },
-  categoryImage: {
-    width: '100%',
-    height: '100%',
+  rootImageActive: {
+    borderColor: colors.primary,
   },
-  categoryCardName: {
+  rootLabel: {
+    marginTop: spacing.xs,
     textAlign: 'center',
+    fontWeight: '600',
   },
+  rootLabelActive: {
+    fontWeight: '800',
+  },
+  results: {
+    marginHorizontal: SECTION_MARGIN,
+    borderRadius: radius.xl,
+    borderWidth: 1,
+    borderColor: colors.divider,
+    backgroundColor: colors.surface,
+    overflow: 'hidden',
+  },
+  resultRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+  },
+  resultIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: radius.md,
+    backgroundColor: colors.primarySurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+
+  /* Landing sections — compact tiles on soft light green, in white cards. */
+  section: {
+    marginHorizontal: SECTION_MARGIN,
+    marginBottom: spacing.md,
+    padding: SECTION_PADDING,
+    borderRadius: radius.xl,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.divider,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  sectionIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    backgroundColor: colors.primarySurface,
+  },
+  tileGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: TILE_GAP,
+  },
+  tile: {
+    padding: TILE_PADDING,
+    borderRadius: radius.md,
+    backgroundColor: colors.primarySurface,
+    alignItems: 'center',
+  },
+  tilePressed: { opacity: 0.75 },
+  tileImage: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tileLabel: {
+    marginTop: spacing.xs,
+    minHeight: 32,
+    textAlign: 'center',
+    color: colors.textPrimary,
+    fontWeight: '600',
+  },
+
 
   /* Left sidebar — subcategories of one parent */
   // Width is set at render from the screen size — see railWidth. Anything
@@ -519,5 +776,22 @@ const styles = StyleSheet.create({
   sidebarItemActive: {
     backgroundColor: colors.primarySurface,
     borderLeftColor: colors.primary,
+  },
+
+  /* Products placeholder — the theme's light green (`primarySurface`). */
+  placeholderGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    padding: spacing.xs,
+  },
+  placeholderImage: {
+    height: 110,
+    borderRadius: radius.md,
+    backgroundColor: colors.primarySurface,
+  },
+  placeholderLine: {
+    height: 12,
+    borderRadius: radius.sm,
+    backgroundColor: colors.primarySurface,
   },
 });

@@ -1,6 +1,7 @@
 import {
   Animated,
   Easing,
+  Image,
   Pressable,
   StyleSheet,
   View,
@@ -13,7 +14,13 @@ import ReanimatedAnimated, {
   useAnimatedStyle,
   useSharedValue,
 } from "react-native-reanimated";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { Ionicons } from "@expo/vector-icons";
 import { ChevronRight, Package } from "lucide-react-native";
@@ -65,6 +72,23 @@ import { StoreSection } from "./sections/StoreSection";
 
 const NO_RESULTS: never[] = [];
 
+function RestaurantBanner({ onPress }: { onPress: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel="Explore local restaurants"
+      style={styles.restaurantBanner}
+    >
+      <Image
+        source={require("../../../assets/restaurant-banner.png")}
+        style={styles.restaurantBannerImage}
+        resizeMode="cover"
+      />
+    </Pressable>
+  );
+}
+
 /* =====================================================================
    ANIMATED SEARCH PLACEHOLDER
 
@@ -80,7 +104,9 @@ const NO_RESULTS: never[] = [];
 const DEFAULT_SEARCH_PHRASE = "Search products, brands & more…";
 const MAX_SEARCH_PHRASES = 8;
 
-function searchPhrases(categories: readonly CategoryDto[] | undefined): string[] {
+function searchPhrases(
+  categories: readonly CategoryDto[] | undefined,
+): string[] {
   const names = (categories ?? []).flatMap((category) => [
     category.name,
     ...(category.children ?? []).map((child) => child.name),
@@ -168,6 +194,7 @@ export default function HomeScreen({
   onOpenSearch,
   onOpenLocation,
   onOpenCart,
+  onOpenProfile,
   onOpenOrders,
   onOpenNotifications,
   onOpenOrderTracking,
@@ -188,6 +215,7 @@ export default function HomeScreen({
   onOpenRestaurant: (sellerId: string) => void;
   onOpenStore: (sellerId: string) => void;
   onOpenFood: () => void;
+  onOpenProfile: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
@@ -195,7 +223,8 @@ export default function HomeScreen({
   // The bell's badge. Polled only while Home is the visible screen — the
   // tab stays mounted behind other tabs and has no reason to ask then.
   const isFocused = useIsFocused();
-  const unreadNotifications = useNotificationUnreadCount({ poll: isFocused }).data ?? 0;
+  const unreadNotifications =
+    useNotificationUnreadCount({ poll: isFocused }).data ?? 0;
 
   const feed = useHomeFeed();
   const cart = useCartActions();
@@ -214,13 +243,12 @@ export default function HomeScreen({
   // returns them in placement order), so the first ONGOING one found is
   // the most recent.
   const orders = useOrders();
-  const ongoingOrder = orders.data?.items.find((order) => order.bucket === "ONGOING") ?? null;
+  const ongoingOrder =
+    orders.data?.items.find((order) => order.bucket === "ONGOING") ?? null;
 
   const { location, serviceability, refresh } = useLocation();
 
   const { height: windowHeight } = useWindowDimensions();
-
-
 
   // Collapses the address/profile row as the page scrolls, leaving the
   // search bar as the only thing left looking pinned at the top.
@@ -442,7 +470,10 @@ export default function HomeScreen({
   // Stores and restaurants are filtered to the customer's location by the
   // SERVER (each seller's own delivery radius — the rule checkout enforces).
   const near = useMemo(
-    () => (location ? { latitude: location.latitude, longitude: location.longitude } : null),
+    () =>
+      location
+        ? { latitude: location.latitude, longitude: location.longitude }
+        : null,
     [location],
   );
   const restaurantsQuery = useRestaurants(near);
@@ -451,7 +482,10 @@ export default function HomeScreen({
 
   // A food seller with an empty menu has nothing to order yet.
   const restaurants = useMemo(
-    () => (restaurantsQuery.data ?? NO_RESULTS).filter((restaurant) => restaurant.menuItemCount > 0),
+    () =>
+      (restaurantsQuery.data ?? NO_RESULTS).filter(
+        (restaurant) => restaurant.menuItemCount > 0,
+      ),
     [restaurantsQuery.data],
   );
   const stores = storesQuery.data ?? NO_RESULTS;
@@ -468,10 +502,19 @@ export default function HomeScreen({
             previousOrders: previouslyOrdered.data ?? null,
           })
         : (NO_RESULTS as HomeSection[]),
-    [feed.data, restaurants.length, stores.length, offers.length, previouslyOrdered.data],
+    [
+      feed.data,
+      restaurants.length,
+      stores.length,
+      offers.length,
+      previouslyOrdered.data,
+    ],
   );
 
-  const phrases = useMemo(() => searchPhrases(feed.data?.categories), [feed.data?.categories]);
+  const phrases = useMemo(
+    () => searchPhrases(feed.data?.categories),
+    [feed.data?.categories],
+  );
 
   /* ----------------------------------------------------------------
      NAVIGATION HANDLERS
@@ -508,10 +551,12 @@ export default function HomeScreen({
   const handlers = useMemo(
     () => ({
       openProduct: (productId: string) => nav.current.onOpenProduct(productId),
-      openCategory: (categoryId: string) => nav.current.onOpenCategory(categoryId),
+      openCategory: (categoryId: string) =>
+        nav.current.onOpenCategory(categoryId),
       openAllCategories: () => nav.current.onOpenAllCategories(),
       openSearch: () => nav.current.onOpenSearch(),
-      openRestaurant: (sellerId: string) => nav.current.onOpenRestaurant(sellerId),
+      openRestaurant: (sellerId: string) =>
+        nav.current.onOpenRestaurant(sellerId),
       openStore: (sellerId: string) => nav.current.onOpenStore(sellerId),
       openFood: () => nav.current.onOpenFood(),
       action: (action: HomeAction) => {
@@ -552,17 +597,31 @@ export default function HomeScreen({
     ({ item }: { item: HomeSection }) => {
       switch (item.kind) {
         case "banners":
-          return <PromoCarousel slides={item.slides} onAction={handlers.action} />;
+          return (
+            <PromoCarousel slides={item.slides} onAction={handlers.action} />
+          );
         case "categoryGrid": {
           const viewAll = item.viewAll;
+
+          // Banner sirf first category grid ke niche show hoga
+          const firstCategoryGridKey = sections.find(
+            (section) => section.kind === "categoryGrid",
+          )?.key;
+
           return (
-            <CategoryGrid
-              title={item.title}
-              categories={item.categories}
-              columns={item.columns}
-              onOpenCategory={handlers.openCategory}
-              onViewAll={viewAll ? () => handlers.action(viewAll) : undefined}
-            />
+            <>
+              <CategoryGrid
+                title={item.title}
+                categories={item.categories}
+                columns={item.columns}
+                onOpenCategory={handlers.openCategory}
+                onViewAll={viewAll ? () => handlers.action(viewAll) : undefined}
+              />
+
+              {item.key === firstCategoryGridKey && (
+                <RestaurantBanner onPress={handlers.openFood} />
+              )}
+            </>
           );
         }
         case "food":
@@ -574,7 +633,13 @@ export default function HomeScreen({
             />
           );
         case "stores":
-          return <StoreSection stores={stores} nearby={near !== null} onOpenStore={handlers.openStore} />;
+          return (
+            <StoreSection
+              stores={stores}
+              nearby={near !== null}
+              onOpenStore={handlers.openStore}
+            />
+          );
         case "offers":
           return <OfferSection offers={offers} />;
         case "shelf":
@@ -699,10 +764,6 @@ export default function HomeScreen({
             >
               {/* Brand */}
 
-              <View style={styles.logo}>
-                <BrandMark size={34} />
-              </View>
-
               {/* Location Text */}
 
               <View style={styles.locationText}>
@@ -762,10 +823,18 @@ export default function HomeScreen({
                   : "Notifications"
               }
             >
-              <Ionicons name="notifications-outline" size={26} color={colors.primary} />
+              <Ionicons
+                name="notifications-outline"
+                size={26}
+                color={colors.primary}
+              />
               {unreadNotifications > 0 && (
                 <View style={styles.bellBadge}>
-                  <AppText variant="overline" color={colors.textOnPrimary} style={styles.bellBadgeText}>
+                  <AppText
+                    variant="overline"
+                    color={colors.textOnPrimary}
+                    style={styles.bellBadgeText}
+                  >
                     {formatUnreadBadge(unreadNotifications)}
                   </AppText>
                 </View>
@@ -778,22 +847,17 @@ export default function HomeScreen({
         ---------------------------------------------------------- */}
 
             <Pressable
-              onPress={onOpenCart}
+              onPress={onOpenProfile}
               style={styles.cartButton}
               hitSlop={8}
               accessibilityRole="button"
-              accessibilityLabel={
-                cartCount > 0 ? `Cart, ${cartCount} ${cartCount === 1 ? "item" : "items"}` : "Cart, empty"
-              }
+              accessibilityLabel="Profile"
             >
-              <Ionicons name="bag-handle-outline" size={25} color={colors.primary} />
-              {cartCount > 0 && (
-                <View style={styles.bellBadge}>
-                  <AppText variant="overline" color={colors.textOnPrimary} style={styles.bellBadgeText}>
-                    {cartCount > 99 ? "99+" : String(cartCount)}
-                  </AppText>
-                </View>
-              )}
+              <Ionicons
+                name="person-circle-outline"
+                size={28}
+                color={colors.primary}
+              />
             </Pressable>
           </ReanimatedAnimated.View>
         </ReanimatedAnimated.View>
@@ -820,10 +884,6 @@ export default function HomeScreen({
             accessibilityLabel="Search products"
           >
             <AnimatedSearchPlaceholder phrases={phrases} />
-
-            <View style={styles.searchAction}>
-              <Ionicons name="search" size={17} color={colors.textOnPrimary} />
-            </View>
           </Pressable>
         </ReanimatedAnimated.View>
       </View>
@@ -871,6 +931,21 @@ export default function HomeScreen({
               <View style={styles.noticeContainer}>
                 <NoticeStrip message={cart.error} />
               </View>
+            )}
+
+            {/* No delivery location chosen yet: ask here, never at launch. */}
+            {!location && (
+              <Pressable
+                onPress={onOpenLocation}
+                style={styles.noticeContainer}
+                accessibilityRole="button"
+                accessibilityLabel="Set your delivery location"
+              >
+                <NoticeStrip
+                  message="Set your delivery location to see what we deliver to you. Tap to use your current location or choose an address."
+                  tone="info"
+                />
+              </Pressable>
             )}
 
             {serviceability && !serviceability.serviceable && (
@@ -921,23 +996,38 @@ export default function HomeScreen({
                   </View>
 
                   <View style={styles.ongoingOrderAction}>
-                    <AppText variant="bodyStrong" color={colors.primary} style={styles.ongoingOrderActionText}>
+                    <AppText
+                      variant="bodyStrong"
+                      color={colors.primary}
+                      style={styles.ongoingOrderActionText}
+                    >
                       Track
                     </AppText>
-                    <ChevronRight size={16} color={colors.primary} strokeWidth={2.5} />
+                    <ChevronRight
+                      size={16}
+                      color={colors.primary}
+                      strokeWidth={2.5}
+                    />
                   </View>
                 </Pressable>
               </View>
             )}
 
             {/* First load with nothing cached: the page's shape, not a spinner. */}
-            {!feed.data && feed.isLoading && <HomeSkeleton cardWidth={SHELF_CARD_WIDTH} />}
+            {!feed.data && feed.isLoading && (
+              <HomeSkeleton cardWidth={SHELF_CARD_WIDTH} />
+            )}
 
             {!feed.data && feed.isError && (
-              <View style={[styles.errorWrap, { minHeight: windowHeight * 0.6 }]}>
+              <View
+                style={[styles.errorWrap, { minHeight: windowHeight * 0.6 }]}
+              >
                 <ErrorState
                   message="We could not load the store."
-                  offline={(feed.error as { isOffline?: boolean } | null)?.isOffline === true}
+                  offline={
+                    (feed.error as { isOffline?: boolean } | null)
+                      ?.isOffline === true
+                  }
                   onRetry={() => void feed.refetch()}
                 />
               </View>
@@ -1040,10 +1130,6 @@ const styles = StyleSheet.create({
      LOCATION ICON
   ================================================================ */
 
-  logo: {
-    marginRight: 10,
-  },
-
   deliveringRow: {
     flexDirection: "row",
 
@@ -1073,7 +1159,7 @@ const styles = StyleSheet.create({
   },
 
   locationLabel: {
-    fontSize: 12,
+    fontSize: 14,
 
     lineHeight: 18,
 
@@ -1095,7 +1181,7 @@ const styles = StyleSheet.create({
   ================================================================ */
 
   chevronContainer: {
-    width: 22,
+    width: 44,
 
     height: 22,
 
@@ -1181,11 +1267,11 @@ const styles = StyleSheet.create({
   //   marginTop: spacing.md,
   //   backgroundColor: colors.success,
   // },
-searchBarRow: {
-  marginTop: spacing.md - 12,
-  paddingTop: 10,
-  backgroundColor: colors.surface,
-},
+  searchBarRow: {
+    marginTop: spacing.md - 12,
+    paddingTop: 10,
+    backgroundColor: colors.surface,
+  },
   searchBar: {
     marginHorizontal: spacing.base,
 
@@ -1315,4 +1401,18 @@ searchBarRow: {
   errorWrap: {
     justifyContent: "center",
   },
+
+  restaurantBanner: {
+    marginHorizontal: spacing.base,
+    marginTop: spacing.md,
+    marginBottom: spacing.sm,
+    borderRadius: radius.lg,
+    overflow: "hidden",
+    backgroundColor: colors.surface,
+  },
+
+ restaurantBannerImage: {
+  width: "100%",
+  height: 150,
+},
 });

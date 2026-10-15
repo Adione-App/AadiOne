@@ -68,13 +68,6 @@ type Fields = {
 
 const EMPTY_FIELDS: Fields = { houseStreet: '', area: '', city: '', district: '', pincode: '' };
 
-/**
- * Fields that move the address to another place. Changing one drops a saved
- * point that did not come from GPS at the address (it was found from the old
- * text), so the location has to be captured again.
- */
-const PLACE_FIELDS: (keyof Fields)[] = ['city', 'district', 'pincode'];
-
 export default function AddressFormScreen({
   addressId,
   live,
@@ -184,18 +177,16 @@ export default function AddressFormScreen({
     setSeeded(true);
   }, [existing, seeded]);
 
+  /** Text only: an address's saved point is never changed by editing its text. */
   function setField(key: keyof Fields, value: string): void {
     setFields((current) => ({ ...current, [key]: value }));
-    if (PLACE_FIELDS.includes(key) && point && !point.fresh && point.source !== 'GPS') {
-      setPoint(null);
-      setLocationNote({
-        ok: false,
-        message: 'The village / city, district or PIN changed — use your current location again while you are at this address.',
-      });
-    }
   }
 
-  /** One fresh fix at the address; its reverse-geocoded text fills only the empty fields. */
+  /**
+   * ADD mode only (a new address has no point yet): one fresh fix at the
+   * address; its reverse-geocoded text fills only the empty fields. Edit and
+   * live modes keep the point they were opened with.
+   */
   async function useCurrentLocation(): Promise<void> {
     setLocating(true);
     setLocationError(null);
@@ -210,8 +201,6 @@ export default function AddressFormScreen({
       setPoint({ latitude: result.latitude, longitude: result.longitude, source: 'GPS', accuracyM: result.accuracyM, fresh: true });
 
       const suggested = await suggestAddressFor(result.latitude, result.longitude);
-      // Live mode: the state follows the NEW point (it is never typed there).
-      if (isLive) setState(liveState(suggested?.state, result.latitude, result.longitude));
       // Where the phone says this point is, when that is not Rajasthan.
       const gpsState = stateFromGeocoder(suggested?.state);
       const outsideHomeState = gpsState !== null && !isHomeState(gpsState);
@@ -238,30 +227,18 @@ export default function AddressFormScreen({
       }
       const filled = Object.keys(fill);
 
-      // The phone's PIN / district against what was typed — a hint that the
-      // customer is not at this address. Only compared when both exist.
-      const mismatch = [
-        suggested?.pincode && isValidPincode(fields.pincode) && suggested.pincode !== fields.pincode ? `PIN ${suggested.pincode}` : null,
-        suggested?.district && fields.district.trim() && suggested.district.toLowerCase() !== fields.district.trim().toLowerCase()
-          ? `district ${suggested.district}`
-          : null,
-      ].filter(Boolean);
-
+      // (No district / PIN comparison with what was typed: geocoders report
+      // divisions and neighbouring PINs often enough to make it a false alarm.)
       const notes = [
-        // A saved address is checked by the server too; say it here first.
-        !isLive && outsideHomeState
+        // The server refuses it too; say it here first.
+        outsideHomeState
           ? `Your phone places you in ${gpsState}. Aadione currently delivers only in Rajasthan, so this location cannot be saved.`
           : null,
         filled.length > 0 ? 'Empty fields were filled from your location — please check them.' : null,
         result.quality === 'POOR' ? 'Your phone could only find an approximate location. For exact delivery, try again outdoors.' : null,
-        mismatch.length > 0
-          ? `Your phone places you in ${mismatch.join(' / ')}, which differs from the address above — make sure you are at this address.`
-          : null,
       ].filter(Boolean);
       setLocationNote(
-        notes.length > 0
-          ? { ok: result.quality !== 'POOR' && mismatch.length === 0 && !outsideHomeState, message: notes.join(' ') }
-          : null,
+        notes.length > 0 ? { ok: result.quality !== 'POOR' && !outsideHomeState, message: notes.join(' ') } : null,
       );
     } finally {
       setLocating(false);
@@ -402,15 +379,16 @@ export default function AddressFormScreen({
   /** Live mode (not saving): locality, district and PIN may be left empty. */
   const liveOptional = isLive && !saveAsAddress ? 'Optional' : undefined;
 
+  /**
+   * GPS capture appears only when ADDING an address — it is the only way a
+   * new address gets its point. Editing keeps the saved point untouched; the
+   * live-details form already has its point from Select Location.
+   */
+  const showLocationCapture = !isEditing && !isLive;
+
   const pointStatus = !point
     ? { ok: false, text: 'Location not set yet — tap below while you are at this address.' }
-    : isLive
-      ? { ok: true, text: 'Live location captured — your order is delivered to this exact spot.' }
-      : point.fresh
-      ? { ok: true, text: 'Current location captured.' }
-      : point.source === 'GPS' || point.source === 'MAP_PIN'
-        ? { ok: true, text: 'Location saved for this address.' }
-        : { ok: false, text: 'Location saved earlier. At this address? Update it for exact delivery.' };
+    : { ok: true, text: 'Current location captured.' };
 
   return (
     <Screen>
@@ -528,7 +506,9 @@ export default function AddressFormScreen({
             </View>
           </Field>
 
-          {/* The point — separate from the text above */}
+          {/* The point — separate from the text above. Only when ADDING an
+              address (see showLocationCapture). */}
+          {showLocationCapture && (
           <View style={styles.locationBox}>
             <View style={styles.locationStatus}>
               <Ionicons
@@ -566,6 +546,7 @@ export default function AddressFormScreen({
               </AppText>
             )}
           </View>
+          )}
 
           {!complete && (missing.length > 0 || !point) && (
             <AppText variant="caption" color={colors.textSecondary}>

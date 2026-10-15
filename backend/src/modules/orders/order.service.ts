@@ -56,6 +56,7 @@ import * as configService from "../configuration/configuration.service";
 import * as sellerService from "../sellers/seller.service";
 import { unorderableMessage, unorderableReason } from "../cart/orderability";
 import { resolveDestination, type DestinationInput } from "./delivery-destination";
+import { allocateProportionally } from "./coupon-allocation";
 import * as pricingService from "../pricing/pricing.service";
 import * as inventoryService from "../inventory/inventory.service";
 import * as cartService from "../cart/cart.service";
@@ -830,6 +831,8 @@ export async function placeOrder(
         subtotalPaise: number;
         commissionBp: number;
         commissionPaise: number;
+        /** This seller's share of the Aadione-funded coupon (sum of its lines'). */
+        couponDiscountPaise: number;
         items: Prisma.OrderItemCreateManySellerOrderInput[];
       }
 
@@ -843,10 +846,23 @@ export async function placeOrder(
         commissionRates ?? (await resolveCommissionRates(itemsBySeller, tx));
       let commissionRateIndex = 0;
 
+      // The Aadione-funded coupon, split across every line of the order in
+      // proportion to its line total (coupon-allocation.ts) — in exactly the
+      // order the loop below visits the lines. The shares sum to the coupon
+      // to the paisa; they never reduce what a seller is paid.
+      const lineCouponShares = allocateProportionally(
+        bill.couponDiscountPaise,
+        [...itemsBySeller.values()].flatMap((items) =>
+          items.map((item) => offersByListingId.get(item.sellerListingId)!.pricePaise * item.qty),
+        ),
+      );
+      let lineIndex = 0;
+
       for (const [sellerId, items] of itemsBySeller) {
         let itemsSubtotalPaise = 0;
         let itemDiscountPaise = 0;
         let taxPaise = 0;
+        let couponDiscountPaise = 0;
         const orderItemData: Prisma.OrderItemCreateManySellerOrderInput[] = [];
 
         for (const item of items) {
@@ -891,6 +907,9 @@ export async function placeOrder(
             lineTotal,
             rateBp,
           );
+          const lineCouponPaise = lineCouponShares[lineIndex]!;
+          lineIndex += 1;
+          couponDiscountPaise += lineCouponPaise;
 
           // Full snapshot: renaming or deleting the product later must not
           // change what this receipt says.
@@ -916,6 +935,7 @@ export async function placeOrder(
             lineTotalPaise: lineTotal,
             commissionBp: rateBp,
             commissionPaise: lineCommissionPaise,
+            couponDiscountPaise: lineCouponPaise,
             allowCodResolved: resolvedPolicy === CodPolicy.ALLOW,
           });
         }
@@ -946,7 +966,13 @@ export async function placeOrder(
               ? Math.round((commissionPaise / itemsSubtotalPaise) * 10_000)
               : 0,
           commissionPaise,
+          couponDiscountPaise,
           items: orderItemData,
+        });
+      }
+      if (lineIndex !== lineCouponShares.length) {
+        throw new AppError(ErrorCode.INTERNAL_ERROR, {
+          internalMessage: `coupon allocation covered ${lineIndex} of ${lineCouponShares.length} lines`,
         });
       }
 
@@ -1020,6 +1046,7 @@ export async function placeOrder(
               subtotalPaise: so.subtotalPaise,
               commissionBp: so.commissionBp,
               commissionPaise: so.commissionPaise,
+              couponDiscountPaise: so.couponDiscountPaise,
               items: { createMany: { data: so.items } },
             })),
           },

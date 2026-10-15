@@ -14,32 +14,39 @@ import { colors, radius, spacing } from "@shared/theme";
 import { formatAddressLines } from "@shared/address";
 import { DETECT_MESSAGE, type DetectStatus } from "@shared/location";
 import { formatIndianMobile } from "@shared/phone";
-import { addressDetailLines } from "@/lib/addressDisplay";
-import { isActiveLiveDestination } from "@/lib/liveLocation";
+import { addressSummary } from "@/lib/addressDisplay";
+import {
+  buildLiveDestination,
+  isActiveLiveDestination,
+  isHomeState,
+  liveLocationLabel,
+} from "@/lib/liveLocation";
 import { detectDeviceLocation, suggestAddressFor } from "@/lib/deviceLocation";
 import { api } from "@/lib/api";
-import { useLocation } from "@/lib/store";
+import { useAuth, useLocation } from "@/lib/store";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { AppText, Button, Card, Loading, Screen } from "@/components/ui";
-import type { LiveFixParams } from "@/navigation/types";
+
+type SelectError = { status: Exclude<DetectStatus, "OK"> | "OUTSIDE_STATE"; message: string };
+
+const OUTSIDE_STATE_MESSAGE =
+  "Aadione currently delivers only in Rajasthan, and your current location appears to be outside Rajasthan.";
 
 export default function SelectLocationScreen({
   onBack,
   onAddAddress,
-  onLiveLocation,
 }: {
   onBack: () => void;
   onAddAddress: () => void;
-  /** Opens the delivery-details form for a fresh GPS fix (see LiveFixParams). */
-  onLiveLocation: (fix: LiveFixParams) => void;
 }) {
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
+  const user = useAuth((s) => s.user);
 
-  const { selectedAddressId, setLocation, selectAddress, liveDestination, location } = useLocation();
+  const { selectedAddressId, setLocation, setLiveDestination, selectAddress, liveDestination, location } = useLocation();
 
   const [detecting, setDetecting] = useState<"gps" | "address" | null>(null);
-  const [detectError, setDetectError] = useState<{ status: Exclude<DetectStatus, "OK">; message: string } | null>(null);
+  const [detectError, setDetectError] = useState<SelectError | null>(null);
 
   const addresses = useQuery({
     queryKey: ["addresses"],
@@ -47,10 +54,17 @@ export default function SelectLocationScreen({
   });
 
   /**
-   * Permission → one fresh GPS fix → reverse geocoding → the delivery
-   * details form, prefilled with whatever the geocoder found. A failed fix
-   * opens nothing and sets nothing (there is no fallback point); a failed
-   * geocode still opens the form, empty, for the customer to fill in.
+   * Permission → one fresh GPS fix → the readable address → SELECTED, and
+   * back to where the customer came from. No second confirmation.
+   *
+   * What is selected is a genuine live destination: these exact coordinates
+   * (sent as `liveLocation` at checkout), the address the geocoder could
+   * read, and the recipient from the verified profile. Anything the geocoder
+   * or profile lacked is completed at checkout before paying.
+   *
+   * Nothing is selected for a failed fix (no fallback point) or a point
+   * outside Rajasthan; the server re-checks the point and the seller radius
+   * on the quote and the order regardless.
    */
   async function useCurrentLocation(): Promise<void> {
     setDetecting("gps");
@@ -63,13 +77,22 @@ export default function SelectLocationScreen({
       }
       setDetecting("address");
       const suggestion = await suggestAddressFor(result.latitude, result.longitude);
-      onLiveLocation({
-        latitude: result.latitude,
-        longitude: result.longitude,
-        accuracyM: result.accuracyM,
-        quality: result.quality,
-        suggestion,
+      const destination = buildLiveDestination(result, suggestion, user);
+      if (!isHomeState(destination.state)) {
+        setDetectError({ status: "OUTSIDE_STATE", message: OUTSIDE_STATE_MESSAGE });
+        return;
+      }
+      // The details first, then the point they belong to (the store keeps a
+      // live destination only for the current GPS location).
+      setLiveDestination(destination);
+      void setLocation({
+        latitude: destination.latitude,
+        longitude: destination.longitude,
+        label: liveLocationLabel(destination),
+        source: "GPS",
+        accuracyM: destination.accuracyM,
       });
+      onBack();
     } finally {
       setDetecting(null);
     }
@@ -152,7 +175,7 @@ export default function SelectLocationScreen({
                 ? "Finding your location…"
                 : detecting === "address"
                   ? "Reading the address…"
-                  : "Deliver to where you are now — no need to save it"}
+                  : "Deliver to where you are now — selected at once"}
             </AppText>
           </View>
 
@@ -195,11 +218,14 @@ export default function SelectLocationScreen({
                   </AppText>
                 </View>
               </View>
-              <AppText variant="caption" color={colors.textPrimary} style={{ marginTop: 2 }}>
-                {activeLive.fullName} · {formatIndianMobile(activeLive.mobile)}
-              </AppText>
+              {activeLive.fullName ? (
+                <AppText variant="caption" color={colors.textPrimary} style={{ marginTop: 2 }}>
+                  {activeLive.fullName}
+                  {activeLive.mobile ? ` · ${formatIndianMobile(activeLive.mobile)}` : ""}
+                </AppText>
+              ) : null}
               <AppText variant="body" color={colors.textSecondary} style={{ marginTop: 2 }}>
-                {addressDetailLines(activeLive).join(", ")}
+                {addressSummary(activeLive) || "Your current location"}
               </AppText>
             </View>
           </View>
@@ -249,7 +275,7 @@ export default function SelectLocationScreen({
                         color={colors.textSecondary}
                         style={{ marginTop: 2 }}
                       >
-                        {addressDetailLines(address).join(", ")}
+                        {addressSummary(address)}
                       </AppText>
 
                       {!address.isServiceable && (

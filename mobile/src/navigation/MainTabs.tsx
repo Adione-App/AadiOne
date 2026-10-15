@@ -177,12 +177,13 @@ function usePulse(trigger: number) {
 function CartTabIcon({
   color,
   focused,
-  count,
 }: {
   color: string;
   focused: boolean;
-  count: number;
 }) {
+  // Subscribes HERE, not in MainTabs: a cart change re-renders this icon
+  // only, never the whole tab navigator (which it used to on every tap).
+  const count = useCartActions().cart?.bill.itemCount ?? 0;
   const pulse = usePulse(count);
 
   return (
@@ -331,18 +332,10 @@ function AnimatedTabBar(props: BottomTabBarProps) {
 }
 
 export function MainTabs() {
-  // Reads through `useCartActions` — same hook every other cart-touching
-  // screen uses — rather than calling `useCart()` directly, so the badge
-  // shows the exact same OPTIMISTIC count a product card or the Cart screen
-  // is already showing, updated the instant a tap happens rather than only
-  // once the mutation's response lands. A second, independent `useCart()`
-  // call here would still share the underlying server cache entry, but its
-  // *count* would lag behind by one network round trip every time — which
-  // is exactly the "badge doesn't match what I just tapped" bug this avoids.
-  const { cart } = useCartActions();
+  // No cart subscription here: the badge's own CartTabIcon reads the
+  // optimistic count (useCartActions) itself, so a cart tap no longer
+  // re-renders the whole tab navigator.
   const insets = useSafeAreaInsets();
-
-  const cartCount = cart?.bill.itemCount ?? 0;
 
   return (
     // `MiniCartOverlay` is a SIBLING of `Tab.Navigator`, not a screen
@@ -362,6 +355,10 @@ export function MainTabs() {
         tabBar={(props) => <AnimatedTabBar {...props} />}
         screenOptions={{
           headerShown: false,
+          // Tabs out of sight (Cart, Categories, Wishlist …) are not
+          // re-rendered on every cart tap made in the visible one; they
+          // render the latest state when shown again.
+          freezeOnBlur: true,
 
           tabBarActiveTintColor: colors.primary,
           tabBarInactiveTintColor: colors.textSecondary,
@@ -489,7 +486,7 @@ export function MainTabs() {
             // Custom icon (not the built-in `tabBarBadge`) so the badge can
             // pulse on every count change — see CartTabIcon/CartBadge above.
             tabBarIcon: ({ color, focused }) => (
-              <CartTabIcon color={color} focused={focused} count={cartCount} />
+              <CartTabIcon color={color} focused={focused} />
             ),
 
             // No button in the bar — MiniCartBar (Home) and Categories' own

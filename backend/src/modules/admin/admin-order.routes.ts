@@ -26,6 +26,7 @@ import { allowsManualPaymentConfirmation, payments } from "../../infra/payment";
 import * as service from "./admin-order.service";
 import * as sellerOrderService from "../orders/seller-order.service";
 import * as settlementService from "../sellers/seller-settlement.service";
+import * as orderFinancials from "../orders/order-financials.service";
 import { ActorType, SellerOrderStatus, SettlementStatus } from "../../shared";
 
 const uuid = z.string().uuid();
@@ -137,6 +138,21 @@ adminOrderRouter.get(
   validate({ params: idParams }),
   asyncHandler(async (req: Request, res: Response) => {
     ok(res, await service.getOrderForAdmin(req.params["id"] as string));
+  }),
+);
+
+/**
+ * GET /admin/orders/:id/financials — the per-seller money breakdown of one
+ * order: subtotal, Aadione-funded coupon share, customer-paid amount, gross
+ * and net commission, seller payable, refunds and settlement state, plus
+ * reconciliation checks. One backend calculation (order-financials.service).
+ */
+adminOrderRouter.get(
+  "/orders/:id/financials",
+  requirePermission(Permission.SETTLEMENT_READ),
+  validate({ params: idParams }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await orderFinancials.getOrderFinancials(req.params["id"] as string));
   }),
 );
 
@@ -367,11 +383,23 @@ adminOrderRouter.patch(
   requirePermission(Permission.SETTLEMENT_MANAGE),
   validate({
     params: idParams,
-    body: z.object({ status: z.nativeEnum(SettlementStatus) }),
+    body: z.object({
+      status: z.nativeEnum(SettlementStatus),
+      // The bank / UPI transfer reference (e.g. UTR), when marking PAID.
+      reference: z.string().trim().min(3).max(80).optional(),
+    }),
   }),
   asyncHandler(async (req: Request, res: Response) => {
-    const { status } = req.body as { status: SettlementStatus };
-    ok(res, await settlementService.updateSettlementStatus(req.params["id"] as string, status));
+    const { status, reference } = req.body as { status: SettlementStatus; reference?: string };
+    ok(
+      res,
+      await settlementService.updateSettlementStatus(
+        req.params["id"] as string,
+        status,
+        requireUser(req).id,
+        reference ?? null,
+      ),
+    );
   }),
 );
 

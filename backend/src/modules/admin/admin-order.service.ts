@@ -379,7 +379,29 @@ export async function cancelWholeOrder(
  *   - dispatch requires an assigned rider (otherwise nobody has the parcel)
  *   - COD delivery requires the customer's OTP (proof it reached them)
  */
+/**
+ * The parent statuses an admin may CHOOSE through the generic status
+ * endpoint: the delivery leg, and cancelling. Payment states (confirmed,
+ * failed, refunded) are never an admin's say-so — they follow the money
+ * (payment.service.ts), and PROCESSING / READY_FOR_PICKUP are derived.
+ * Previously PENDING_PAYMENT -> PAYMENT_CONFIRMED was accepted here from any
+ * panel role holding ORDER_UPDATE_STATUS, marking an unpaid order PAID.
+ */
+const ADMIN_SETTABLE_ORDER_STATUSES: readonly OrderStatus[] = [
+  OrderStatus.PICKED_UP,
+  OrderStatus.OUT_FOR_DELIVERY,
+  OrderStatus.DELIVERED,
+  OrderStatus.CANCELLED,
+];
+
 export async function updateOrderStatus(input: UpdateStatusInput): Promise<void> {
+  if (!ADMIN_SETTABLE_ORDER_STATUSES.includes(input.toStatus)) {
+    throw new AppError(ErrorCode.INVALID_STATUS_TRANSITION, {
+      message: "This status is set automatically and cannot be chosen by hand.",
+      internalMessage: `admin ${input.actorUserId} tried to set order ${input.orderId} to ${input.toStatus}`,
+    });
+  }
+
   const order = await prisma.order.findUnique({
     where: { id: input.orderId },
     include: {

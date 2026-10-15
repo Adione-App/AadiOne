@@ -92,6 +92,7 @@ export default function SearchScreen({
       <ProductCard
         product={item}
         qtyInCart={cart.qtyForCard(item)}
+        cartVariantId={cart.cartVariantForCard(item)}
         busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
         onPress={onOpenProduct}
         onAdd={cart.add}
@@ -115,6 +116,7 @@ export default function SearchScreen({
           <ProductCard
             product={item}
             qtyInCart={cart.qtyForCard(item)}
+            cartVariantId={cart.cartVariantForCard(item)}
             busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
             onPress={onOpenProduct}
             onAdd={cart.add}

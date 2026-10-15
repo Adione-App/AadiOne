@@ -46,6 +46,26 @@ export function addressDetailLines(address: StructuredAddress): string[] {
 }
 
 /**
+ * The address as ONE compact line for tight spaces (the checkout bar):
+ *
+ *   21 B, Ram Davra, Kus Stand Kuraj, Kuraj, Rajsamand, Rajasthan 313328
+ *
+ * Same parts as `addressDetailLines`, each once (a district equal to the
+ * town, or a part repeating an earlier one, is left out); no "District"
+ * prefix. Callers clamp it to two lines — the full address stays in the
+ * detailed views.
+ */
+export function addressSummary(address: StructuredAddress): string {
+  const statePin = [clean(address.state), clean(address.pincode)].filter(Boolean).join(' ');
+  const parts = [houseAndStreet(address), clean(address.area), clean(address.city), clean(address.district), statePin];
+  const kept: string[] = [];
+  for (const part of parts) {
+    if (part && !kept.some((existing) => same(existing, part))) kept.push(part);
+  }
+  return kept.join(', ');
+}
+
+/**
  * A saved address's landmark when it adds something — older addresses often
  * repeat the locality (or the house / street) there. No longer collected, but
  * kept on the row and shown, never invented.

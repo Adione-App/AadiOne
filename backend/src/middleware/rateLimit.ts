@@ -145,6 +145,20 @@ export const orderCreationPerUser = rateLimit({
   identify: byUser,
 });
 
+/**
+ * Customer payment routes (create / refresh / verify / claim / status). One
+ * refresh can make up to four gateway API calls, so an unthrottled account
+ * could burn the merchant's gateway quota for everyone. The app needs at most
+ * ~7 calls per payment attempt (create + 6 verification polls); 60 a minute
+ * leaves ample room for genuine retries. Not applied to the webhook.
+ */
+export const paymentActionsPerUser = rateLimit({
+  scope: 'payments:user',
+  limit: 60,
+  windowSeconds: MINUTE,
+  identify: byUser,
+});
+
 export const authenticatedApiLimit = rateLimit({
   scope: 'api:user',
   limit: 300,

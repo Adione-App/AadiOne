@@ -12,7 +12,7 @@
 import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
 import { UpiIntentProvider } from './upi-intent.provider';
 import { CashfreeProvider } from './cashfree.provider';
-import { env, isProduction } from '../../config/env';
+import { env, isProduction, isTest } from '../../config/env';
 import { moduleLogger } from '../../common/logger';
 import { AppError } from '../../common/errors';
 import { ErrorCode } from '../../shared';
@@ -189,7 +189,9 @@ class MockPaymentProvider implements PaymentProvider {
     return {
       eventId: String(payload['event_id'] ?? randomUUID()),
       type: String(payload['type'] ?? 'payment.captured'),
-      signatureValid: true,
+      // The mock's webhooks carry no signature, so they are believed only by
+      // the test suite — never by a running server, even in development.
+      signatureValid: isTest,
       providerOrderId: (payload['provider_order_id'] as string) ?? null,
       providerPaymentId: (payload['provider_payment_id'] as string) ?? null,
       amountPaise: (payload['amount_paise'] as number) ?? null,
@@ -274,4 +276,5 @@ export function allowsManualPaymentConfirmation(): boolean {
 
 export const payments: PaymentProvider = createProvider();
 export { MockPaymentProvider, CashfreeProvider };
+export { CashfreeApiError } from './cashfree.provider';
 export { buildUpiIntentUrl } from './upi-intent.provider';

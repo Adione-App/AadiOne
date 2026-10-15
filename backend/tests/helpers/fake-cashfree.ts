@@ -58,8 +58,22 @@ export class FakeCashfree {
   failNext: { status: number; code: string; message: string } | null = null;
   /** Status every newly created refund starts in (Cashfree: usually PENDING). */
   refundStartStatus = 'PENDING';
+  /**
+   * Set to make Cashfree PROCESS the next call and then lose its response
+   * (a timeout or dropped connection after the work was done).
+   */
+  loseNextResponse = false;
 
   readonly fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const response = await this.handle(input, init);
+    if (this.loseNextResponse) {
+      this.loseNextResponse = false;
+      throw new TypeError('fetch failed: the connection was closed before the response arrived');
+    }
+    return response;
+  }) as typeof fetch;
+
+  private async handle(input: string | URL | Request, init?: RequestInit): Promise<Response> {
     const url = String(input);
     const path = new URL(url).pathname.replace(/^\/pg/, '');
     const method = (init?.method ?? 'GET').toUpperCase();
@@ -144,7 +158,7 @@ export class FakeCashfree {
       return refund ? json(200, refund) : json(404, { message: 'refund not found', code: 'refund_not_found', type: 'invalid_request_error' });
     }
     return json(404, { message: 'not found', code: 'not_found', type: 'invalid_request_error' });
-  }) as typeof fetch;
+  }
 
   reset(): void {
     this.orders.clear();
@@ -152,6 +166,7 @@ export class FakeCashfree {
     this.requests.length = 0;
     this.failNext = null;
     this.refundStartStatus = 'PENDING';
+    this.loseNextResponse = false;
   }
 
   /** The customer completes (or fails) one attempt in Cashfree's checkout. */

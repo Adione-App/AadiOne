@@ -572,13 +572,25 @@ export async function removeCoupon(
   return (await getCart(userId, { distanceKm })).dto;
 }
 
-/** Marks the cart converted once its order is created. */
+/**
+ * Marks the cart converted once its order is created — only if it is still
+ * ACTIVE. Two checkouts of the same cart racing (a double tap with fresh
+ * idempotency keys, two devices) both read it ACTIVE; the second one's
+ * conditional update waits for the first to commit, then matches nothing and
+ * throws, rolling back its order and stock reservation. Unconditional, both
+ * orders were created from one cart.
+ */
 export async function markConverted(
   cartId: string,
   client: DbClient = prisma,
 ): Promise<void> {
-  await client.cart.update({
-    where: { id: cartId },
+  const converted = await client.cart.updateMany({
+    where: { id: cartId, status: "ACTIVE" },
     data: { status: "CONVERTED" },
   });
+  if (converted.count === 0) {
+    throw new AppError(ErrorCode.ORDER_IN_PROGRESS, {
+      internalMessage: `cart ${cartId} was already converted by a concurrent checkout`,
+    });
+  }
 }

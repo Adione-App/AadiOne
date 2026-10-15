@@ -22,6 +22,7 @@ import * as sellerCategoryService from '../catalog/seller-category.service';
 import * as onboardingService from './seller-onboarding.service';
 import * as lifecycleService from './seller-lifecycle.service';
 import * as settlementService from './seller-settlement.service';
+import * as orderFinancials from '../orders/order-financials.service';
 import * as sellerLoginService from './seller-login.service';
 import { sendDocumentFile } from './document-response';
 
@@ -565,6 +566,21 @@ adminSellerRouter.get(
   validate({ params: z.object({ sellerId: uuid }) }),
   asyncHandler(async (req: Request, res: Response) => {
     ok(res, await settlementService.getEarningsSummary(req.params['sellerId'] as string, undefined));
+  }),
+);
+
+/**
+ * GET /admin/sellers/:sellerId/platform-accounting — Aadione's side of this
+ * seller's business: commission earned, Aadione-funded coupon expense, net
+ * commission contribution, and what was reversed by cancellations. Admin
+ * only: none of it is a deduction from the seller's payout.
+ */
+adminSellerRouter.get(
+  '/sellers/:sellerId/platform-accounting',
+  requirePermission(Permission.SETTLEMENT_READ),
+  validate({ params: z.object({ sellerId: uuid }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await orderFinancials.getSellerPlatformAccounting(req.params['sellerId'] as string));
   }),
 );
 

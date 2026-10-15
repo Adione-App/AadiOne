@@ -146,7 +146,8 @@ interface SellerOrderForEarnings {
   refunds: { amountPaise: number; status: string }[];
 }
 
-function toEarningsRow(sellerOrder: SellerOrderForEarnings): SellerOrderEarningsRow {
+/** Exported for the admin order-financials report — the ONE eligibility rule. */
+export function toEarningsRow(sellerOrder: SellerOrderForEarnings): SellerOrderEarningsRow {
   const cancelled =
     sellerOrder.status === SellerOrderStatus.CANCELLED || sellerOrder.status === SellerOrderStatus.REJECTED;
   const grossPaise = sellerOrder.subtotalPaise;
@@ -185,7 +186,7 @@ function toEarningsRow(sellerOrder: SellerOrderForEarnings): SellerOrderEarnings
   };
 }
 
-const EARNINGS_SELECT = {
+export const EARNINGS_SELECT = {
   id: true,
   orderId: true,
   sellerId: true,
@@ -217,7 +218,7 @@ async function loadSellerOrThrow(sellerId: string, scopeSellerId?: string) {
 type Range = { start: Date; end: Date };
 
 /** Periods are half-open on the left: (periodStart, periodEnd]. */
-function inRange(deliveredAt: string | null, range: Range): boolean {
+export function inRange(deliveredAt: string | null, range: Range): boolean {
   if (!deliveredAt) return false;
   const t = new Date(deliveredAt).getTime();
   return t > range.start.getTime() && t <= range.end.getTime();
@@ -617,6 +618,7 @@ interface SettlementRow {
   netPayablePaise: number;
   status: SettlementStatus;
   paidAt: Date | null;
+  payoutReference: string | null;
   createdAt: Date;
 }
 
@@ -632,6 +634,8 @@ function toSettlementDto(settlement: SettlementRow, sellerName: string) {
     netPayablePaise: settlement.netPayablePaise,
     status: settlement.status,
     paidAt: settlement.paidAt?.toISOString() ?? null,
+    /** Bank / UPI reference recorded when the payout was marked PAID. */
+    payoutReference: settlement.payoutReference,
     createdAt: settlement.createdAt.toISOString(),
   };
 }
@@ -744,9 +748,20 @@ const ALLOWED_SETTLEMENT_TRANSITIONS: Readonly<Record<SettlementStatus, readonly
   [SettlementStatus.FAILED]: [SettlementStatus.PENDING],
 };
 
-export async function updateSettlementStatus(settlementId: string, toStatus: SettlementStatus) {
+export async function updateSettlementStatus(
+  settlementId: string,
+  toStatus: SettlementStatus,
+  actorUserId: string | null,
+  /** Bank / UPI reference of the payout — accepted only when marking it PAID. */
+  payoutReference: string | null = null,
+) {
   const settlement = await prisma.sellerSettlement.findUnique({ where: { id: settlementId } });
   if (!settlement) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Settlement not found.' });
+  if (payoutReference !== null && toStatus !== SettlementStatus.PAID) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message: 'A payout reference can only be recorded when marking the settlement paid.',
+    });
+  }
 
   if (settlement.status === toStatus) {
     // Idempotent no-op — a retried "mark as paid" must not error, and must
@@ -762,14 +777,37 @@ export async function updateSettlementStatus(settlementId: string, toStatus: Set
   }
 
   // Compare-and-set on the status we validated against: two concurrent
-  // "mark PAID" requests cannot both apply (and double-stamp paidAt).
-  const { count } = await prisma.sellerSettlement.updateMany({
-    where: { id: settlementId, status: settlement.status },
-    data: {
-      status: toStatus,
-      ...(toStatus === SettlementStatus.PAID ? { paidAt: new Date() } : {}),
-      ...(toStatus === SettlementStatus.PENDING ? { paidAt: null } : {}),
-    },
+  // "mark PAID" requests cannot both apply (and double-stamp paidAt). The
+  // audit row is written in the same transaction, only by the request that
+  // actually changed the status — who marked a payout PAID is never lost.
+  const { count } = await runInTransaction(async (tx) => {
+    const changed = await tx.sellerSettlement.updateMany({
+      where: { id: settlementId, status: settlement.status },
+      data: {
+        status: toStatus,
+        ...(toStatus === SettlementStatus.PAID ? { paidAt: new Date(), payoutReference } : {}),
+        // Re-queued after a FAILED payout: the old attempt's reference no longer applies.
+        ...(toStatus === SettlementStatus.PENDING ? { paidAt: null, payoutReference: null } : {}),
+      },
+    });
+    if (changed.count > 0) {
+      await tx.auditLog.create({
+        data: {
+          actorUserId,
+          action: 'settlement.status',
+          entityType: 'SellerSettlement',
+          entityId: settlementId,
+          before: { status: settlement.status },
+          after: {
+            status: toStatus,
+            sellerId: settlement.sellerId,
+            netPayablePaise: settlement.netPayablePaise,
+            ...(toStatus === SettlementStatus.PAID ? { payoutReference } : {}),
+          },
+        },
+      });
+    }
+    return changed;
   });
 
   if (count === 0) {

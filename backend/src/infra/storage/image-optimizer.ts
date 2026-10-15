@@ -11,7 +11,8 @@
  * rejected, as before. Animated inputs keep their first frame only.
  */
 
-import sharp from 'sharp';
+// sharp 0.35 exports its types by name (its ESM declarations have no `sharp` namespace).
+import sharp, { type Metadata, type OutputInfo } from 'sharp';
 
 import { AppError } from '../../common/errors';
 import { ErrorCode } from '../../shared';
@@ -77,13 +78,13 @@ function invalidImage(internalMessage: string): AppError {
 }
 
 /** AVIF decodes through libheif, so sharp reports it as `heif` with AV1 compression. */
-function isSupportedFormat(metadata: sharp.Metadata): boolean {
+function isSupportedFormat(metadata: Metadata): boolean {
   if (metadata.format === 'heif') return metadata.compression === 'av1';
   return metadata.format === 'jpeg' || metadata.format === 'png' || metadata.format === 'webp';
 }
 
 export async function optimizeImage(input: Buffer, profile: ImageProfile): Promise<OptimizedImage> {
-  let metadata: sharp.Metadata;
+  let metadata: Metadata;
   try {
     metadata = await sharp(input, { limitInputPixels: false }).metadata();
   } catch (error) {
@@ -110,7 +111,7 @@ export async function optimizeImage(input: Buffer, profile: ImageProfile): Promi
       .webp({ quality, effort: 5, smartSubsample: true })
       .toBuffer({ resolveWithObject: true });
 
-  let output: { data: Buffer; info: sharp.OutputInfo };
+  let output: { data: Buffer; info: OutputInfo };
   try {
     output = await encode(profile.quality);
     // An upload that was already heavily compressed (low-quality JPEG, AVIF)

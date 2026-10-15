@@ -55,6 +55,11 @@ const FoodNav = createNativeStackNavigator<FoodStackParamList>();
 
 const noHeader = {
   headerShown: false,
+  // A screen covered by another one (Home under Product Detail, …) is not
+  // re-rendered while hidden — a cart tap on the top screen used to
+  // re-render every screen below it too. It keeps its state and renders
+  // the latest on the way back.
+  freezeOnBlur: true,
 } as const;
 
 /* =====================================================================
@@ -210,7 +215,6 @@ export function HomeStack() {
           <SelectLocationScreen
             onBack={() => navigation.goBack()}
             onAddAddress={() => navigation.navigate("AddressForm")}
-            onLiveLocation={(live) => navigation.navigate("AddressForm", { live })}
           />
         )}
       </CatalogStack.Screen>
@@ -415,6 +419,8 @@ export function CartStack() {
           <CartScreen
             onAddAddress={() => navigation.navigate("AddressForm")}
             onChangeLocation={() => navigation.navigate("SelectLocation")}
+            // The selected live location still lacks a detail the order needs.
+            onCompleteLiveDetails={(live) => navigation.navigate("AddressForm", { live })}
             onBrowse={() => navigation.getParent()?.navigate("Home")}
             onOpenSearch={() =>
               navigation.getParent()?.navigate("Home", { screen: "SearchHome" })
@@ -505,7 +511,6 @@ export function CartStack() {
           <SelectLocationScreen
             onBack={() => navigation.goBack()}
             onAddAddress={() => navigation.navigate("AddressForm")}
-            onLiveLocation={(live) => navigation.navigate("AddressForm", { live })}
           />
         )}
       </CartNav.Screen>

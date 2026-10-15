@@ -16,7 +16,10 @@
  */
 
 import { INDIAN_STATES } from '@shared/address';
-import type { LiveLocationInput } from '@shared';
+import type { LiveLocationInput, UserDto } from '@shared';
+import type { AddressSuggestion } from '@shared/location';
+import { normalizeIndianMobile } from '@shared/phone';
+import { addressSummary, houseAndStreet } from './addressDisplay';
 
 export const HOME_STATE = 'Rajasthan';
 
@@ -51,9 +54,52 @@ export function liveState(geocodedState: string | null | undefined, latitude: nu
   return stateFromGeocoder(geocodedState) ?? (isPlausiblyInRajasthan(latitude, longitude) ? HOME_STATE : '');
 }
 
-/** Short header label for Home / Select Location: "Shastri Nagar, Sikar". */
-export function liveLocationLabel(destination: Pick<LiveLocationInput, 'area' | 'city'>): string {
-  return [destination.area, destination.city].filter((part) => part && part.trim()).join(', ') || 'Current location';
+/**
+ * The live location's label everywhere it is named (Home header, saved with
+ * the chosen location): the FULL readable address the geocoder gave —
+ * road, locality, village / town, district, Rajasthan, PIN — each part
+ * once, never just the town. It used to be "locality, town" only
+ * ("Railmagra"), which did not say where the order would actually go.
+ */
+export function liveLocationLabel(destination: LiveLocationInput): string {
+  return addressSummary(destination) || 'Current location';
+}
+
+/**
+ * The live destination for a GPS fix the customer just chose: the point
+ * itself, the address the geocoder could read, and the recipient from the
+ * VERIFIED profile. Anything unknown stays empty — never invented — and
+ * `isLiveDestinationComplete` says whether checkout must ask for it.
+ */
+export function buildLiveDestination(
+  fix: { latitude: number; longitude: number; accuracyM: number | null },
+  suggestion: AddressSuggestion | null,
+  user: Pick<UserDto, 'fullName' | 'mobile' | 'mobileVerified'> | null,
+): LiveLocationInput {
+  return {
+    latitude: fix.latitude,
+    longitude: fix.longitude,
+    accuracyM: fix.accuracyM,
+    fullName: user?.fullName?.trim() ?? '',
+    mobile: user?.mobileVerified ? user.mobile : '',
+    houseNo: null,
+    street: (suggestion && houseAndStreet(suggestion)) || null,
+    area: suggestion?.area ?? null,
+    city: suggestion?.city ?? '',
+    district: suggestion?.district ?? null,
+    state: liveState(suggestion?.state, fix.latitude, fix.longitude),
+    pincode: suggestion?.pincode ?? null,
+  };
+}
+
+/** What the server requires of a live destination: who, a valid mobile, the village / town, Rajasthan. */
+export function isLiveDestinationComplete(live: LiveLocationInput): boolean {
+  return (
+    live.fullName.trim().length >= 2 &&
+    normalizeIndianMobile(live.mobile) !== null &&
+    live.city.trim().length >= 2 &&
+    isHomeState(live.state)
+  );
 }
 
 /** True when `live` is the destination for exactly this chosen GPS point. */

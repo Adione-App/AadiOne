@@ -188,7 +188,11 @@ const sameText = (a: string | null, b: string | null) => !!a && !!b && a.toLower
 export function suggestionFromPlace(place: GeocodedPlace | null | undefined): AddressSuggestion | null {
   if (!place) return null;
   const city = clean(place.city);
-  const district = clean(place.subregion);
+  // Some geocoders put the revenue DIVISION here ("Udaipur Division" for a
+  // village in Rajsamand district). A division is never a district, so it is
+  // dropped — the customer fills the district in; nothing wrong is shown.
+  const subregion = clean(place.subregion);
+  const district = subregion && /\bdivision\b/i.test(subregion) ? null : subregion;
   const locality = clean(place.district);
   const street = clean(place.street);
   const pincode = clean(place.postalCode);

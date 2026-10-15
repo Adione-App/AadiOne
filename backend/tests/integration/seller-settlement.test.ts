@@ -686,6 +686,25 @@ describe('settlement status transitions', () => {
     expect(paidAts.size).toBe(1);
   });
 
+  it('records who changed each status — once per real change, even when "mark PAID" races', async () => {
+    const { adminToken, settlementId } = await createdSettlement();
+    const admin = await prisma.user.findFirstOrThrow({ where: { email: ADMIN.email } });
+
+    await setStatus(adminToken, settlementId, 'PROCESSING').expect(200);
+    await Promise.all([1, 2, 3].map(() => setStatus(adminToken, settlementId, 'PAID')));
+    await setStatus(adminToken, settlementId, 'PAID').expect(200); // idempotent retry: no new row
+
+    const audit = await prisma.auditLog.findMany({
+      where: { action: 'settlement.status', entityId: settlementId },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(audit.map((a) => [a.before, (a.after as { status: string }).status])).toEqual([
+      [{ status: 'PENDING' }, 'PROCESSING'],
+      [{ status: 'PROCESSING' }, 'PAID'],
+    ]);
+    expect(audit.every((a) => a.actorUserId === admin.id && a.entityType === 'SellerSettlement')).toBe(true);
+  });
+
   it('rejects an invalid transition (PENDING -> PAID directly)', async () => {
     const { adminToken, settlementId } = await createdSettlement();
     const res = await setStatus(adminToken, settlementId, 'PAID');

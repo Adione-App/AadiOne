@@ -62,8 +62,10 @@ import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { addressPrimaryLine } from "@shared/text";
 import { formatIndianMobile } from "@shared/phone";
 import type { StructuredAddress } from "@shared/address";
-import { addressDetailLines } from "@/lib/addressDisplay";
-import { isActiveLiveDestination } from "@/lib/liveLocation";
+import { addressDetailLines, addressSummary } from "@/lib/addressDisplay";
+import { isActiveLiveDestination, isLiveDestinationComplete } from "@/lib/liveLocation";
+import { FIX_ACCURACY } from "@shared/location";
+import type { LiveFixParams } from "@/navigation/types";
 
 import { api, ApiRequestError, resolveImageUrl } from "@/lib/api";
 import {
@@ -166,6 +168,7 @@ export default function CartScreen({
   onPlaced,
   onAddAddress,
   onChangeLocation,
+  onCompleteLiveDetails,
   onBrowse,
   onOpenSearch,
 }: {
@@ -173,6 +176,8 @@ export default function CartScreen({
   onAddAddress: () => void;
   /** Select Location: a saved address, or the live (current) location. */
   onChangeLocation: () => void;
+  /** The details form for the selected live location (name / phone / town missing). */
+  onCompleteLiveDetails: (live: LiveFixParams) => void;
   onBrowse: () => void;
   onOpenSearch: () => void;
 }) {
@@ -335,10 +340,20 @@ export default function CartScreen({
   const live = isActiveLiveDestination(liveDestination, location)
     ? liveDestination
     : null;
+  // A live location selected straight from GPS may still lack the recipient
+  // or the village / town (the geocoder or profile did not have it): it is
+  // shown, but not quoted or ordered to until the customer completes it.
+  const liveReady = live !== null && isLiveDestinationComplete(live);
   const destinationBody = useMemo<DeliveryDestinationRequest | null>(
     () =>
-      live ? { liveLocation: live } : addressId ? { addressId } : null,
-    [live, addressId],
+      live
+        ? liveReady
+          ? { liveLocation: live }
+          : null
+        : addressId
+          ? { addressId }
+          : null,
+    [live, liveReady, addressId],
   );
   const destinationKey = destinationBody
     ? JSON.stringify(destinationBody)
@@ -943,6 +958,27 @@ export default function CartScreen({
           onChange={() => setAddressPickerOpen(true)}
           // Select Location offers both: the current location or a new address.
           onAdd={onChangeLocation}
+          onCompleteLive={() => {
+            if (!live) return;
+            const accuracy = live.accuracyM ?? null;
+            onCompleteLiveDetails({
+              latitude: live.latitude,
+              longitude: live.longitude,
+              accuracyM: accuracy,
+              quality:
+                accuracy === null || accuracy > FIX_ACCURACY.USABLE_M ? "POOR" : accuracy > FIX_ACCURACY.GOOD_M ? "FAIR" : "GOOD",
+              // What the geocoder already read — the form fills only these.
+              suggestion: {
+                houseNo: null,
+                street: live.street ?? null,
+                area: live.area ?? null,
+                city: live.city || null,
+                district: live.district ?? null,
+                state: live.state || null,
+                pincode: live.pincode ?? null,
+              },
+            });
+          }}
         />
         <View style={styles.bottomDivider} />
 
@@ -1145,6 +1181,7 @@ function DeliveryAddressSection({
   hasAny,
   onChange,
   onAdd,
+  onCompleteLive,
 }: {
   /** Delivering to the live location — shown instead of any saved address. */
   live: LiveLocationInput | null;
@@ -1154,6 +1191,8 @@ function DeliveryAddressSection({
   hasAny: boolean;
   onChange: () => void;
   onAdd: () => void;
+  /** Opens the details form for a live location still missing name / phone / town. */
+  onCompleteLive: () => void;
 }) {
   if (loading) {
     return (
@@ -1194,27 +1233,45 @@ function DeliveryAddressSection({
   }
 
   if (live) {
+    const complete = isLiveDestinationComplete(live);
     return (
-      <Pressable
-        style={[styles.addressRow, styles.addressRowFull]}
-        onPress={onChange}
-        accessibilityRole="button"
-        accessibilityLabel={`Deliver to your live location: ${live.fullName}, ${live.mobile}, ${addressDetailLines(live).join(", ")}. Change location`}
-      >
+      <View style={[styles.addressRow, styles.addressRowFull]}>
         <View style={[styles.addressIconCircle, { backgroundColor: colors.primary + "15" }]}>
-          <Ionicons name="navigate" size={18} color={colors.primary} />
+          <Ionicons name="navigate" size={16} color={colors.primary} />
         </View>
-        <View style={styles.addressCompactContent}>
+        {/* Incomplete: the card itself opens the details form. */}
+        <Pressable
+          style={styles.addressCompactContent}
+          onPress={complete ? onChange : onCompleteLive}
+          accessibilityRole="button"
+          accessibilityLabel={
+            complete
+              ? `Deliver to your live location: ${live.fullName}, ${addressSummary(live)}. Change location`
+              : "Add your delivery details for this location"
+          }
+        >
           <LiveLocationBadge />
-          <AddressDetails address={live} />
-        </View>
-        <View style={styles.addressChangeAction}>
+          {live.fullName ? (
+            <AppText variant="bodyStrong" numberOfLines={1}>
+              {live.fullName}
+            </AppText>
+          ) : null}
+          <AppText variant="caption" color={colors.textSecondary} numberOfLines={2}>
+            {addressSummary(live) || "Your current location"}
+          </AppText>
+          {!complete && (
+            <AppText variant="caption" color={colors.warning} numberOfLines={2}>
+              Tap to add your name, phone and village / town before ordering here.
+            </AppText>
+          )}
+        </Pressable>
+        <Pressable onPress={onChange} hitSlop={8} style={styles.addressChangeAction} accessibilityRole="button" accessibilityLabel="Change location">
           <AppText variant="bodyStrong" color={colors.primary} numberOfLines={1}>
             Change
           </AppText>
           <Ionicons name="chevron-forward" size={15} color={colors.primary} />
-        </View>
-      </Pressable>
+        </Pressable>
+      </View>
     );
   }
 
@@ -1227,17 +1284,35 @@ function DeliveryAddressSection({
       accessibilityRole="button"
       accessibilityLabel={
         address
-          ? `Deliver to ${address.label}: ${address.fullName}, ${address.mobile}, ${addressDetailLines(address).join(", ")}.${note ? ` ${note}` : ""} Change address`
+          ? `Deliver to ${address.label}: ${address.fullName}, ${addressSummary(address)}.${note ? ` ${note}` : ""} Change address`
           : "Choose a delivery address"
       }
     >
       <View style={[styles.addressIconCircle, { backgroundColor: visual.bg }]}>
-        <Ionicons name={visual.icon} size={18} color={visual.fg} />
+        <Ionicons name={visual.icon} size={16} color={visual.fg} />
       </View>
 
       <View style={styles.addressCompactContent}>
         {address ? (
-          <AddressDetails address={address} heading={`Deliver to ${address.label}`} note={note} />
+          // Compact on purpose: label, the recipient's name, and the address
+          // in at most two lines. Phone and the full address are in the
+          // address picker and the COD confirmation.
+          <>
+            <AppText variant="caption" color={colors.textSecondary} numberOfLines={1}>
+              Deliver to {address.label}
+            </AppText>
+            <AppText variant="bodyStrong" numberOfLines={1}>
+              {address.fullName}
+            </AppText>
+            <AppText variant="caption" color={colors.textSecondary} numberOfLines={2}>
+              {addressSummary(address)}
+            </AppText>
+            {note && (
+              <AppText variant="caption" color={colors.warning} numberOfLines={2}>
+                {note}
+              </AppText>
+            )}
+          </>
         ) : (
           <>
             <AppText variant="bodyStrong" numberOfLines={1}>

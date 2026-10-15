@@ -36,7 +36,8 @@ import { AppText } from "./ui";
 
 
 
-const QTY_ANIM_DURATION = 180;
+/** Short and snappy: the new number reads immediately; the roll is a cue, not a wait. */
+const QTY_ANIM_DURATION = 120;
 
 function AnimatedQuantity({
   qty,
@@ -88,19 +89,21 @@ function AnimatedQuantity({
   const outgoingQty = roll.outgoing;
   const displayQty = roll.shown;
 
-  // Incoming number: slides in from below (increment) or above (decrement)
-  // and overshoots slightly past its resting scale — the "pop".
+  // Incoming number: a short slide from half a line below (increment) or
+  // above (decrement), readable from the first frame. It used to start
+  // invisible at 60% scale and travel a full line over 180 ms, so the new
+  // quantity only became legible well after the tap.
   const incomingTranslateY = anim.interpolate({
     inputRange: [0, 1],
-    outputRange: [sign * lineHeight, 0],
+    outputRange: [sign * lineHeight * 0.5, 0],
   });
   const incomingScale = anim.interpolate({
-    inputRange: [0, 0.6, 1],
-    outputRange: [0.6, 1.08, 1],
+    inputRange: [0, 1],
+    outputRange: [0.9, 1],
   });
   const incomingOpacity = anim.interpolate({
-    inputRange: [0, 0.3, 1],
-    outputRange: [0, 1, 1],
+    inputRange: [0, 1],
+    outputRange: [0.5, 1],
   });
 
   // Outgoing number: slides out the opposite way and fades.
@@ -250,8 +253,8 @@ const BUTTON_OVERHANG = 16;
 const IMAGE_TEXT_GAP = spacing.sm;
 
 
-const MORPH_ENTER_DURATION = 180;
-const MORPH_EXIT_DURATION = 160;
+const MORPH_ENTER_DURATION = 140;
+const MORPH_EXIT_DURATION = 120;
 
 
 function tapHaptic() {
@@ -261,6 +264,7 @@ function tapHaptic() {
 function ProductCardImpl({
   product,
   qtyInCart,
+  cartVariantId = null,
   onPress,
   onAdd,
   onIncrement,
@@ -269,6 +273,12 @@ function ProductCardImpl({
 }: {
   product: ProductSummaryDto;
   qtyInCart: number;
+  /**
+   * Several sizes / options only: the ONE variant of this product in the
+   * cart (`useCartActions().cartVariantForCard`). The card's − and + act on
+   * it directly; null (none, or several in the cart) means the variant sheet.
+   */
+  cartVariantId?: string | null;
   /** Called with the PRODUCT id — from the image, or the More Details icon. */
   onPress: (productId: string) => void;
   
@@ -410,16 +420,22 @@ function ProductCardImpl({
                 onIncrement={() => {
                   if (!variant) return;
                   tapHaptic();
-                  if (hasOptions) return openOptions();
+                  // Several sizes: one more of the size already in the cart.
+                  // Several sizes in the cart: the customer picks which (sheet).
+                  const target = hasOptions ? cartVariantId : variant.id;
+                  if (!target) return openOptions();
                   // Only an accepted step flies into the cart.
-                  if (onIncrement(variant.id) !== false) flyToCart(imageUrl, variant.id);
+                  if (onIncrement(target) !== false) flyToCart(imageUrl, target);
                 }}
                 onDecrement={() => {
                   if (!variant) return;
                   tapHaptic();
-                  // Which size to take one off is the customer's call: the sheet.
-                  if (hasOptions) return openOptions();
-                  onDecrement(variant.id);
+                  // Several sizes: one fewer of the size in the cart — never a
+                  // sheet. Only when SEVERAL sizes are in the cart is the
+                  // choice the customer's (sheet); the card never guesses one.
+                  const target = hasOptions ? cartVariantId : variant.id;
+                  if (!target) return openOptions();
+                  onDecrement(target);
                 }}
                 busy={busy}
                 fullWidth
@@ -552,7 +568,7 @@ export function ActionBarTransition({
     anim.setValue(0);
     Animated.timing(anim, {
       toValue: 1,
-      duration: 200,
+      duration: 140,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();

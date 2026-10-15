@@ -74,7 +74,7 @@
  *    different product's quantity changes.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { create } from "zustand";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type {
@@ -89,6 +89,7 @@ import { flyFromCart } from "./flyToCart";
 import { showCartNotice } from "./cartNotice";
 import { quantityLimitMessage, quantityLimitOf, type QuantityLimit } from "./quantityLimit";
 import { useCart, useCartMutations } from "./queries";
+import { singleCartVariantOf } from "./cartVariant";
 import { useLocation } from "@/lib/store";
 
 type KnownLine = { id: string; qty: number } | null;
@@ -345,16 +346,26 @@ interface PendingCartState {
    * unused, not wrong.
    */
   pendingSnapshots: Record<string, CartItemSnapshot>;
+  /**
+   * The last cart-action failure, shared like everything else here: it used
+   * to be per hook instance, so an error from a tap inside one component
+   * (a Home shelf) was invisible to the notice another (Home) showed.
+   */
+  error: string | null;
   setPending: (variantId: string, qty: number) => void;
   clearPending: (variantId: string) => void;
   setBusy: (variantId: string, busy: boolean) => void;
   setSnapshot: (variantId: string, snapshot: CartItemSnapshot) => void;
+  setError: (error: string | null) => void;
 }
 
 const usePendingCartStore = create<PendingCartState>((set) => ({
   pendingQty: {},
   busyVariants: {},
   pendingSnapshots: {},
+  error: null,
+
+  setError: (error) => set((state) => (state.error === error ? state : { error })),
 
   setPending: (variantId, qty) =>
     set((state) => ({ pendingQty: { ...state.pendingQty, [variantId]: qty } })),
@@ -384,6 +395,14 @@ const usePendingCartStore = create<PendingCartState>((set) => ({
       return { busyVariants: next };
     }),
 }));
+
+/**
+ * Only the shared cart error — for a notice that must not re-render on
+ * every quantity change (Home's), unlike a full `useCartActions()`.
+ */
+export function useCartError(): string | null {
+  return usePendingCartStore((state) => state.error);
+}
 
 /**
  * Called right alongside `clearCartAfterOrder` (queries.ts) the instant an
@@ -443,7 +462,9 @@ export function useCartActions() {
 
   const mutations = useCartMutations();
 
-  const [error, setError] = useState<string | null>(null);
+  // Shared across every instance — see PendingCartState.error.
+  const error = usePendingCartStore((state) => state.error);
+  const setError = usePendingCartStore.getState().setError;
 
   // Reactive subscriptions: purely so THIS component re-renders the instant
   // ANY component's tap changes the shared store — including one that
@@ -872,6 +893,20 @@ export function useCartActions() {
   );
 
   /**
+   * For a product with several sizes / options: the ONE variant of it in the
+   * cart, so the card's − and + can act on it directly (no sheet). Null when
+   * none is in the cart (+ opens the sheet to pick one) or when SEVERAL are —
+   * then which size to change is the customer's explicit choice, in the
+   * sheet; the card never picks one. Always null for a single-variant
+   * product (its card uses its own variant).
+   */
+  const cartVariantForCard = useCallback(
+    (product: Pick<ProductSummaryDto, "id" | "variantCount">): string | null =>
+      singleCartVariantOf(optimisticCart?.items ?? [], product),
+    [optimisticCart],
+  );
+
+  /**
    * The most this variant may hold, for an instant answer to a tap — the
    * server re-checks every change. From the server's own cart line when there
    * is one (fresh per-order limit AND stock); otherwise only the per-order
@@ -1041,6 +1076,7 @@ export function useCartActions() {
     qtyFor,
     qtyForProduct,
     qtyForCard,
+    cartVariantForCard,
     isBusy,
 
     add,

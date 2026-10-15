@@ -454,6 +454,16 @@ const envSchema = z
       );
     }
 
+    // The mock gateway's signing secret is in the source code and its
+    // webhooks are unsigned: on any DEPLOYED environment (staging included)
+    // anyone could forge a "paid" order. Local development and tests only.
+    if (env.PAYMENT_PROVIDER === "mock" && env.NODE_ENV !== "development" && env.NODE_ENV !== "test") {
+      fail(
+        "PAYMENT_PROVIDER",
+        `the mock payment provider accepts forged payments; only allowed with NODE_ENV=development or test (got ${env.NODE_ENV})`,
+      );
+    }
+
     /*
      * ------------------------------------------------------------------------
      * Production guards

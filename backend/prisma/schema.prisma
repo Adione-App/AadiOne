@@ -1665,6 +1665,12 @@ model SellerOrder {
   commissionBp    Int @map("commission_bp")
   commissionPaise Int @map("commission_paise")
 
+  /// Exact sum of this seller’s OrderItem.couponDiscountPaise: its share of
+  /// the Aadione-funded coupon. NOT a seller deduction — seller payable stays
+  /// subtotalPaise - commissionPaise. What the customer paid for this portion
+  /// (and what cancelling it refunds) is subtotalPaise - couponDiscountPaise.
+  couponDiscountPaise Int @default(0) @map("coupon_discount_paise")
+
   acceptedAt  DateTime? @map("accepted_at") @db.Timestamptz(3)
   preparingAt DateTime? @map("preparing_at") @db.Timestamptz(3)
   readyAt     DateTime? @map("ready_at") @db.Timestamptz(3)
@@ -1726,6 +1732,14 @@ model OrderItem {
   /// drift apart.
   commissionBp    Int @default(0) @map("commission_bp")
   commissionPaise Int @default(0) @map("commission_paise")
+
+  /// This line’s share of the order’s Aadione-funded coupon, allocated once at
+  /// order creation in proportion to lineTotalPaise (largest remainder, so the
+  /// lines of an order sum EXACTLY to Order.couponDiscountPaise). Never
+  /// recomputed. The customer paid lineTotalPaise - couponDiscountPaise for
+  /// this line; the seller is still paid on lineTotalPaise (Aadione bears the
+  /// coupon), and commission is still charged on lineTotalPaise.
+  couponDiscountPaise Int @default(0) @map("coupon_discount_paise")
 
   /// How COD resolved for THIS line at THIS moment.
   allowCodResolved Boolean @default(true) @map("allow_cod_resolved")
@@ -1963,6 +1977,9 @@ model SellerSettlement {
   commissionPaise Int @map("commission_paise")
   /// grossSalesPaise - commissionPaise (before any other deduction).
   netPayablePaise Int @map("net_payable_paise")
+  /// The bank / UPI transfer reference recorded when the payout is marked
+  /// PAID (e.g. a UTR). Null until then, and for payouts recorded before it existed.
+  payoutReference String? @map("payout_reference") @db.VarChar(80)
 
   status SettlementStatus @default(PENDING)
   paidAt DateTime?        @map("paid_at") @db.Timestamptz(3)

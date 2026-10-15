@@ -41,8 +41,9 @@ import {
   useStores,
 } from "@/lib/queries";
 import { formatUnreadBadge } from "@/lib/notifications";
-import { useCartActions } from "@/lib/useCartActions";
+import { useCartError } from "@/lib/useCartActions";
 import { useLocation } from "@/lib/store";
+import { isActiveLiveDestination, liveLocationLabel } from "@/lib/liveLocation";
 import { openBannerAction } from "@/lib/bannerAction";
 
 import BrandMark from "@/components/BrandMark";
@@ -226,9 +227,10 @@ export default function HomeScreen({
     useNotificationUnreadCount({ poll: isFocused }).data ?? 0;
 
   const feed = useHomeFeed();
-  const cart = useCartActions();
-  // Same optimistic count as the Cart tab's badge (see MainTabs).
-  const cartCount = cart.cart?.bill.itemCount ?? 0;
+  // Only the shared cart error — Home does NOT subscribe to the cart
+  // itself: each ProductShelf does, so a quantity tap re-renders the shelves,
+  // not this whole screen.
+  const cartError = useCartError();
   const previouslyOrdered = usePreviouslyOrdered();
 
   // The most recent order that's still ONGOING (not delivered/cancelled/
@@ -245,7 +247,12 @@ export default function HomeScreen({
   const ongoingOrder =
     orders.data?.items.find((order) => order.bucket === "ONGOING") ?? null;
 
-  const { location, serviceability, refresh } = useLocation();
+  const { location, liveDestination, serviceability, refresh } = useLocation();
+  // A live GPS location is named by its FULL address, from the stored
+  // destination itself (not a shortened label saved earlier).
+  const locationLabel = isActiveLiveDestination(liveDestination, location)
+    ? liveLocationLabel(liveDestination)
+    : location?.label;
 
   const { height: windowHeight } = useWindowDimensions();
 
@@ -645,7 +652,6 @@ export default function HomeScreen({
           return (
             <ProductShelf 
               section={item}
-              cart={cart}
               onOpenProduct={handlers.openProduct}
               onAction={handlers.action}
             />
@@ -654,7 +660,7 @@ export default function HomeScreen({
           return null;
       }
     },
-    [restaurants, stores, offers, near, cart, handlers],
+    [restaurants, stores, offers, near, handlers],
   );
 
   return (
@@ -779,10 +785,11 @@ export default function HomeScreen({
 
                 <AppText
                   variant="bodyStrong"
-                  numberOfLines={1}
+                  // Two lines: a live location's full address must stay readable.
+                  numberOfLines={2}
                   style={styles.locationLabel}
                 >
-                  {location?.label ?? "Select a location"}
+                  {locationLabel ?? "Select a location"}
                 </AppText>
               </View>
 
@@ -844,7 +851,7 @@ export default function HomeScreen({
             >
               <Ionicons
                 name="person-circle-outline"
-                size={28}
+                size={34}
                 color={colors.primary}
               />
             </Pressable>
@@ -916,9 +923,9 @@ export default function HomeScreen({
                 SERVICEABILITY / CART NOTICES
             ==================================================== */}
 
-            {cart.error && (
+            {cartError && (
               <View style={styles.noticeContainer}>
-                <NoticeStrip message={cart.error} />
+                <NoticeStrip message={cartError} />
               </View>
             )}
 

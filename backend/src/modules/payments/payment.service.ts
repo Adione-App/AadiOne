@@ -39,6 +39,7 @@ import { prisma, runInTransaction, type Tx } from "../../infra/db/prisma";
 import {
   allowsManualPaymentConfirmation,
   buildUpiIntentUrl,
+  CashfreeApiError,
   payments as provider,
   requiresManualPaymentConfirmation,
 } from "../../infra/payment";
@@ -51,6 +52,7 @@ import type {
 import { moduleLogger } from "../../common/logger";
 import * as configService from "../configuration/configuration.service";
 import * as notificationService from "../notifications/notification.service";
+import { customerPaidPaise } from "../orders/coupon-allocation";
 import {
   confirmPaymentAndPlace,
   transitionOrder,
@@ -912,6 +914,49 @@ interface SettlementInput {
 }
 
 /**
+ * A capture whose amount differs from the order total is never applied —
+ * but the customer may have been charged, so it must not live only in a log
+ * line. Recorded once per provider payment (the webhook, the app's refresh
+ * and reconciliation all re-arrive here) in the audit log, where the admin
+ * activity view shows it. Never throws: the refusal itself must still happen.
+ */
+async function recordAmountMismatch(
+  orderId: string,
+  expectedPaise: number,
+  input: SettlementInput,
+): Promise<void> {
+  try {
+    const seen = await prisma.auditLog.findFirst({
+      where: {
+        action: "payment.amount_mismatch",
+        entityId: orderId,
+        after: { path: ["providerPaymentId"], equals: input.providerPaymentId },
+      },
+      select: { id: true },
+    });
+    if (seen) return;
+    await prisma.auditLog.create({
+      data: {
+        actorUserId: null,
+        action: "payment.amount_mismatch",
+        entityType: "Order",
+        entityId: orderId,
+        after: {
+          provider: provider.name,
+          providerOrderId: input.providerOrderId,
+          providerPaymentId: input.providerPaymentId,
+          expectedPaise,
+          capturedPaise: input.amountPaise,
+          source: input.actorType,
+        },
+      },
+    });
+  } catch (error) {
+    log.error({ err: error, orderId }, "could not record the payment amount mismatch");
+  }
+}
+
+/**
  * Records a successful capture and advances the order.
  *
  * Idempotent by construction:
@@ -943,6 +988,7 @@ async function settleCapture(input: SettlementInput): Promise<void> {
       },
       "PAYMENT AMOUNT MISMATCH — not confirming",
     );
+    await recordAmountMismatch(order.id, order.totalPaise, input);
     throw new AppError(ErrorCode.PAYMENT_AMOUNT_MISMATCH);
   }
 
@@ -1364,6 +1410,41 @@ const LIVE_REFUND_STATUSES = [
   RefundStatus.COMPLETED,
 ];
 
+/**
+ * The audit row for a refund reservation, written in the SAME transaction as
+ * the Refund row: every refund that can move money names who triggered it
+ * (null = the system) and exactly which payment, portion and amount.
+ */
+async function auditRefundReservation(
+  tx: Tx,
+  entry: {
+    action: string;
+    actorUserId: string | null;
+    orderId: string;
+    refundId: string;
+    paymentId: string;
+    sellerOrderId: string | null;
+    amountPaise: number;
+    reason: string;
+  },
+): Promise<void> {
+  await tx.auditLog.create({
+    data: {
+      actorUserId: entry.actorUserId,
+      action: entry.action,
+      entityType: "Order",
+      entityId: entry.orderId,
+      after: {
+        refundId: entry.refundId,
+        paymentId: entry.paymentId,
+        sellerOrderId: entry.sellerOrderId,
+        amountPaise: entry.amountPaise,
+        reason: entry.reason,
+      },
+    },
+  });
+}
+
 /** The payment that paid for the order — never an orphan capture. */
 async function lockCapturedPayment(tx: Tx, orderId: string) {
   const [locked] = await tx.$queryRaw<{ id: string }[]>`
@@ -1464,9 +1545,49 @@ async function applyRefundResult(
 }
 
 /**
+ * True only when the provider definitively REFUSED a refund call, i.e. no
+ * refund exists. Anything else — unreachable, timed out, 5xx, rate-limited —
+ * says nothing about whether the provider acted, so it is not a failure.
+ * A provider that cannot re-read refunds can never resolve an unknown outcome,
+ * so for it every error stays a failure (the previous behaviour).
+ */
+function isDefinitiveRefundRejection(error: unknown): boolean {
+  if (!provider.getRefund) return true;
+  if (error instanceof CashfreeApiError) {
+    const status = error.httpStatus;
+    return status >= 400 && status < 500 && status !== 408 && status !== 409 && status !== 429;
+  }
+  // Refused before any call was made (missing provider ids, and the like).
+  return AppError.is(error) && error.code === ErrorCode.REFUND_FAILED;
+}
+
+/** How long an unknown refund must have existed before "not found" at the provider is believed. */
+const UNKNOWN_REFUND_GRACE_MS = 10 * 60_000;
+
+/**
+ * The provider has no record of a refund we reserved long ago: its call never
+ * reached the provider. Only now is it FAILED — and so open to a retry.
+ */
+async function failRefundUnknownToProvider(refundId: string): Promise<void> {
+  const failed = await runInTransaction(async (tx) => {
+    const { paymentId } = await tx.refund.findUniqueOrThrow({ where: { id: refundId }, select: { paymentId: true } });
+    await tx.$queryRaw`SELECT id FROM payments WHERE id = ${paymentId}::uuid FOR UPDATE`;
+    const changed = await tx.refund.updateMany({
+      where: { id: refundId, status: { in: [RefundStatus.PENDING, RefundStatus.PROCESSING] } },
+      data: { status: RefundStatus.FAILED, failureReason: "The payment provider has no record of this refund." },
+    });
+    return changed.count > 0;
+  });
+  if (!failed) return;
+  log.warn({ refundId }, "refund unknown to the provider after the grace period — marked FAILED");
+  await announceRefund(refundId, "FAILED");
+}
+
+/**
  * Calls the provider for an already-reserved Refund row and records the
  * outcome. Returns the final refund status, or throws only when the provider
- * itself refused (the row is then FAILED).
+ * itself refused (the row is then FAILED). An unknown outcome (see
+ * `isDefinitiveRefundRejection`) returns PENDING.
  */
 async function executeReservedRefund(
   reserved: ReservedRefund,
@@ -1484,6 +1605,18 @@ async function executeReservedRefund(
       reason,
     });
   } catch (error) {
+    if (!isDefinitiveRefundRejection(error)) {
+      // A timeout, a dropped connection or a 5xx: the provider may well have
+      // refunded. FAILED would re-open this money for a second refund (the
+      // remainder refund, an admin retry) while the gateway already paid it
+      // out. The row stays PENDING — still blocking any second refund — and
+      // reconciliation re-reads it from the provider by this same id.
+      log.error(
+        { err: error, refundId: reserved.refundId, orderId: reserved.orderId },
+        "refund outcome unknown — left PENDING for reconciliation, do NOT re-refund",
+      );
+      return { status: RefundStatus.PENDING, orderPaymentStatus: null };
+    }
     await prisma.refund.update({
       where: { id: reserved.refundId },
       data: { status: RefundStatus.FAILED, failureReason: String(error).slice(0, 300) },
@@ -1574,7 +1707,7 @@ async function announceRefund(
 export async function refundOrder(
   orderId: string,
   reason: string,
-  actorUserId: string,
+  actorUserId: string | null,
 ): Promise<{ refundId: string; status: RefundStatus }> {
   const order = await prisma.order.findUniqueOrThrow({
     where: { id: orderId },
@@ -1625,6 +1758,22 @@ export async function refundOrder(
     }
     const refund = await tx.refund.create({
       data: { paymentId: payment.id, orderId, amountPaise, status: RefundStatus.PENDING, reason },
+    });
+    // Who moved the money, recorded with the reservation itself. Null for
+    // the automatic refund of a cancelled paid order (refundIfPaid).
+    await tx.auditLog.create({
+      data: {
+        actorUserId,
+        action: actorUserId ? "payment.refund" : "payment.refund_auto",
+        entityType: "Order",
+        entityId: orderId,
+        after: {
+          refundId: refund.id,
+          paymentId: payment.id,
+          amountPaise,
+          reason,
+        },
+      },
     });
     return {
       reserved: {
@@ -1677,7 +1826,8 @@ export async function refundIfPaid(
   if (order.paymentMethod !== PaymentMethod.ONLINE) return;
   if (order.paymentStatus !== OrderPaymentStatus.PAID) return;
 
-  await refundOrder(orderId, reason, order.userId).catch((error) =>
+  // No acting admin: this is the system's automatic refund, not the customer's.
+  await refundOrder(orderId, reason, null).catch((error) =>
     log.error(
       { err: error, orderId },
       "auto-refund failed — needs manual action",
@@ -1740,7 +1890,10 @@ const FINAL_REFUND_REASON =
  * actually back (executeReservedRefund -> syncRefundState), via the normal
  * SYSTEM transition — or later, when an asynchronous refund completes.
  */
-async function refundRemainderIfAllSellerOrdersCancelled(orderId: string): Promise<void> {
+async function refundRemainderIfAllSellerOrdersCancelled(
+  orderId: string,
+  actorUserId: string | null,
+): Promise<void> {
   const reserved = await runInTransaction(async (tx): Promise<ReservedRefund | null> => {
     const payment = await lockCapturedPayment(tx, orderId);
     if (!payment?.providerPaymentId) return null;
@@ -1765,6 +1918,16 @@ async function refundRemainderIfAllSellerOrdersCancelled(orderId: string): Promi
 
     const refund = await tx.refund.create({
       data: { paymentId: payment.id, orderId, amountPaise, status: RefundStatus.PENDING, reason: FINAL_REFUND_REASON },
+    });
+    await auditRefundReservation(tx, {
+      action: "payment.refund_remainder",
+      actorUserId,
+      orderId,
+      refundId: refund.id,
+      paymentId: payment.id,
+      sellerOrderId: null,
+      amountPaise,
+      reason: FINAL_REFUND_REASON,
     });
     return {
       refundId: refund.id,
@@ -1799,9 +1962,12 @@ async function refundRemainderIfAllSellerOrdersCancelled(orderId: string): Promi
 
 /**
  * Partial refund for ONE cancelled/rejected SellerOrder (#10/#19) — exactly
- * that seller's own tax-inclusive subtotal, the same figure
- * `order-state.service.ts` decremented from `currentPayablePaise` when the
- * SellerOrder was cancelled. Never touches any other seller's portion.
+ * what the customer PAID for that seller's portion: its tax-inclusive
+ * subtotal minus its share of the Aadione-funded coupon (coupon-allocation.ts),
+ * the same figure `order-state.service.ts` decremented from
+ * `currentPayablePaise` when the SellerOrder was cancelled. A coupon is never
+ * refunded as cash: the customer never paid it. Never touches any other
+ * seller's portion or its coupon share.
  *
  * Runs whenever the order's money is still (at least partly) held: PAID, or
  * PARTIALLY_REFUNDED because an EARLIER sibling portion was already refunded
@@ -1817,6 +1983,8 @@ async function refundRemainderIfAllSellerOrdersCancelled(orderId: string): Promi
 export async function refundSellerOrderIfPaid(
   sellerOrderId: string,
   reason: string,
+  // Whoever cancelled or rejected the portion (customer, seller staff, admin); null for the system.
+  actorUserId: string | null = null,
 ): Promise<void> {
   const sellerOrder = await prisma.sellerOrder.findUnique({
     where: { id: sellerOrderId },
@@ -1832,9 +2000,11 @@ export async function refundSellerOrderIfPaid(
     return;
   }
   if (sellerOrder.status !== SellerOrderStatus.CANCELLED && sellerOrder.status !== SellerOrderStatus.REJECTED) return;
-  if (sellerOrder.subtotalPaise <= 0) return;
+  const paidForPortion = customerPaidPaise(sellerOrder.subtotalPaise, sellerOrder.couponDiscountPaise);
 
-  const reserved = await runInTransaction(async (tx): Promise<ReservedRefund | null> => {
+  // A portion the coupon paid for entirely took no money — nothing to refund
+  // for it, though the remaining fees may still be due below.
+  const reserved = paidForPortion <= 0 ? null : await runInTransaction(async (tx): Promise<ReservedRefund | null> => {
     const payment = await lockCapturedPayment(tx, order.id);
     if (!payment?.providerPaymentId) {
       log.error({ orderId: order.id, sellerOrderId }, "cannot issue partial refund — no captured payment found");
@@ -1846,7 +2016,7 @@ export async function refundSellerOrderIfPaid(
     if (existing) return null;
 
     const remaining = payment.amountPaise - (await liveRefundedPaise(tx, payment.id));
-    const amountPaise = Math.min(sellerOrder.subtotalPaise, remaining);
+    const amountPaise = Math.min(paidForPortion, remaining);
     if (amountPaise <= 0) {
       log.error(
         { orderId: order.id, sellerOrderId, remaining },
@@ -1854,9 +2024,9 @@ export async function refundSellerOrderIfPaid(
       );
       return null;
     }
-    if (amountPaise < sellerOrder.subtotalPaise) {
+    if (amountPaise < paidForPortion) {
       log.warn(
-        { orderId: order.id, sellerOrderId, subtotalPaise: sellerOrder.subtotalPaise, amountPaise },
+        { orderId: order.id, sellerOrderId, paidForPortion, amountPaise },
         "partial refund capped at the amount still captured",
       );
     }
@@ -1869,6 +2039,16 @@ export async function refundSellerOrderIfPaid(
         status: RefundStatus.PENDING,
         reason,
       },
+    });
+    await auditRefundReservation(tx, {
+      action: "payment.refund_seller_portion",
+      actorUserId,
+      orderId: order.id,
+      refundId: refund.id,
+      paymentId: payment.id,
+      sellerOrderId,
+      amountPaise,
+      reason,
     });
     return {
       refundId: refund.id,
@@ -1906,7 +2086,7 @@ export async function refundSellerOrderIfPaid(
 
   // If that was the LAST active portion, whatever is still captured (the
   // delivery/platform fees) goes back too — a no-op otherwise.
-  await refundRemainderIfAllSellerOrdersCancelled(order.id);
+  await refundRemainderIfAllSellerOrdersCancelled(order.id, actorUserId);
 }
 
 /**
@@ -2221,10 +2401,24 @@ export async function reconcileCheckoutPayments(): Promise<number> {
     });
     for (const refund of refunds) {
       try {
-        await recordRefundUpdate(
-          refund.id,
-          await provider.getRefund(refund.payment.providerOrderId!, refund.id),
-        );
+        let current: RefundResult;
+        try {
+          current = await provider.getRefund(refund.payment.providerOrderId!, refund.id);
+        } catch (error) {
+          // A refund whose call never reached the provider (see
+          // executeReservedRefund) — FAILED only once it is clearly not
+          // coming; a young one may still be in flight.
+          if (
+            error instanceof CashfreeApiError &&
+            error.httpStatus === 404 &&
+            Date.now() - refund.createdAt.getTime() > UNKNOWN_REFUND_GRACE_MS
+          ) {
+            await failRefundUnknownToProvider(refund.id);
+            continue;
+          }
+          throw error;
+        }
+        await recordRefundUpdate(refund.id, current);
       } catch (error) {
         log.error({ err: error, refundId: refund.id }, "refund reconciliation failed");
       }

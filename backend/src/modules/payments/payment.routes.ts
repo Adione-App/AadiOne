@@ -9,6 +9,7 @@ import {
   requireUser,
 } from "../../middleware/auth";
 import { idempotency } from "../../middleware/idempotency";
+import { paymentActionsPerUser } from "../../middleware/rateLimit";
 import { prisma } from "../../infra/db/prisma";
 import * as service from "./payment.service";
 
@@ -45,9 +46,14 @@ paymentRouter.post(
 
 /**
  * All authenticated customer payment routes below this point require
- * ORDER_CREATE permission.
+ * ORDER_CREATE permission, and are rate-limited per user (the webhook above
+ * is not — it is the gateway, not a customer).
  */
-paymentRouter.use(authenticate, requirePermission(Permission.ORDER_CREATE));
+paymentRouter.use(
+  authenticate,
+  requirePermission(Permission.ORDER_CREATE),
+  paymentActionsPerUser,
+);
 
 /**
  * POST /payments/create

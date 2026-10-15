@@ -311,6 +311,7 @@ export default function ProductDetailScreen({
                     <ProductCard
                       product={item}
                       qtyInCart={cart.qtyForCard(item)}
+                      cartVariantId={cart.cartVariantForCard(item)}
                       busy={
                         item.defaultVariant
                           ? cart.isBusy(item.defaultVariant.id)

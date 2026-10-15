@@ -28,6 +28,7 @@ import {
   OrderPaymentStatus,
   OrderStatus,
   PaymentMethod,
+  PaymentStatus,
   SellerOrderStatus,
   ORDER_STATUS_LABELS,
   SELLER_ORDER_STATUS_LABELS,
@@ -44,6 +45,7 @@ import * as inventoryService from '../inventory/inventory.service';
 import * as notificationService from '../notifications/notification.service';
 import * as referralService from '../referrals/referral.service';
 import * as deliveryService from '../delivery/delivery.service';
+import { customerPaidPaise } from './coupon-allocation';
 import {
   emitAdminOrderStatus,
   emitNewSellerOrder,
@@ -278,8 +280,12 @@ export async function transitionSellerOrder(
     });
 
     // Cancelling/rejecting THIS seller's portion drops what the customer
-    // still owes by exactly this portion's share (#9/#20) — every other
-    // seller's portion, and the original checkout snapshot, is untouched.
+    // still owes by exactly what they pay for this portion (#9/#20): its
+    // tax-inclusive subtotal minus its share of the Aadione-funded coupon
+    // (coupon-allocation.ts) — the same figure its refund returns. Every
+    // other seller's portion, and the original checkout snapshot, is
+    // untouched. (Decrementing the pre-coupon subtotal over-reduced it, and
+    // a fully cancelled coupon order could go below its fees, even negative.)
     if (toStatus === SellerOrderStatus.REJECTED || toStatus === SellerOrderStatus.CANCELLED) {
       await tx.order.update({
         where: { id: order.id },
@@ -287,7 +293,7 @@ export async function transitionSellerOrder(
           currentPayablePaise: {
             // subtotalPaise is tax-INCLUSIVE (see placeOrder) — adding
             // taxPaise again would over-decrement.
-            decrement: sellerOrderBefore.subtotalPaise,
+            decrement: customerPaidPaise(sellerOrderBefore.subtotalPaise, sellerOrderBefore.couponDiscountPaise),
           },
         },
       });
@@ -387,6 +393,7 @@ async function dispatchSellerOrderSideEffects(
     await paymentService.refundSellerOrderIfPaid(
       sellerOrder.id,
       input.reason ?? 'Seller order cancelled or rejected',
+      input.actorUserId ?? null,
     );
   }
 }
@@ -591,6 +598,44 @@ export async function transitionOrder(input: OrderTransitionInput): Promise<Orde
     }
 
     const order = await tx.order.findUniqueOrThrow({ where: { id: input.orderId } });
+
+    // --- money is the gate for an online order awaiting payment -----------
+    // Decided under the order lock, which settleCapture also holds while it
+    // records a capture — so this sees every capture that has committed, and
+    // a capture that has not yet committed sees this transition instead.
+    //   - PAYMENT_CONFIRMED needs a captured payment for THIS order: no
+    //     caller (an admin's status change included) can mark it paid on its
+    //     own say-so.
+    //   - CANCELLED / PAYMENT_FAILED are refused once a payment has been
+    //     captured: the order is being placed (or reconciliation will place
+    //     it), and is then cancellable WITH a refund. Before, a cancel in that
+    //     window left the order CANCELLED + unpaid and the money unrefunded.
+    if (fromStatus === OrderStatus.PENDING_PAYMENT && order.paymentMethod === PaymentMethod.ONLINE) {
+      const captured = await tx.payment.findFirst({
+        where: {
+          orderId: order.id,
+          status: PaymentStatus.CAPTURED,
+          // An orphan capture (late / duplicate money, refunded on its own)
+          // never pays for an order — see payment.service.ts.
+          OR: [{ failureCode: null }, { failureCode: { not: 'ORPHAN_CAPTURE' } }],
+        },
+        select: { id: true },
+      });
+      if (toStatus === OrderStatus.PAYMENT_CONFIRMED && !captured) {
+        throw new AppError(ErrorCode.PAYMENT_VERIFICATION_FAILED, {
+          message: 'This order has not been paid.',
+          internalMessage: `${input.actorType} tried PENDING_PAYMENT -> PAYMENT_CONFIRMED on ${order.id} with no captured payment`,
+        });
+      }
+      if ((toStatus === OrderStatus.CANCELLED || toStatus === OrderStatus.PAYMENT_FAILED) && captured) {
+        throw new AppError(ErrorCode.PAYMENT_ALREADY_CAPTURED, {
+          message:
+            'Your payment has been received and the order is being confirmed. You can cancel it once it is confirmed, and you will be refunded.',
+          internalMessage: `${input.actorType} tried PENDING_PAYMENT -> ${toStatus} on ${order.id} after payment ${captured.id} was captured`,
+        });
+      }
+    }
+
     const sellerOrders = await tx.sellerOrder.findMany({ where: { orderId: order.id } });
 
     // --- stock side effects, across every seller order under this parent --

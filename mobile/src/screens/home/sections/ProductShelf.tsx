@@ -2,9 +2,10 @@
  * A horizontal product shelf — the existing `ProductCard`, unchanged, in a
  * virtualized horizontal FlatList inside a Home panel.
  *
- * Cards are handed the SAME stable cart callbacks Home always used
- * (`cart.add`/`increment`/`decrement`, see useCartActions), so React.memo on
- * ProductCard still skips every card whose own quantity didn't change.
+ * Each shelf reads the cart ITSELF (useCartActions) instead of being handed
+ * Home's: a cart tap re-renders the shelves — whose memoised cards skip
+ * every product whose own quantity did not change — never the whole Home
+ * screen (banners, header, every section), as it used to on every tap.
  *
  * Which products a shelf shows is decided by the engine (homeEngine.ts); this
  * component only draws them. Every shelf with somewhere to go (its
@@ -19,7 +20,7 @@ import type { ProductSummaryDto } from "@shared";
 import { colors, radius, spacing } from "@shared/theme";
 import { AppText } from "@/components/ui";
 import { ProductCard } from "@/components/ProductCard";
-import type { useCartActions } from "@/lib/useCartActions";
+import { useCartActions } from "@/lib/useCartActions";
 import type { HomeAction, HomeSection } from "../homeEngine";
 import { PANEL_PADDING, SectionHeader, SectionPanel } from "./SectionShell";
 
@@ -27,26 +28,25 @@ import { PANEL_PADDING, SectionHeader, SectionPanel } from "./SectionShell";
 export const SHELF_CARD_WIDTH = 132;
 const CARD_GAP = 8;
 
-type Cart = ReturnType<typeof useCartActions>;
 type Shelf = Extract<HomeSection, { kind: "shelf" }>;
 
 function ProductShelfImpl({
   section,
-  cart,
   onOpenProduct,
   onAction,
 }: {
   section: Shelf;
-  cart: Cart;
   onOpenProduct: (productId: string) => void;
   onAction: (action: HomeAction) => void;
 }) {
+  const cart = useCartActions();
   const renderProduct = useCallback(
     ({ item }: { item: ProductSummaryDto }) => (
       <View style={styles.productWrapper}>
         <ProductCard
           product={item}
           qtyInCart={cart.qtyForCard(item)}
+          cartVariantId={cart.cartVariantForCard(item)}
           busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
           onPress={onOpenProduct}
           onAdd={cart.add}

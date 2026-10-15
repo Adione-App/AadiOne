@@ -1,32 +1,32 @@
-/**
- * Food — the restaurants and cafes that deliver to the customer's location
- * (GET /restaurants; the server applies each seller's own delivery radius),
- * each opening its menu.
- *
- * Top to bottom: header (back, "Food", delivery location, search), the hero,
- * the filter chips, then one card per place.
- *
- *   hero        the live admin banners of placement "food" — the ONE source
- *               of this screen's top banner (Admin Panel → Banners), drawn
- *               by the shared PromoBanners (default style: headline +
- *               image, "split"), on an optional "food_background" image.
- *               With none live there is no hero at all: the screen starts
- *               straight at its filters, no empty space.
- *   list        "food_list" banners after the second place.
- *   filters     All / Veg / Non-Veg / Restaurant / Cafe, applied by the
- *               SERVER (pure-veg kitchens, places with a non-veg item, seller
- *               type) — never guessed from names.
- *   search      narrows the loaded places by name or cuisine.
- *   cards       FoodRestaurantCard: real photo, status, cuisine, delivery
- *               time and fee for this location; nothing invented.
- */
-
 import { useCallback, useMemo, useRef, useState } from "react";
-import { FlatList, Pressable, RefreshControl, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import {
+  FlatList,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  View,
+} from "react-native";
 import { Image } from "expo-image";
-import { ArrowLeft, ChevronDown, Coffee, Drumstick, Leaf, MapPin, Search, Utensils, UtensilsCrossed, X } from "lucide-react-native";
+import {
+  ArrowLeft,
+  ChevronDown,
+  Coffee,
+  Drumstick,
+  Leaf,
+  MapPin,
+  Search,
+  Utensils,
+  UtensilsCrossed,
+  X,
+} from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { FOOD_BANNER_PLACEMENTS, type RestaurantListQuery, type RestaurantSummaryDto } from "@shared";
+import {
+  FOOD_BANNER_PLACEMENTS,
+  type RestaurantListQuery,
+  type RestaurantSummaryDto,
+} from "@shared";
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { FoodRestaurantCard } from "@/components/FoodRestaurantCard";
 import { PromoBanners, PromoSlot } from "@/components/PromoBanner";
@@ -42,20 +42,55 @@ const MINI_CART_ROOM = 84;
 
 type FilterKey = "ALL" | "VEG" | "NON_VEG" | "RESTAURANT" | "CAFE";
 
-const FILTERS: { key: FilterKey; label: string; query: RestaurantListQuery }[] = [
-  { key: "ALL", label: "All", query: {} },
-  { key: "VEG", label: "Veg", query: { diet: "VEG" } },
-  { key: "NON_VEG", label: "Non-Veg", query: { diet: "NON_VEG" } },
-  { key: "RESTAURANT", label: "Restaurant", query: { type: "RESTAURANT" } },
-  { key: "CAFE", label: "Cafe", query: { type: "CAFE" } },
-];
+const FILTERS: { key: FilterKey; label: string; query: RestaurantListQuery }[] =
+  [
+    { key: "ALL", label: "All", query: {} },
+    { key: "VEG", label: "Veg", query: { diet: "VEG" } },
+    { key: "NON_VEG", label: "Non-Veg", query: { diet: "NON_VEG" } },
+    { key: "RESTAURANT", label: "Restaurant", query: { type: "RESTAURANT" } },
+    { key: "CAFE", label: "Cafe", query: { type: "CAFE" } },
+  ];
 
-function FilterIcon({ filter, active }: { filter: FilterKey; active: boolean }) {
+function FilterIcon({
+  filter,
+  active,
+}: {
+  filter: FilterKey;
+  active: boolean;
+}) {
   const size = 15;
-  if (filter === "VEG") return <Leaf size={size} color={active ? colors.textOnPrimary : palette.green600} strokeWidth={2.25} />;
-  if (filter === "NON_VEG") return <Drumstick size={size} color={active ? colors.textOnPrimary : "#E8590C"} strokeWidth={2.25} />;
-  if (filter === "RESTAURANT") return <Utensils size={size} color={active ? colors.textOnPrimary : colors.textPrimary} strokeWidth={2.25} />;
-  if (filter === "CAFE") return <Coffee size={size} color={active ? colors.textOnPrimary : "#B45309"} strokeWidth={2.25} />;
+  if (filter === "VEG")
+    return (
+      <Leaf
+        size={size}
+        color={active ? colors.textOnPrimary : palette.green600}
+        strokeWidth={2.25}
+      />
+    );
+  if (filter === "NON_VEG")
+    return (
+      <Drumstick
+        size={size}
+        color={active ? colors.textOnPrimary : "#E8590C"}
+        strokeWidth={2.25}
+      />
+    );
+  if (filter === "RESTAURANT")
+    return (
+      <Utensils
+        size={size}
+        color={active ? colors.textOnPrimary : colors.textPrimary}
+        strokeWidth={2.25}
+      />
+    );
+  if (filter === "CAFE")
+    return (
+      <Coffee
+        size={size}
+        color={active ? colors.textOnPrimary : "#B45309"}
+        strokeWidth={2.25}
+      />
+    );
   return null;
 }
 
@@ -65,7 +100,12 @@ function FoodSkeleton() {
     <View style={{ paddingHorizontal: spacing.base, gap: spacing.md }}>
       {Array.from({ length: 4 }, (_, index) => (
         <View key={index} style={{ flexDirection: "row", gap: spacing.md }}>
-          <Bone progress={progress} width={140} height={106} rounded={radius.lg} />
+          <Bone
+            progress={progress}
+            width={140}
+            height={106}
+            rounded={radius.lg}
+          />
           <View style={{ flex: 1, gap: spacing.sm, paddingTop: spacing.xs }}>
             <Bone progress={progress} width="70%" height={16} />
             <Bone progress={progress} width="50%" height={12} />
@@ -90,7 +130,13 @@ export default function FoodScreen({
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
   const location = useLocation((state) => state.location);
-  const near = useMemo(() => (location ? { latitude: location.latitude, longitude: location.longitude } : null), [location]);
+  const near = useMemo(
+    () =>
+      location
+        ? { latitude: location.latitude, longitude: location.longitude }
+        : null,
+    [location],
+  );
 
   const [filterKey, setFilterKey] = useState<FilterKey>("ALL");
   const filter = FILTERS.find((f) => f.key === filterKey)!;
@@ -107,16 +153,25 @@ export default function FoodScreen({
   const listRef = useRef<FlatList<RestaurantSummaryDto>>(null);
 
   // A food seller with an empty menu has nothing to order yet.
-  const restaurants = useMemo(() => (query.data ?? []).filter((restaurant) => restaurant.menuItemCount > 0), [query.data]);
+  const restaurants = useMemo(
+    () =>
+      (query.data ?? []).filter((restaurant) => restaurant.menuItemCount > 0),
+    [query.data],
+  );
   const visible = useMemo(() => {
     const term = search.trim().toLowerCase();
     if (!term) return restaurants;
-    return restaurants.filter((r) => r.name.toLowerCase().includes(term) || r.cuisine.some((c) => c.toLowerCase().includes(term)));
+    return restaurants.filter(
+      (r) =>
+        r.name.toLowerCase().includes(term) ||
+        r.cuisine.some((c) => c.toLowerCase().includes(term)),
+    );
   }, [restaurants, search]);
 
   const slides = heroBanners.data ?? [];
-  const backgroundUrl = resolveImageUrl(background.data?.[0]?.imageUrl ?? null);
-
+  const backgroundUrl = resolveImageUrl(
+    background.data?.[0]?.imageUrl ?? heroBanners.data?.[0]?.imageUrl ?? null,
+  );
   // A hero button on a banner with no tap target takes the customer to the places to order from.
   const scrollToList = useCallback(() => {
     listRef.current?.scrollToOffset({ offset: 320, animated: true });
@@ -133,17 +188,35 @@ export default function FoodScreen({
     <View>
       <View style={[styles.top, { paddingTop: insets.top + spacing.xs }]}>
         {backgroundUrl ? (
-          <Image source={{ uri: backgroundUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} cachePolicy="memory-disk" />
+          <Image
+            source={{ uri: backgroundUrl }}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            transition={150}
+            cachePolicy="memory-disk"
+          />
         ) : null}
 
         <View style={styles.headerRow}>
           {onBack ? (
-            <Pressable onPress={onBack} hitSlop={12} style={styles.back} accessibilityRole="button" accessibilityLabel="Back">
-              <ArrowLeft size={24} color={colors.textPrimary} strokeWidth={2.25} />
+            <Pressable
+              onPress={onBack}
+              hitSlop={12}
+              style={styles.back}
+              accessibilityRole="button"
+              accessibilityLabel="Back"
+            >
+              <ArrowLeft
+                size={24}
+                color={colors.textPrimary}
+                strokeWidth={2.25}
+              />
             </Pressable>
           ) : null}
+
           <View style={{ flex: 1, minWidth: 0 }}>
             <AppText style={styles.title}>Food</AppText>
+
             <Pressable
               onPress={onOpenLocation}
               disabled={!onOpenLocation}
@@ -152,13 +225,27 @@ export default function FoodScreen({
               accessibilityRole="button"
               accessibilityLabel="Change delivery location"
             >
-              <MapPin size={15} color={palette.green700} fill={palette.green700} strokeWidth={1.5} />
+              <MapPin
+                size={15}
+                color={palette.green700}
+                fill={palette.green700}
+                strokeWidth={1.5}
+              />
+
               <AppText style={styles.locationText} numberOfLines={1}>
                 {location?.label ?? "Set your delivery location"}
               </AppText>
-              {onOpenLocation ? <ChevronDown size={16} color={colors.textSecondary} strokeWidth={2.25} /> : null}
+
+              {onOpenLocation ? (
+                <ChevronDown
+                  size={16}
+                  color={colors.textSecondary}
+                  strokeWidth={2.25}
+                />
+              ) : null}
             </Pressable>
           </View>
+
           <Pressable
             onPress={() => {
               setSearchOpen((open) => !open);
@@ -166,9 +253,15 @@ export default function FoodScreen({
             }}
             style={styles.searchButton}
             accessibilityRole="button"
-            accessibilityLabel={searchOpen ? "Close search" : "Search restaurants"}
+            accessibilityLabel={
+              searchOpen ? "Close search" : "Search restaurants"
+            }
           >
-            {searchOpen ? <X size={20} color={colors.textPrimary} strokeWidth={2.25} /> : <Search size={20} color={colors.textPrimary} strokeWidth={2.25} />}
+            {searchOpen ? (
+              <X size={20} color={colors.textPrimary} strokeWidth={2.25} />
+            ) : (
+              <Search size={20} color={colors.textPrimary} strokeWidth={2.25} />
+            )}
           </Pressable>
         </View>
 
@@ -187,13 +280,22 @@ export default function FoodScreen({
           </View>
         ) : null}
 
-        {/* Only live "food" banners; none = no hero and no space for one. */}
-        {slides.length > 0 ? (
-          <PromoBanners banners={slides} defaultVariant="split" onDecorativeCta={scrollToList} style={styles.hero} />
+        {backgroundUrl ? (
+          <View style={styles.backgroundHeroSpace} />
+        ) : slides.length > 0 ? (
+          <PromoBanners
+            banners={slides}
+            defaultVariant="split"
+            onDecorativeCta={scrollToList}
+            style={styles.hero}
+          />
         ) : null}
       </View>
-
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.chips}
+      >
         {FILTERS.map((entry) => {
           const active = entry.key === filterKey;
           return (
@@ -205,7 +307,11 @@ export default function FoodScreen({
               accessibilityState={{ selected: active }}
             >
               <FilterIcon filter={entry.key} active={active} />
-              <AppText style={[styles.chipText, active && styles.chipTextActive]}>{entry.label}</AppText>
+              <AppText
+                style={[styles.chipText, active && styles.chipTextActive]}
+              >
+                {entry.label}
+              </AppText>
             </Pressable>
           );
         })}
@@ -232,7 +338,12 @@ export default function FoodScreen({
               <FoodRestaurantCard restaurant={item} onPress={openRestaurant} />
             </View>
             {/* "food_list" banners: after the second place (or the only one). */}
-            {index === Math.min(1, visible.length - 1) ? <PromoSlot placement={FOOD_BANNER_PLACEMENTS.LIST} style={styles.listBanner} /> : null}
+            {index === Math.min(1, visible.length - 1) ? (
+              <PromoSlot
+                placement={FOOD_BANNER_PLACEMENTS.LIST}
+                style={styles.listBanner}
+              />
+            ) : null}
           </>
         )}
         ListHeaderComponent={header}
@@ -242,21 +353,42 @@ export default function FoodScreen({
           ) : query.isError ? (
             <ErrorState
               message="We could not load restaurants."
-              offline={(query.error as { isOffline?: boolean } | null)?.isOffline === true}
+              offline={
+                (query.error as { isOffline?: boolean } | null)?.isOffline ===
+                true
+              }
               onRetry={() => void query.refetch()}
             />
           ) : search.trim() ? (
-            <EmptyState title="No match" hint={`Nothing here matches "${search.trim()}".`} />
+            <EmptyState
+              title="No match"
+              hint={`Nothing here matches "${search.trim()}".`}
+            />
           ) : (
             <EmptyState
-              icon={<UtensilsCrossed size={44} color={colors.primary} strokeWidth={1.75} />}
+              icon={
+                <UtensilsCrossed
+                  size={44}
+                  color={colors.primary}
+                  strokeWidth={1.75}
+                />
+              }
               title="No places to show"
               hint={emptyHint}
             />
           )
         }
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.primary} colors={[colors.primary]} />}
-        contentContainerStyle={{ paddingBottom: tabBarClearance + MINI_CART_ROOM }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={refresh}
+            tintColor={colors.primary}
+            colors={[colors.primary]}
+          />
+        }
+        contentContainerStyle={{
+          paddingBottom: tabBarClearance + MINI_CART_ROOM,
+        }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         initialNumToRender={5}
@@ -277,8 +409,14 @@ const styles = StyleSheet.create({
   top: {
     paddingHorizontal: spacing.base,
     paddingBottom: spacing.md,
-    backgroundColor: palette.green50,
+    backgroundColor: "transparent",
     overflow: "hidden",
+    position: "relative",
+  },
+  backgroundHeroSpace: {
+    height: 120,
+    marginHorizontal: -spacing.base,
+    marginTop: spacing.sm,
   },
   headerRow: {
     flexDirection: "row",

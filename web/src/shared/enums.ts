@@ -87,6 +87,8 @@ export const SellerType = {
   ELECTRONICS: 'ELECTRONICS',
   BEAUTY: 'BEAUTY',
   HOME: 'HOME',
+  /** Home & Kitchen — distinct from HOME. */
+  HOME_KITCHEN: 'HOME_KITCHEN',
   PHARMACY: 'PHARMACY',
   RESTAURANT: 'RESTAURANT',
   CAFE: 'CAFE',

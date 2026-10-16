@@ -82,6 +82,15 @@ if (isTestRun) {
   }
 }
 
+/** The database name from a connection URL — never its credentials or host. */
+function databaseNameOf(url: string): string {
+  try {
+    return decodeURIComponent(new URL(url).pathname.replace(/^\//, "")) || "(none)";
+  } catch {
+    return "(unparseable URL)";
+  }
+}
+
 const nonEmpty = (label: string) =>
   z.string().trim().min(1, `${label} must not be empty`);
 
@@ -449,7 +458,9 @@ const envSchema = z
     if (env.NODE_ENV === "test" && !/_test(\?|$)/.test(env.DATABASE_URL)) {
       fail(
         "DATABASE_URL",
-        `NODE_ENV=test requires a database whose name ends in "_test" (got: ${env.DATABASE_URL}). ` +
+        // Only the database NAME: the URL carries the password, and this
+        // message is printed to the terminal / logs.
+        `NODE_ENV=test requires a database whose name ends in "_test" (got database "${databaseNameOf(env.DATABASE_URL)}"). ` +
           "The test suite truncates every table.",
       );
     }

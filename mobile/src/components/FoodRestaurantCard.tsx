@@ -1,9 +1,9 @@
 /**
  * One restaurant / cafe on the Food screen: its COVER photo on the left (the
- * place itself — never its menu image); the details on the right — its veg /
- * non-veg marks beside the name (green = serves veg, red = serves non-veg,
- * both for a place with both, from the real item marks: servesVeg /
- * servesNonVeg), open status, cuisine tags, its time and a chevron to its menu.
+ * place itself — never its menu image); the details on the right — ONE diet
+ * mark beside the name (green = pure veg, red = pure non-veg, none for a
+ * mixed place — never both; restaurantCardDiet in the shared contract), open
+ * status, cuisine tags, its time and a chevron to its menu.
  *
  * Everything shown is real: the photo is the restaurant's own cover (else a
  * photo from its menu); the time is its configured preparation time as
@@ -15,7 +15,7 @@ import { memo } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Image } from "expo-image";
 import { ChevronRight, Clock, UtensilsCrossed } from "lucide-react-native";
-import { prepTimeRange, type RestaurantSummaryDto } from "@shared";
+import { prepTimeRange, restaurantCardDiet, type RestaurantSummaryDto } from "@shared";
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { AppText } from "@/components/ui";
 import { resolveImageUrl } from "@/lib/api";
@@ -45,14 +45,6 @@ export function DietBadge({
   );
 }
 
-/** Which marks a place gets: from servesVeg / servesNonVeg; an older server's single `diet` otherwise. */
-export function dietMarks(restaurant: Pick<RestaurantSummaryDto, "diet" | "servesVeg" | "servesNonVeg">): { veg: boolean; nonVeg: boolean } {
-  if (restaurant.servesVeg !== undefined || restaurant.servesNonVeg !== undefined) {
-    return { veg: Boolean(restaurant.servesVeg), nonVeg: Boolean(restaurant.servesNonVeg) };
-  }
-  return { veg: restaurant.diet === "VEG", nonVeg: restaurant.diet === "NON_VEG" };
-}
-
 function FoodRestaurantCardImpl({
   restaurant,
   onPress,
@@ -63,7 +55,8 @@ function FoodRestaurantCardImpl({
   const image = resolveImageUrl(restaurant.coverImageUrl);
   const tags = restaurant.cuisine.map((c) => c.trim()).filter(Boolean).slice(0, MAX_TAGS);
   const time = prepTimeRange(restaurant.avgPrepMins);
-  const marks = dietMarks(restaurant);
+  // One mark at most: a mixed place shows none (its items keep their own marks on the menu).
+  const cardDiet = restaurantCardDiet(restaurant);
 
   return (
     <Pressable
@@ -84,10 +77,9 @@ function FoodRestaurantCardImpl({
 
       <View style={styles.body}>
         <View style={styles.titleRow}>
-          {marks.veg || marks.nonVeg ? (
+          {cardDiet ? (
             <View style={styles.marks}>
-              {marks.veg ? <DietBadge diet="VEG" size={14} /> : null}
-              {marks.nonVeg ? <DietBadge diet="NON_VEG" size={14} /> : null}
+              <DietBadge diet={cardDiet} size={14} />
             </View>
           ) : null}
           <AppText style={styles.name} numberOfLines={2}>

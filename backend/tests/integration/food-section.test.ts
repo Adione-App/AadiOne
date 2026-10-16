@@ -149,7 +149,7 @@ beforeEach(async () => {
 /* -------------------------------------------------------------------------- */
 
 describe('GET /restaurants — Food filters and card data', () => {
-  it('marks and filters veg / non-veg from the real item marks; a place with both shows both', async () => {
+  it('classifies and filters veg / non-veg from the real item marks; a mixed place shows no card mark but is in both filters', async () => {
     const veg = await kitchen('Shree Veg Kitchen', 'RESTAURANT', { vegOnly: true, items: [{ name: 'Paneer Burger', diet: 'VEG' }] });
     const nonVeg = await kitchen('Ha Hokam Food', 'RESTAURANT', { items: [{ name: 'Veg Burger', diet: 'VEG' }, { name: 'Chicken Burger', diet: 'NON_VEG' }] });
     const cafe = await kitchen('Daily Cafe', 'CAFE', { items: [{ name: 'Cold Coffee', diet: null }] });
@@ -159,20 +159,24 @@ describe('GET /restaurants — Food filters and card data', () => {
     const all = await list();
     const byId = new Map(all.map((r) => [r.sellerId, r]));
     expect(all).toHaveLength(4);
-    expect(byId.get(veg)!.diet).toBe('VEG');
-    expect(byId.get(nonVeg)!.diet).toBe('NON_VEG');
-    expect(byId.get(cafe)!.diet).toBeNull();
-    expect(byId.get(offOnly)!.diet).toBeNull();
+    // The classification, and the ONE card mark it gives (`diet`, also what
+    // older apps draw): pure veg -> VEG, mixed -> none (never both), no
+    // marked live item -> none. A switched-off non-veg item does not count,
+    // so "Quiet Diner" is pure veg on what it actually serves.
+    expect(byId.get(veg)).toMatchObject({ dietClass: 'PURE_VEG', diet: 'VEG' });
+    expect(byId.get(nonVeg)).toMatchObject({ dietClass: 'MIXED', diet: null });
+    expect(byId.get(cafe)).toMatchObject({ dietClass: null, diet: null });
+    expect(byId.get(offOnly)).toMatchObject({ dietClass: 'PURE_VEG', diet: 'VEG' });
 
-    // Green / red marks from the real item marks: a place with both kinds shows both;
-    // an unmarked item (the cafe's coffee) and a switched-off item count as neither.
+    // Filter eligibility from the real item marks: a mixed place is eligible
+    // for both; an unmarked item (the cafe's coffee) and a switched-off item count as neither.
     const marks = (id: string) => [byId.get(id)!.servesVeg, byId.get(id)!.servesNonVeg];
     expect(marks(veg)).toEqual([true, false]);
     expect(marks(nonVeg)).toEqual([true, true]);
     expect(marks(cafe)).toEqual([false, false]);
     expect(marks(offOnly)).toEqual([true, false]);
 
-    // The filters mean exactly the marks: Veg = serves veg, Non-Veg = serves non-veg.
+    // The filters: Veg = has a live veg item (mixed included), Non-Veg = has a live non-veg item.
     const ids = (rows: RestaurantSummaryDto[]) => rows.map((r) => r.sellerId).sort();
     expect(ids(await list('?diet=VEG'))).toEqual([veg, nonVeg, offOnly].sort());
     expect(ids(await list('?diet=NON_VEG'))).toEqual([nonVeg]);
@@ -201,6 +205,104 @@ describe('GET /restaurants — Food filters and card data', () => {
 
     // Out of range: not listed at all, never a made-up fee.
     expect(await list('?lat=26.9124&lng=75.7873')).toEqual([]);
+  });
+});
+
+/** One more live-or-hidden food item for `sellerId`, in a new section of a new or existing menu. */
+async function extraItem(
+  sellerId: string,
+  item: { name: string; diet: 'VEG' | 'NON_VEG'; sectionActive?: boolean; menuActive?: boolean },
+): Promise<void> {
+  counter += 1;
+  const menu = await prisma.category.create({
+    data: { sellerId, name: `Menu ${counter}`, slug: `menu-x-${counter}`, path: `menu-x-${counter}`, depth: 0, isActive: item.menuActive ?? true },
+  });
+  const section = await prisma.category.create({
+    data: { sellerId, parentId: menu.id, name: `Section ${counter}`, slug: `section-${counter}`, path: `menu-x-${counter}/section-${counter}`, depth: 1, isActive: item.sectionActive ?? true },
+  });
+  const product = await prisma.product.create({
+    data: {
+      name: item.name,
+      slug: `item-x-${counter}`,
+      categoryId: section.id,
+      status: ProductStatus.ACTIVE,
+      approvalStatus: 'APPROVED',
+      submittedBySellerId: sellerId,
+      searchKeywords: [],
+      attributes: { diet: item.diet },
+    },
+  });
+  const variant = await prisma.productVariant.create({
+    data: { productId: product.id, sku: `FOOD-X-${counter}`, variantName: 'Regular', unit: UnitType.PIECE, unitValue: 1, isDefault: true, status: ProductStatus.ACTIVE },
+  });
+  await prisma.sellerListing.create({
+    data: { sellerId, variantId: variant.id, mrpPaise: 9900, pricePaise: 9900, stockQty: 100_000, tracksStock: false, isAvailable: true },
+  });
+}
+
+describe('restaurant diet classification — one card mark, never both', () => {
+  const ids = (rows: RestaurantSummaryDto[]) => rows.map((r) => r.sellerId).sort();
+
+  it('a pure non-veg place gets only the red mark and only the Non-Veg filter', async () => {
+    const id = await kitchen('Chicken Point', 'RESTAURANT', { items: [{ name: 'Chicken Biryani', diet: 'NON_VEG' }, { name: 'Mutton Curry', diet: 'NON_VEG' }] });
+    const [row] = await list();
+    expect(row).toMatchObject({ sellerId: id, dietClass: 'PURE_NON_VEG', diet: 'NON_VEG', servesVeg: false, servesNonVeg: true });
+    expect(ids(await list('?diet=NON_VEG'))).toEqual([id]);
+    expect(ids(await list('?diet=VEG'))).toEqual([]);
+  });
+
+  it('a pure-veg kitchen is never non-veg — not even with an item wrongly marked non-veg — and its unmarked items count as veg', async () => {
+    const wronglyMarked = await kitchen('Shree Bhojanalaya', 'RESTAURANT', { vegOnly: true, items: [{ name: 'Dal Bati', diet: 'VEG' }, { name: 'Egg Curry', diet: 'NON_VEG' }] });
+    const unmarked = await kitchen('Gopal Sweets', 'CAFE', { vegOnly: true, items: [{ name: 'Kachori', diet: null }] });
+    const byId = new Map((await list()).map((r) => [r.sellerId, r]));
+    expect(byId.get(wronglyMarked)).toMatchObject({ dietClass: 'PURE_VEG', diet: 'VEG', servesVeg: true, servesNonVeg: false });
+    expect(byId.get(unmarked)).toMatchObject({ dietClass: 'PURE_VEG', diet: 'VEG', servesVeg: true, servesNonVeg: false });
+    expect(ids(await list('?diet=NON_VEG'))).toEqual([]);
+    expect(ids(await list('?diet=VEG'))).toEqual([wronglyMarked, unmarked].sort());
+
+    // The menu still shows each item with its own mark (the seller's data is untouched).
+    const menu = expectSuccess<RestaurantMenuDto>((await api().get(`/api/v1/restaurants/${wronglyMarked}`).expect(200)).body).data;
+    const marks = new Map(menu.sections.flatMap((section) => section.items).map((item) => [item.name, item.diet]));
+    expect(marks.get('Dal Bati')).toBe('VEG');
+    expect(marks.get('Egg Curry')).toBe('NON_VEG');
+  });
+
+  it('a mixed place shows no mark, is in BOTH filters, and its menu items keep their own marks', async () => {
+    const id = await kitchen('Ha Hokam Food', 'RESTAURANT', { items: [{ name: 'Veg Burger', diet: 'VEG' }, { name: 'Chicken Burger', diet: 'NON_VEG' }] });
+    const [row] = await list();
+    expect(row).toMatchObject({ sellerId: id, dietClass: 'MIXED', diet: null, servesVeg: true, servesNonVeg: true });
+    expect(ids(await list('?diet=VEG'))).toEqual([id]);
+    expect(ids(await list('?diet=NON_VEG'))).toEqual([id]);
+
+    const menu = expectSuccess<RestaurantMenuDto>((await api().get(`/api/v1/restaurants/${id}`).expect(200)).body).data;
+    const marks = new Map(menu.sections.flatMap((section) => section.items).map((item) => [item.name, item.diet]));
+    expect(marks).toEqual(new Map([['Veg Burger', 'VEG'], ['Chicken Burger', 'NON_VEG']]));
+  });
+
+  it('a place with an empty or entirely unavailable menu is in no diet filter — pure-veg kitchens included', async () => {
+    const empty = await kitchen('New Veg Kitchen', 'RESTAURANT', { vegOnly: true });
+    const off = await kitchen('Closed Menu', 'RESTAURANT', { vegOnly: true, items: [{ name: 'Thali', diet: 'VEG', available: false }] });
+    const byId = new Map((await list()).map((r) => [r.sellerId, r]));
+    // Still listed (existing behaviour) — just never as a veg / non-veg place.
+    expect(byId.get(empty)).toMatchObject({ dietClass: null, diet: null, servesVeg: false, servesNonVeg: false, menuItemCount: 0 });
+    expect(byId.get(off)).toMatchObject({ dietClass: null, diet: null, servesVeg: false, servesNonVeg: false, menuItemCount: 0 });
+    expect(ids(await list('?diet=VEG'))).toEqual([]);
+    expect(ids(await list('?diet=NON_VEG'))).toEqual([]);
+  });
+
+  it('items in a hidden section or a hidden menu count for nothing — the same rule as the public menu', async () => {
+    const id = await kitchen('Dhaba 52', 'RESTAURANT', { items: [{ name: 'Paneer Tikka', diet: 'VEG' }] });
+    await extraItem(id, { name: 'Chicken Tikka', diet: 'NON_VEG', sectionActive: false });
+    await extraItem(id, { name: 'Fish Curry', diet: 'NON_VEG', menuActive: false });
+    const [row] = await list();
+    expect(row).toMatchObject({ sellerId: id, dietClass: 'PURE_VEG', diet: 'VEG', servesNonVeg: false, menuItemCount: 1 });
+    expect(ids(await list('?diet=NON_VEG'))).toEqual([]);
+    const menu = expectSuccess<RestaurantMenuDto>((await api().get(`/api/v1/restaurants/${id}`).expect(200)).body).data;
+    expect(menu.sections.flatMap((section) => section.items).map((item) => item.name)).toEqual(['Paneer Tikka']);
+
+    // Showing the section again makes the place mixed.
+    await prisma.category.updateMany({ where: { sellerId: id, isActive: false, parentId: { not: null } }, data: { isActive: true } });
+    expect((await list())[0]).toMatchObject({ dietClass: 'MIXED', diet: null, servesVeg: true, servesNonVeg: true, menuItemCount: 2 });
   });
 });
 

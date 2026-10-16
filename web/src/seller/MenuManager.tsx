@@ -152,7 +152,7 @@ export function MenuManager({ kind }: { kind: 'Restaurant' | 'Cafe' }) {
                   <div className="flex items-start gap-3">
                     <div className="min-w-0 flex-1">
                       <h3 className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-lg font-semibold text-gray-900" data-menu-name>
+                        <span className="min-w-0 text-lg font-semibold leading-snug text-gray-900 [overflow-wrap:anywhere]" data-menu-name>
                           {menu.name}
                         </span>
                         {!menu.isActive && <Pill tone="gray">Hidden</Pill>}
@@ -160,7 +160,7 @@ export function MenuManager({ kind }: { kind: 'Restaurant' | 'Cafe' }) {
                       <p className="text-xs text-gray-500">
                         {menu.subcategories.length} section{menu.subcategories.length === 1 ? '' : 's'} · {itemCount} food item{itemCount === 1 ? '' : 's'}
                       </p>
-                      <div className="mt-1 flex flex-wrap gap-x-3">
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
                         <button type="button" onClick={() => setNaming({ kind: 'menu', menu })} aria-label={`Edit menu ${menu.name}`} className={smallLink}>
                           Edit
                         </button>
@@ -193,12 +193,12 @@ export function MenuManager({ kind }: { kind: 'Restaurant' | 'Cafe' }) {
                             <div className="flex items-start gap-3">
                               <div className="min-w-0 flex-1">
                                 <p className="flex flex-wrap items-center gap-2">
-                                  <span className="truncate font-semibold text-gray-900" data-section-name>
+                                  <span className="min-w-0 font-semibold leading-snug text-gray-900 [overflow-wrap:anywhere]" data-section-name>
                                     {section.name}
                                   </span>
                                   {!section.isActive && <Pill tone="gray">Hidden</Pill>}
                                 </p>
-                                <div className="mt-0.5 flex flex-wrap gap-x-3">
+                                <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-1">
                                   <button type="button" onClick={() => setNaming({ kind: 'section', menu, section })} aria-label={`Edit section ${section.name}`} className={smallLink}>
                                     Edit
                                   </button>
@@ -329,17 +329,18 @@ function FoodItemRow({
   return (
     <li className="flex flex-wrap items-center gap-3 p-2.5">
       <ProductImage src={item.images[0]?.thumbUrl ?? item.images[0]?.url ?? null} alt={item.name} size="h-11 w-11" />
-      <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-1.5">
+      {/* At least 8rem, so on a narrow phone the availability switch wraps to its own line instead of squeezing the name. */}
+      <div className="min-w-0 flex-1 basis-32">
+        <p className="flex items-start gap-1.5">
           {item.diet && (
             <span
               role="img"
               aria-label={item.diet === 'VEG' ? 'Veg' : 'Non-veg'}
-              className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${item.diet === 'VEG' ? 'bg-brand-500' : 'bg-danger-500'}`}
+              className={`mt-1.5 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${item.diet === 'VEG' ? 'bg-brand-500' : 'bg-danger-500'}`}
             />
           )}
-          <span className="truncate font-medium text-gray-900">{item.name}</span>
-          <span className="ml-auto pl-2 font-semibold text-gray-900">
+          <span className="min-w-0 flex-1 font-medium leading-snug text-gray-900 [overflow-wrap:anywhere]">{item.name}</span>
+          <span className="ml-auto shrink-0 whitespace-nowrap pl-2 font-semibold text-gray-900">
             {options.length > 1
               ? `from ${formatPaise(Math.min(...options.map((v) => v.listing!.pricePaise)))}`
               : item.listing

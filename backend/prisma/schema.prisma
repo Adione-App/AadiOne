@@ -108,6 +108,9 @@ enum SellerType {
   ELECTRONICS
   BEAUTY
   HOME
+  /// Home & Kitchen (kitchenware, utensils, cookware) — a broad classification
+  /// like every other type except the food ones; no behaviour of its own.
+  HOME_KITCHEN
   PHARMACY
   RESTAURANT
   /// A cafe — a FOOD seller like RESTAURANT: menu sections + food items,

@@ -35,6 +35,7 @@ export const SELLER_TYPE_LABEL: Record<SellerType, string> = {
   [SellerType.ELECTRONICS]: 'Electronics',
   [SellerType.BEAUTY]: 'Beauty',
   [SellerType.HOME]: 'Home',
+  [SellerType.HOME_KITCHEN]: 'Home & Kitchen',
   [SellerType.PHARMACY]: 'Pharmacy',
   [SellerType.RESTAURANT]: 'Restaurant',
   [SellerType.CAFE]: 'Cafe',

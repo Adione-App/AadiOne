@@ -191,7 +191,7 @@ export default function SellerCategoriesPage() {
             return (
               <li key={top.id}>
                 <Surface className="space-y-3 p-3.5">
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-start gap-3">
                     <ImagePicker
                       label={`Change image of ${top.name}`}
                       src={top.imageUrl}
@@ -202,14 +202,14 @@ export default function SellerCategoriesPage() {
                     />
                     <div className="min-w-0 flex-1">
                       <p className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-base font-semibold text-gray-900">{top.name}</span>
+                        <span className="min-w-0 text-base font-semibold leading-snug text-gray-900 [overflow-wrap:anywhere]">{top.name}</span>
                         {!top.isActive && <Pill tone="gray">Hidden</Pill>}
                       </p>
                       <p className="text-xs text-gray-500">
                         {top.subcategories.length} subcategor{top.subcategories.length === 1 ? 'y' : 'ies'} · {top.productCount + subProducts} product
                         {top.productCount + subProducts === 1 ? '' : 's'}
                       </p>
-                      <div className="mt-1 flex flex-wrap gap-x-3">
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
                         <button type="button" onClick={() => setEditing({ kind: 'rename-top', category: top })} aria-label={`Edit ${top.name}`} className="text-xs font-semibold text-brand-600">
                           Edit
                         </button>
@@ -245,10 +245,10 @@ export default function SellerCategoriesPage() {
                       No subcategories yet — add one, or list products under {top.name} itself.
                     </p>
                   ) : (
-                    <ul className="grid gap-2 md:grid-cols-2">
+                    <ul className="grid grid-cols-1 gap-2 md:grid-cols-2">
                       {top.subcategories.map((sub) => (
                         <li key={sub.id}>
-                          <div className="flex items-center gap-3 rounded-xl border border-gray-100 bg-gray-50/60 p-2.5">
+                          <div className="flex items-start gap-3 rounded-xl border border-gray-100 bg-gray-50/60 p-2.5">
                             <ImagePicker
                               label={`Change image of ${sub.name}`}
                               src={sub.imageUrl}
@@ -258,12 +258,12 @@ export default function SellerCategoriesPage() {
                               size="h-11 w-11"
                             />
                             <div className="min-w-0 flex-1">
-                              <p className="truncate font-semibold text-gray-900">{sub.name}</p>
+                              <p className="font-semibold leading-snug text-gray-900 [overflow-wrap:anywhere]">{sub.name}</p>
                               <p className="text-xs text-gray-500">
                                 {sub.productCount} product{sub.productCount === 1 ? '' : 's'}
                                 {sub.isActive ? '' : ' · hidden'}
                               </p>
-                              <div className="mt-0.5 flex gap-x-3">
+                              <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-1">
                                 <button type="button" onClick={() => setEditing({ kind: 'rename-sub', parent: top, sub })} aria-label={`Edit ${sub.name}`} className="text-xs font-semibold text-brand-600">
                                   Edit
                                 </button>

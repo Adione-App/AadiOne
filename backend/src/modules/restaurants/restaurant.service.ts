@@ -30,11 +30,12 @@ import {
   FOOD_SELLER_TYPES,
   ProductStatus,
   SellerType,
+  classifyRestaurantDiet,
   foodDietOf,
   isFoodSellerType,
   optionGroupsOf,
   optionValuesOf,
-  type FoodDiet,
+  restaurantCardDiet,
   type RestaurantDto,
   type RestaurantListQuery,
   type RestaurantMenuDto,
@@ -356,26 +357,37 @@ async function coverImages(sellerIds: string[]): Promise<Map<string, string>> {
 }
 
 /**
- * Which diets each restaurant's live menu actually has — from the veg /
- * non-veg mark the seller sets on every food item (Product.attributes.diet).
- * Nothing is guessed from names; an item without a mark counts as neither.
+ * What each restaurant's LIVE menu holds: whether it has any item a customer
+ * can order, and any marked veg / non-veg (Product.attributes.diet — the mark
+ * the seller sets on every food item; nothing is guessed from names, and an
+ * unmarked item counts as neither). "Live" is exactly the public menu's rule
+ * (loadMenu): listing available; variant and product active and not deleted;
+ * product approved; its menu section AND that section's menu both active and
+ * not deleted. Food items are made to order, so stock is not part of it.
  * One query for all restaurants.
  */
-async function menuDiets(sellerIds: string[]): Promise<{ veg: Set<string>; nonVeg: Set<string> }> {
-  const veg = new Set<string>();
-  const nonVeg = new Set<string>();
-  if (sellerIds.length === 0) return { veg, nonVeg };
-  const rows = await prisma.$queryRaw<{ seller_id: string; diet: string }[]>`
-    SELECT DISTINCT sl.seller_id, p.attributes->>'diet' AS diet
+async function liveMenuDiets(
+  sellerIds: string[],
+): Promise<Map<string, { hasLiveItem: boolean; hasLiveVegItem: boolean; hasLiveNonVegItem: boolean }>> {
+  if (sellerIds.length === 0) return new Map();
+  const rows = await prisma.$queryRaw<{ seller_id: string; any_item: boolean; veg: boolean; non_veg: boolean }[]>`
+    SELECT sl.seller_id,
+           true AS any_item,
+           bool_or(p.attributes->>'diet' = 'VEG') AS veg,
+           bool_or(p.attributes->>'diet' = 'NON_VEG') AS non_veg
     FROM seller_listings sl
     JOIN product_variants v ON v.id = sl.variant_id AND v.status = 'ACTIVE' AND v.deleted_at IS NULL
     JOIN products p ON p.id = v.product_id
       AND p.status = 'ACTIVE' AND p.approval_status = 'APPROVED' AND p.deleted_at IS NULL
+    JOIN categories section ON section.id = p.category_id
+      AND section.seller_id = sl.seller_id AND section.is_active AND section.deleted_at IS NULL
+    JOIN categories menu ON menu.id = section.parent_id AND menu.is_active AND menu.deleted_at IS NULL
     WHERE sl.is_available
       AND sl.seller_id = ANY(${sellerIds}::uuid[])
-      AND p.attributes->>'diet' IN ('VEG', 'NON_VEG')`;
-  for (const row of rows) (row.diet === 'VEG' ? veg : nonVeg).add(row.seller_id);
-  return { veg, nonVeg };
+    GROUP BY sl.seller_id`;
+  return new Map(
+    rows.map((row) => [row.seller_id, { hasLiveItem: row.any_item, hasLiveVegItem: Boolean(row.veg), hasLiveNonVegItem: Boolean(row.non_veg) }]),
+  );
 }
 
 /**
@@ -385,14 +397,15 @@ async function menuDiets(sellerIds: string[]): Promise<{ veg: Set<string>; nonVe
  * delivery fee (the configured fee slabs) and delivery time (the same
  * estimate checkout promises).
  *
- * Veg / non-veg — the Food list's green and red marks AND its filters, one
- * definition for both:
- *   serves veg      a pure-veg kitchen, or at least one live VEG item
- *   serves non-veg  at least one live NON_VEG item
- * A place with both kinds is in both filters and shows both marks.
+ * Veg / non-veg — classifyRestaurantDiet (shared/dto.ts) is the one
+ * definition: PURE_VEG / PURE_NON_VEG / MIXED from the pure-veg setting and
+ * the live menu's item marks. The card shows ONE mark (green for pure veg,
+ * red for pure non-veg, none for mixed — never both); a mixed place is still
+ * in both filters. A pure-veg kitchen is never in the Non-Veg filter, and a
+ * place with no live (marked) item is in neither.
  *
  * Filters (GET /restaurants?diet=&type=): `type` = RESTAURANT / CAFE;
- * `diet` VEG = serves veg, NON_VEG = serves non-veg.
+ * `diet` VEG = servesVeg, NON_VEG = servesNonVeg.
  */
 export async function listRestaurants(
   location: { lat: number; lng: number } | null = null,
@@ -406,14 +419,21 @@ export async function listRestaurants(
     include: RESTAURANT_INCLUDE,
     orderBy: { name: 'asc' },
   });
-  const diets = await menuDiets(candidates.map((s) => s.id));
-  const servesVeg = (seller: (typeof candidates)[number]) => Boolean(seller.restaurantProfile?.isVegOnly) || diets.veg.has(seller.id);
-  const servesNonVeg = (seller: (typeof candidates)[number]) => diets.nonVeg.has(seller.id);
+  const menus = await liveMenuDiets(candidates.map((s) => s.id));
+  const NO_LIVE_ITEMS = { hasLiveItem: false, hasLiveVegItem: false, hasLiveNonVegItem: false };
+  const dietBySeller = new Map(
+    candidates.map((seller) => [
+      seller.id,
+      classifyRestaurantDiet({ isVegOnly: Boolean(seller.restaurantProfile?.isVegOnly), ...(menus.get(seller.id) ?? NO_LIVE_ITEMS) }),
+    ]),
+  );
+  const dietOf = (seller: (typeof candidates)[number]) => dietBySeller.get(seller.id)!;
   const sellers =
-    filters.diet === 'VEG' ? candidates.filter(servesVeg) : filters.diet === 'NON_VEG' ? candidates.filter(servesNonVeg) : candidates;
-  // Older apps read the single `diet`: pure veg → VEG, any non-veg → NON_VEG.
-  const dietOf = (seller: (typeof sellers)[number]): FoodDiet | null =>
-    seller.restaurantProfile?.isVegOnly ? 'VEG' : servesNonVeg(seller) ? 'NON_VEG' : null;
+    filters.diet === 'VEG'
+      ? candidates.filter((s) => dietOf(s).servesVeg)
+      : filters.diet === 'NON_VEG'
+        ? candidates.filter((s) => dietOf(s).servesNonVeg)
+        : candidates;
   const counts = await prisma.sellerListing.groupBy({
     by: ['sellerId'],
     where: {
@@ -422,7 +442,13 @@ export async function listRestaurants(
       variant: {
         status: ProductStatus.ACTIVE,
         deletedAt: null,
-        product: { status: ProductStatus.ACTIVE, approvalStatus: ApprovalStatus.APPROVED, deletedAt: null },
+        // The public menu's rule (loadMenu): its section and menu must be live too.
+        product: {
+          status: ProductStatus.ACTIVE,
+          approvalStatus: ApprovalStatus.APPROVED,
+          deletedAt: null,
+          category: { isActive: true, deletedAt: null, parent: { isActive: true, deletedAt: null } },
+        },
       },
     },
     _count: { _all: true },
@@ -456,9 +482,9 @@ export async function listRestaurants(
         // Its own cover first; otherwise a real photo from its menu.
         coverImageUrl: dto.coverImageUrl ?? covers.get(seller.id) ?? null,
         distanceKm: trip?.distanceKm ?? null,
-        diet: dietOf(seller),
-        servesVeg: servesVeg(seller),
-        servesNonVeg: servesNonVeg(seller),
+        ...dietOf(seller),
+        // Older apps draw this single mark: pure veg / pure non-veg; a mixed place gets none.
+        diet: restaurantCardDiet(dietOf(seller)),
         deliveryFeePaise: trip?.feePaise ?? null,
         etaMinMinutes: trip?.etaMin ?? null,
         etaMaxMinutes: trip?.etaMax ?? null,

@@ -50,6 +50,7 @@ import SellerListingsTab from './SellerListingsTab';
 import SellerOnboardingTab from './SellerOnboardingTab';
 import SellerOrdersTab from './SellerOrdersTab';
 import SellerRestaurantTab from './SellerRestaurantTab';
+import StoreLocationPanel, { type SellerLocation, type StoreLocationSource } from '@/seller/StoreLocationPanel';
 import { SellerLoginPanel } from './SellerLoginPanel';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -420,6 +421,8 @@ function OverviewTab({
         </dl>
       </Panel>
 
+      <AdminStoreLocation sellerId={seller.id} />
+
       <Panel title="Onboarding">
         <dl className="divide-y divide-gray-100">
           <DetailRow label="Lifecycle">
@@ -606,5 +609,37 @@ function SellerActivityTab({ sellerId }: { sellerId: string }) {
         })}
       </ul>
     </Panel>
+  );
+}
+
+/**
+ * Admin correction of a store's delivery point (GET/PATCH
+ * /admin/sellers/:id/location) — the seller's own Store Location form, with
+ * the admin as editor. Validated and audited by the server. Hidden without
+ * SELLER_MANAGE. "Use my current location" is off: the admin is not at the shop.
+ */
+function AdminStoreLocation({ sellerId }: { sellerId: string }) {
+  const { canManage } = useSellerPermissions();
+  const queryClient = useQueryClient();
+  const [notice, setNotice] = useState<string | null>(null);
+  if (!canManage) return null;
+  const source: StoreLocationSource = {
+    queryKey: ['admin', 'sellers', sellerId, 'location'],
+    load: () => api.get<SellerLocation>(`/admin/sellers/${sellerId}/location`),
+    save: (body) => api.patch<SellerLocation>(`/admin/sellers/${sellerId}/location`, body),
+    errorMessage: (error) => sellerErrorMessage(error, 'Could not update the store location.'),
+    deviceLocation: false,
+  };
+  return (
+    <div className="space-y-2">
+      {notice && <p className="rounded-lg bg-brand-50 px-3 py-2 text-sm text-brand-700">{notice}</p>}
+      <StoreLocationPanel
+        source={source}
+        onSaved={() => {
+          void queryClient.invalidateQueries({ queryKey: adminSellerKeys.detail(sellerId) });
+          setNotice('Store location corrected. Distances, delivery fees and serviceability now use the new point.');
+        }}
+      />
+    </div>
   );
 }

@@ -125,6 +125,13 @@ interface LocationCachePayload {
   serviceability: ServiceabilityResult;
   /** The live-location details for `location` (GPS only), if confirmed. */
   liveDestination?: LiveLocationInput | null;
+  /**
+   * The saved address `location` is (ADDRESS only). Without it a restart
+   * kept Home on that address's point while checkout fell back to the
+   * DEFAULT address — the order could go somewhere other than what was shown
+   * and checked.
+   */
+  selectedAddressId?: string | null;
 }
 
 function isValidLiveDestination(value: unknown): value is LiveLocationInput {
@@ -169,11 +176,18 @@ async function persistLocationCache(
   location: ChosenLocation,
   serviceability: ServiceabilityResult,
   liveDestination: LiveLocationInput | null,
+  selectedAddressId: string | null,
 ): Promise<void> {
   try {
     await AsyncStorage.setItem(
       LOCATION_CACHE_KEY,
-      JSON.stringify({ location, serviceability, liveDestination } satisfies LocationCachePayload),
+      JSON.stringify({
+        location,
+        serviceability,
+        liveDestination,
+        // Only an ADDRESS point belongs to a saved address.
+        selectedAddressId: location.source === 'ADDRESS' ? selectedAddressId : null,
+      } satisfies LocationCachePayload),
     );
   } catch {
     // Best-effort — a failed write just means the next cold start falls back
@@ -250,7 +264,7 @@ export const useLocation = create<LocationState>((set, get) => ({
       // A slower answer for a location the customer has since changed is stale.
       if (check !== latestCheck) return;
       set({ serviceability: result, checking: false });
-      void persistLocationCache(location, result, get().liveDestination);
+      void persistLocationCache(location, result, get().liveDestination, get().selectedAddressId);
     } catch (error) {
       if (check !== latestCheck) return;
       set({
@@ -263,6 +277,8 @@ export const useLocation = create<LocationState>((set, get) => ({
   selectAddress(addressId) {
     // A saved address replaces the live destination.
     set(addressId ? { selectedAddressId: addressId, liveDestination: null } : { selectedAddressId: null });
+    const { location, serviceability } = get();
+    if (location && serviceability) void persistLocationCache(location, serviceability, get().liveDestination, get().selectedAddressId);
   },
 
   setLiveDestination(destination) {
@@ -272,7 +288,7 @@ export const useLocation = create<LocationState>((set, get) => ({
   forgetPersonalChoice() {
     set({ liveDestination: null, selectedAddressId: null });
     const { location, serviceability } = get();
-    if (location && serviceability) void persistLocationCache(location, serviceability, null);
+    if (location && serviceability) void persistLocationCache(location, serviceability, null, null);
   },
 
   async hydrate() {
@@ -287,6 +303,12 @@ export const useLocation = create<LocationState>((set, get) => ({
             serviceability: parsed.serviceability,
             // Restored only when it is complete and for this very point.
             liveDestination: isValidLiveDestination(parsed.liveDestination) ? liveDestinationFor(location, parsed.liveDestination) : null,
+            // The saved address this point is — so checkout orders to the same
+            // address Home shows (checkout drops it if the address was deleted).
+            selectedAddressId:
+              location.source === 'ADDRESS' && typeof parsed.selectedAddressId === 'string' && parsed.selectedAddressId
+                ? parsed.selectedAddressId
+                : null,
           });
         }
       }

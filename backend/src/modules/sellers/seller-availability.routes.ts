@@ -108,7 +108,8 @@ sellerAvailabilityRouter.delete(
  * and delivery fee for its products. Address fields are optional; the
  * coordinates are required together. Audited (seller.update_location).
  */
-const locationSchema = z
+/** Shared with the admin correction route (admin-seller.routes.ts). */
+export const locationSchema = z
   .object({
     // Validated by the service (shared coordinateProblem: range, (0, 0), swapped, India).
     latitude: z.number(),

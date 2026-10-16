@@ -16,9 +16,13 @@ import * as Location from 'expo-location';
 import {
   LocationError,
   detectLocation,
+  geocodeQueryFor,
+  sortGeocodeCandidates,
   suggestionFromPlace,
+  type AddressPlaceFields,
   type AddressSuggestion,
   type DetectResult,
+  type GeocodeCandidate,
 } from '@shared/location';
 
 export function detectDeviceLocation(): Promise<DetectResult> {
@@ -63,18 +67,52 @@ export async function suggestAddressFor(latitude: number, longitude: number): Pr
   }
 }
 
+/** At most this many geocoder results are checked (each needs a reverse lookup). */
+const MAX_CANDIDATES = 5;
+
+export type FindAddressResult =
+  | { status: 'FOUND'; usable: GeocodeCandidate[]; rejected: GeocodeCandidate[] }
+  | { status: 'NOT_FOUND' | 'FAILED'; usable: []; rejected: GeocodeCandidate[] };
+
 /**
- * Forward geocoding of typed address text with the OS geocoder. The result is
- * the centre of whatever area the text names (a locality, a village, a PIN) —
- * APPROXIMATE, and saved as such (locationSource GEOCODED). Null when it does
- * not resolve: nothing is substituted.
+ * Forward-geocodes a TYPED address with the OS geocoder, from the full
+ * structured address (geocodeQueryFor — never the village or PIN alone).
+ *
+ * Every result is APPROXIMATE: the OS geocoder returns the centre of whatever
+ * it matched (a street, a village, sometimes only the PIN area) and says
+ * nothing about which — so a found point is saved as GEOCODED with no
+ * accuracy, and the customer confirms it. Each result is reverse-geocoded and
+ * checked against the typed village / district / state / PIN
+ * (sortGeocodeCandidates): a different PIN / district / state is rejected,
+ * never offered; several plausible results are all offered for the customer
+ * to choose. Nothing found or a failure saves nothing — no default point.
  */
-export async function geocodeAddressText(text: string): Promise<{ latitude: number; longitude: number } | null> {
-  if (!text.trim()) return null;
+export async function findAddressCandidates(
+  address: { houseNo?: string | null; street?: string | null; area?: string | null } & AddressPlaceFields,
+): Promise<FindAddressResult> {
+  const query = geocodeQueryFor(address);
+  if (!query) return { status: 'NOT_FOUND', usable: [], rejected: [] };
+  let hits: { latitude: number; longitude: number }[];
   try {
-    const [hit] = await Location.geocodeAsync(text);
-    return hit ? { latitude: hit.latitude, longitude: hit.longitude } : null;
+    hits = (await Location.geocodeAsync(query)).slice(0, MAX_CANDIDATES);
   } catch {
-    return null;
+    return { status: 'FAILED', usable: [], rejected: [] };
   }
+  if (hits.length === 0) return { status: 'NOT_FOUND', usable: [], rejected: [] };
+  const withPlaces = await Promise.all(
+    hits.map(async (hit) => ({
+      latitude: hit.latitude,
+      longitude: hit.longitude,
+      place: await suggestAddressFor(hit.latitude, hit.longitude),
+    })),
+  );
+  const sorted = sortGeocodeCandidates(address, withPlaces);
+  return sorted.usable.length > 0
+    ? { status: 'FOUND', usable: sorted.usable, rejected: sorted.rejected }
+    : { status: 'NOT_FOUND', usable: [], rejected: sorted.rejected };
+}
+
+/** A map preview of a point (Google Maps in the browser / app) — for checking, not editing. */
+export function mapPreviewUrl(latitude: number, longitude: number): string {
+  return `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`;
 }

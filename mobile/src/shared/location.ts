@@ -21,7 +21,7 @@
  * shows the accuracy and asks the person to confirm it.
  */
 
-import { coordinateProblem } from './distance';
+import { coordinateProblem, distanceKmExact } from './distance';
 import { isValidPincode } from './phone';
 
 /** Where a saved point came from (Address.locationSource). */
@@ -221,4 +221,170 @@ export function suggestionLabel(suggestion: AddressSuggestion | null, fallback =
   if (!suggestion) return fallback;
   const label = [suggestion.area, suggestion.city ?? suggestion.district, suggestion.pincode].filter(Boolean).join(', ');
   return label || fallback;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Manual address <-> point: validate, never trust                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The parts of an address that say WHICH PLACE it is. A point must agree
+ * with them; house / street / landmark only refine it within that place.
+ */
+export interface AddressPlaceFields {
+  city: string | null | undefined;
+  district: string | null | undefined;
+  state: string | null | undefined;
+  pincode: string | null | undefined;
+}
+
+const PLACE_NOISE = /\b(district|distt|dist|tehsil|tahsil|city|town|village|gram|gaon)\b/g;
+const STATE_SPELLINGS: Record<string, string> = { 'राजस्थान': 'rajasthan', rajsthan: 'rajasthan', rajsathan: 'rajasthan' };
+
+/** Lower-case, accent-free, punctuation-free, without "district" / "tehsil" / … — for comparing place names only. */
+export function normalizePlaceName(value: string | null | undefined): string | null {
+  const text = clean(value);
+  if (!text) return null;
+  const lowered = text
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(PLACE_NOISE, ' ')
+    .replace(/[^a-z0-9ऀ-ॿ]+/g, ' ')
+    .trim();
+  if (!lowered) return null;
+  return STATE_SPELLINGS[lowered] ?? lowered;
+}
+
+/** Digits of a 6-digit Indian PIN, else null ("313 329" -> "313329"). */
+export function normalizePincode(value: string | null | undefined): string | null {
+  const digits = (value ?? '').replace(/\D/g, '');
+  return isValidPincode(digits) ? digits : null;
+}
+
+/** Same place name: equal, or one is the other plus whole extra words ("Railmagra" / "Railmagra Kasba"). */
+const samePlace = (a: string, b: string): boolean => a === b || ` ${a} `.includes(` ${b} `) || ` ${b} `.includes(` ${a} `);
+
+/**
+ * True when the address now names a DIFFERENT place than the one its saved
+ * point was confirmed for — village / city, district, state or PIN changed in
+ * substance (case, spacing and "District" wording are not a change). Such a
+ * point must be confirmed again; house / street / landmark edits keep it.
+ */
+export function placeChanged(before: AddressPlaceFields, after: AddressPlaceFields): boolean {
+  return (
+    normalizePlaceName(before.city) !== normalizePlaceName(after.city) ||
+    normalizePlaceName(before.district) !== normalizePlaceName(after.district) ||
+    normalizePlaceName(before.state) !== normalizePlaceName(after.state) ||
+    normalizePincode(before.pincode) !== normalizePincode(after.pincode)
+  );
+}
+
+export type FieldCheck = 'MATCH' | 'MISMATCH' | 'UNKNOWN';
+
+export interface PointPlaceCheck {
+  /**
+   * MATCH      the point's place agrees with the address (the PIN, or the
+   *            village with nothing contradicting it);
+   * UNVERIFIED nothing contradicts it, but too little is known to confirm;
+   * CONFLICT   only the village / city name differs — geocoders name areas
+   *            coarsely, so the person must confirm; never silently accepted;
+   * MISMATCH   the PIN, district or state differs — a different place.
+   */
+  verdict: 'MATCH' | 'UNVERIFIED' | 'CONFLICT' | 'MISMATCH';
+  fields: Record<'city' | 'district' | 'state' | 'pincode', FieldCheck>;
+}
+
+/**
+ * Does a point (as its reverse-geocoded place says) belong to the address the
+ * person typed? Each field is MATCH, MISMATCH, or UNKNOWN when either side is
+ * empty — "the geocoder did not say" is never treated as a mismatch, nor as a
+ * match. Pure: used for GPS fixes and forward-geocoded results alike.
+ */
+export function checkPointAgainstAddress(entered: AddressPlaceFields, found: AddressSuggestion | null): PointPlaceCheck {
+  const name = (a: string | null, b: string | null): FieldCheck => (!a || !b ? 'UNKNOWN' : samePlace(a, b) ? 'MATCH' : 'MISMATCH');
+  const pin = (a: string | null, b: string | null): FieldCheck => (!a || !b ? 'UNKNOWN' : a === b ? 'MATCH' : 'MISMATCH');
+  const fields = {
+    city: name(normalizePlaceName(entered.city), normalizePlaceName(found?.city)),
+    district: name(normalizePlaceName(entered.district), normalizePlaceName(found?.district)),
+    state: name(normalizePlaceName(entered.state), normalizePlaceName(found?.state)),
+    pincode: pin(normalizePincode(entered.pincode), normalizePincode(found?.pincode)),
+  };
+  const verdict: PointPlaceCheck['verdict'] =
+    fields.pincode === 'MISMATCH' || fields.district === 'MISMATCH' || fields.state === 'MISMATCH'
+      ? 'MISMATCH'
+      : fields.city === 'MISMATCH'
+        ? 'CONFLICT'
+        : fields.pincode === 'MATCH' || fields.city === 'MATCH'
+          ? 'MATCH'
+          : 'UNVERIFIED';
+  return { verdict, fields };
+}
+
+/** One line for the person: where a point is, as the geocoder names it. */
+export function describeFoundPlace(found: AddressSuggestion | null): string {
+  if (!found) return 'a place the map could not name';
+  return [found.area, found.city, found.district, found.state, found.pincode].filter(Boolean).join(', ') || 'a place the map could not name';
+}
+
+/**
+ * The full text a forward geocoder is given for a typed address: every part
+ * that says where it is (never the village or the PIN alone), cleaned, plus
+ * the country. The landmark is left out: "near Shiv Mandir" sends geocoders
+ * astray.
+ */
+export function geocodeQueryFor(
+  address: { houseNo?: string | null; street?: string | null; area?: string | null } & AddressPlaceFields,
+): string {
+  const parts = [address.houseNo, address.street, address.area, address.city, address.district, address.state, normalizePincode(address.pincode)]
+    .map((part) => clean(part))
+    .filter((part): part is string => !!part);
+  const seen = new Set<string>();
+  const unique = parts.filter((part) => {
+    const key = part.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return unique.length ? [...unique, 'India'].join(', ') : '';
+}
+
+export interface GeocodeCandidateInput {
+  latitude: number;
+  longitude: number;
+  /** The candidate's own place, from reverse-geocoding it (null when unknown). */
+  place: AddressSuggestion | null;
+}
+
+export interface GeocodeCandidate extends GeocodeCandidateInput {
+  check: PointPlaceCheck;
+}
+
+/**
+ * Forward-geocoder results for a typed address, sorted out — never "take the
+ * first one":
+ *   usable    agree with the address (MATCH / UNVERIFIED / CONFLICT — the
+ *             last needs the person's confirmation), best first; results
+ *             within 100 m of a better one are merged;
+ *   rejected  a different PIN / district / state, or invalid coordinates —
+ *             shown to explain what was found, never selectable.
+ * With several usable results the person chooses; with none, nothing is saved.
+ */
+export function sortGeocodeCandidates(
+  entered: AddressPlaceFields,
+  results: readonly GeocodeCandidateInput[],
+): { usable: GeocodeCandidate[]; rejected: GeocodeCandidate[] } {
+  const rank = { MATCH: 0, UNVERIFIED: 1, CONFLICT: 2, MISMATCH: 3 } as const;
+  const checked = results.map((result) => ({ ...result, check: checkPointAgainstAddress(entered, result.place) }));
+  const rejected = checked.filter(
+    (c) => c.check.verdict === 'MISMATCH' || coordinateProblem(c.latitude, c.longitude, { requireIndia: true }) !== null,
+  );
+  const usable: GeocodeCandidate[] = [];
+  for (const candidate of checked
+    .filter((c) => !rejected.includes(c))
+    .sort((a, b) => rank[a.check.verdict] - rank[b.check.verdict])) {
+    if (usable.some((u) => distanceKmExact(u.latitude, u.longitude, candidate.latitude, candidate.longitude) < 0.1)) continue;
+    usable.push(candidate);
+  }
+  return { usable, rejected };
 }

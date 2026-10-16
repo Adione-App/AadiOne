@@ -30,7 +30,7 @@ import { detectBrowserLocation } from '@/lib/browserLocation';
 import { sellerApi, sellerErrorMessage } from './sellerApi';
 import { sellerKeys } from './sellerQueries';
 
-interface SellerLocation {
+export interface SellerLocation {
   id: string;
   name: string;
   addressLine: string;
@@ -54,18 +54,45 @@ const isUnset = (location: SellerLocation): boolean =>
 
 const mapLink = (lat: number, lng: number) => `https://www.google.com/maps?q=${lat},${lng}`;
 
+/**
+ * Where the panel reads and saves the store point. Default: the signed-in
+ * seller's own (/seller/location). The admin panel passes its own
+ * (/admin/sellers/:id/location) to correct a store's point.
+ */
+export interface StoreLocationSource {
+  queryKey: readonly unknown[];
+  load: () => Promise<SellerLocation>;
+  save: (body: Record<string, unknown>) => Promise<SellerLocation>;
+  errorMessage: (error: unknown) => string;
+  /**
+   * "Use my current location" — only for someone standing IN the shop. An
+   * admin's browser location is not the shop, so the admin source turns it off.
+   */
+  deviceLocation: boolean;
+}
+
+const SELLER_SOURCE: StoreLocationSource = {
+  queryKey: LOCATION_KEY,
+  load: () => sellerApi.get<SellerLocation>('/seller/location'),
+  save: (body) => sellerApi.patch<SellerLocation>('/seller/location', body),
+  errorMessage: sellerErrorMessage,
+  deviceLocation: true,
+};
+
 export default function StoreLocationPanel({
   onSaved,
   readOnly = false,
+  source = SELLER_SOURCE,
 }: {
   onSaved: (message: string) => void;
   /** Onboarding under review: show the location, no Edit. */
   readOnly?: boolean;
+  source?: StoreLocationSource;
 }) {
   const queryClient = useQueryClient();
   const location = useQuery({
-    queryKey: LOCATION_KEY,
-    queryFn: () => sellerApi.get<SellerLocation>('/seller/location'),
+    queryKey: source.queryKey,
+    queryFn: source.load,
   });
   const [editing, setEditing] = useState(false);
 
@@ -73,7 +100,7 @@ export default function StoreLocationPanel({
   if (location.isError) {
     return (
       <Panel title="Store location">
-        <ErrorBanner message={sellerErrorMessage(location.error)} />
+        <ErrorBanner message={source.errorMessage(location.error)} />
       </Panel>
     );
   }
@@ -96,9 +123,10 @@ export default function StoreLocationPanel({
       {editing ? (
         <LocationForm
           initial={data}
+          source={source}
           onCancel={() => setEditing(false)}
           onSaved={(saved) => {
-            queryClient.setQueryData(LOCATION_KEY, saved);
+            queryClient.setQueryData(source.queryKey, saved);
             void queryClient.invalidateQueries({ queryKey: sellerKeys.onboarding });
             void queryClient.invalidateQueries({ queryKey: sellerKeys.lifecycle });
             setEditing(false);
@@ -140,10 +168,12 @@ export default function StoreLocationPanel({
 
 function LocationForm({
   initial,
+  source,
   onCancel,
   onSaved,
 }: {
   initial: SellerLocation;
+  source: StoreLocationSource;
   onCancel: () => void;
   onSaved: (saved: SellerLocation) => void;
 }) {
@@ -167,9 +197,9 @@ function LocationForm({
   useEffect(() => setError(null), [lat, lng, addressLine, locality, city, district, state, pincode, landmark]);
 
   const save = useMutation({
-    mutationFn: (body: Record<string, unknown>) => sellerApi.patch<SellerLocation>('/seller/location', body),
+    mutationFn: source.save,
     onSuccess: onSaved,
-    onError: (err) => setError(sellerErrorMessage(err)),
+    onError: (err) => setError(source.errorMessage(err)),
   });
 
   async function useCurrentPosition(): Promise<void> {
@@ -256,10 +286,10 @@ function LocationForm({
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Latitude" required>
-            <input value={lat} onChange={(e) => setLat(e.target.value)} inputMode="decimal" className={inputClass} placeholder="e.g. 27.6094" />
+            <input value={lat} onChange={(e) => setLat(e.target.value)} inputMode="decimal" className={inputClass} placeholder="e.g. 25.12345" />
           </Field>
           <Field label="Longitude" required>
-            <input value={lng} onChange={(e) => setLng(e.target.value)} inputMode="decimal" className={inputClass} placeholder="e.g. 75.1399" />
+            <input value={lng} onChange={(e) => setLng(e.target.value)} inputMode="decimal" className={inputClass} placeholder="e.g. 74.12345" />
           </Field>
         </div>
         {lat.trim() && lng.trim() && pointProblem && pointProblem !== 'MISSING' && <p className="text-xs text-danger-600">{COORDINATE_PROBLEM_MESSAGE[pointProblem]}</p>}
@@ -268,11 +298,13 @@ function LocationForm({
             Check this point on the map
           </a>
         )}
-        <div>
-          <button type="button" onClick={() => void useCurrentPosition()} disabled={locating} className="text-sm font-semibold text-brand-600 hover:text-brand-700 disabled:opacity-60">
-            {locating ? 'Reading your location…' : 'Use my current location (stand in the shop)'}
-          </button>
-        </div>
+        {source.deviceLocation && (
+          <div>
+            <button type="button" onClick={() => void useCurrentPosition()} disabled={locating} className="text-sm font-semibold text-brand-600 hover:text-brand-700 disabled:opacity-60">
+              {locating ? 'Reading your location…' : 'Use my current location (stand in the shop)'}
+            </button>
+          </div>
+        )}
         {detected && (
           <div role="status" className={`rounded-lg px-3 py-2 text-sm ${detected.quality === 'POOR' ? 'bg-warn-50 text-warn-600' : 'bg-brand-50 text-brand-700'}`}>
             <p>

@@ -8,7 +8,7 @@
 
 import type { Address } from '@prisma/client';
 import { ConfigKey, ErrorCode, type AddressDto } from '../../shared';
-import { LOCATION_SOURCES, type LocationSource } from '../../shared/location';
+import { LOCATION_SOURCES, placeChanged, type LocationSource } from '../../shared/location';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import * as configService from '../configuration/configuration.service';
@@ -183,6 +183,28 @@ export async function updateAddress(
   const latitude = input.latitude ?? existing.latitude;
   const longitude = input.longitude ?? existing.longitude;
   const pinMoved = latitude !== existing.latitude || longitude !== existing.longitude;
+
+  // The address now names a different village / district / state / PIN, but
+  // the point is the OLD one, echoed back unchanged: that point was confirmed
+  // for the old place, so keeping it would quietly attach the wrong
+  // coordinates (and serviceability) to the new address. A point is only
+  // carried over when the place is the same (house / street edits).
+  if (
+    !pinMoved &&
+    placeChanged(existing, {
+      city: input.city ?? existing.city,
+      district: input.district !== undefined ? input.district : existing.district,
+      state: input.state ?? existing.state,
+      pincode: input.pincode ?? existing.pincode,
+    })
+  ) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message:
+        'This address now names a different place. Confirm where it is again — use your current location there, or find the address — before saving.',
+      details: [{ field: 'latitude', message: 'The location must be confirmed again for the changed village, district, state or PIN.' }],
+      internalMessage: `address ${addressId}: place changed with an unchanged point`,
+    });
+  }
 
   // The address as it would be after this edit must be in Rajasthan. An older
   // out-of-state address is refused with a clear reason — never quietly

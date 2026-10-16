@@ -23,6 +23,8 @@ import * as onboardingService from './seller-onboarding.service';
 import * as lifecycleService from './seller-lifecycle.service';
 import * as settlementService from './seller-settlement.service';
 import * as orderFinancials from '../orders/order-financials.service';
+import * as storeLocationService from './admin-seller.service';
+import { locationSchema } from './seller-availability.routes';
 import * as sellerLoginService from './seller-login.service';
 import { sendDocumentFile } from './document-response';
 
@@ -566,6 +568,31 @@ adminSellerRouter.get(
   validate({ params: z.object({ sellerId: uuid }) }),
   asyncHandler(async (req: Request, res: Response) => {
     ok(res, await settlementService.getEarningsSummary(req.params['sellerId'] as string, undefined));
+  }),
+);
+
+/**
+ * GET / PATCH /admin/sellers/:sellerId/location — the store's delivery point,
+ * for an admin to correct (e.g. a pin set from a desktop browser, or one
+ * copied across shops). Same validation and the same audited update as the
+ * seller's own Store Location (coordinates validated, Rajasthan only,
+ * `seller.update_location` audit row with before / after and the admin).
+ */
+adminSellerRouter.get(
+  '/sellers/:sellerId/location',
+  requirePermission(Permission.SELLER_MANAGE),
+  validate({ params: z.object({ sellerId: uuid }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await storeLocationService.getSellerLocation(req.params['sellerId'] as string));
+  }),
+);
+
+adminSellerRouter.patch(
+  '/sellers/:sellerId/location',
+  requirePermission(Permission.SELLER_MANAGE),
+  validate({ params: z.object({ sellerId: uuid }), body: locationSchema }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await storeLocationService.updateSellerLocation(req.params['sellerId'] as string, req.body, requireUser(req).id));
   }),
 );
 

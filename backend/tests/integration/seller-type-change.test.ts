@@ -1,5 +1,5 @@
 /**
- * Seller type corrections (2026-10-16): Nepali Kichen CAFE -> RESTAURANT,
+ * Seller type corrections (2026-10-16): Nepali Kitchen CAFE -> RESTAURANT,
  * JAYANT METALS STORE HOME -> HOME_KITCHEN ("Home & Kitchen", a new type
  * distinct from "Home"). The change is a controlled data update
  * (seller-type-change.ts / scripts/change-seller-type.ts) — exercised here
@@ -97,11 +97,11 @@ beforeEach(async () => {
   await cache.clear();
 });
 
-describe('Nepali Kichen: CAFE -> RESTAURANT', () => {
+describe('Nepali Kitchen: CAFE -> RESTAURANT', () => {
   it('dry run changes nothing; apply changes only the type — menu, items, profile and counts intact; re-run is a no-op', async () => {
-    const id = await seller('NEPALIKICHEN', 'Nepali Kichen', SellerType.CAFE);
+    const id = await seller('NEPALIKICHEN', 'Nepali Kitchen', SellerType.CAFE);
     await prisma.restaurantProfile.create({ data: { sellerId: id, cuisine: ['Indian', 'Chicken', 'egg'], isVegOnly: false, avgPrepMins: 20 } });
-    await tree(id, 'Nepali Kichen', ['Chicken', 'Roti'], 2);
+    await tree(id, 'Nepali Kitchen', ['Chicken', 'Roti'], 2);
     const before = await snapshot(id);
 
     const dry = await changeSellerType({ code: 'NEPALIKICHEN', from: SellerType.CAFE, to: SellerType.RESTAURANT }, { apply: false, reason: 'test' });
@@ -163,7 +163,7 @@ describe('JAYANT METALS STORE: HOME -> HOME_KITCHEN', () => {
 
 describe('guards', () => {
   it('refuses the wrong expected type, food <-> non-food moves and unknown codes — and changes nothing', async () => {
-    const id = await seller('NEPALIKICHEN', 'Nepali Kichen', SellerType.CAFE);
+    const id = await seller('NEPALIKICHEN', 'Nepali Kitchen', SellerType.CAFE);
     expect(
       (await changeSellerType({ code: 'NEPALIKICHEN', from: SellerType.HOME, to: SellerType.HOME_KITCHEN }, { apply: true, reason: 'test' })).status,
     ).toBe('UNEXPECTED_TYPE');

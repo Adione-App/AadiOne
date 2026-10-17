@@ -80,3 +80,46 @@ describe('mock payment provider outside tests', () => {
     expect(result.stdout).toContain('SIGNATURE_VALID=false');
   }, 70_000);
 });
+
+/*
+ * Maintenance scripts (`with-env.mjs --no-payments`): an env file holding LIVE
+ * Cashfree keys with NODE_ENV=development is refused as before, unless the
+ * process is a payments-free maintenance run — which then holds no payment
+ * setting at all and cannot start a payment provider. Fake values only.
+ */
+const LIVE_KEYS_ON_A_DEV_BOX = {
+  NODE_ENV: 'development',
+  PAYMENT_PROVIDER: 'cashfree',
+  CASHFREE_APP_ID: 'fake-live-app-id',
+  CASHFREE_SECRET_KEY: 'fake-live-secret',
+  CASHFREE_ENV: 'production',
+};
+
+describe('maintenance scripts without payments', () => {
+  it('live Cashfree keys with NODE_ENV=development are still refused for every other process', () => {
+    const result = run(LIVE_KEYS_ON_A_DEV_BOX, importEnv);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('live Cashfree credentials are only allowed with NODE_ENV=production');
+    expect(result.stdout).not.toContain('ENV_OK');
+  }, 70_000);
+
+  it('--no-payments: starts with no payment setting in the process, NODE_ENV unchanged, and no payment provider', () => {
+    const result = run(
+      { ...LIVE_KEYS_ON_A_DEV_BOX, ADIONE_PAYMENTS_DISABLED: '1' },
+      `const { env } = await import(${JSON.stringify(pathToFileURL(path.join(BACKEND, 'src/config/env.ts')).href)});
+       console.log('NODE_ENV=' + env.NODE_ENV);
+       console.log('PAYMENT_VARS=' + Object.keys(process.env).filter((k) => /^(CASHFREE_|RAZORPAY_|PAYMENT_PROVIDER)/.test(k)).length);
+       try {
+         await import(${JSON.stringify(pathToFileURL(path.join(BACKEND, 'src/infra/payment/index.ts')).href)});
+         console.log('PAYMENTS_LOADED');
+       } catch (error) {
+         console.log('PAYMENTS_REFUSED ' + error.message);
+       }`,
+    );
+    expect(result.stdout).toContain('NODE_ENV=development');
+    expect(result.stdout).toContain('PAYMENT_VARS=0');
+    expect(result.stdout).toContain('PAYMENTS_REFUSED payments are disabled in this process');
+    expect(result.stdout).not.toContain('PAYMENTS_LOADED');
+    expect(result.stdout + result.stderr).not.toContain('fake-live-secret');
+  }, 70_000);
+});

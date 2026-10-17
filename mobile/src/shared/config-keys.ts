@@ -20,6 +20,7 @@
  */
 
 import { CodPolicy, OrderStatus } from "./enums";
+import { AppUpdateMode, type AppUpdatePolicy } from "./app-version";
 
 export const ConfigKey = {
   /* serviceability */
@@ -82,6 +83,9 @@ export const ConfigKey = {
 
   /* customer home page */
   HOME_CATEGORY_ORDER: "HOME_CATEGORY_ORDER",
+
+  /* mobile app updates */
+  APP_UPDATE_POLICY: "APP_UPDATE_POLICY",
 } as const;
 
 export type ConfigKey = (typeof ConfigKey)[keyof typeof ConfigKey];
@@ -146,6 +150,8 @@ export interface ConfigValues {
    * automatically, so a new category never needs this list to appear.
    */
   HOME_CATEGORY_ORDER: string[];
+  /** Optional / mandatory app updates per platform (app-version.ts). Managed from Admin → App Updates. */
+  APP_UPDATE_POLICY: AppUpdatePolicy;
 }
 
 /**
@@ -209,6 +215,24 @@ export const CONFIG_DEFAULTS: ConfigValues = {
   DELIVERY_PROMISE_TEXT: "in 30 minutes",
 
   HOME_CATEGORY_ORDER: [],
+
+  // Off until an admin turns it on: a missing or unreadable policy never
+  // locks anyone out. The Android link is the official listing of this app's
+  // package (in.adione.app); the iOS listing is not known yet.
+  APP_UPDATE_POLICY: {
+    enabled: false,
+    mode: AppUpdateMode.OPTIONAL,
+    blockUnversionedClients: false,
+    title: "Update available",
+    message: "A new version of Aadione is available with improvements and fixes. Please update to continue enjoying the best experience.",
+    releaseNotes: null,
+    android: {
+      latestVersion: null,
+      minimumVersion: null,
+      storeUrl: "https://play.google.com/store/apps/details?id=in.adione.app",
+    },
+    ios: { latestVersion: null, minimumVersion: null, storeUrl: null },
+  },
 };
 
 /**
@@ -339,4 +363,7 @@ export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
 
   HOME_CATEGORY_ORDER:
     "Top categories (by path) the customer Home page shows first, in order. Other categories follow automatically. Managed from Admin → Banners → Home page category order.",
+
+  APP_UPDATE_POLICY:
+    "Optional / mandatory mobile app updates per platform: latest and minimum supported versions, store links and the update message. Managed from Admin → App Updates.",
 };

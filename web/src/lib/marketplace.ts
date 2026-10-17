@@ -26,7 +26,8 @@ export type VisibilityReason =
   | 'OFF_SALE'
   | 'OUT_OF_STOCK';
 
-export type StockState = 'IN_STOCK' | 'LOW' | 'OUT';
+/** MADE_TO_ORDER: food with no stock count — never in stock totals. */
+export type StockState = 'IN_STOCK' | 'LOW' | 'OUT' | 'MADE_TO_ORDER';
 
 export interface MarketplaceProductRow {
   key: string;
@@ -245,6 +246,8 @@ export interface CatalogueProduct {
   listingCount: number;
   minPricePaise: number | null;
   availableQty: number;
+  /** Absent from older servers. */
+  madeToOrder?: boolean;
   updatedAt: string;
 }
 

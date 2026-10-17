@@ -216,7 +216,8 @@ async function findOwnProducts(sellerId: string, productId?: string): Promise<Se
     pricePaise: row.pricePaise,
     stockQty: row.stockQty,
     reservedQty: row.reservedQty,
-    availableQty: Math.max(0, row.stockQty - row.reservedQty),
+    // Made-to-order food has no stock count (inventory/stock-rules.ts).
+    availableQty: row.tracksStock ? Math.max(0, row.stockQty - row.reservedQty) : 0,
     isAvailable: row.isAvailable,
     tracksStock: row.tracksStock,
     lowStockThreshold: row.lowStockThreshold,

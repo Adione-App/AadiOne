@@ -36,6 +36,8 @@ import { requireSellerLifecycleAccess } from '../middleware/sellerLifecycle';
 import { sellerLifecycleRouter } from '../modules/sellers/seller-lifecycle.routes';
 import { authenticatedApiLimit } from '../middleware/rateLimit';
 import { paymentRouter } from '../modules/payments/payment.routes';
+import { appVersionRouter } from '../modules/app-version/app-version.routes';
+import { requireSupportedAppVersion, requireSupportedAppVersionForPayments } from '../middleware/appVersion';
 import {
   deviceRouter,
   notificationRouter,
@@ -49,6 +51,8 @@ export const apiRouter: Router = Router();
 apiRouter.use(publicApiLimit);
 
 apiRouter.use('/config', configurationRouter);
+// Public, never version-gated: an app that must update has to learn that.
+apiRouter.use('/app-version', appVersionRouter);
 apiRouter.use('/legal', legalRouter);
 apiRouter.use('/auth', authRouter);
 apiRouter.use('/store', sellerRouter);
@@ -56,15 +60,19 @@ apiRouter.use('/', catalogRouter);
 apiRouter.use('/restaurants', restaurantRouter);
 apiRouter.use('/offers', offerRouter);
 apiRouter.use('/banners', bannerRouter);
-apiRouter.use('/cart', cartRouter);
-apiRouter.use('/addresses', addressRouter);
-apiRouter.use('/checkout', checkoutRouter);
-apiRouter.use('/orders', orderRouter);
-apiRouter.use('/payments', paymentRouter);
+// Customer commerce routes refuse an app below the supported version
+// (middleware/appVersion.ts — requests without app headers, i.e. the admin and
+// seller panels, webhooks and integrations, pass untouched; payment
+// verification and the gateway webhook are always open).
+apiRouter.use('/cart', requireSupportedAppVersion, cartRouter);
+apiRouter.use('/addresses', requireSupportedAppVersion, addressRouter);
+apiRouter.use('/checkout', requireSupportedAppVersion, checkoutRouter);
+apiRouter.use('/orders', requireSupportedAppVersion, orderRouter);
+apiRouter.use('/payments', requireSupportedAppVersionForPayments, paymentRouter);
 apiRouter.use('/notifications', notificationRouter);
 apiRouter.use('/devices', deviceRouter);
-apiRouter.use('/referrals', referralRouter);
-apiRouter.use('/rewards', rewardsRouter);
+apiRouter.use('/referrals', requireSupportedAppVersion, referralRouter);
+apiRouter.use('/rewards', requireSupportedAppVersion, rewardsRouter);
 apiRouter.use('/admin', adminRouter);
 apiRouter.use(
   '/seller',

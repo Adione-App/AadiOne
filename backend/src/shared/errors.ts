@@ -18,6 +18,8 @@ export const ErrorCode = {
   INTERNAL_ERROR: 'INTERNAL_ERROR',
   SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
   RATE_LIMITED: 'RATE_LIMITED',
+  /** The installed app is below the version the customer APIs accept (see app-version.ts). */
+  APP_UPDATE_REQUIRED: 'APP_UPDATE_REQUIRED',
 
   /* auth ---------------------------------------------------------------- */
   UNAUTHENTICATED: 'UNAUTHENTICATED',
@@ -105,6 +107,7 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   INTERNAL_ERROR: 500,
   SERVICE_UNAVAILABLE: 503,
   RATE_LIMITED: 429,
+  APP_UPDATE_REQUIRED: 426,
 
   UNAUTHENTICATED: 401,
   TOKEN_EXPIRED: 401,
@@ -182,6 +185,7 @@ export const ERROR_DEFAULT_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   INTERNAL_ERROR: 'Something went wrong at our end. Please try again.',
   SERVICE_UNAVAILABLE: 'Service is temporarily unavailable. Please try again shortly.',
   RATE_LIMITED: 'Too many requests. Please wait a moment and try again.',
+  APP_UPDATE_REQUIRED: 'Please update Aadione from the Play Store or App Store to continue.',
 
   UNAUTHENTICATED: 'Please log in to continue.',
   TOKEN_EXPIRED: 'Your session has expired. Please log in again.',

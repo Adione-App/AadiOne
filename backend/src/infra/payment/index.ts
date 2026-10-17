@@ -240,6 +240,13 @@ function createCashfreeProvider(): CashfreeProvider {
 }
 
 function createProvider(): PaymentProvider {
+  // Set by `scripts/with-env.mjs --no-payments`: the process was started
+  // without payment settings, so a provider here would be the dev mock — fail
+  // instead of silently "paying" or "refunding" from a maintenance script.
+  if (process.env['ADIONE_PAYMENTS_DISABLED'] === '1') {
+    throw new Error('payments are disabled in this process (with-env --no-payments); it must not load the payment provider');
+  }
+
   const provider =
     env.PAYMENT_PROVIDER === 'upi_intent'
       ? new UpiIntentProvider()

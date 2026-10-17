@@ -84,7 +84,8 @@ function toDto(listing: ListingRow): SellerListingInventoryDto {
     mrpPaise: listing.mrpPaise,
     pricePaise: listing.pricePaise,
     stockQty: listing.stockQty,
-    availableQty: Math.max(0, listing.stockQty - listing.reservedQty),
+    // Made-to-order food has no stock count (inventory/stock-rules.ts).
+    availableQty: listing.tracksStock ? Math.max(0, listing.stockQty - listing.reservedQty) : 0,
     isAvailable: listing.isAvailable,
     tracksStock: listing.tracksStock,
     reservedQty: listing.reservedQty,

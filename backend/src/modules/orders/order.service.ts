@@ -682,7 +682,10 @@ export async function placeOrder(
           });
         }
 
-        if (offer.availableQty < item.qty) {
+        // Stock is checked for TRACKED listings only: a made-to-order food item
+        // has no stock count (inventory/stock-rules.ts) — its limit is the
+        // per-order one checked below.
+        if (offer.tracksStock && offer.availableQty < item.qty) {
           throw new AppError(ErrorCode.ITEM_OUT_OF_STOCK, {
             message:
               offer.availableQty === 0

@@ -20,6 +20,7 @@
 import { Prisma, type Category } from "@prisma/client";
 import { ProductStatus } from "../../shared";
 import { prisma, type DbClient } from "../../infra/db/prisma";
+import { hasStockToSellSql } from "../inventory/stock-rules";
 
 /** SQL predicate on `sellers s`: a live marketplace seller — not a food seller (restaurant/cafe). */
 export const MARKETPLACE_SELLER_SQL = Prisma.sql`s.deleted_at IS NULL AND s.is_active AND s.onboarding_status = 'APPROVED' AND s.seller_type NOT IN ('RESTAURANT', 'CAFE')`;
@@ -220,7 +221,7 @@ export async function listProductIds(
   client: DbClient = prisma,
 ): Promise<ProductIdRow[]> {
   const stockFilter = input.inStockOnly
-    ? Prisma.sql`AND sl.is_available AND (sl.stock_qty - sl.reserved_qty) > 0`
+    ? Prisma.sql`AND sl.is_available AND ${hasStockToSellSql('sl')}`
     : Prisma.empty;
 
   const categoryFilter = input.categoryPath
@@ -297,7 +298,7 @@ export async function listCategoryShelfCandidates(
     WHERE ${PUBLIC_PRODUCT_SQL}
       AND (c.path = ${topPath} OR c.path LIKE ${`${topPath}/%`})
       AND sl.is_available
-      AND (sl.stock_qty - sl.reserved_qty) > 0
+      AND ${hasStockToSellSql('sl')}
     GROUP BY p.id, c.path, p.popularity_score, p.created_at
     ORDER BY p.popularity_score DESC, p.created_at DESC, p.id DESC
     LIMIT ${limit}`;
@@ -455,7 +456,7 @@ export async function listRailProductIds(
     WHERE ${PUBLIC_PRODUCT_SQL}
 
       AND sl.is_available
-      AND (sl.stock_qty - sl.reserved_qty) > 0
+      AND ${hasStockToSellSql('sl')}
 
       ${filter}
 
@@ -514,7 +515,7 @@ export async function sellerCatalogueStats(
         FROM products p
         ${LISTED_JOINS}
         WHERE ${PUBLIC_PRODUCT_SQL} ${scope}
-          AND sl.is_available AND (sl.stock_qty - sl.reserved_qty) > 0
+          AND sl.is_available AND ${hasStockToSellSql('sl')}
       )
       SELECT seller_id, url FROM (
         SELECT sp.seller_id, COALESCE(pi.thumb_url, pi.url) AS url,
@@ -558,7 +559,7 @@ export async function listRelatedProductIds(
       AND p.id <> ${excludeProductId}::uuid
       AND ${PUBLIC_PRODUCT_SQL}
       AND sl.is_available
-      AND (sl.stock_qty - sl.reserved_qty) > 0
+      AND ${hasStockToSellSql('sl')}
     GROUP BY p.id, p.popularity_score
     ORDER BY p.popularity_score DESC, p.id ASC
     LIMIT ${limit}`;

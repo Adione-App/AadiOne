@@ -44,6 +44,7 @@ import * as repository from "./catalog.repository";
 import { MARKETPLACE_SELLER_WHERE, type HydratedProduct, type ProductSort } from "./catalog.repository";
 import { HOME_TOP_PLACEMENT, listActiveBanners, listActiveBannersByPlacement } from "../banners/banner.service";
 import { balanceBySubcategory, orderByPreference } from "./home-selection";
+import { hasStockToSell, sellableQty } from "../inventory/stock-rules";
 
 /* -------------------------------------------------------------------------- */
 /* Category tree                                                              */
@@ -277,7 +278,7 @@ type Offer = HydratedProduct["variants"][number]["sellerListings"][number];
 
 /** In stock first, then the lowest price, then the oldest listing (stable). */
 function bestOffer(offers: Offer[]): Offer | undefined {
-  const inStock = (offer: Offer) => offer.isAvailable && offer.stockQty - offer.reservedQty > 0;
+  const inStock = (offer: Offer) => offer.isAvailable && hasStockToSell(offer);
   return [...offers].sort(
     (a, b) =>
       Number(inStock(b)) - Number(inStock(a)) ||
@@ -297,7 +298,9 @@ function toVariantDto(
   // thing, so it is omitted rather than shown as unavailable.
   if (!offer) return null;
 
-  const availableQty = Math.max(0, offer.stockQty - offer.reservedQty);
+  // Tracked: stock left. Made-to-order food: the per-order limit — never a
+  // fabricated stock count (inventory/stock-rules.ts).
+  const availableQty = sellableQty({ ...offer, maxQtyPerOrder: offer.maxQtyPerOrder || context.defaultMaxQty });
 
   const allowCod =
     resolveItemCodPolicy(
@@ -591,7 +594,7 @@ export async function subscribeBackInStock(
   const offer = await prisma.sellerListing.findFirst({
     where: { variantId, seller: MARKETPLACE_SELLER_WHERE },
     orderBy: [{ pricePaise: "asc" }, { createdAt: "asc" }],
-    select: { id: true, sellerId: true, stockQty: true, reservedQty: true, isAvailable: true },
+    select: { id: true, sellerId: true, stockQty: true, reservedQty: true, tracksStock: true, isAvailable: true },
   });
 
   if (!offer) {
@@ -602,7 +605,7 @@ export async function subscribeBackInStock(
 
   // Already back — say so rather than promising a notification that would fire
   // immediately and look broken.
-  if (offer.isAvailable && offer.stockQty - offer.reservedQty > 0) {
+  if (offer.isAvailable && hasStockToSell(offer)) {
     throw new AppError(ErrorCode.VALIDATION_ERROR, {
       message: "Good news — this item is already back in stock.",
     });

@@ -16,6 +16,7 @@ import { prisma } from '../db/prisma';
 import { env } from '../../config/env';
 import { moduleLogger } from '../../common/logger';
 import { expandSearchTerms } from './aliases';
+import { hasStockToSellSql } from '../../modules/inventory/stock-rules';
 
 const log = moduleLogger('search');
 
@@ -154,7 +155,7 @@ class PostgresSearchProvider implements SearchProvider {
           AND v.deleted_at IS NULL
           ${
             query.inStockOnly
-              ? Prisma.sql`AND sl.is_available AND (sl.stock_qty - sl.reserved_qty) > 0`
+              ? Prisma.sql`AND sl.is_available AND ${hasStockToSellSql('sl')}`
               : Prisma.empty
           }
       )

@@ -45,6 +45,7 @@ import { AppError } from '../../common/errors';
 import { hashPassword } from '../../common/crypto';
 import { moduleLogger } from '../../common/logger';
 import { maskMobile } from '../../shared/phone';
+import { findMobileConflict, sellerSignupConflictError } from './seller-mobile-conflict';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import * as notificationService from '../notifications/notification.service';
 import * as tokenService from '../auth/token.service';
@@ -192,7 +193,11 @@ export interface SellerSignupResult extends AuthResponse {
  * is never shown to customers — onboardingStatus stays PENDING).
  *
  * An existing account's mobile or email is refused (409), as in customer
- * signup — never silently attached: the applicant has proven neither.
+ * signup — never silently attached: the applicant has proven neither. The
+ * refusal names WHICH kind of account holds the number (seller, former
+ * seller, shopping customer, staff — seller-mobile-conflict.ts), so the
+ * applicant knows what to do; a lost race on the unique index answers the
+ * same way.
  */
 export async function signupSeller(
   input: SellerSignupRequest,
@@ -202,16 +207,11 @@ export async function signupSeller(
   const fullName = input.fullName.trim();
   const businessName = input.businessName.trim();
 
-  const [byMobile, byEmail] = await Promise.all([
-    prisma.user.findUnique({ where: { mobile: input.mobile }, select: { id: true } }),
+  const [mobileConflict, byEmail] = await Promise.all([
+    findMobileConflict(prisma, input.mobile),
     prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: { id: true } }),
   ]);
-  if (byMobile) {
-    throw new AppError(ErrorCode.MOBILE_ALREADY_REGISTERED, {
-      message: 'An Aadione account with this mobile number already exists. Sign in instead, or use another number.',
-      internalMessage: `seller signup: mobile ${maskMobile(input.mobile)} already registered`,
-    });
-  }
+  if (mobileConflict.kind !== 'NONE') throw sellerSignupConflictError(mobileConflict, input.mobile);
   if (byEmail) {
     throw new AppError(ErrorCode.EMAIL_ALREADY_REGISTERED, {
       message: 'An Aadione account with this email already exists. Sign in instead, or use another email.',
@@ -291,10 +291,14 @@ export async function signupSeller(
       return { user, sellerId: seller.id };
     });
   } catch (error) {
-    // A concurrent signup with the same mobile/email lost the race.
+    // A concurrent signup with the same mobile/email lost the race: say
+    // exactly what now holds the number (or the email), as above.
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, {
-        message: 'This mobile number or email is already registered.',
+      const conflict = await findMobileConflict(prisma, input.mobile);
+      if (conflict.kind !== 'NONE') throw sellerSignupConflictError(conflict, input.mobile);
+      throw new AppError(ErrorCode.EMAIL_ALREADY_REGISTERED, {
+        message: 'An Aadione account with this email already exists. Sign in instead, or use another email.',
+        internalMessage: `seller signup: unique conflict for mobile ${maskMobile(input.mobile)}`,
       });
     }
     throw error;

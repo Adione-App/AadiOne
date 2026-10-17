@@ -16,7 +16,8 @@
 
 import Constants from "expo-constants";
 import * as SecureStore from "expo-secure-store";
-import type { ApiError, ApiErrorDetail, ApiResponse, ErrorCode } from "@shared";
+import type { ApiError, ApiErrorDetail, ApiResponse, AppUpdateCheckDto, ErrorCode } from "@shared";
+import { appVersionHeaders } from "./appVersion";
 
 const BASE_URL =
   process.env["EXPO_PUBLIC_API_URL"] ??
@@ -209,6 +210,18 @@ export function onSessionExpired(handler: () => void): void {
   onSessionLost = handler;
 }
 
+let onUpdateRequired: ((update: AppUpdateCheckDto | null) => void) | null = null;
+
+/**
+ * Called whenever the server refuses a request with APP_UPDATE_REQUIRED (this
+ * installed version is below the supported one) — wherever in the app the
+ * request came from. The handler switches the app to its update screen; the
+ * request itself still fails with the server's message as usual.
+ */
+export function onAppUpdateRequired(handler: (update: AppUpdateCheckDto | null) => void): void {
+  onUpdateRequired = handler;
+}
+
 let refreshInFlight: Promise<boolean> | null = null;
 
 async function refreshSession(): Promise<boolean> {
@@ -311,6 +324,9 @@ async function performRequest<T>(
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...NGROK_HEADERS,
+    // X-App-Platform / X-App-Version / X-App-Build: the server enforces the
+    // minimum supported version on the customer APIs (app-version.ts).
+    ...appVersionHeaders(),
   };
 
   if (accessToken) {
@@ -358,6 +374,11 @@ async function performRequest<T>(
 
     if (!body || body.success === false) {
       const error = (body as ApiError | null)?.error;
+
+      if (error?.code === "APP_UPDATE_REQUIRED") {
+        const update = error.details?.find((detail) => detail.field === "appUpdate")?.["update"];
+        onUpdateRequired?.((update as AppUpdateCheckDto | undefined) ?? null);
+      }
 
       throw new ApiRequestError(
         (error?.code ?? "INTERNAL_ERROR") as ErrorCode,

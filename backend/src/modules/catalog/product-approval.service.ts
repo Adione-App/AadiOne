@@ -136,12 +136,12 @@ export interface CreateSellerProductInput {
 }
 
 /**
- * The fixed capacity a made-to-order food listing (tracksStock = false)
- * carries: orders reserve against it but never use it up (inventory.service),
- * so availability is the seller's on/off switch alone. Equals the listing
- * routes' stock maximum.
+ * A made-to-order food listing (tracksStock = false) has NO stock count:
+ * stock_qty / reserved_qty stay 0 and are never read, orders reserve nothing,
+ * and availability is the seller's on/off switch alone
+ * (inventory/stock-rules.ts). It used to be given a fabricated 100000.
  */
-export const FOOD_ITEM_CAPACITY = 100_000;
+const FOOD_NO_STOCK = 0;
 
 /** A food item's variant: one portion, no seller-visible SKU or unit. */
 function foodSku(): string {
@@ -200,7 +200,7 @@ export async function createSellerProduct(
     listingData = {
       mrpPaise: input.pricePaise,
       pricePaise: input.pricePaise,
-      stockQty: FOOD_ITEM_CAPACITY,
+      stockQty: FOOD_NO_STOCK,
       tracksStock: false,
       isAvailable: input.isAvailable ?? true,
     };
@@ -431,7 +431,7 @@ async function applyListingChanges(
         variantId,
         mrpPaise: input.pricePaise,
         pricePaise: input.pricePaise,
-        stockQty: FOOD_ITEM_CAPACITY,
+        stockQty: FOOD_NO_STOCK,
         tracksStock: false,
         isAvailable: true,
       },

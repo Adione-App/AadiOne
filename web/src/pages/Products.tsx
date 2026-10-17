@@ -221,7 +221,9 @@ export default function ProductsPage() {
                         )}
                       </td>
                       <td className="whitespace-nowrap px-3 py-3">
-                        {row.listing ? (
+                        {row.listing && row.listing.stock === 'MADE_TO_ORDER' ? (
+                          <StockBadge state="MADE_TO_ORDER" />
+                        ) : row.listing ? (
                           <div className="space-y-1">
                             <p className="tabular-nums text-gray-900">
                               <span className="font-semibold">{row.listing.availableQty}</span> available

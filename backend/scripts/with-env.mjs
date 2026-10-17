@@ -10,7 +10,10 @@
  * PowerShell, cmd, and bash without any shell-specific env-var prefix.
  *
  * Usage:
- *   node scripts/with-env.mjs <envFile> <command> [args...]
+ *   node scripts/with-env.mjs [--no-payments] <envFile> <command> [args...]
+ *
+ * --no-payments: for maintenance scripts that never take or refund money —
+ * the command runs with no payment settings at all (see below).
  *
  * Example (what `db:migrate:v2` runs under the hood):
  *   node scripts/with-env.mjs .env.v2 prisma migrate dev
@@ -31,7 +34,17 @@ const backendRoot = path.resolve(
   "..",
 );
 
-const [envFileArg, command, ...commandArgs] = process.argv.slice(2);
+// `--no-payments` (before the env file): the command gets NO payment settings
+// at all — no gateway credentials, no provider, no Cashfree environment. For
+// maintenance scripts that never take or refund money (seller cleanup, stock
+// backfill, diagnostics): they then run under the env file's own NODE_ENV
+// without needing live keys, and src/infra/payment refuses to start a
+// provider in such a process.
+const cliArgs = process.argv.slice(2);
+const noPayments = cliArgs[0] === "--no-payments";
+if (noPayments) cliArgs.shift();
+
+const [envFileArg, command, ...commandArgs] = cliArgs;
 
 if (!envFileArg || !command) {
   console.error(
@@ -72,6 +85,13 @@ if (!process.env["DATABASE_URL"] || !process.env["DATABASE_URL"].trim()) {
 // Downstream code (src/config/env.ts, prisma/seed/index.ts) checks this to
 // know it must load ONLY this file — never falling back to backend/.env.
 process.env["ENV_FILE"] = envFileArg;
+
+// src/config/env.ts re-reads ENV_FILE itself, so the payment settings are
+// withheld THERE, after that load (withholdPaymentSettings).
+if (noPayments) {
+  process.env["ADIONE_PAYMENTS_DISABLED"] = "1";
+  console.error("[with-env] --no-payments: payment settings are withheld from this command");
+}
 
 const child = spawnSync(command, commandArgs, {
   cwd: backendRoot,

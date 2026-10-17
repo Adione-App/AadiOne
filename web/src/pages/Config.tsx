@@ -450,7 +450,8 @@ export default function ConfigPage() {
   }
 
   // The Home category order has its own editor (Banners → Home page category order).
-  const entries = config.data.filter((entry) => entry.key !== "HOME_CATEGORY_ORDER");
+  // Managed on their own pages: Banners → Home page category order, and App Updates.
+  const entries = config.data.filter((entry) => entry.key !== "HOME_CATEGORY_ORDER" && entry.key !== "APP_UPDATE_POLICY");
 
   /**
    * Group configuration entries.

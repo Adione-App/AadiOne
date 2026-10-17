@@ -22,7 +22,7 @@ import { hashPassword } from '../../src/common/crypto';
 import { cache } from '../../src/infra/cache';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as otpService from '../../src/modules/auth/otp.service';
-import { commitReservation, restockCommitted } from '../../src/modules/inventory/inventory.service';
+import { commitReservation, releaseReservation, reserveStock, restockCommitted } from '../../src/modules/inventory/inventory.service';
 import { runInTransaction } from '../../src/infra/db/prisma';
 
 const ADMIN = { email: 'owner@adione.test', password: 'TestAdmin@123' };
@@ -235,19 +235,24 @@ describe.each([
     await as(seller.token).delete(`/seller/subcategories/${section.id}`).expect(200);
   });
 
-  it('orders never use up a made-to-order food item (commit and cancel leave its capacity alone)', async () => {
+  it('a made-to-order food item has no stock count: created with 0, and reserve / commit / release / restock never touch it', async () => {
     const seller = await seedSeller(mobile, type);
     const section = await addSection(seller, await addMenu(seller, menus[0]!), names[0]!);
     const item = await addFoodItem(seller, section.id);
-    const before = await prisma.sellerListing.findUniqueOrThrow({ where: { id: item.listingId } });
-    await prisma.sellerListing.update({ where: { id: item.listingId }, data: { reservedQty: 3 } });
+    const created = await prisma.sellerListing.findUniqueOrThrow({ where: { id: item.listingId } });
+    // Never a fabricated stock (it used to be 100000).
+    expect([created.tracksStock, created.stockQty, created.reservedQty]).toEqual([false, 0, 0]);
+    const variantId = created.variantId;
+    const line = [{ sellerListingId: item.listingId, variantId, qty: 3 }];
 
-    await runInTransaction((tx) => commitReservation(tx, [{ sellerListingId: item.listingId, qty: 3 }], randomUUID()));
-    let after = await prisma.sellerListing.findUniqueOrThrow({ where: { id: item.listingId } });
-    expect([after.stockQty, after.reservedQty]).toEqual([before.stockQty, 0]);
-    await runInTransaction((tx) => restockCommitted(tx, [{ sellerListingId: item.listingId, qty: 3 }], randomUUID()));
-    after = await prisma.sellerListing.findUniqueOrThrow({ where: { id: item.listingId } });
-    expect(after.stockQty).toBe(before.stockQty);
+    await runInTransaction((tx) => reserveStock(tx, line, randomUUID()));
+    await runInTransaction((tx) => commitReservation(tx, line, randomUUID()));
+    await runInTransaction((tx) => releaseReservation(tx, line, randomUUID()));
+    await runInTransaction((tx) => restockCommitted(tx, line, randomUUID()));
+
+    const after = await prisma.sellerListing.findUniqueOrThrow({ where: { id: item.listingId } });
+    expect([after.stockQty, after.reservedQty]).toEqual([0, 0]);
+    expect(await prisma.stockLedger.count({ where: { sellerListingId: item.listingId } })).toBe(0);
   });
 
   it('food items go through batch approval and reach the customer menu grouped Menu → Section → Item', async () => {

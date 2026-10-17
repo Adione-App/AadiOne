@@ -50,6 +50,7 @@ export function ProductStatusBadge({ status }: { status: string }) {
 export function StockBadge({ state }: { state: StockState }) {
   if (state === 'OUT') return <Pill tone="red">Out of stock</Pill>;
   if (state === 'LOW') return <Pill tone="amber">Low stock</Pill>;
+  if (state === 'MADE_TO_ORDER') return <Pill tone="gray">Made to order</Pill>;
   return <Pill tone="brand">In stock</Pill>;
 }
 

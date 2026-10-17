@@ -82,6 +82,23 @@ if (isTestRun) {
   }
 }
 
+/**
+ * `scripts/with-env.mjs --no-payments`: a maintenance script that never takes
+ * or refunds money (seller cleanup, stock backfill, diagnostics) runs with NO
+ * payment settings — so it neither needs nor holds live gateway keys, and the
+ * env file's own NODE_ENV stays as it is. Every other check below still runs;
+ * src/infra/payment refuses to start a provider in such a process.
+ */
+function withholdPaymentSettings(): void {
+  if (process.env["ADIONE_PAYMENTS_DISABLED"] !== "1") return;
+  const paymentVariable = /^(PAYMENT_PROVIDER|CASHFREE_\w+|RAZORPAY_\w+|UPI_VPA|UPI_PAYEE_NAME)$/;
+  for (const name of Object.keys(process.env)) {
+    if (paymentVariable.test(name)) delete process.env[name];
+  }
+}
+
+withholdPaymentSettings();
+
 /** The database name from a connection URL — never its credentials or host. */
 function databaseNameOf(url: string): string {
   try {

@@ -21,6 +21,7 @@ import { adminNotificationRouter } from '../notifications/notification.routes';
 import { adminMarketplaceRouter } from './admin-marketplace.routes';
 import { adminContentRouter } from './admin-content.routes';
 import { adminProductImportRouter } from '../product-import/import.routes';
+import { adminAppVersionRouter } from '../app-version/app-version.routes';
 
 export const adminRouter: Router = Router();
 
@@ -38,3 +39,4 @@ adminRouter.use('/', adminRestaurantRouter);
 adminRouter.use('/', adminMarketplaceRouter);
 adminRouter.use('/', adminContentRouter);
 adminRouter.use('/', adminProductImportRouter);
+adminRouter.use('/', adminAppVersionRouter);

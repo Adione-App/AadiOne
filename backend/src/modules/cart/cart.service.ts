@@ -37,6 +37,7 @@ import * as configService from "../configuration/configuration.service";
 import * as pricingService from "../pricing/pricing.service";
 import { moduleLogger } from "../../common/logger";
 import { unorderableMessage, unorderableReason } from "./orderability";
+import { trackedAvailableQty } from "../inventory/stock-rules";
 import * as sellerService from "../sellers/seller.service";
 
 const log = moduleLogger("cart");
@@ -133,7 +134,10 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
       continue;
     }
 
-    const availableQty = Math.max(0, offer.stockQty - offer.reservedQty);
+    // Tracked: stock left. Made-to-order food: no stock count — its only
+    // limit is the per-order one (inventory/stock-rules.ts).
+    const availableQty =
+      trackedAvailableQty(offer) ?? (offer.maxQtyPerOrder || config.DEFAULT_MAX_QTY_PER_ORDER);
     const inStock = offer.isAvailable && availableQty > 0;
 
     if (!inStock) {
@@ -151,7 +155,7 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
     const maxQty = offer.maxQtyPerOrder || config.DEFAULT_MAX_QTY_PER_ORDER;
     let qty = item.qty;
 
-    if (qty > availableQty) {
+    if (offer.tracksStock && qty > availableQty) {
       changes.push({
         type: "QTY_REDUCED_STOCK",
         variantId: variant.id,
@@ -422,8 +426,9 @@ export async function addItem(
   // same gate checkout applies.
   await sellerService.assertSellerAcceptingOrders(offer.seller);
 
-  const availableQty = Math.max(0, offer.stockQty - offer.reservedQty);
-  if (!offer.isAvailable || availableQty <= 0) {
+  // null = made to order (no stock count): only the switch and the per-order limit apply.
+  const availableQty = trackedAvailableQty(offer);
+  if (!offer.isAvailable || (availableQty !== null && availableQty <= 0)) {
     throw new AppError(ErrorCode.ITEM_OUT_OF_STOCK, {
       message: `${offer.variant.product.name} is out of stock.`,
     });
@@ -442,7 +447,7 @@ export async function addItem(
       message: `You can order up to ${maxQty} of this item per order.`,
     });
   }
-  if (desiredQty > availableQty) {
+  if (availableQty !== null && desiredQty > availableQty) {
     throw new AppError(ErrorCode.INSUFFICIENT_STOCK, {
       message: `Only ${availableQty} left in stock.`,
     });
@@ -487,8 +492,8 @@ export async function updateItemQty(
 
   const offer = item.sellerListing;
 
-  const availableQty = Math.max(0, offer.stockQty - offer.reservedQty);
-  if (qty > availableQty) {
+  const availableQty = trackedAvailableQty(offer);
+  if (availableQty !== null && qty > availableQty) {
     throw new AppError(ErrorCode.INSUFFICIENT_STOCK, {
       message: `Only ${availableQty} left in stock.`,
     });

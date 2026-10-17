@@ -185,12 +185,21 @@ export default function InventoryPage() {
                       <td className="px-3 py-3">
                         <SellerLink seller={row.seller} tab="products" />
                       </td>
-                      <td className="px-3 py-3 text-right tabular-nums">{row.stockQty}</td>
-                      <td className="px-3 py-3 text-right tabular-nums">{row.reservedQty}</td>
-                      <td className={`px-3 py-3 text-right font-semibold tabular-nums ${row.stock === 'OUT' ? 'text-danger-600' : row.stock === 'LOW' ? 'text-warn-500' : 'text-gray-900'}`}>
-                        {row.availableQty}
-                        <span className="block text-[11px] font-normal text-gray-400">low at {row.lowStockThreshold}</span>
-                      </td>
+                      {row.stock === 'MADE_TO_ORDER' ? (
+                        // Food made to order has no stock count — nothing to total.
+                        <td colSpan={3} className="px-3 py-3 text-right text-gray-500">
+                          Made to order
+                        </td>
+                      ) : (
+                        <>
+                          <td className="px-3 py-3 text-right tabular-nums">{row.stockQty}</td>
+                          <td className="px-3 py-3 text-right tabular-nums">{row.reservedQty}</td>
+                          <td className={`px-3 py-3 text-right font-semibold tabular-nums ${row.stock === 'OUT' ? 'text-danger-600' : row.stock === 'LOW' ? 'text-warn-500' : 'text-gray-900'}`}>
+                            {row.availableQty}
+                            <span className="block text-[11px] font-normal text-gray-400">low at {row.lowStockThreshold}</span>
+                          </td>
+                        </>
+                      )}
                       <td className="px-3 py-3">
                         <div className="flex flex-col items-start gap-1">
                           <StockBadge state={row.stock} />

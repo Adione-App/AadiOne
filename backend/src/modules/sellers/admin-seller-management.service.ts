@@ -27,6 +27,7 @@
 import type { Prisma } from '@prisma/client';
 import {
   UserRole,
+  UserStatus,
   DocumentStatus,
   ErrorCode,
   SellerLifecycleStatus,
@@ -76,6 +77,16 @@ const SELLER_INCOMPATIBLE_ROLES: readonly UserRole[] = [
   UserRole.STAFF,
   UserRole.DELIVERY_AGENT,
 ];
+
+/** A blocked account is never handed a store — the same rule seller signup
+ * applies (seller-mobile-conflict.ts); an admin unblocks it first. */
+function assertOwnerNotBlocked(existingUser: { status: UserStatus } | null): void {
+  if (existingUser?.status === UserStatus.BLOCKED) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message: 'This mobile number belongs to a blocked account. Unblock the account before making it a seller owner.',
+    });
+  }
+}
 
 /**
  * Allocates a unique `Seller.code` from the seller's name, with the same
@@ -130,6 +141,7 @@ export async function assignSellerOwner(
         internalMessage: `ownerMobile ${ownerMobile} belongs to existing user with role ${existingUser.role}`,
       });
     }
+    assertOwnerNotBlocked(existingUser);
 
     let ownerUserId: string;
     let isNewOwnerAccount: boolean;
@@ -208,6 +220,7 @@ export async function createSeller(
         internalMessage: `ownerMobile ${ownerMobile} belongs to existing user with role ${existingUser.role}`,
       });
     }
+    assertOwnerNotBlocked(existingUser);
 
     const code = await allocateSellerCode(input.name, tx);
 

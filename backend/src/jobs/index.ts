@@ -21,6 +21,7 @@ import { confirmPaymentAndPlace, transitionOrder } from '../modules/orders/order
 import * as notificationService from '../modules/notifications/notification.service';
 import { reconcileCheckoutPayments } from '../modules/payments/payment.service';
 import { cleanupProductImports, runProductImportWorker } from '../modules/product-import/import-worker';
+import { hasStockToSellSql } from '../modules/inventory/stock-rules';
 
 const log = moduleLogger('jobs');
 
@@ -149,7 +150,7 @@ export async function notifyBackInStock(): Promise<number> {
     JOIN seller_listings sl ON sl.id = s.seller_listing_id
     WHERE s.notified_at IS NULL
       AND sl.is_available
-      AND (sl.stock_qty - sl.reserved_qty) > 0
+      AND ${hasStockToSellSql('sl')}
     LIMIT 100`;
 
   for (const subscription of subscriptions) {

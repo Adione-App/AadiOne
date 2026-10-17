@@ -29,6 +29,7 @@ export * from './errors';
 export * from './api';
 export * from './permissions';
 export * from './config-keys';
+export * from './app-version';
 export * from './dto';
 export * from './product-import';
 

@@ -23,6 +23,7 @@
     "babel-preset-expo": "~57.0.0",
     "cashfree-pg-api-contract": "2.1.1",
     "expo": "~57.0.24",
+    "expo-application": "~57.0.3",
     "expo-clipboard": "~57.0.2",
     "expo-constants": "~57.0.18",
     "expo-crypto": "~57.0.3",

@@ -30,6 +30,7 @@ import CustomersPage from '@/pages/Customers';
 import DeliveryPage from '@/pages/Delivery';
 import ReferralsPage from '@/pages/Referrals';
 import ConfigPage from '@/pages/Config';
+import AppUpdatesPage from '@/pages/AppUpdates';
 import PaymentsPage from '@/pages/Payments';
 import RefundsPage from '@/pages/Refunds';
 import CommissionPage from '@/pages/Commission';
@@ -159,6 +160,15 @@ const NAV: NavItem[] = [
     title: 'Audit Logs',
     subtitle: 'Who changed what, and when',
     permission: Permission.CONFIG_WRITE,
+  },
+  {
+    to: '/app-updates',
+    label: 'App Updates',
+    icon: 'phone',
+    section: 'SYSTEM',
+    title: 'App Updates',
+    subtitle: 'Optional and mandatory customer app updates',
+    permission: Permission.CONFIG_READ,
   },
   { to: '/settings', label: 'Configuration', icon: 'config', section: 'SYSTEM', title: 'Configuration', subtitle: 'Platform settings' },
 ];
@@ -434,6 +444,7 @@ function AdminApp() {
         <Route path="/settlements" element={<SettlementsPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/audit-logs" element={<AuditLogsPage />} />
+        <Route path="/app-updates" element={<AppUpdatesPage />} />
         <Route path="/settings" element={<ConfigPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

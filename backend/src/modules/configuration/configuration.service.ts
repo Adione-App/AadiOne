@@ -22,6 +22,7 @@ import {
   PUBLIC_CONFIG_KEYS,
   type ConfigValues,
   type PublicConfig,
+  validateAppUpdatePolicy,
 } from '@shared';
 import type { Prisma } from '@prisma/client';
 import { cache, CacheKey } from '../../infra/cache';
@@ -279,6 +280,14 @@ function validateValue(key: keyof ConfigValues, value: unknown): void {
       if (typeof path !== 'string' || !CATEGORY_PATH_PATTERN.test(path)) fail('each entry must be a top-level category path such as "grocery"');
     }
     if (new Set(paths).size !== paths.length) fail('a category can be listed only once');
+  }
+
+  // The full app-update rules (versions, store links) — the same check as the
+  // dedicated admin endpoint, so the generic PATCH /admin/config cannot store
+  // a policy that would lock customers out by mistake.
+  if (key === ConfigKey.APP_UPDATE_POLICY) {
+    const issues = validateAppUpdatePolicy(value);
+    if (issues.length > 0) fail(issues.map((issue) => issue.message).join('; '));
   }
 
   if (key === ConfigKey.DEFAULT_COD_POLICY) {

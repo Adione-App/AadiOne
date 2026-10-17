@@ -26,6 +26,7 @@ import { prisma } from '../../infra/db/prisma';
 import { listingVisibility, type ListingVisibility, type ListingVisibilityReason } from '../catalog/listing-visibility';
 import * as settlementService from '../sellers/seller-settlement.service';
 import { maskMobile, paginate, paymentOutcome, redactAuditValue, refundSummary, stockState, type Paged, type StockState } from './admin-marketplace-views';
+import { trackedAvailableQty } from '../inventory/stock-rules';
 
 /** Upper bound on rows a monitoring view loads before filtering. */
 const ROW_CAP = 5000;
@@ -49,6 +50,7 @@ const LISTING_SELECT = {
   mrpPaise: true,
   stockQty: true,
   reservedQty: true,
+  tracksStock: true,
   isAvailable: true,
   lowStockThreshold: true,
   updatedAt: true,
@@ -147,9 +149,18 @@ export function mergeVariantRows(rows: MarketplaceProductRow[]): MarketplaceProd
     if (group.length === 1) return group[0]!;
     const listings = group.map((r) => r.listing).filter((l): l is NonNullable<MarketplaceProductRow['listing']> => l !== null);
     const cheapest = listings.reduce((a, b) => (b.pricePaise < a.pricePaise ? b : a));
-    const sum = (pick: (l: (typeof listings)[number]) => number) => listings.reduce((n, l) => n + pick(l), 0);
-    const states = listings.map((l) => l.stock);
-    const stock: StockState = states.every((s) => s === 'OUT') ? 'OUT' : states.some((s) => s !== 'IN_STOCK') ? 'LOW' : 'IN_STOCK';
+    // Made-to-order listings have no stock count: kept out of every quantity sum.
+    const sum = (pick: (l: (typeof listings)[number]) => number) =>
+      listings.reduce((n, l) => (l.stock === 'MADE_TO_ORDER' ? n : n + pick(l)), 0);
+    const states = listings.map((l) => l.stock).filter((s) => s !== 'MADE_TO_ORDER');
+    const stock: StockState =
+      states.length === 0
+        ? 'MADE_TO_ORDER'
+        : states.every((s) => s === 'OUT')
+          ? 'OUT'
+          : states.some((s) => s !== 'IN_STOCK')
+            ? 'LOW'
+            : 'IN_STOCK';
     const first = group[0]!;
     return {
       ...first,
@@ -213,8 +224,8 @@ export async function listMarketplaceProducts(
         id: l.id,
         pricePaise: l.pricePaise,
         mrpPaise: l.mrpPaise,
-        stockQty: l.stockQty,
-        reservedQty: l.reservedQty,
+        stockQty: l.tracksStock ? l.stockQty : 0,
+        reservedQty: l.tracksStock ? l.reservedQty : 0,
         availableQty,
         isAvailable: l.isAvailable,
         stock: state,
@@ -388,8 +399,8 @@ export async function listMarketplaceInventory(query: {
       seller: { id: l.seller.id, name: l.seller.name },
       product: { id: product.id, name: product.name, variantName: l.variant.variantName, imageUrl: imageOf(product), category: product.category.name },
       pricePaise: l.pricePaise,
-      stockQty: l.stockQty,
-      reservedQty: l.reservedQty,
+      stockQty: l.tracksStock ? l.stockQty : 0,
+      reservedQty: l.tracksStock ? l.reservedQty : 0,
       availableQty,
       lowStockThreshold: l.lowStockThreshold,
       isAvailable: l.isAvailable,
@@ -416,7 +427,7 @@ export async function listMarketplaceInventory(query: {
   };
 
   // Most urgent first: out of stock, then low, then the rest by name.
-  const rank = (r: MarketplaceInventoryRow) => (r.stock === 'OUT' ? 0 : r.stock === 'LOW' ? 1 : 2);
+  const rank = (r: MarketplaceInventoryRow) => (r.stock === 'OUT' ? 0 : r.stock === 'LOW' ? 1 : r.stock === 'IN_STOCK' ? 2 : 3);
   const filtered = rows
     .filter(
       (r) =>
@@ -723,8 +734,10 @@ export interface CatalogueProductRow {
   listingCount: number;
   /** Lowest price across the product's listings; null when not listed yet. */
   minPricePaise: number | null;
-  /** Sum of available stock across the product's listings. */
+  /** Sum of available physical stock across the product's listings (0 for made-to-order food). */
   availableQty: number;
+  /** Every listing is made-to-order food (no stock count). */
+  madeToOrder: boolean;
   updatedAt: string;
 }
 
@@ -796,7 +809,7 @@ export async function getMarketplaceCatalogue(query: { sellerId?: string; q?: st
         images: { orderBy: { displayOrder: 'asc' }, take: 1, select: { url: true, thumbUrl: true } },
         variants: {
           where: { deletedAt: null },
-          select: { sellerListings: { select: { pricePaise: true, stockQty: true, reservedQty: true, isAvailable: true } } },
+          select: { sellerListings: { select: { pricePaise: true, stockQty: true, reservedQty: true, tracksStock: true, isAvailable: true } } },
         },
       },
       orderBy: { name: 'asc' },
@@ -821,7 +834,9 @@ export async function getMarketplaceCatalogue(query: { sellerId?: string; q?: st
       categoryId: p.categoryId,
       listingCount: listings.length,
       minPricePaise: listings.length ? Math.min(...listings.map((l) => l.pricePaise)) : null,
-      availableQty: listings.reduce((sum, l) => sum + Math.max(0, l.stockQty - l.reservedQty), 0),
+      // Physical units only — made-to-order food has no stock count.
+      availableQty: listings.reduce((sum, l) => sum + (trackedAvailableQty(l) ?? 0), 0),
+      madeToOrder: listings.length > 0 && listings.every((l) => !l.tracksStock),
       updatedAt: p.updatedAt.toISOString(),
     };
   };

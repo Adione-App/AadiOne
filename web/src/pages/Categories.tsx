@@ -458,7 +458,7 @@ function ProductList({ products, empty }: { products: CatalogueProduct[]; empty:
           </div>
           <div className="text-right text-xs text-gray-600">
             <p className="font-semibold text-gray-900">{p.minPricePaise === null ? 'Not listed' : formatPaise(p.minPricePaise)}</p>
-            <p>{p.listingCount === 0 ? '—' : `${p.availableQty} available`}</p>
+            <p>{p.listingCount === 0 ? '—' : p.madeToOrder ? 'Made to order' : `${p.availableQty} available`}</p>
           </div>
           <div className="flex flex-wrap gap-1.5">
             <ApprovalBadge status={p.approvalStatus} />

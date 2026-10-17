@@ -8,17 +8,20 @@
 /* stock                                                                      */
 /* -------------------------------------------------------------------------- */
 
-export type StockState = 'IN_STOCK' | 'LOW' | 'OUT';
+/** MADE_TO_ORDER: a food item with no stock count (inventory/stock-rules.ts) — never in stock totals. */
+export type StockState = 'IN_STOCK' | 'LOW' | 'OUT' | 'MADE_TO_ORDER';
 
 /**
  * One listing's stock state, with the SAME definitions the seller panel uses
  * (listing-visibility.ts): available = stock − reserved; out = nothing
  * available; low = something available but at or under the threshold.
  */
-export function stockState(listing: { stockQty: number; reservedQty: number; lowStockThreshold: number }): {
+export function stockState(listing: { tracksStock: boolean; stockQty: number; reservedQty: number; lowStockThreshold: number }): {
   availableQty: number;
   state: StockState;
 } {
+  // No stock count at all: 0 units in every total, never "low" or "out".
+  if (listing.tracksStock === false) return { availableQty: 0, state: 'MADE_TO_ORDER' };
   const availableQty = Math.max(0, listing.stockQty - listing.reservedQty);
   if (availableQty <= 0) return { availableQty, state: 'OUT' };
   if (availableQty <= listing.lowStockThreshold) return { availableQty, state: 'LOW' };

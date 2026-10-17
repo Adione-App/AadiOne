@@ -16,6 +16,7 @@ import { ErrorCode, StockLedgerReason } from '../../shared';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction, type Tx } from '../../infra/db/prisma';
 import { moduleLogger } from '../../common/logger';
+import { sellableQty } from './stock-rules';
 
 const log = moduleLogger('inventory');
 
@@ -27,6 +28,9 @@ export interface LockedOffer {
   mrpPaise: number;
   stockQty: number;
   reservedQty: number;
+  /** False for a made-to-order food item: no stock count (stock-rules.ts). */
+  tracksStock: boolean;
+  /** Tracked: stock − reserved. Not tracked: the per-order limit (stock-rules.ts sellableQty). */
   availableQty: number;
   isAvailable: boolean;
   maxQtyPerOrder: number;
@@ -70,10 +74,11 @@ export async function lockOffersForUpdate(
       is_available: boolean;
       max_qty_per_order: number;
       allow_cod: string;
+      tracks_stock: boolean;
     }[]
   >`
     SELECT id, variant_id, seller_id, price_paise, mrp_paise, stock_qty,
-           reserved_qty, is_available, max_qty_per_order, allow_cod
+           reserved_qty, is_available, max_qty_per_order, allow_cod, tracks_stock
     FROM seller_listings
     WHERE seller_id = ${sellerId}::uuid
       AND variant_id IN (${Prisma.join(variantIds.map((id) => Prisma.sql`${id}::uuid`))})
@@ -91,7 +96,13 @@ export async function lockOffersForUpdate(
         mrpPaise: row.mrp_paise,
         stockQty: row.stock_qty,
         reservedQty: row.reserved_qty,
-        availableQty: Math.max(0, row.stock_qty - row.reserved_qty),
+        tracksStock: row.tracks_stock,
+        availableQty: sellableQty({
+          tracksStock: row.tracks_stock,
+          stockQty: row.stock_qty,
+          reservedQty: row.reserved_qty,
+          maxQtyPerOrder: row.max_qty_per_order,
+        }),
         isAvailable: row.is_available,
         maxQtyPerOrder: row.max_qty_per_order,
         allowCod: row.allow_cod,
@@ -139,6 +150,8 @@ export async function reserveStock(
   sellerOrderId: string,
 ): Promise<void> {
   for (const item of items) {
+    // A made-to-order food item has no stock count, so nothing is held.
+    if (!(await tracksStock(tx, item.sellerListingId))) continue;
     const updated = await tx.sellerListing.update({
       where: { id: item.sellerListingId },
       data: { reservedQty: { increment: item.qty } },
@@ -165,12 +178,9 @@ export async function commitReservation(
   sellerOrderId: string,
 ): Promise<void> {
   for (const item of items) {
-    // A made-to-order food item (tracksStock = false) only releases its hold:
-    // its fixed capacity is never used up, so nothing is written off.
-    if (!(await tracksStock(tx, item.sellerListingId))) {
-      await tx.sellerListing.update({ where: { id: item.sellerListingId }, data: { reservedQty: { decrement: item.qty } } });
-      continue;
-    }
+    // A made-to-order food item (tracksStock = false) has no stock count:
+    // nothing was held, so nothing is written off.
+    if (!(await tracksStock(tx, item.sellerListingId))) continue;
     const updated = await tx.sellerListing.update({
       where: { id: item.sellerListingId },
       data: {
@@ -198,6 +208,8 @@ export async function releaseReservation(
   reason: StockLedgerReason = StockLedgerReason.ORDER_RELEASE,
 ): Promise<void> {
   for (const item of items) {
+    // Nothing was held for a made-to-order food item.
+    if (!(await tracksStock(tx, item.sellerListingId))) continue;
     const updated = await tx.sellerListing.update({
       where: { id: item.sellerListingId },
       data: { reservedQty: { decrement: item.qty } },
@@ -470,6 +482,7 @@ export async function listLowStock(sellerId: string, limit = 50): Promise<LowSto
     JOIN product_variants v ON v.id = sl.variant_id
     JOIN products p ON p.id = v.product_id
     WHERE sl.seller_id = ${sellerId}::uuid
+      AND sl.tracks_stock
       AND (sl.stock_qty - sl.reserved_qty) <= sl.low_stock_threshold
       AND v.deleted_at IS NULL AND p.deleted_at IS NULL
     ORDER BY (sl.stock_qty - sl.reserved_qty) ASC
@@ -489,7 +502,8 @@ export async function listLowStockAllSellers(limit = 50): Promise<LowStockRow[]>
     JOIN sellers s ON s.id = sl.seller_id
     JOIN product_variants v ON v.id = sl.variant_id
     JOIN products p ON p.id = v.product_id
-    WHERE (sl.stock_qty - sl.reserved_qty) <= sl.low_stock_threshold
+    WHERE sl.tracks_stock
+      AND (sl.stock_qty - sl.reserved_qty) <= sl.low_stock_threshold
       AND v.deleted_at IS NULL AND p.deleted_at IS NULL
     ORDER BY (sl.stock_qty - sl.reserved_qty) ASC
     LIMIT ${limit}`;

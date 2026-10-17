@@ -12,6 +12,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { AppState } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as ExpoSplashScreen from "expo-splash-screen";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -27,6 +28,9 @@ import { useAuth, useLocation } from "@/lib/store";
 import { useRecentSearches } from "@/lib/recentSearches";
 import { useWishlist } from "@/lib/useWishlist";
 import { hydrateCartFromDisk } from "@/lib/useCartActions";
+import { selectUpdateRequired, useAppUpdate } from "@/lib/appUpdate";
+import { AppUpdatePrompt } from "@/components/AppUpdatePrompt";
+import UpdateRequiredScreen from "@/screens/update/UpdateRequiredScreen";
 
 import { StartupLoading } from "@/components/ui";
 import { FlyToCartOverlay } from "@/lib/flyToCart";
@@ -140,6 +144,15 @@ function RootNavigator({
   startupReady: boolean;
 }) {
   const isRestoring = useIsRestoring();
+  const updateRequired = useAppUpdate(selectUpdateRequired);
+  const update = useAppUpdate((state) => state.check);
+
+  // An update the installed version MUST take replaces the whole app — not a
+  // modal over it: no navigator is mounted, so there is no screen to go back
+  // to, no tab bar and no deep link around it (see UpdateRequiredScreen).
+  if (startupReady && updateRequired) {
+    return <UpdateRequiredScreen update={update} />;
+  }
 
   return (
     <NavigationContainer ref={navigationRef}>
@@ -208,6 +221,15 @@ export default function App() {
           useRecentSearches.getState().hydrate(),
           useWishlist.getState().hydrate(),
           hydrateCartFromDisk(),
+          // The last update answer for this installed version (offline launch).
+          useAppUpdate.getState().hydrate(),
+        ]);
+        // Ask the server about this installed version before the app shows,
+        // so a required update appears first — but never hold a slow or
+        // offline launch for long: the server enforces it on its own too.
+        await Promise.race([
+          useAppUpdate.getState().refresh({ force: true }),
+          new Promise((resolve) => setTimeout(resolve, 2500)),
         ]);
       } finally {
         if (!mounted) {
@@ -241,6 +263,20 @@ export default function App() {
       mounted = false;
     };
   }, [restore, clear]);
+
+  /* ------------------------------------------------------------------------ */
+  /* Re-check the update policy whenever the app comes back to the front      */
+  /* (e.g. from the Play Store / App Store after "Update Now").               */
+  /* ------------------------------------------------------------------------ */
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active") void useAppUpdate.getState().refresh();
+    });
+    return () => subscription.remove();
+  }, []);
+
+  const updateRequired = useAppUpdate(selectUpdateRequired);
 
   /* ------------------------------------------------------------------------ */
   /* Hide Android native splash                                               */
@@ -310,15 +346,23 @@ export default function App() {
 
         <RootNavigator status={status} startupReady={startupReady} />
 
-        {/* Mounted last so it paints above the tab bar/screens — see
-            flyToCart.tsx for why this needs to be a root-level overlay. */}
-        <FlyToCartOverlay />
+        {/* Nothing of the app is layered over a required update. */}
+        {updateRequired ? null : (
+          <>
+            {/* Mounted last so it paints above the tab bar/screens — see
+                flyToCart.tsx for why this needs to be a root-level overlay. */}
+            <FlyToCartOverlay />
 
-        {/* The variant sheet any product card opens (lib/variantSheet.ts). */}
-        <VariantSheetHost />
+            {/* The variant sheet any product card opens (lib/variantSheet.ts). */}
+            <VariantSheetHost />
 
-        {/* Cart popups, e.g. a quantity limit reached (lib/cartNotice.ts). */}
-        <CartNoticeToast />
+            {/* Cart popups, e.g. a quantity limit reached (lib/cartNotice.ts). */}
+            <CartNoticeToast />
+
+            {/* An optional update: one dismissible prompt (lib/appUpdate.ts). */}
+            {startupReady ? <AppUpdatePrompt /> : null}
+          </>
+        )}
       </PersistQueryClientProvider>
     </SafeAreaProvider>
   );

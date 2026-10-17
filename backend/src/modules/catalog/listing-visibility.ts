@@ -45,13 +45,15 @@ export interface ListingVisibilityInput {
   product: { status: string; deletedAt: Date | null; approvalStatus: string };
   /** The default variant; absent only for a product with no live variant. */
   variant: { status: string; deletedAt: Date | null } | null;
-  listing: { isAvailable: boolean; stockQty: number; reservedQty: number; lowStockThreshold: number } | null;
+  listing: { isAvailable: boolean; tracksStock: boolean; stockQty: number; reservedQty: number; lowStockThreshold: number } | null;
 }
 
 export function listingVisibility(input: ListingVisibilityInput): ListingVisibility {
-  const availableQty = input.listing ? Math.max(0, input.listing.stockQty - input.listing.reservedQty) : 0;
+  // A made-to-order food item has no stock count: 0 units, never low, never out.
+  const tracked = input.listing?.tracksStock ?? true;
+  const availableQty = input.listing && tracked ? Math.max(0, input.listing.stockQty - input.listing.reservedQty) : 0;
   const lowStock =
-    input.listing !== null && availableQty > 0 && availableQty <= input.listing.lowStockThreshold;
+    input.listing !== null && tracked && availableQty > 0 && availableQty <= input.listing.lowStockThreshold;
   const result = (reason: ListingVisibilityReason): ListingVisibility => ({
     sellable: reason === 'VISIBLE',
     reason,
@@ -77,7 +79,7 @@ export function listingVisibility(input: ListingVisibilityInput): ListingVisibil
   }
   if (!input.listing) return result('NOT_LISTED');
   if (!input.listing.isAvailable) return result('OFF_SALE');
-  if (availableQty <= 0) return result('OUT_OF_STOCK');
+  if (tracked && availableQty <= 0) return result('OUT_OF_STOCK');
   return result('VISIBLE');
 }
 

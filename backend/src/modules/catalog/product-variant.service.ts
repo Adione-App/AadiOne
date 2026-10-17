@@ -44,8 +44,8 @@ import { AppError } from '../../common/errors';
 import { prisma, runInTransaction, type Tx } from '../../infra/db/prisma';
 import { updateOwnListing } from './seller-listing.service';
 
-/** Made-to-order capacity of a food listing (mirrors FOOD_ITEM_CAPACITY). */
-const FOOD_CAPACITY = 100_000;
+/** A food listing has no stock count (made to order — inventory/stock-rules.ts). */
+const FOOD_NO_STOCK = 0;
 export const MAX_OPTION_GROUPS = 3;
 export const MAX_OPTION_VALUES = 30;
 export const MAX_VARIANTS = 100;
@@ -209,7 +209,7 @@ export async function createVariantRows(
             variantId: row.id,
             mrpPaise: variant.pricePaise,
             pricePaise: variant.pricePaise,
-            stockQty: FOOD_CAPACITY,
+            stockQty: FOOD_NO_STOCK,
             tracksStock: false,
             isAvailable: variant.isAvailable ?? true,
           }

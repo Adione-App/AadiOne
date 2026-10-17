@@ -385,57 +385,102 @@ function bumpCartEpoch(): number {
  */
 let cartWriteSeq = 0;
 
+/**
+ * Changes to DIFFERENT items can be in flight together (each item is one
+ * request at a time — useCartActions.ts), and their answers can arrive out of
+ * order. Each answer is the whole cart as it was when the server handled that
+ * request, so an earlier request's answer written last would bring back an
+ * older quantity of the other item. So:
+ *   - an answer is written only if no LATER-started request's answer already
+ *     has been (`cartMutationSeq` / `lastWrittenMutationSeq`);
+ *   - when requests overlapped, or one failed (a timed-out one may still have
+ *     reached the server), the cart is read again once the last one settles,
+ *     so the screen always ends on what the server really holds.
+ * Module-level, like `cartEpoch`: every screen's hook shares them.
+ */
+let cartMutationSeq = 0;
+let lastWrittenMutationSeq = 0;
+let cartMutationsInFlight = 0;
+let cartNeedsReconcile = false;
+
+/**
+ * GET /cart for one cart query key, guarded against answers that went stale
+ * while it was in flight. Shared by `useCart` and the reconcile read.
+ */
+async function fetchCartGuarded(
+  queryClient: QueryClient,
+  queryKey: readonly unknown[],
+  distanceKm: number | null,
+): Promise<CartDto> {
+  // Same protection `guardedWrite` (below) already gives per-item
+  // mutation responses, extended to this plain GET — which had none.
+  // `api.ts`'s own GETs retry twice with backoff on a transient
+  // failure, so a cart fetch that was ALREADY in flight when the
+  // customer placed an order (e.g. fired by this screen's own mount,
+  // or a slow/retrying attempt) can easily resolve AFTER
+  // `clearCartAfterOrder` has already correctly emptied the cache —
+  // its response reflects the cart as it was AT REQUEST TIME, before
+  // the order converted it, which is now stale. Without this guard,
+  // React Query would still happily write that stale snapshot over
+  // the correct empty one the instant it arrived — resurrecting the
+  // just-placed order's items back into the Mini Cart/Cart screen,
+  // which is exactly the "cart still shows the in-progress order"
+  // bug this fixes for the query path (`resetPendingCartAfterOrder`
+  // in useCartActions.ts covers the other, optimistic-overlay half).
+  const epochAtStart = cartEpoch;
+  const writeSeqAtStart = cartWriteSeq;
+
+  const data = await api.get<CartDto>(
+    distanceKm !== null
+      ? `/cart?distanceKm=${encodeURIComponent(distanceKm)}`
+      : "/cart",
+  );
+
+  if (cartEpoch !== epochAtStart) {
+    // An authoritative clear/order happened while this request was in
+    // flight. Keep whatever's ALREADY in the cache (correct) instead
+    // of overwriting it with this now-superseded snapshot — falling
+    // back to the just-fetched `data` only if there's nothing cached
+    // yet at all (shouldn't happen in practice, since
+    // `clearCartAfterOrder` always writes something first).
+    const current = queryClient.getQueryData<CartDto>(queryKey);
+    if (current) return current;
+  }
+
+  if (cartWriteSeq !== writeSeqAtStart) {
+    // A quantity change's own (newer) response was written while this
+    // GET was in flight — keep it rather than this older snapshot.
+    const current = queryClient.getQueryData<CartDto>(queryKey);
+    if (current) return current;
+  }
+
+  return data;
+}
+
+/**
+ * The reconcile read (see `cartMutationSeq`): every cart a screen is showing,
+ * re-read from the server. Quiet on purpose — a failed read (offline, say)
+ * keeps the last confirmed cart on screen; the failed change already showed
+ * its own error. Going through the query's own refetch instead would put it
+ * in its error state, and the Cart screen would replace the whole cart with
+ * "We could not load your cart." over one failed tap.
+ */
+function reconcileCart(queryClient: QueryClient): void {
+  for (const query of queryClient.getQueryCache().findAll({ queryKey: keys.cart, type: "active" })) {
+    const distanceKm = (query.queryKey[1] ?? null) as number | null;
+    fetchCartGuarded(queryClient, query.queryKey, distanceKm)
+      .then((data) => queryClient.setQueryData(query.queryKey, data))
+      .catch(() => undefined);
+  }
+}
+
 export function useCart(distanceKm: number | null = null) {
   const queryClient = useQueryClient();
   const queryKey = [...keys.cart, distanceKm];
 
   return useQuery({
     queryKey,
-    queryFn: async () => {
-      // Same protection `guardedWrite` (below) already gives per-item
-      // mutation responses, extended to this plain GET — which had none.
-      // `api.ts`'s own GETs retry twice with backoff on a transient
-      // failure, so a cart fetch that was ALREADY in flight when the
-      // customer placed an order (e.g. fired by this screen's own mount,
-      // or a slow/retrying attempt) can easily resolve AFTER
-      // `clearCartAfterOrder` has already correctly emptied the cache —
-      // its response reflects the cart as it was AT REQUEST TIME, before
-      // the order converted it, which is now stale. Without this guard,
-      // React Query would still happily write that stale snapshot over
-      // the correct empty one the instant it arrived — resurrecting the
-      // just-placed order's items back into the Mini Cart/Cart screen,
-      // which is exactly the "cart still shows the in-progress order"
-      // bug this fixes for the query path (`resetPendingCartAfterOrder`
-      // in useCartActions.ts covers the other, optimistic-overlay half).
-      const epochAtStart = cartEpoch;
-      const writeSeqAtStart = cartWriteSeq;
-
-      const data = await api.get<CartDto>(
-        distanceKm !== null
-          ? `/cart?distanceKm=${encodeURIComponent(distanceKm)}`
-          : "/cart",
-      );
-
-      if (cartEpoch !== epochAtStart) {
-        // An authoritative clear/order happened while this request was in
-        // flight. Keep whatever's ALREADY in the cache (correct) instead
-        // of overwriting it with this now-superseded snapshot — falling
-        // back to the just-fetched `data` only if there's nothing cached
-        // yet at all (shouldn't happen in practice, since
-        // `clearCartAfterOrder` always writes something first).
-        const current = queryClient.getQueryData<CartDto>(queryKey);
-        if (current) return current;
-      }
-
-      if (cartWriteSeq !== writeSeqAtStart) {
-        // A quantity change's own (newer) response was written while this
-        // GET was in flight — keep it rather than this older snapshot.
-        const current = queryClient.getQueryData<CartDto>(queryKey);
-        if (current) return current;
-      }
-
-      return data;
-    },
+    queryFn: () => fetchCartGuarded(queryClient, queryKey, distanceKm),
     // The cart must never sit on a stale answer just because it was already
     // in memory — every screen that shows it refetches fresh the instant
     // it's observed, regardless of the app's default 30s staleTime. Without
@@ -504,18 +549,39 @@ export function useCartMutations() {
     queryClient.setQueriesData<CartDto>({ queryKey: keys.cart }, data);
   };
 
-  type MutationContext = { epoch: number };
+  type MutationContext = { epoch: number; seq: number };
 
   // A newer authoritative clear (Clear Cart, or a successful order) landed
   // while this request was in flight — see `cartEpoch` above. That state is
   // correct and newer; this response is stale and must not overwrite it.
+  // Likewise an answer older than one already shown (`cartMutationSeq`).
   const guardedWrite = (data: CartDto, context: MutationContext | undefined): void => {
     if (context && context.epoch !== cartEpoch) return;
+    if (context) {
+      if (context.seq < lastWrittenMutationSeq) return;
+      lastWrittenMutationSeq = context.seq;
+    }
     cartWriteSeq += 1;
     write(data);
   };
 
-  const captureEpoch = (): MutationContext => ({ epoch: cartEpoch });
+  const captureEpoch = (): MutationContext => {
+    cartMutationsInFlight += 1;
+    if (cartMutationsInFlight > 1) cartNeedsReconcile = true;
+    cartMutationSeq += 1;
+    return { epoch: cartEpoch, seq: cartMutationSeq };
+  };
+
+  // After the last in-flight change settles: one fresh GET /cart when they
+  // overlapped or one failed — see `cartMutationSeq` above.
+  const settle = (_data: unknown, error: unknown): void => {
+    cartMutationsInFlight = Math.max(0, cartMutationsInFlight - 1);
+    if (error) cartNeedsReconcile = true;
+    if (cartMutationsInFlight === 0 && cartNeedsReconcile) {
+      cartNeedsReconcile = false;
+      reconcileCart(queryClient);
+    }
+  };
 
   const addItem = useMutation({
     mutationFn: (input: {
@@ -539,6 +605,7 @@ export function useCartMutations() {
 
     onMutate: captureEpoch,
     onSuccess: (data, _vars, context) => guardedWrite(data, context),
+    onSettled: settle,
   });
 
   const updateQty = useMutation({
@@ -561,6 +628,7 @@ export function useCartMutations() {
 
     onMutate: captureEpoch,
     onSuccess: (data, _vars, context) => guardedWrite(data, context),
+    onSettled: settle,
   });
 
   const removeItem = useMutation({
@@ -577,6 +645,7 @@ export function useCartMutations() {
 
     onMutate: captureEpoch,
     onSuccess: (data, _vars, context) => guardedWrite(data, context),
+    onSettled: settle,
   });
 
   const clearCart = useMutation({
@@ -618,6 +687,7 @@ export function useCartMutations() {
 
     onMutate: captureEpoch,
     onSuccess: (data, _vars, context) => guardedWrite(data, context),
+    onSettled: settle,
   });
 
   // Applying a DIFFERENT code while one is already active naturally replaces
@@ -637,6 +707,7 @@ export function useCartMutations() {
 
     onMutate: captureEpoch,
     onSuccess: (data, _vars, context) => guardedWrite(data, context),
+    onSettled: settle,
   });
 
   return {

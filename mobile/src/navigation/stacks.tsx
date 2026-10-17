@@ -149,7 +149,6 @@ export function HomeStack() {
           <RestaurantMenuScreen
             sellerId={route.params.sellerId}
             fallbackName={route.params.name}
-            initialDiet={route.params.diet}
             onBack={() => navigation.goBack()}
           />
         )}
@@ -338,8 +337,8 @@ export function FoodStack() {
       <FoodNav.Screen name="FoodHome">
         {({ navigation }) => (
           <FoodScreen
-            onOpenRestaurant={(sellerId, diet) =>
-              navigation.navigate("RestaurantMenu", { sellerId, ...(diet ? { diet } : {}) })
+            onOpenRestaurant={(sellerId) =>
+              navigation.navigate("RestaurantMenu", { sellerId })
             }
             // The Food tab is a root screen: "back" returns to Home.
             onBack={() =>
@@ -359,7 +358,6 @@ export function FoodStack() {
           <RestaurantMenuScreen
             sellerId={route.params.sellerId}
             fallbackName={route.params.name}
-            initialDiet={route.params.diet}
             onBack={() => navigation.goBack()}
           />
         )}

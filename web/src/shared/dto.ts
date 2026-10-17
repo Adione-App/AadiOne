@@ -1206,21 +1206,11 @@ export interface RestaurantSummaryDto extends RestaurantDto {
   /** Straight-line km from the customer; null when no location was given. */
   distanceKm: number | null;
   /**
-   * The single mark an older app draws: VEG = pure veg, NON_VEG = pure
-   * non-veg, null = mixed or unknown (see restaurantCardDiet). Absent from
-   * older servers.
+   * The restaurant's own classification (restaurantDietOf): VEG = pure veg,
+   * NON_VEG = every other place, whatever veg dishes its menu also has.
+   * Absent from older servers — restaurantDietOf(isVegOnly) gives the same.
    */
   diet?: FoodDiet | null;
-  /**
-   * Filter eligibility (see classifyRestaurantDiet): servesVeg = it has at
-   * least one live veg item; servesNonVeg = at least one live non-veg item
-   * AND it is not a pure-veg kitchen. A mixed place has both. They decide the
-   * Veg / Non-Veg filters only — never the card mark. Absent from older servers.
-   */
-  servesVeg?: boolean;
-  servesNonVeg?: boolean;
-  /** PURE_VEG / PURE_NON_VEG / MIXED, or null with no marked live item. The card mark comes from this. Absent from older servers. */
-  dietClass?: RestaurantDietClass | null;
   /** Delivery fee to the customer's location (the configured fee slabs); null without a location. Absent from older servers. */
   deliveryFeePaise?: number | null;
   /** Delivery time range to the customer's location (the same estimate checkout promises); null without a location. */
@@ -1228,60 +1218,21 @@ export interface RestaurantSummaryDto extends RestaurantDto {
   etaMaxMinutes?: number | null;
 }
 
-export type RestaurantDietClass = 'PURE_VEG' | 'PURE_NON_VEG' | 'MIXED';
-
 /**
- * A restaurant's dietary classification, from its pure-veg setting and the
- * veg / non-veg mark on each LIVE menu item (one a customer can actually
- * order — the same rule as its public menu). The one definition the Food
- * list's filters and card mark both use.
- *
- *   pure-veg kitchen (isVegOnly)  serves veg when it has any live item (its
- *                                 items are veg by definition); never serves
- *                                 non-veg, even if an item is marked NON_VEG
- *   otherwise                     serves veg / non-veg when it has at least
- *                                 one live item marked VEG / NON_VEG; an
- *                                 unmarked item counts as neither
- *
- * Both -> MIXED; only one -> PURE_VEG / PURE_NON_VEG; neither -> null (in no
- * diet filter). There is no "pure non-veg" setting: PURE_NON_VEG means every
- * marked live item is non-veg.
+ * A restaurant's own veg / non-veg classification: its saved pure-veg setting
+ * (RestaurantProfile.isVegOnly — the restaurant's profile, also shown to the
+ * admin), never inferred from its menu. A pure-veg kitchen is VEG; every other
+ * place is NON_VEG, even when its menu also has paneer or veg chow mein. The
+ * Food list's Veg / Non-Veg filters, its card mark and the menu header all use
+ * this one rule; each menu item keeps its own mark (RestaurantMenuItemDto.diet).
  */
-export function classifyRestaurantDiet(input: {
-  isVegOnly: boolean;
-  hasLiveItem: boolean;
-  hasLiveVegItem: boolean;
-  hasLiveNonVegItem: boolean;
-}): { servesVeg: boolean; servesNonVeg: boolean; dietClass: RestaurantDietClass | null } {
-  const servesVeg = input.isVegOnly ? input.hasLiveItem : input.hasLiveVegItem;
-  const servesNonVeg = !input.isVegOnly && input.hasLiveNonVegItem;
-  const dietClass: RestaurantDietClass | null =
-    servesVeg && servesNonVeg ? 'MIXED' : servesVeg ? 'PURE_VEG' : servesNonVeg ? 'PURE_NON_VEG' : null;
-  return { servesVeg, servesNonVeg, dietClass };
-}
-
-/**
- * The ONE mark a restaurant card shows: green for pure veg, red for pure
- * non-veg, NONE for a mixed place (never both). From dietClass; an older
- * server without it -> from servesVeg / servesNonVeg (both -> none), else
- * its single legacy diet.
- */
-export function restaurantCardDiet(
-  restaurant: Pick<RestaurantSummaryDto, 'dietClass' | 'servesVeg' | 'servesNonVeg' | 'diet'>,
-): FoodDiet | null {
-  if (restaurant.dietClass !== undefined) {
-    return restaurant.dietClass === 'PURE_VEG' ? 'VEG' : restaurant.dietClass === 'PURE_NON_VEG' ? 'NON_VEG' : null;
-  }
-  if (restaurant.servesVeg !== undefined || restaurant.servesNonVeg !== undefined) {
-    if (restaurant.servesVeg && restaurant.servesNonVeg) return null;
-    return restaurant.servesVeg ? 'VEG' : restaurant.servesNonVeg ? 'NON_VEG' : null;
-  }
-  return restaurant.diet ?? null;
+export function restaurantDietOf(restaurant: Pick<RestaurantDto, 'isVegOnly'>): FoodDiet {
+  return restaurant.isVegOnly ? 'VEG' : 'NON_VEG';
 }
 
 /** GET /restaurants filters. */
 export interface RestaurantListQuery {
-  /** VEG = places with a live veg item (servesVeg, mixed included); NON_VEG = places with a live non-veg item that are not pure-veg kitchens (servesNonVeg). */
+  /** VEG = pure-veg restaurants only; NON_VEG = every other restaurant (restaurantDietOf). */
   diet?: FoodDiet;
   /** RESTAURANT or CAFE. */
   type?: 'RESTAURANT' | 'CAFE';

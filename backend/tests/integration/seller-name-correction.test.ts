@@ -112,7 +112,7 @@ describe('NEPALIKICHEN: "Nepali Kichen" -> "Nepali Kitchen"', () => {
     const list = expectSuccess<RestaurantSummaryDto[]>((await api().get('/api/v1/restaurants?type=RESTAURANT').expect(200)).body).data;
     const row = list.find((r) => r.sellerId === seller.id)!;
     expect(row.name).toBe('Nepali Kitchen');
-    expect(row.dietClass).toBe('MIXED');
+    expect(row.diet).toBe('NON_VEG');
     const page = expectSuccess<RestaurantMenuDto>((await api().get(`/api/v1/restaurants/${seller.id}`).expect(200)).body).data;
     expect(page.restaurant.name).toBe('Nepali Kitchen');
     expect(page.menus.map((m) => m.name)).toEqual(['Nepali Kitchen']);

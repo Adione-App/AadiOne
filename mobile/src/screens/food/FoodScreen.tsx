@@ -122,8 +122,7 @@ export default function FoodScreen({
   onBack,
   onOpenLocation,
 }: {
-  /** `diet`: the active Veg / Non-Veg filter, so the menu opens filtered the same way. */
-  onOpenRestaurant: (sellerId: string, diet?: "VEG" | "NON_VEG") => void;
+  onOpenRestaurant: (sellerId: string) => void;
   onBack?: (() => void) | undefined;
   onOpenLocation?: (() => void) | undefined;
 }) {
@@ -140,11 +139,8 @@ export default function FoodScreen({
 
   const [filterKey, setFilterKey] = useState<FilterKey>("ALL");
   const filter = FILTERS.find((f) => f.key === filterKey)!;
+  // Veg / Non-Veg = the restaurant's own type (the server's restaurantDietOf), never its dishes.
   const query = useRestaurants(near, filter.query);
-  const openRestaurant = useCallback(
-    (sellerId: string) => onOpenRestaurant(sellerId, filter.query.diet),
-    [onOpenRestaurant, filter.query.diet],
-  );
   const heroBanners = useBanners(FOOD_BANNER_PLACEMENTS.HERO);
   const background = useBanners(FOOD_BANNER_PLACEMENTS.BACKGROUND);
 
@@ -335,7 +331,7 @@ export default function FoodScreen({
         renderItem={({ item, index }) => (
           <>
             <View style={styles.cardWrap}>
-              <FoodRestaurantCard restaurant={item} onPress={openRestaurant} />
+              <FoodRestaurantCard restaurant={item} onPress={onOpenRestaurant} />
             </View>
             {/* "food_list" banners: after the second place (or the only one). */}
             {index === Math.min(1, visible.length - 1) ? (

@@ -60,8 +60,7 @@ export type CatalogStackParamList = {
   OrderTracking: { orderId: string };
   Notifications: undefined;
   /** A restaurant's / cafe's menu, opened from Home's food rail. */
-  /** `diet`: the Food list filter it was opened under — the menu opens filtered the same way. */
-  RestaurantMenu: { sellerId: string; name?: string; diet?: "VEG" | "NON_VEG" };
+  RestaurantMenu: { sellerId: string; name?: string };
   /** A marketplace seller's store page, opened from Home's stores rail. */
   Store: { sellerId: string };
 };
@@ -69,8 +68,7 @@ export type CatalogStackParamList = {
 /** The Food tab's own stack: restaurants & cafes, then a menu. */
 export type FoodStackParamList = {
   FoodHome: undefined;
-  /** `diet`: the Food list filter it was opened under — the menu opens filtered the same way. */
-  RestaurantMenu: { sellerId: string; name?: string; diet?: "VEG" | "NON_VEG" };
+  RestaurantMenu: { sellerId: string; name?: string };
 };
 
 export type CartStackParamList = {

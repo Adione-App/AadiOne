@@ -1,9 +1,9 @@
 /**
  * One restaurant / cafe on the Food screen: its COVER photo on the left (the
  * place itself — never its menu image); the details on the right — ONE diet
- * mark beside the name (green = pure veg, red = pure non-veg, none for a
- * mixed place — never both; restaurantCardDiet in the shared contract), open
- * status, cuisine tags, its time and a chevron to its menu.
+ * mark beside the name, the restaurant's own classification (green = pure
+ * veg, red = non-veg; restaurantDietOf in the shared contract, never its
+ * menu), open status, cuisine tags, its time and a chevron to its menu.
  *
  * Everything shown is real: the photo is the restaurant's own cover (else a
  * photo from its menu); the time is its configured preparation time as
@@ -15,7 +15,7 @@ import { memo } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Image } from "expo-image";
 import { ChevronRight, Clock, UtensilsCrossed } from "lucide-react-native";
-import { prepTimeRange, restaurantCardDiet, type RestaurantSummaryDto } from "@shared";
+import { prepTimeRange, restaurantDietOf, type FoodDiet, type RestaurantSummaryDto } from "@shared";
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { AppText } from "@/components/ui";
 import { resolveImageUrl } from "@/lib/api";
@@ -29,16 +29,20 @@ const PHOTO_HEIGHT = 104;
 export function DietBadge({
   diet,
   size = 22,
+  label,
 }: {
-  diet: RestaurantSummaryDto["diet"] | "VEG" | "NON_VEG" | null | undefined;
+  diet: FoodDiet | null | undefined;
   size?: number;
+  /** What a screen reader says; default "Veg" / "Non-veg". */
+  label?: string;
 }) {
   if (!diet) return null;
   const tone = diet === "VEG" ? palette.green600 : palette.red500;
   return (
     <View
       style={[styles.dietBox, { width: size, height: size, borderColor: tone, borderRadius: size * 0.22 }]}
-      accessibilityLabel={diet === "VEG" ? "Pure veg" : "Serves non-veg"}
+      accessible
+      accessibilityLabel={label ?? (diet === "VEG" ? "Veg" : "Non-veg")}
     >
       <View style={{ width: size * 0.46, height: size * 0.46, borderRadius: size * 0.23, backgroundColor: tone }} />
     </View>
@@ -55,8 +59,8 @@ function FoodRestaurantCardImpl({
   const image = resolveImageUrl(restaurant.coverImageUrl);
   const tags = restaurant.cuisine.map((c) => c.trim()).filter(Boolean).slice(0, MAX_TAGS);
   const time = prepTimeRange(restaurant.avgPrepMins);
-  // One mark at most: a mixed place shows none (its items keep their own marks on the menu).
-  const cardDiet = restaurantCardDiet(restaurant);
+  // The restaurant's own type, never its menu: its items keep their own marks on the menu.
+  const cardDiet = restaurantDietOf(restaurant);
 
   return (
     <Pressable
@@ -77,11 +81,9 @@ function FoodRestaurantCardImpl({
 
       <View style={styles.body}>
         <View style={styles.titleRow}>
-          {cardDiet ? (
-            <View style={styles.marks}>
-              <DietBadge diet={cardDiet} size={14} />
-            </View>
-          ) : null}
+          <View style={styles.marks}>
+            <DietBadge diet={cardDiet} size={14} label={cardDiet === "VEG" ? "Pure veg restaurant" : "Non-veg restaurant"} />
+          </View>
           <AppText style={styles.name} numberOfLines={2}>
             {restaurant.name}
           </AppText>

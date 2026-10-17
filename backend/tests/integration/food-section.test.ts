@@ -1,10 +1,11 @@
 /**
  * Food section (customer Food list + restaurant page), end to end:
  *
- *   - GET /restaurants filters on the server: VEG = pure-veg kitchens,
- *     NON_VEG = places with a live non-veg item, type = RESTAURANT / CAFE;
- *     each row says which (diet) and, with a location, the real delivery fee
- *     and time; nothing without a location;
+ *   - GET /restaurants filters on the server by each restaurant's OWN type:
+ *     VEG = pure-veg restaurants, NON_VEG = every other one (whatever veg
+ *     dishes it has), type = RESTAURANT / CAFE; each row says which (diet)
+ *     and, with a location, the real delivery fee and time; nothing without
+ *     a location;
  *   - admin-managed restaurant logo / cover through the admin upload + image
  *     pipeline (WebP, replace removes the old file, remove clears it), refused
  *     to sellers, for non-food sellers and for non-admin uploads;
@@ -149,42 +150,38 @@ beforeEach(async () => {
 /* -------------------------------------------------------------------------- */
 
 describe('GET /restaurants — Food filters and card data', () => {
-  it('classifies and filters veg / non-veg from the real item marks; a mixed place shows no card mark but is in both filters', async () => {
+  it('classifies and filters by the restaurant\'s own type, never by its menu items', async () => {
     const veg = await kitchen('Shree Veg Kitchen', 'RESTAURANT', { vegOnly: true, items: [{ name: 'Paneer Burger', diet: 'VEG' }] });
     const nonVeg = await kitchen('Ha Hokam Food', 'RESTAURANT', { items: [{ name: 'Veg Burger', diet: 'VEG' }, { name: 'Chicken Burger', diet: 'NON_VEG' }] });
     const cafe = await kitchen('Daily Cafe', 'CAFE', { items: [{ name: 'Cold Coffee', diet: null }] });
-    // A switched-off non-veg item does not make a kitchen "non-veg".
+    // Not pure veg, though everything it serves right now is veg.
     const offOnly = await kitchen('Quiet Diner', 'RESTAURANT', { items: [{ name: 'Fish Fry', diet: 'NON_VEG', available: false }, { name: 'Dal', diet: 'VEG' }] });
 
     const all = await list();
     const byId = new Map(all.map((r) => [r.sellerId, r]));
     expect(all).toHaveLength(4);
-    // The classification, and the ONE card mark it gives (`diet`, also what
-    // older apps draw): pure veg -> VEG, mixed -> none (never both), no
-    // marked live item -> none. A switched-off non-veg item does not count,
-    // so "Quiet Diner" is pure veg on what it actually serves.
-    expect(byId.get(veg)).toMatchObject({ dietClass: 'PURE_VEG', diet: 'VEG' });
-    expect(byId.get(nonVeg)).toMatchObject({ dietClass: 'MIXED', diet: null });
-    expect(byId.get(cafe)).toMatchObject({ dietClass: null, diet: null });
-    expect(byId.get(offOnly)).toMatchObject({ dietClass: 'PURE_VEG', diet: 'VEG' });
+    // `diet` = the restaurant's own type (isVegOnly) — one mark, always set.
+    expect(byId.get(veg)).toMatchObject({ isVegOnly: true, diet: 'VEG' });
+    expect(byId.get(nonVeg)).toMatchObject({ isVegOnly: false, diet: 'NON_VEG' });
+    expect(byId.get(cafe)).toMatchObject({ isVegOnly: false, diet: 'NON_VEG' });
+    expect(byId.get(offOnly)).toMatchObject({ isVegOnly: false, diet: 'NON_VEG' });
+    // The old menu-derived fields are gone from the response.
+    for (const row of all) {
+      expect(row).not.toHaveProperty('dietClass');
+      expect(row).not.toHaveProperty('servesVeg');
+      expect(row).not.toHaveProperty('servesNonVeg');
+    }
 
-    // Filter eligibility from the real item marks: a mixed place is eligible
-    // for both; an unmarked item (the cafe's coffee) and a switched-off item count as neither.
-    const marks = (id: string) => [byId.get(id)!.servesVeg, byId.get(id)!.servesNonVeg];
-    expect(marks(veg)).toEqual([true, false]);
-    expect(marks(nonVeg)).toEqual([true, true]);
-    expect(marks(cafe)).toEqual([false, false]);
-    expect(marks(offOnly)).toEqual([true, false]);
-
-    // The filters: Veg = has a live veg item (mixed included), Non-Veg = has a live non-veg item.
+    // The filters: Veg = pure-veg restaurants only; Non-Veg = every other one.
     const ids = (rows: RestaurantSummaryDto[]) => rows.map((r) => r.sellerId).sort();
-    expect(ids(await list('?diet=VEG'))).toEqual([veg, nonVeg, offOnly].sort());
-    expect(ids(await list('?diet=NON_VEG'))).toEqual([nonVeg]);
-    expect((await list('?diet=NON_VEG')).every((r) => r.servesNonVeg)).toBe(true);
-    expect((await list('?diet=VEG')).every((r) => r.servesVeg)).toBe(true);
+    expect(ids(await list('?diet=VEG'))).toEqual([veg]);
+    expect(ids(await list('?diet=NON_VEG'))).toEqual([nonVeg, cafe, offOnly].sort());
+    expect((await list('?diet=NON_VEG')).every((r) => r.diet === 'NON_VEG' && !r.isVegOnly)).toBe(true);
+    expect((await list('?diet=VEG')).every((r) => r.diet === 'VEG' && r.isVegOnly)).toBe(true);
     expect(ids(await list('?type=CAFE'))).toEqual([cafe]);
     expect(ids(await list('?type=RESTAURANT'))).toEqual([veg, nonVeg, offOnly].sort());
     expect(ids(await list('?type=CAFE&diet=VEG'))).toEqual([]);
+    expect(ids(await list('?type=CAFE&diet=NON_VEG'))).toEqual([cafe]);
 
     await api().get('/api/v1/restaurants?diet=EGG').expect(400);
     await api().get('/api/v1/restaurants?type=GROCERY').expect(400);
@@ -240,69 +237,86 @@ async function extraItem(
   });
 }
 
-describe('restaurant diet classification — one card mark, never both', () => {
+describe('restaurant classification — the restaurant\'s own type, items keep their own marks', () => {
   const ids = (rows: RestaurantSummaryDto[]) => rows.map((r) => r.sellerId).sort();
+  const itemMarks = (menu: RestaurantMenuDto) =>
+    new Map(menu.sections.flatMap((section) => section.items).map((item) => [item.name, item.diet]));
+  const menuOf = async (id: string) =>
+    expectSuccess<RestaurantMenuDto>((await api().get(`/api/v1/restaurants/${id}`).expect(200)).body).data;
 
-  it('a pure non-veg place gets only the red mark and only the Non-Veg filter', async () => {
-    const id = await kitchen('Chicken Point', 'RESTAURANT', { items: [{ name: 'Chicken Biryani', diet: 'NON_VEG' }, { name: 'Mutton Curry', diet: 'NON_VEG' }] });
-    const [row] = await list();
-    expect(row).toMatchObject({ sellerId: id, dietClass: 'PURE_NON_VEG', diet: 'NON_VEG', servesVeg: false, servesNonVeg: true });
-    expect(ids(await list('?diet=NON_VEG'))).toEqual([id]);
-    expect(ids(await list('?diet=VEG'))).toEqual([]);
-  });
+  it('a non-veg restaurant with veg dishes is only ever Non-Veg; its veg dishes keep their veg mark', async () => {
+    const nepali = await kitchen('Nepali Kitchen', 'RESTAURANT', {
+      items: [
+        { name: 'Chicken Curry', diet: 'NON_VEG' },
+        { name: 'Paneer Dish', diet: 'VEG' },
+        { name: 'Veg Chow Mein', diet: 'VEG' },
+        { name: 'Chicken Momos', diet: 'NON_VEG' },
+      ],
+    });
+    const pureVeg = await kitchen('Pure Veg Restaurant', 'RESTAURANT', {
+      vegOnly: true,
+      items: [{ name: 'Paneer Dish', diet: 'VEG' }, { name: 'Dal', diet: 'VEG' }, { name: 'Roti', diet: 'VEG' }],
+    });
 
-  it('a pure-veg kitchen is never non-veg — not even with an item wrongly marked non-veg — and its unmarked items count as veg', async () => {
-    const wronglyMarked = await kitchen('Shree Bhojanalaya', 'RESTAURANT', { vegOnly: true, items: [{ name: 'Dal Bati', diet: 'VEG' }, { name: 'Egg Curry', diet: 'NON_VEG' }] });
-    const unmarked = await kitchen('Gopal Sweets', 'CAFE', { vegOnly: true, items: [{ name: 'Kachori', diet: null }] });
     const byId = new Map((await list()).map((r) => [r.sellerId, r]));
-    expect(byId.get(wronglyMarked)).toMatchObject({ dietClass: 'PURE_VEG', diet: 'VEG', servesVeg: true, servesNonVeg: false });
-    expect(byId.get(unmarked)).toMatchObject({ dietClass: 'PURE_VEG', diet: 'VEG', servesVeg: true, servesNonVeg: false });
-    expect(ids(await list('?diet=NON_VEG'))).toEqual([]);
-    expect(ids(await list('?diet=VEG'))).toEqual([wronglyMarked, unmarked].sort());
+    expect(byId.get(nepali)).toMatchObject({ diet: 'NON_VEG', isVegOnly: false, menuItemCount: 4 });
+    expect(byId.get(pureVeg)).toMatchObject({ diet: 'VEG', isVegOnly: true, menuItemCount: 3 });
+    expect(ids(await list('?diet=VEG'))).toEqual([pureVeg]);
+    expect(ids(await list('?diet=NON_VEG'))).toEqual([nepali]);
 
-    // The menu still shows each item with its own mark (the seller's data is untouched).
-    const menu = expectSuccess<RestaurantMenuDto>((await api().get(`/api/v1/restaurants/${wronglyMarked}`).expect(200)).body).data;
-    const marks = new Map(menu.sections.flatMap((section) => section.items).map((item) => [item.name, item.diet]));
-    expect(marks.get('Dal Bati')).toBe('VEG');
-    expect(marks.get('Egg Curry')).toBe('NON_VEG');
+    // The menu header reads the restaurant's own type; each item keeps its own mark.
+    const nepaliMenu = await menuOf(nepali);
+    expect(nepaliMenu.restaurant.isVegOnly).toBe(false);
+    expect(itemMarks(nepaliMenu)).toEqual(
+      new Map([['Chicken Curry', 'NON_VEG'], ['Paneer Dish', 'VEG'], ['Veg Chow Mein', 'VEG'], ['Chicken Momos', 'NON_VEG']]),
+    );
+    const vegMenu = await menuOf(pureVeg);
+    expect(vegMenu.restaurant.isVegOnly).toBe(true);
+    expect(itemMarks(vegMenu)).toEqual(new Map([['Paneer Dish', 'VEG'], ['Dal', 'VEG'], ['Roti', 'VEG']]));
   });
 
-  it('a mixed place shows no mark, is in BOTH filters, and its menu items keep their own marks', async () => {
-    const id = await kitchen('Ha Hokam Food', 'RESTAURANT', { items: [{ name: 'Veg Burger', diet: 'VEG' }, { name: 'Chicken Burger', diet: 'NON_VEG' }] });
-    const [row] = await list();
-    expect(row).toMatchObject({ sellerId: id, dietClass: 'MIXED', diet: null, servesVeg: true, servesNonVeg: true });
-    expect(ids(await list('?diet=VEG'))).toEqual([id]);
-    expect(ids(await list('?diet=NON_VEG'))).toEqual([id]);
-
-    const menu = expectSuccess<RestaurantMenuDto>((await api().get(`/api/v1/restaurants/${id}`).expect(200)).body).data;
-    const marks = new Map(menu.sections.flatMap((section) => section.items).map((item) => [item.name, item.diet]));
-    expect(marks).toEqual(new Map([['Veg Burger', 'VEG'], ['Chicken Burger', 'NON_VEG']]));
-  });
-
-  it('a place with an empty or entirely unavailable menu is in no diet filter — pure-veg kitchens included', async () => {
-    const empty = await kitchen('New Veg Kitchen', 'RESTAURANT', { vegOnly: true });
-    const off = await kitchen('Closed Menu', 'RESTAURANT', { vegOnly: true, items: [{ name: 'Thali', diet: 'VEG', available: false }] });
-    const byId = new Map((await list()).map((r) => [r.sellerId, r]));
-    // Still listed (existing behaviour) — just never as a veg / non-veg place.
-    expect(byId.get(empty)).toMatchObject({ dietClass: null, diet: null, servesVeg: false, servesNonVeg: false, menuItemCount: 0 });
-    expect(byId.get(off)).toMatchObject({ dietClass: null, diet: null, servesVeg: false, servesNonVeg: false, menuItemCount: 0 });
-    expect(ids(await list('?diet=VEG'))).toEqual([]);
-    expect(ids(await list('?diet=NON_VEG'))).toEqual([]);
-  });
-
-  it('items in a hidden section or a hidden menu count for nothing — the same rule as the public menu', async () => {
+  it('a non-veg restaurant whose live items are all veg is still Non-Veg', async () => {
     const id = await kitchen('Dhaba 52', 'RESTAURANT', { items: [{ name: 'Paneer Tikka', diet: 'VEG' }] });
     await extraItem(id, { name: 'Chicken Tikka', diet: 'NON_VEG', sectionActive: false });
     await extraItem(id, { name: 'Fish Curry', diet: 'NON_VEG', menuActive: false });
-    const [row] = await list();
-    expect(row).toMatchObject({ sellerId: id, dietClass: 'PURE_VEG', diet: 'VEG', servesNonVeg: false, menuItemCount: 1 });
-    expect(ids(await list('?diet=NON_VEG'))).toEqual([]);
-    const menu = expectSuccess<RestaurantMenuDto>((await api().get(`/api/v1/restaurants/${id}`).expect(200)).body).data;
-    expect(menu.sections.flatMap((section) => section.items).map((item) => item.name)).toEqual(['Paneer Tikka']);
+    expect((await list())[0]).toMatchObject({ sellerId: id, diet: 'NON_VEG', menuItemCount: 1 });
+    expect(ids(await list('?diet=VEG'))).toEqual([]);
+    expect(ids(await list('?diet=NON_VEG'))).toEqual([id]);
+    // Hidden sections / menus still stay off the public menu.
+    expect((await menuOf(id)).sections.flatMap((section) => section.items).map((item) => item.name)).toEqual(['Paneer Tikka']);
+  });
 
-    // Showing the section again makes the place mixed.
-    await prisma.category.updateMany({ where: { sellerId: id, isActive: false, parentId: { not: null } }, data: { isActive: true } });
-    expect((await list())[0]).toMatchObject({ dietClass: 'MIXED', diet: null, servesVeg: true, servesNonVeg: true, menuItemCount: 2 });
+  it('a pure-veg restaurant is never Non-Veg — not even with an item wrongly marked non-veg — and the item keeps its own mark', async () => {
+    const wronglyMarked = await kitchen('Shree Bhojanalaya', 'RESTAURANT', { vegOnly: true, items: [{ name: 'Dal Bati', diet: 'VEG' }, { name: 'Egg Curry', diet: 'NON_VEG' }] });
+    const unmarked = await kitchen('Gopal Sweets', 'CAFE', { vegOnly: true, items: [{ name: 'Kachori', diet: null }] });
+    const byId = new Map((await list()).map((r) => [r.sellerId, r]));
+    expect(byId.get(wronglyMarked)).toMatchObject({ diet: 'VEG' });
+    expect(byId.get(unmarked)).toMatchObject({ diet: 'VEG' });
+    expect(ids(await list('?diet=NON_VEG'))).toEqual([]);
+    expect(ids(await list('?diet=VEG'))).toEqual([wronglyMarked, unmarked].sort());
+
+    // The seller's data is untouched: no item mark is inferred from the restaurant's type.
+    const marks = itemMarks(await menuOf(wronglyMarked));
+    expect(marks.get('Dal Bati')).toBe('VEG');
+    expect(marks.get('Egg Curry')).toBe('NON_VEG');
+    expect(itemMarks(await menuOf(unmarked)).get('Kachori')).toBeNull();
+  });
+
+  it('changing the saved type moves the restaurant between the filters; its menu does not', async () => {
+    const id = await kitchen('Ha Hokam Food', 'RESTAURANT', { items: [{ name: 'Veg Burger', diet: 'VEG' }] });
+    expect(ids(await list('?diet=NON_VEG'))).toEqual([id]);
+    await prisma.restaurantProfile.update({ where: { sellerId: id }, data: { isVegOnly: true } });
+    expect(ids(await list('?diet=VEG'))).toEqual([id]);
+    expect(ids(await list('?diet=NON_VEG'))).toEqual([]);
+    expect((await list())[0]).toMatchObject({ diet: 'VEG' });
+  });
+
+  it('an empty menu keeps its type (the app hides places with nothing to order)', async () => {
+    const empty = await kitchen('New Veg Kitchen', 'RESTAURANT', { vegOnly: true });
+    const off = await kitchen('Closed Menu', 'RESTAURANT', { items: [{ name: 'Thali', diet: 'VEG', available: false }] });
+    const byId = new Map((await list()).map((r) => [r.sellerId, r]));
+    expect(byId.get(empty)).toMatchObject({ diet: 'VEG', menuItemCount: 0 });
+    expect(byId.get(off)).toMatchObject({ diet: 'NON_VEG', menuItemCount: 0 });
   });
 });
 

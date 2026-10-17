@@ -2,7 +2,6 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -15,9 +14,9 @@ import {
   type ViewToken,
 } from "react-native";
 import { Image } from "expo-image";
-import { ArrowLeft, ChevronDown, ChevronUp, Clock, MapPin, Triangle, UtensilsCrossed } from "lucide-react-native";
+import { ArrowLeft, ChevronDown, ChevronUp, Clock, MapPin, UtensilsCrossed } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { prepTimeRange, type RestaurantDto, type RestaurantMenuItemDto } from "@shared";
+import { prepTimeRange, restaurantDietOf, type RestaurantDto, type RestaurantMenuItemDto } from "@shared";
 import { formatPaise } from "@shared/money";
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { DietBadge } from "@/components/FoodRestaurantCard";
@@ -68,7 +67,6 @@ const MenuItemRow = memo(function MenuItemRow({
   item,
   showVariant,
   qty,
-  busy,
   onAdd,
   onIncrement,
   onDecrement,
@@ -76,7 +74,6 @@ const MenuItemRow = memo(function MenuItemRow({
   item: RestaurantMenuItemDto;
   showVariant: boolean;
   qty: number;
-  busy: boolean;
   onAdd: Cart["add"];
   onIncrement: Cart["increment"];
   onDecrement: Cart["decrement"];
@@ -87,9 +84,17 @@ const MenuItemRow = memo(function MenuItemRow({
   return (
     <View style={styles.item}>
       <View style={styles.itemCopy}>
-        <AppText style={styles.itemName} numberOfLines={2}>
-          {item.name}
-        </AppText>
+        <View style={styles.itemTitleRow}>
+          {/* The item's own veg / non-veg mark — never the restaurant's type; an unmarked item shows none. */}
+          {item.diet ? (
+            <View style={styles.itemDiet}>
+              <DietBadge diet={item.diet} size={14} />
+            </View>
+          ) : null}
+          <AppText style={styles.itemName} numberOfLines={2}>
+            {item.name}
+          </AppText>
+        </View>
         {showVariant && item.variantName ? (
           <AppText variant="caption" color={colors.textSecondary} numberOfLines={1}>
             {item.variantName}
@@ -113,12 +118,6 @@ const MenuItemRow = memo(function MenuItemRow({
           ) : (
             <UtensilsCrossed size={30} color={palette.green600} strokeWidth={1.5} />
           )}
-          {/* The item's own veg / non-veg mark, in the image's upper corner. */}
-          {item.diet ? (
-            <View style={styles.itemDiet}>
-              <DietBadge diet={item.diet} size={15} />
-            </View>
-          ) : null}
         </View>
         <View style={styles.action}>
           {!item.inStock ? (
@@ -129,25 +128,23 @@ const MenuItemRow = memo(function MenuItemRow({
             <QuantityStepper
               qty={qty}
               max={item.maxQtyPerOrder}
-              busy={busy}
               onIncrement={() => onIncrement(item.variantId)}
               onDecrement={() => onDecrement(item.variantId)}
               // The shared control, sized like this menu's ADD button so the swap never shifts the row.
               style={styles.stepperSize}
             />
           ) : (
+            // Always ready, never a spinner — even while the − that emptied the
+            // line is still saving: the cart actions run one request per item at
+            // a time and send this add after it (never twice), the same as the
+            // grocery ProductCard's add.
             <Pressable
-              onPress={() => {
-                // A tap while this item's previous change is still saving is ignored: never added twice.
-                if (!busy) onAdd(item.variantId, snapshotOf(item));
-              }}
-              disabled={busy}
+              onPress={() => onAdd(item.variantId, snapshotOf(item))}
               style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}
               accessibilityRole="button"
-              accessibilityState={{ busy }}
               accessibilityLabel={`Add ${item.name}${showVariant ? `, ${item.variantName}` : ""}`}
             >
-              {busy ? <ActivityIndicator size="small" color={colors.primary} /> : <AppText style={styles.addText}>ADD</AppText>}
+              <AppText style={styles.addText}>ADD</AppText>
             </Pressable>
           )}
         </View>
@@ -169,36 +166,14 @@ function initialsOf(name: string): string {
     .join("");
 }
 
-function DietLabel({ restaurant, servesNonVeg }: { restaurant: RestaurantDto; servesNonVeg: boolean }) {
-  if (restaurant.isVegOnly) {
-    return (
-      <View style={[styles.dietLabel, { borderColor: palette.green600 }]}>
-        <DietBadge diet="VEG" size={16} />
-        <AppText style={[styles.dietLabelText, { color: palette.green700 }]}>Pure Veg</AppText>
-      </View>
-    );
-  }
-  if (!servesNonVeg) return null;
-  return (
-    <View style={[styles.dietLabel, { borderColor: "#F4C7C9", backgroundColor: "#FFF5F5" }]}>
-      <View style={styles.nonVegMark}>
-        <Triangle size={9} color={palette.red500} fill={palette.red500} strokeWidth={1} />
-      </View>
-      <AppText style={[styles.dietLabelText, { color: palette.red500 }]}>Non Veg</AppText>
-    </View>
-  );
-}
-
 function RestaurantHero({
   restaurant,
   coverUrl,
-  servesNonVeg,
   topInset,
   onBack,
 }: {
   restaurant: RestaurantDto;
   coverUrl: string | null;
-  servesNonVeg: boolean;
   topInset: number;
   onBack: () => void;
 }) {
@@ -208,6 +183,8 @@ function RestaurantHero({
   const time = prepTimeRange(restaurant.avgPrepMins);
   const cuisine = restaurant.cuisine.filter((entry) => entry.trim()).join(", ");
   const address = [restaurant.addressLine, restaurant.city].filter(Boolean).join(", ");
+  // The restaurant's own type (its pure-veg setting) — never worked out from its menu.
+  const diet = restaurantDietOf(restaurant);
   return (
     <View>
       <View style={[styles.cover, { height: heroHeight + topInset }]}>
@@ -242,7 +219,7 @@ function RestaurantHero({
             <AppText style={styles.infoName} numberOfLines={2}>
               {restaurant.name}
             </AppText>
-            <DietLabel restaurant={restaurant} servesNonVeg={servesNonVeg} />
+            <DietBadge diet={diet} size={16} label={diet === "VEG" ? "Pure veg restaurant" : "Non-veg restaurant"} />
           </View>
           {cuisine ? (
             <AppText style={styles.cuisine} numberOfLines={2}>
@@ -351,13 +328,10 @@ function MenuSkeleton() {
 export default function RestaurantMenuScreen({
   sellerId,
   fallbackName,
-  initialDiet,
   onBack,
 }: {
   sellerId: string;
   fallbackName?: string | undefined;
-  /** The Food list filter it was opened under; the menu starts filtered the same way. */
-  initialDiet?: "VEG" | "NON_VEG" | undefined;
   onBack: () => void;
 }) {
   const insets = useSafeAreaInsets();
@@ -372,20 +346,12 @@ export default function RestaurantMenuScreen({
   // While a tab tap scrolls the list, the scroll must not move the highlight back.
   const jumping = useRef(false);
 
-  // All / Veg / Non-Veg — by each item's own mark; items without a mark only show under All.
-  const [dietFilter, setDietFilter] = useState<"ALL" | "VEG" | "NON_VEG">(initialDiet ?? "ALL");
-  const menuDiets = useMemo(() => {
-    const items = (menu.data?.menus ?? []).flatMap((entry) => entry.sections.flatMap((section) => section.items));
-    return { veg: items.some((item) => item.diet === "VEG"), nonVeg: items.some((item) => item.diet === "NON_VEG") };
-  }, [menu.data]);
-
   const allSections = useMemo(() => {
     const data = menu.data;
     if (!data) return [];
     const multipleMenus = data.menus.length > 1;
     return data.menus.flatMap((entry) =>
       entry.sections
-        .map((section) => ({ ...section, items: section.items.filter((item) => dietFilter === "ALL" || item.diet === dietFilter) }))
         .filter((section) => section.items.length > 0)
         .map((section) => {
           // A dish listed with several variants (Half / Full) shows which one each line is.
@@ -402,7 +368,7 @@ export default function RestaurantMenuScreen({
           };
         }),
     );
-  }, [menu.data, dietFilter]);
+  }, [menu.data]);
 
   const sections = useMemo(
     () => allSections.map((section) => (collapsed.has(section.key) ? { ...section, data: [] as RestaurantMenuItemDto[] } : section)),
@@ -412,11 +378,9 @@ export default function RestaurantMenuScreen({
     () => allSections.map((section) => ({ key: section.key, title: section.title, count: section.items.length, imageUrl: section.imageUrl })),
     [allSections],
   );
-  // A tab hidden by the Veg / Non-Veg switch falls back to the first one still shown.
+  // A tab gone after a refresh falls back to the first one still shown.
   const activeKey = (active && tabs.some((tab) => tab.key === active) ? active : null) ?? tabs[0]?.key ?? null;
 
-  // From the whole menu, not the filtered view, so the header label never flips with the Veg switch.
-  const servesNonVeg = menuDiets.nonVeg;
   const coverUrl = useMemo(() => {
     // Its own menu image — never the cover, which is the Food list card's.
     const own = resolveImageUrl(menu.data?.restaurant.menuImageUrl ?? null);
@@ -477,7 +441,6 @@ export default function RestaurantMenuScreen({
         item={item}
         showVariant={(section.multiVariant.get(item.productId) ?? 0) > 1}
         qty={cart.qtyFor(item.variantId)}
-        busy={cart.isBusy(item.variantId)}
         onAdd={cart.add}
         onIncrement={cart.increment}
         onDecrement={cart.decrement}
@@ -537,34 +500,12 @@ export default function RestaurantMenuScreen({
         }
         ListHeaderComponent={
           <View>
-            <RestaurantHero restaurant={restaurant} coverUrl={coverUrl} servesNonVeg={servesNonVeg} topInset={insets.top} onBack={onBack} />
+            <RestaurantHero restaurant={restaurant} coverUrl={coverUrl} topInset={insets.top} onBack={onBack} />
             {cart.error && (
               <View style={styles.notice}>
                 <NoticeStrip message={cart.error} />
               </View>
             )}
-            {/* Shown when the menu has both kinds, or a filter came from the Food list. */}
-            {(menuDiets.veg && menuDiets.nonVeg) || dietFilter !== "ALL" ? (
-              <View style={styles.dietSwitch} accessibilityRole="tablist">
-                {(["ALL", "VEG", "NON_VEG"] as const).map((key) => {
-                  const selected = dietFilter === key;
-                  return (
-                    <Pressable
-                      key={key}
-                      onPress={() => setDietFilter(key)}
-                      style={[styles.dietChip, selected && styles.dietChipActive]}
-                      accessibilityRole="tab"
-                      accessibilityState={{ selected }}
-                    >
-                      {key !== "ALL" ? <DietBadge diet={key} size={13} /> : null}
-                      <AppText style={[styles.dietChipText, selected && styles.dietChipTextActive]}>
-                        {key === "ALL" ? "All" : key === "VEG" ? "Veg" : "Non-Veg"}
-                      </AppText>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            ) : null}
             {tabs.length > 0 && (
               <View
                 onLayout={(event) => {
@@ -602,14 +543,7 @@ export default function RestaurantMenuScreen({
         }}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
         ListEmptyComponent={
-          dietFilter !== "ALL" ? (
-            <EmptyState
-              title={dietFilter === "VEG" ? "No veg items here" : "No non-veg items here"}
-              hint="Switch to All to see the whole menu."
-            />
-          ) : (
-            <EmptyState title="The menu is being updated" hint="This place hasn't listed any items yet. Check back soon." />
-          )
+          <EmptyState title="The menu is being updated" hint="This place hasn't listed any items yet. Check back soon." />
         }
         contentContainerStyle={{ paddingBottom: tabBarClearance + MINI_CART_ROOM }}
         initialNumToRender={12}
@@ -720,29 +654,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: colors.textPrimary,
   },
-  dietLabel: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-  },
-  nonVegMark: {
-    width: 16,
-    height: 16,
-    borderWidth: 1.75,
-    borderColor: palette.red500,
-    borderRadius: 3,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  dietLabelText: {
-    fontSize: 12,
-    lineHeight: 15,
-    fontWeight: "700",
-  },
   cuisine: {
     marginTop: 2,
     fontSize: 13,
@@ -782,45 +693,7 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     color: colors.textSecondary,
   },
-  itemDiet: {
-    position: "absolute",
-    top: 6,
-    left: 6,
-    padding: 2,
-    borderRadius: 4,
-    backgroundColor: colors.surface,
-  },
-  dietSwitch: {
-    flexDirection: "row",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.base,
-    paddingTop: spacing.md,
-  },
-  dietChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    height: 32,
-    paddingHorizontal: spacing.md,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-  },
-  dietChipActive: {
-    borderColor: palette.green700,
-    backgroundColor: palette.green50,
-  },
-  dietChipText: {
-    fontSize: 13,
-    lineHeight: 17,
-    fontWeight: "600",
-    color: colors.textPrimary,
-  },
-  dietChipTextActive: {
-    color: palette.green700,
-    fontWeight: "700",
-  },
+
   timeText: {
     fontWeight: "700",
     color: colors.textPrimary,
@@ -931,7 +804,17 @@ const styles = StyleSheet.create({
     minWidth: 0,
     gap: 3,
   },
+  itemTitleRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
+  },
+  // Centred on the name's first line (2 + 20/2 - 14/2).
+  itemDiet: {
+    marginTop: 5,
+  },
   itemName: {
+    flexShrink: 1,
     marginTop: 2,
     fontSize: 15,
     lineHeight: 20,

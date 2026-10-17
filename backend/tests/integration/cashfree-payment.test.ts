@@ -76,6 +76,7 @@ interface Refreshed {
   status: OrderStatus;
   paymentStatus: string;
   lastAttemptFailed: boolean;
+  attemptPending: boolean;
   payBy: string | null;
   latePaymentRefund: boolean;
 }
@@ -617,5 +618,426 @@ describe('reconciliation', () => {
     const row = await prisma.payment.findUniqueOrThrow({ where: { id: checkout.paymentId } });
     expect(row).toMatchObject({ status: 'FAILED', failureCode: 'CHECKOUT_EXPIRED' });
     expect((await dbOrder(order)).status).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* UPI app payments — what the app sees after the customer's UPI app returns   */
+/* -------------------------------------------------------------------------- */
+
+describe('UPI app payment outcomes — only Cashfree’s own answer counts', () => {
+  const history = (order: OnlineOrder) =>
+    prisma.orderStatusHistory.findMany({ where: { orderId: order.orderId, fromStatus: { not: null } } });
+  const audits = (order: OnlineOrder, action: string) =>
+    prisma.auditLog.findMany({ where: { action, entityId: order.orderId } });
+
+  it('a pending UPI payment keeps the order unpaid and reports "pending", not "failed"', async () => {
+    const order = await placeOnlineOrder();
+    const checkout = await openCheckout(order);
+    cashfree.attempt(checkout.providerOrderId, 'PENDING');
+
+    const state = await refreshed(order);
+    expect(state).toMatchObject({
+      status: OrderStatus.PENDING_PAYMENT,
+      paymentStatus: 'PENDING',
+      attemptPending: true,
+      lastAttemptFailed: false,
+      latePaymentRefund: false,
+    });
+    expect(state.payBy).not.toBeNull();
+    // Nothing placed, nothing announced to sellers, stock still only held.
+    expect(await history(order)).toHaveLength(0);
+    expect((await listing(order)).reservedQty).toBe(2);
+    expect((await listing(order)).stockQty).toBe(10);
+  });
+
+  it('a delayed success (pending first, Cashfree says SUCCESS later) is placed exactly once', async () => {
+    const order = await placeOnlineOrder();
+    const checkout = await openCheckout(order);
+    const pending = cashfree.attempt(checkout.providerOrderId, 'PENDING');
+    expect((await refreshed(order)).attemptPending).toBe(true);
+
+    // The bank answers after the customer is already back in the app.
+    cashfree.finish(checkout.providerOrderId, pending.cf_payment_id, 'SUCCESS');
+    const state = await refreshed(order);
+    expect(state).toMatchObject({ status: OrderStatus.PROCESSING, paymentStatus: 'PAID', attemptPending: false });
+
+    // The success webhook arriving afterwards changes nothing.
+    await deliver(cashfree.paymentWebhook('PAYMENT_SUCCESS_WEBHOOK', checkout.providerOrderId, pending)).then((r) =>
+      expect(r.status).toBe(200),
+    );
+    expect((await refreshed(order)).status).toBe(OrderStatus.PROCESSING);
+    const rows = await prisma.payment.findMany({ where: { orderId: order.orderId } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'CAPTURED', providerPaymentId: pending.cf_payment_id, failureCode: null });
+    expect(await history(order)).toHaveLength(2);
+    expect((await listing(order)).stockQty).toBe(8);
+  });
+
+  it('a pending attempt that finally fails leaves the order payable for a retry', async () => {
+    const order = await placeOnlineOrder();
+    const checkout = await openCheckout(order);
+    const pending = cashfree.attempt(checkout.providerOrderId, 'PENDING');
+    cashfree.finish(checkout.providerOrderId, pending.cf_payment_id, 'FAILED');
+
+    expect(await refreshed(order)).toMatchObject({
+      status: OrderStatus.PENDING_PAYMENT,
+      lastAttemptFailed: true,
+      attemptPending: false,
+    });
+    expect((await listing(order)).reservedQty).toBe(2);
+  });
+
+  it('app closed after paying: no refresh, no webhook — reconciliation places it, and the app later sees it paid', async () => {
+    const order = await placeOnlineOrder();
+    const checkout = await openCheckout(order);
+    const paid = cashfree.attempt(checkout.providerOrderId, 'SUCCESS');
+    // The customer paid in their UPI app and the phone never came back to AdiOne.
+    await prisma.payment.update({
+      where: { id: checkout.paymentId },
+      data: { createdAt: new Date(Date.now() - 3 * 60_000) },
+    });
+    expect((await dbOrder(order)).status).toBe(OrderStatus.PENDING_PAYMENT);
+
+    expect(await reconcileCheckoutPayments()).toBe(1);
+    expect(await dbOrder(order)).toMatchObject({ status: OrderStatus.PROCESSING, paymentStatus: 'PAID' });
+
+    // Reopened app, a late webhook and another sweep: all no-ops.
+    expect((await refreshed(order)).status).toBe(OrderStatus.PROCESSING);
+    await deliver(cashfree.paymentWebhook('PAYMENT_SUCCESS_WEBHOOK', checkout.providerOrderId, paid)).then((r) =>
+      expect(r.status).toBe(200),
+    );
+    expect(await reconcileCheckoutPayments()).toBe(0);
+    expect(await prisma.payment.count({ where: { orderId: order.orderId, status: 'CAPTURED' } })).toBe(1);
+    expect(await history(order)).toHaveLength(2);
+    expect(await prisma.refund.count({ where: { orderId: order.orderId } })).toBe(0);
+    expect((await listing(order)).stockQty).toBe(8);
+  });
+
+  it('retrying after a failed attempt reuses the same Cashfree order — one order, one payment, one charge', async () => {
+    const order = await placeOnlineOrder();
+    const first = await openCheckout(order);
+    cashfree.attempt(first.providerOrderId, 'FAILED');
+    expect((await refreshed(order)).lastAttemptFailed).toBe(true);
+
+    // "Try again" in the app: a new create call (new idempotency key).
+    const retry = await openCheckout(order);
+    expect(retry.providerOrderId).toBe(first.providerOrderId);
+    expect(retry.cashfree.paymentSessionId).toBe(first.cashfree.paymentSessionId);
+    cashfree.attempt(retry.providerOrderId, 'SUCCESS');
+    expect((await refreshed(order)).status).toBe(OrderStatus.PROCESSING);
+
+    // A further "Pay" after success is refused, not charged again.
+    const again = await api()
+      .post('/api/v1/payments/create')
+      .set('Authorization', bearer(order.token))
+      .set('Idempotency-Key', randomUUID())
+      .send({ orderId: order.orderId });
+    expect(expectError(again.body).code).toBe(ErrorCode.PAYMENT_ALREADY_CAPTURED);
+
+    expect(await prisma.order.count({ where: { userId: order.userId } })).toBe(1);
+    expect(cashfree.orders.size).toBe(1);
+    expect(await prisma.payment.count({ where: { orderId: order.orderId } })).toBe(1);
+    expect(await prisma.payment.count({ where: { orderId: order.orderId, status: 'CAPTURED' } })).toBe(1);
+  });
+
+  it('a forged "success" from the app (callback, verify, repeated refreshes) confirms nothing while Cashfree is unpaid', async () => {
+    const order = await placeOnlineOrder();
+    const checkout = await openCheckout(order);
+    cashfree.attempt(checkout.providerOrderId, 'PENDING');
+
+    const verify = await api()
+      .post('/api/v1/payments/verify')
+      .set('Authorization', bearer(order.token))
+      .send({
+        orderId: order.orderId,
+        providerOrderId: checkout.providerOrderId,
+        providerPaymentId: '5999999999',
+        signature: 'S'.repeat(64),
+        // Extra client-claimed fields are ignored (and stripped by validation).
+        status: 'SUCCESS',
+        amountPaise: order.totalPaise,
+      })
+      .expect(200);
+    expect(expectSuccess<{ verified: boolean }>(verify.body).data.verified).toBe(false);
+    for (let i = 0; i < 3; i += 1) expect((await refreshed(order)).status).toBe(OrderStatus.PENDING_PAYMENT);
+
+    // A "success webhook" not signed by Cashfree is refused outright.
+    const forged = cashfree.paymentWebhook('PAYMENT_SUCCESS_WEBHOOK', checkout.providerOrderId, {
+      ...cashfree.orders.get(checkout.providerOrderId)!.payments[0]!,
+      payment_status: 'SUCCESS',
+    });
+    const res = await api()
+      .post('/api/v1/payments/webhook')
+      .set({ ...forged.headers, 'x-webhook-signature': 'Zm9yZ2Vk' })
+      .send(forged.raw);
+    expect(res.status).toBe(400);
+
+    expect(await dbOrder(order)).toMatchObject({ status: OrderStatus.PENDING_PAYMENT, paymentStatus: 'PENDING' });
+    expect(await prisma.payment.count({ where: { orderId: order.orderId, status: 'CAPTURED' } })).toBe(0);
+    expect(await history(order)).toHaveLength(0);
+  });
+
+  it('an answer about a different Cashfree order (wrong transaction reference) is never applied', async () => {
+    const order = await placeOnlineOrder();
+    const checkout = await openCheckout(order);
+    cashfree.attempt(checkout.providerOrderId, 'SUCCESS');
+    cashfree.orderViewOverrides.set(checkout.providerOrderId, { order_id: 'AD999_someoneelse' });
+
+    const res = await refresh(order);
+    expect(res.status).toBe(400);
+    expect(expectError(res.body).code).toBe(ErrorCode.PAYMENT_VERIFICATION_FAILED);
+    expect(await dbOrder(order)).toMatchObject({ status: OrderStatus.PENDING_PAYMENT, paymentStatus: 'PENDING' });
+    expect(await prisma.payment.count({ where: { orderId: order.orderId, status: 'CAPTURED' } })).toBe(0);
+  });
+
+  it('a paid Cashfree order tagged for a DIFFERENT AdiOne order is refused and audited once', async () => {
+    const order = await placeOnlineOrder();
+    const checkout = await openCheckout(order);
+    cashfree.attempt(checkout.providerOrderId, 'SUCCESS');
+    cashfree.orderViewOverrides.set(checkout.providerOrderId, {
+      order_tags: { adione_order_id: randomUUID(), adione_order_number: 'AD000OTHER' },
+    });
+
+    for (let i = 0; i < 2; i += 1) {
+      const res = await refresh(order);
+      expect(res.status).toBe(400);
+      expect(expectError(res.body).code).toBe(ErrorCode.PAYMENT_VERIFICATION_FAILED);
+    }
+    expect(await dbOrder(order)).toMatchObject({ status: OrderStatus.PENDING_PAYMENT, paymentStatus: 'PENDING' });
+    expect(await prisma.payment.count({ where: { orderId: order.orderId, status: 'CAPTURED' } })).toBe(0);
+    expect(await audits(order, 'payment.reference_mismatch')).toHaveLength(1);
+  });
+
+  it('the exact amount in the wrong currency is refused like a wrong amount', async () => {
+    const order = await placeOnlineOrder();
+    const checkout = await openCheckout(order);
+    cashfree.attempt(checkout.providerOrderId, 'SUCCESS', { currency: 'USD' });
+
+    const res = await refresh(order);
+    expect(res.status).toBe(400);
+    expect(expectError(res.body).code).toBe(ErrorCode.PAYMENT_AMOUNT_MISMATCH);
+    expect(await dbOrder(order)).toMatchObject({ status: OrderStatus.PENDING_PAYMENT, paymentStatus: 'PENDING' });
+    const [audit] = await audits(order, 'payment.amount_mismatch');
+    expect(audit?.after).toMatchObject({ currency: 'USD', expectedPaise: order.totalPaise, capturedPaise: order.totalPaise });
+  });
+
+  it('₹220 payable: a capture of ₹219.99 or ₹220.01 is refused; exactly ₹220 is accepted', async () => {
+    const order = await placeOnlineOrder();
+    // Make the server-computed total exactly ₹220 before the checkout opens.
+    await prisma.order.update({ where: { id: order.orderId }, data: { totalPaise: 22000 } });
+    // Each try below gets its own Cashfree order (the previous one closed).
+    const closeOpenCheckouts = () =>
+      prisma.payment.updateMany({
+        where: { orderId: order.orderId, status: { in: ['CREATED', 'PENDING'] } },
+        data: { status: 'FAILED', failureCode: 'TEST_CLOSED' },
+      });
+
+    for (const rupees of [219.99, 220.01]) {
+      const checkout = await openCheckout(order);
+      expect(cashfree.orders.get(checkout.providerOrderId)!.order_amount).toBe(220);
+      cashfree.attempt(checkout.providerOrderId, 'SUCCESS', { amountRupees: rupees });
+      const res = await refresh(order);
+      expect(expectError(res.body).code).toBe(ErrorCode.PAYMENT_AMOUNT_MISMATCH);
+      expect((await dbOrder(order)).paymentStatus).toBe('PENDING');
+      await closeOpenCheckouts();
+    }
+
+    const final = await openCheckout(order);
+    cashfree.attempt(final.providerOrderId, 'SUCCESS', { amountRupees: 220 });
+    expect((await refreshed(order)).paymentStatus).toBe('PAID');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Mismatched captures, replaced checkouts and reconciliation robustness       */
+/* -------------------------------------------------------------------------- */
+
+describe('captured payments that cannot pay for the order', () => {
+  const history = (order: OnlineOrder) =>
+    prisma.orderStatusHistory.findMany({ where: { orderId: order.orderId, fromStatus: { not: null } } });
+  const audits = (order: OnlineOrder, action: string) =>
+    prisma.auditLog.findMany({ where: { action, entityId: order.orderId } });
+  const seedRefundAdmin = () =>
+    prisma.user.create({ data: { mobile: '0000000009', email: 'refunds@adione.test', fullName: 'Refund Admin', role: UserRole.SUPER_ADMIN } });
+  const adminAlerts = (adminId: string) =>
+    prisma.notification.findMany({ where: { userId: adminId, type: NotificationType.ADMIN_REFUND_FAILED } });
+
+  it('a wrong-amount capture is never applied, is refunded exactly once (the amount actually taken), and the customer can pay again', async () => {
+    const order = await placeOnlineOrder();
+    const checkout = await openCheckout(order);
+    const paid = cashfree.attempt(checkout.providerOrderId, 'SUCCESS', { amountRupees: 1 });
+
+    // The app's refresh (twice), the success webhook (twice — a duplicate delivery) and reconciliation all see it.
+    for (let i = 0; i < 2; i += 1) {
+      const res = await refresh(order);
+      expect(res.status).toBe(400);
+      expect(expectError(res.body).code).toBe(ErrorCode.PAYMENT_AMOUNT_MISMATCH);
+      expect(expectError(res.body).message).toMatch(/refunded automatically/);
+    }
+    const hook = cashfree.paymentWebhook('PAYMENT_SUCCESS_WEBHOOK', checkout.providerOrderId, paid);
+    for (let i = 0; i < 2; i += 1) expect((await deliver(hook)).status).toBe(200);
+    await prisma.payment.update({ where: { id: checkout.paymentId }, data: { createdAt: new Date(Date.now() - 3 * 60_000) } });
+    expect(await reconcileCheckoutPayments()).toBe(0);
+
+    // Not paid, nothing placed or announced, stock still only held.
+    expect(await dbOrder(order)).toMatchObject({ status: OrderStatus.PENDING_PAYMENT, paymentStatus: 'PENDING' });
+    expect(await history(order)).toHaveLength(0);
+    expect(await listing(order)).toMatchObject({ reservedQty: 2, stockQty: 10 });
+
+    // Recorded as an orphan of what was ACTUALLY taken, refunded once for exactly that.
+    const row = await prisma.payment.findUniqueOrThrow({ where: { id: checkout.paymentId } });
+    expect(row).toMatchObject({ status: 'CAPTURED', failureCode: 'ORPHAN_CAPTURE', amountPaise: 100, providerPaymentId: paid.cf_payment_id });
+    expect(row.failureReason).toMatch(/^Amount mismatch/);
+    const refunds = await prisma.refund.findMany({ where: { orderId: order.orderId } });
+    expect(refunds).toHaveLength(1);
+    expect(refunds[0]).toMatchObject({ amountPaise: 100, paymentId: checkout.paymentId });
+    expect(cashfree.refunds.size).toBe(1);
+    expect([...cashfree.refunds.values()][0]).toMatchObject({ refund_amount: 1, order_id: checkout.providerOrderId });
+    expect(await audits(order, 'payment.amount_mismatch')).toHaveLength(1);
+    expect(await audits(order, 'payment.orphan_capture_refund')).toHaveLength(1);
+
+    // Cashfree completes the refund: the payment is REFUNDED, the order is still simply unpaid.
+    cashfree.settleRefund(cashfreeRefundId(refunds[0]!.id), 'SUCCESS');
+    expect((await deliver(cashfree.refundWebhook(cashfreeRefundId(refunds[0]!.id)))).status).toBe(200);
+    expect((await prisma.payment.findUniqueOrThrow({ where: { id: checkout.paymentId } })).status).toBe('REFUNDED');
+    expect((await dbOrder(order)).paymentStatus).toBe('PENDING');
+
+    // The customer pays the right amount on a fresh checkout — not reported as a "late payment".
+    const again = await openCheckout(order);
+    expect(again.providerOrderId).not.toBe(checkout.providerOrderId);
+    expect(await refreshed(order)).toMatchObject({ status: OrderStatus.PENDING_PAYMENT, latePaymentRefund: false });
+    cashfree.attempt(again.providerOrderId, 'SUCCESS');
+    expect(await refreshed(order)).toMatchObject({ status: OrderStatus.PROCESSING, paymentStatus: 'PAID' });
+    expect(await prisma.refund.count({ where: { orderId: order.orderId } })).toBe(1);
+    expect(await prisma.payment.count({ where: { orderId: order.orderId, status: 'CAPTURED', failureCode: null } })).toBe(1);
+  });
+
+  it('a capture in the wrong currency is never applied nor auto-refunded — admins are alerted once for a manual refund', async () => {
+    const admin = await seedRefundAdmin();
+    const order = await placeOnlineOrder();
+    const checkout = await openCheckout(order);
+    cashfree.attempt(checkout.providerOrderId, 'SUCCESS', { currency: 'USD' });
+
+    for (let i = 0; i < 2; i += 1) expect(expectError((await refresh(order)).body).code).toBe(ErrorCode.PAYMENT_AMOUNT_MISMATCH);
+    await prisma.payment.update({ where: { id: checkout.paymentId }, data: { createdAt: new Date(Date.now() - 3 * 60_000) } });
+    await reconcileCheckoutPayments();
+
+    expect(await dbOrder(order)).toMatchObject({ status: OrderStatus.PENDING_PAYMENT, paymentStatus: 'PENDING' });
+    expect(await prisma.refund.count({ where: { orderId: order.orderId } })).toBe(0);
+    expect(cashfree.refunds.size).toBe(0);
+    const alerts = await adminAlerts(admin.id);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.body).toMatch(/MANUAL refund .* USD/);
+    expect(await audits(order, 'payment.amount_mismatch')).toHaveLength(1);
+  });
+
+  it('a capture on a Cashfree order tagged for another order alerts admins once for manual review, and refunds nothing', async () => {
+    const admin = await seedRefundAdmin();
+    const order = await placeOnlineOrder();
+    const checkout = await openCheckout(order);
+    cashfree.attempt(checkout.providerOrderId, 'SUCCESS');
+    cashfree.orderViewOverrides.set(checkout.providerOrderId, {
+      order_tags: { adione_order_id: randomUUID(), adione_order_number: 'AD000OTHER' },
+    });
+
+    for (let i = 0; i < 2; i += 1) expect(expectError((await refresh(order)).body).code).toBe(ErrorCode.PAYMENT_VERIFICATION_FAILED);
+    expect(await dbOrder(order)).toMatchObject({ status: OrderStatus.PENDING_PAYMENT, paymentStatus: 'PENDING' });
+    expect(cashfree.refunds.size).toBe(0);
+    const alerts = await adminAlerts(admin.id);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.body).toMatch(/MANUAL review/);
+  });
+});
+
+describe('reconciliation — replaced checkouts and rows that keep failing', () => {
+  const rowOf = (id: string) => prisma.payment.findUniqueOrThrow({ where: { id } });
+
+  async function replacedCheckout(order: OnlineOrder): Promise<{ first: Checkout; second: Checkout }> {
+    const first = await openCheckout(order);
+    await ageStoredSession(first);
+    const second = await openCheckout(order);
+    expect(second.providerOrderId).not.toBe(first.providerOrderId);
+    expect(await rowOf(first.paymentId)).toMatchObject({ status: 'FAILED', failureCode: 'CHECKOUT_SUPERSEDED' });
+    return { first, second };
+  }
+
+  it('settles a payment made on a just-replaced checkout when no webhook arrives and the app never checks', async () => {
+    const order = await placeOnlineOrder();
+    const { first, second } = await replacedCheckout(order);
+    // Paid in the old checkout's final seconds; the webhook is lost; the phone never comes back.
+    cashfree.attempt(first.providerOrderId, 'SUCCESS');
+
+    expect(await reconcileCheckoutPayments()).toBe(1);
+    expect(await dbOrder(order)).toMatchObject({ status: OrderStatus.PROCESSING, paymentStatus: 'PAID' });
+    expect(await rowOf(first.paymentId)).toMatchObject({ status: 'CAPTURED', failureCode: null });
+    expect((await rowOf(second.paymentId)).status).toBe('CREATED');
+
+    // Idempotent: further sweeps, a late webhook and the app's refresh change nothing.
+    expect(await reconcileCheckoutPayments()).toBe(0);
+    const paid = cashfree.orders.get(first.providerOrderId)!.payments[0]!;
+    expect((await deliver(cashfree.paymentWebhook('PAYMENT_SUCCESS_WEBHOOK', first.providerOrderId, paid))).status).toBe(200);
+    expect((await refreshed(order)).status).toBe(OrderStatus.PROCESSING);
+    expect(await prisma.payment.count({ where: { orderId: order.orderId, status: 'CAPTURED' } })).toBe(1);
+    expect(await prisma.refund.count({ where: { orderId: order.orderId } })).toBe(0);
+    expect(
+      await prisma.orderStatusHistory.count({ where: { orderId: order.orderId, toStatus: OrderStatus.PAYMENT_CONFIRMED } }),
+    ).toBe(1);
+  });
+
+  it('both the replaced and the new checkout paid: one is applied, the other refunded exactly once', async () => {
+    const order = await placeOnlineOrder();
+    const { first, second } = await replacedCheckout(order);
+    cashfree.attempt(first.providerOrderId, 'SUCCESS');
+    cashfree.attempt(second.providerOrderId, 'SUCCESS');
+    await prisma.payment.update({ where: { id: second.paymentId }, data: { createdAt: new Date(Date.now() - 3 * 60_000) } });
+
+    await reconcileCheckoutPayments();
+    await reconcileCheckoutPayments();
+
+    expect(await dbOrder(order)).toMatchObject({ status: OrderStatus.PROCESSING, paymentStatus: 'PAID' });
+    const captured = await prisma.payment.findMany({ where: { orderId: order.orderId, status: 'CAPTURED' } });
+    expect(captured).toHaveLength(2);
+    expect(captured.filter((p) => p.failureCode === null)).toHaveLength(1);
+    expect(captured.filter((p) => p.failureCode === 'ORPHAN_CAPTURE')).toHaveLength(1);
+    expect(await prisma.refund.count({ where: { orderId: order.orderId } })).toBe(1);
+    expect(cashfree.refunds.size).toBe(1);
+  });
+
+  it('an unpaid replaced checkout is re-checked only within its window, which never slides forward', async () => {
+    const order = await placeOnlineOrder();
+    const { first } = await replacedCheckout(order);
+    const before = (await rowOf(first.paymentId)).updatedAt.getTime();
+    const asked = () => cashfree.requests.filter((r) => r.method === 'GET' && r.path === `/orders/${first.providerOrderId}`).length;
+
+    const askedBefore = asked();
+    await reconcileCheckoutPayments();
+    expect(asked()).toBe(askedBefore + 1); // re-checked
+    expect((await rowOf(first.paymentId)).updatedAt.getTime()).toBe(before); // not re-stamped
+    expect(await rowOf(first.paymentId)).toMatchObject({ status: 'FAILED', failureCode: 'CHECKOUT_SUPERSEDED' });
+
+    // Past the window it is no longer asked about.
+    await prisma.$executeRaw`UPDATE payments SET updated_at = now() - interval '16 minutes' WHERE id = ${first.paymentId}::uuid`;
+    const askedLater = asked();
+    await reconcileCheckoutPayments();
+    expect(asked()).toBe(askedLater);
+  });
+
+  it('a row whose check fails is moved to the back of the queue, then settled on a later sweep', async () => {
+    const order = await placeOnlineOrder();
+    const checkout = await openCheckout(order);
+    cashfree.attempt(checkout.providerOrderId, 'SUCCESS');
+    const old = new Date(Date.now() - 3 * 60_000);
+    await prisma.$executeRaw`UPDATE payments SET created_at = ${old}, updated_at = ${old} WHERE id = ${checkout.paymentId}::uuid`;
+
+    cashfree.failNext = { status: 500, code: 'internal_error', message: 'Cashfree is down' };
+    expect(await reconcileCheckoutPayments()).toBe(0);
+    const touched = await rowOf(checkout.paymentId);
+    expect(touched.status).toBe('CREATED');
+    expect(touched.updatedAt.getTime()).toBeGreaterThan(old.getTime() + 60_000);
+    expect((await dbOrder(order)).status).toBe(OrderStatus.PENDING_PAYMENT);
+
+    expect(await reconcileCheckoutPayments()).toBe(1);
+    expect(await dbOrder(order)).toMatchObject({ status: OrderStatus.PROCESSING, paymentStatus: 'PAID' });
   });
 });

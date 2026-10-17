@@ -86,6 +86,56 @@ export interface CreatePaymentResult extends CreatePaymentResponse {
  */
 const ORPHAN_CAPTURE = "ORPHAN_CAPTURE";
 
+/**
+ * `payments.failure_reason` prefix of an ORPHAN capture whose amount did not
+ * match its order (see `settleCapture`). Stable: `refreshPayment` recognises
+ * the case by it to keep telling the app what happened.
+ */
+const AMOUNT_MISMATCH_REASON = "Amount mismatch";
+
+/** What the customer is told about a wrong-amount capture: it is being refunded, and they may pay again. */
+function amountMismatchError(): AppError {
+  return new AppError(ErrorCode.PAYMENT_AMOUNT_MISMATCH, {
+    message:
+      "The amount charged did not match this order, so the payment was not accepted and is being refunded automatically. You can pay again.",
+  });
+}
+
+/**
+ * A captured payment that can be neither applied nor refunded automatically
+ * (wrong currency, or a gateway order tagged for another order): alert the
+ * admins who can refund, once per provider payment. The audit row written
+ * next to it carries the details. Never throws.
+ */
+async function alertManualPaymentReview(
+  order: Pick<Order, "id" | "orderNumber">,
+  input: { providerPaymentId: string; amountPaise: number },
+  reason: string,
+): Promise<void> {
+  await notificationService.notifyAdmins(Permission.ORDER_REFUND, {
+    type: NotificationType.ADMIN_REFUND_FAILED,
+    dedupeKey: `payment-review:${provider.name}:${input.providerPaymentId}`,
+    orderId: order.id,
+    context: { orderNumber: order.orderNumber, amountPaise: input.amountPaise, reason },
+  });
+}
+
+/**
+ * A checkout replaced moments ago (a new Cashfree order was opened because
+ * the old one was about to expire) can still have been paid in its final
+ * seconds. The app's refresh AND reconciliation both re-check such a row for
+ * this long — the same condition, so neither can miss what the other sees.
+ */
+const SUPERSEDED_RECHECK_MS = 15 * 60_000;
+
+function recentlySupersededCheckout() {
+  return {
+    status: PaymentStatus.FAILED,
+    failureCode: "CHECKOUT_SUPERSEDED",
+    updatedAt: { gt: new Date(Date.now() - SUPERSEDED_RECHECK_MS) },
+  };
+}
+
 /** Payment row statuses that mean money was actually taken. */
 const MONEY_TAKEN: PaymentStatus[] = [
   PaymentStatus.CAPTURED,
@@ -367,6 +417,8 @@ async function createCheckoutSession(
         providerPaymentId: status.captured.providerPaymentId,
         providerOrderId: open.providerOrderId,
         amountPaise: status.captured.amountPaise,
+        currency: status.captured.currency,
+        gatewayOrderTag: status.adioneOrderId,
         method: status.captured.method,
         actorType: ActorType.SYSTEM,
         rawPayload: { verifiedBy: "fetchOrder", source: "create" },
@@ -911,6 +963,10 @@ interface SettlementInput {
   method: string | null;
   actorType: ActorType;
   rawPayload?: unknown;
+  /** The gateway's currency for the money taken, when it reports one. Only INR is applied. */
+  currency?: string | null;
+  /** The AdiOne order id the gateway order was tagged with at creation, when known. */
+  gatewayOrderTag?: string | null;
 }
 
 /**
@@ -924,11 +980,12 @@ async function recordAmountMismatch(
   orderId: string,
   expectedPaise: number,
   input: SettlementInput,
+  action: "payment.amount_mismatch" | "payment.reference_mismatch" = "payment.amount_mismatch",
 ): Promise<void> {
   try {
     const seen = await prisma.auditLog.findFirst({
       where: {
-        action: "payment.amount_mismatch",
+        action,
         entityId: orderId,
         after: { path: ["providerPaymentId"], equals: input.providerPaymentId },
       },
@@ -938,7 +995,7 @@ async function recordAmountMismatch(
     await prisma.auditLog.create({
       data: {
         actorUserId: null,
-        action: "payment.amount_mismatch",
+        action,
         entityType: "Order",
         entityId: orderId,
         after: {
@@ -947,6 +1004,8 @@ async function recordAmountMismatch(
           providerPaymentId: input.providerPaymentId,
           expectedPaise,
           capturedPaise: input.amountPaise,
+          currency: input.currency ?? null,
+          gatewayOrderTag: input.gatewayOrderTag ?? null,
           source: input.actorType,
         },
       },
@@ -976,9 +1035,59 @@ async function settleCapture(input: SettlementInput): Promise<void> {
     where: { id: input.orderId },
   });
 
+  // Reference cross-check. The gateway order carries the AdiOne order id it
+  // was opened for (its tag); money taken on a gateway order opened for a
+  // different order is never applied to this one.
+  if (input.gatewayOrderTag && input.gatewayOrderTag !== order.id) {
+    log.error(
+      {
+        orderId: order.id,
+        gatewayOrderTag: input.gatewayOrderTag,
+        providerOrderId: input.providerOrderId,
+        providerPaymentId: input.providerPaymentId,
+      },
+      "PAYMENT REFERENCE MISMATCH — not confirming",
+    );
+    await recordAmountMismatch(order.id, order.totalPaise, input, "payment.reference_mismatch");
+    // Whose money this is is unclear, so nothing is refunded automatically.
+    await alertManualPaymentReview(
+      order,
+      input,
+      `needs a MANUAL review — Cashfree order ${input.providerOrderId} is tagged for a different Aadione order`,
+    );
+    throw new AppError(ErrorCode.PAYMENT_VERIFICATION_FAILED, {
+      internalMessage: `gateway order ${input.providerOrderId} is tagged for order ${input.gatewayOrderTag}, not ${order.id}`,
+    });
+  }
+
+  // Currency cross-check. Money in any currency but INR is never applied, and
+  // never auto-refunded either (the refund API takes the ORDER's currency, so
+  // the amount would be wrong): an admin refunds it by hand.
+  const currencyOk = input.currency === undefined || input.currency === null || input.currency === "INR";
+  if (!currencyOk) {
+    log.error(
+      {
+        orderId: order.id,
+        expected: order.totalPaise,
+        received: input.amountPaise,
+        currency: input.currency ?? null,
+        providerPaymentId: input.providerPaymentId,
+      },
+      "PAYMENT CURRENCY MISMATCH — not confirming, manual refund needed",
+    );
+    await recordAmountMismatch(order.id, order.totalPaise, input);
+    await alertManualPaymentReview(order, input, `needs a MANUAL refund — the customer was charged in ${input.currency}, not INR`);
+    throw new AppError(ErrorCode.PAYMENT_AMOUNT_MISMATCH);
+  }
+
   // Amount cross-check. A mismatch means the customer was charged something
-  // other than the order total — treated as fraud, never auto-confirmed.
-  if (input.amountPaise !== order.totalPaise) {
+  // other than the order total — never applied (the order is not paid, nothing
+  // is fulfilled). The money is recorded as an orphan capture of the amount
+  // ACTUALLY taken and refunded automatically below, through the same locked,
+  // idempotent refund as a late or duplicate payment; the customer can pay the
+  // correct amount on a fresh checkout.
+  const amountMismatch = input.amountPaise !== order.totalPaise;
+  if (amountMismatch) {
     log.error(
       {
         orderId: order.id,
@@ -986,10 +1095,9 @@ async function settleCapture(input: SettlementInput): Promise<void> {
         received: input.amountPaise,
         providerPaymentId: input.providerPaymentId,
       },
-      "PAYMENT AMOUNT MISMATCH — not confirming",
+      "PAYMENT AMOUNT MISMATCH — not confirming, refunding automatically",
     );
     await recordAmountMismatch(order.id, order.totalPaise, input);
-    throw new AppError(ErrorCode.PAYMENT_AMOUNT_MISMATCH);
   }
 
   const outcome = await runInTransaction(async (tx) => {
@@ -1025,12 +1133,14 @@ async function settleCapture(input: SettlementInput): Promise<void> {
       select: { id: true },
     });
     const alreadyPaid = Boolean(paidBy) || locked.payment_status === OrderPaymentStatus.PAID;
-    const payable = locked.status === OrderStatus.PENDING_PAYMENT && !alreadyPaid;
+    const payable = !amountMismatch && locked.status === OrderStatus.PENDING_PAYMENT && !alreadyPaid;
     const orphanReason = payable
       ? null
-      : alreadyPaid
-        ? "Duplicate payment — the order was already paid. Refunded automatically."
-        : `Payment arrived after the order became ${locked.status}. Refunded automatically.`;
+      : amountMismatch
+        ? `${AMOUNT_MISMATCH_REASON} — ${input.amountPaise} paise were charged, the order total is ${order.totalPaise}. Refunded automatically.`
+        : alreadyPaid
+          ? "Duplicate payment — the order was already paid. Refunded automatically."
+          : `Payment arrived after the order became ${locked.status}. Refunded automatically.`;
 
     // The row this capture belongs to: the gateway order it was made
     // against, else the newest open intent. Never one that already holds
@@ -1062,6 +1172,10 @@ async function settleCapture(input: SettlementInput): Promise<void> {
       rawPayload: (input.rawPayload ?? null) as never,
       failureCode: payable ? null : ORPHAN_CAPTURE,
       failureReason: orphanReason,
+      // What the gateway ACTUALLY took — equal to the order total except for an
+      // amount mismatch, whose refund (refundOrphanCapture) must return exactly
+      // this, not the total the intent was opened for.
+      amountPaise: input.amountPaise,
     };
 
     const saved = target
@@ -1080,7 +1194,6 @@ async function settleCapture(input: SettlementInput): Promise<void> {
             orderId: order.id,
             provider: provider.name,
             providerOrderId: input.providerOrderId,
-            amountPaise: input.amountPaise,
           },
         });
 
@@ -1102,8 +1215,13 @@ async function settleCapture(input: SettlementInput): Promise<void> {
       "captured payment cannot be applied to its order — refunding automatically",
     );
     await refundOrphanCapture(outcome.paymentId, outcome.orphanReason);
+    // The caller (the app's refresh, the webhook record, reconciliation) is
+    // told the payment did not pay for the order.
+    if (amountMismatch) throw amountMismatchError();
     return;
   }
+  // Belt and braces: a mismatched capture can never reach placement.
+  if (amountMismatch) throw amountMismatchError();
 
   if (outcome.orderStatus === OrderStatus.PENDING_PAYMENT) {
     // Commits the stock reservation and places the order, in one transaction.
@@ -1322,6 +1440,8 @@ export async function handleWebhook(
         providerPaymentId: status.captured.providerPaymentId,
         providerOrderId: status.providerOrderId,
         amountPaise: status.captured.amountPaise,
+        currency: status.captured.currency,
+        gatewayOrderTag: status.adioneOrderId,
         method: status.captured.method,
         actorType: ActorType.PAYMENT_WEBHOOK,
         rawPayload: event.payload,
@@ -2219,6 +2339,12 @@ export interface PaymentRefreshResult {
   totalPaise: number;
   /** The newest attempt failed or was abandoned; the customer may retry. */
   lastAttemptFailed: boolean;
+  /**
+   * The newest attempt is still in progress at the gateway (the UPI app or
+   * the bank has not answered yet). The app shows "Payment pending" and keeps
+   * checking rather than inviting a second payment.
+   */
+  attemptPending: boolean;
   /** Until when payment is accepted, while the order awaits it. */
   payBy: string | null;
   /** Money arrived after the order stopped awaiting it and is being refunded. */
@@ -2240,6 +2366,7 @@ export async function refreshPayment(
     throw new AppError(ErrorCode.NOT_FOUND, { message: "Order not found." });
 
   let lastAttemptFailed = false;
+  let attemptPending = false;
 
   if (
     provider.fetchOrder &&
@@ -2254,12 +2381,8 @@ export async function refreshPayment(
         OR: [
           { status: { in: [PaymentStatus.CREATED, PaymentStatus.PENDING] } },
           // A checkout replaced moments ago can still have been paid in its
-          // final seconds.
-          {
-            status: PaymentStatus.FAILED,
-            failureCode: "CHECKOUT_SUPERSEDED",
-            updatedAt: { gt: new Date(Date.now() - 15 * 60_000) },
-          },
+          // final seconds (reconciliation checks the same rows).
+          recentlySupersededCheckout(),
         ],
       },
       orderBy: { createdAt: "desc" },
@@ -2274,13 +2397,17 @@ export async function refreshPayment(
           providerPaymentId: status.captured.providerPaymentId,
           providerOrderId: status.providerOrderId,
           amountPaise: status.captured.amountPaise,
+          currency: status.captured.currency,
+          gatewayOrderTag: status.adioneOrderId,
           method: status.captured.method,
           actorType: ActorType.SYSTEM,
           rawPayload: { verifiedBy: "fetchOrder", source: "refresh" },
         });
         lastAttemptFailed = false;
+        attemptPending = false;
         break;
       }
+      if (index === 0 && status.attemptPending) attemptPending = true;
       if (row.status === PaymentStatus.FAILED) continue;
       if (status.orderStatus === "EXPIRED" || status.orderStatus === "TERMINATED") {
         await closeDeadCheckout(row.id, status);
@@ -2292,10 +2419,30 @@ export async function refreshPayment(
   }
 
   const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
-  const lateRefund = await prisma.refund.findFirst({
-    where: { orderId: order.id, payment: { failureCode: ORPHAN_CAPTURE } },
-    select: { id: true },
-  });
+
+  // The newest attempt was a wrong-amount capture, already being refunded
+  // (recorded by an earlier call, the webhook or reconciliation): keep saying
+  // so until the customer opens a new checkout.
+  if (updated.status === OrderStatus.PENDING_PAYMENT) {
+    const newest = await prisma.payment.findFirst({
+      where: { orderId: order.id },
+      orderBy: { createdAt: "desc" },
+      select: { failureCode: true, failureReason: true },
+    });
+    if (newest?.failureCode === ORPHAN_CAPTURE && newest.failureReason?.startsWith(AMOUNT_MISMATCH_REASON)) {
+      throw amountMismatchError();
+    }
+  }
+
+  // "Late" = money that arrived after the order stopped awaiting payment. A
+  // refund of a wrong-amount capture on an order that is still payable is not.
+  const lateRefund =
+    updated.status === OrderStatus.PENDING_PAYMENT
+      ? null
+      : await prisma.refund.findFirst({
+          where: { orderId: order.id, payment: { failureCode: ORPHAN_CAPTURE } },
+          select: { id: true },
+        });
 
   return {
     orderId: updated.id,
@@ -2303,6 +2450,7 @@ export async function refreshPayment(
     paymentStatus: updated.paymentStatus,
     totalPaise: updated.totalPaise,
     lastAttemptFailed,
+    attemptPending: attemptPending && updated.status === OrderStatus.PENDING_PAYMENT,
     payBy:
       updated.status === OrderStatus.PENDING_PAYMENT && updated.reservationExpiresAt
         ? updated.reservationExpiresAt.toISOString()
@@ -2332,13 +2480,21 @@ export async function reconcileCheckoutPayments(): Promise<number> {
     where: {
       provider: provider.name,
       providerOrderId: { not: null },
-      status: { in: [PaymentStatus.CREATED, PaymentStatus.PENDING] },
-      createdAt: { lt: cutoff },
+      OR: [
+        { status: { in: [PaymentStatus.CREATED, PaymentStatus.PENDING] }, createdAt: { lt: cutoff } },
+        // A checkout replaced moments ago may have been paid in its final
+        // seconds — the same rows the app's refresh re-checks, so a lost
+        // webhook plus an app that never comes back cannot strand that money.
+        recentlySupersededCheckout(),
+      ],
     },
     orderBy: { updatedAt: "asc" },
     take: 25,
   });
   for (const row of open) {
+    // A replaced checkout is never re-stamped: its re-check window is measured
+    // from when it was replaced and must not slide forward.
+    const superseded = row.status === PaymentStatus.FAILED;
     try {
       const status = await fetchOrder(row.providerOrderId!);
       if (status.captured) {
@@ -2347,12 +2503,16 @@ export async function reconcileCheckoutPayments(): Promise<number> {
           providerPaymentId: status.captured.providerPaymentId,
           providerOrderId: status.providerOrderId,
           amountPaise: status.captured.amountPaise,
+          currency: status.captured.currency,
+          gatewayOrderTag: status.adioneOrderId,
           method: status.captured.method,
           actorType: ActorType.SYSTEM,
           rawPayload: { verifiedBy: "fetchOrder", source: "reconcile" },
         });
         settled += 1;
         log.warn({ paymentId: row.id }, "payment settled by reconciliation");
+      } else if (superseded) {
+        // Not paid (yet); already closed on our side — nothing to change.
       } else if (status.orderStatus === "EXPIRED" || status.orderStatus === "TERMINATED") {
         await closeDeadCheckout(row.id, status);
       } else {
@@ -2361,6 +2521,19 @@ export async function reconcileCheckoutPayments(): Promise<number> {
       }
     } catch (error) {
       log.error({ err: error, paymentId: row.id }, "checkout reconciliation failed");
+      // A row that keeps failing (gateway error, a capture that cannot be
+      // applied) moves to the back of the oldest-first sweep, so it can never
+      // hold the head of every batch. Only if it is still open: a capture
+      // recorded meanwhile must not be touched, and a replaced checkout keeps
+      // its window.
+      if (!superseded) {
+        await prisma.payment
+          .updateMany({
+            where: { id: row.id, status: { in: [PaymentStatus.CREATED, PaymentStatus.PENDING] } },
+            data: { updatedAt: new Date() },
+          })
+          .catch((touchError: unknown) => log.error({ err: touchError, paymentId: row.id }, "could not re-queue the payment row"));
+      }
     }
   }
 

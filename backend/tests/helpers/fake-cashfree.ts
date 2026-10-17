@@ -17,6 +17,8 @@ interface FakePayment {
   payment_group: string;
   payment_message: string;
   payment_time: string;
+  /** Defaults to INR. */
+  payment_currency?: string;
 }
 
 interface FakeOrder {
@@ -63,6 +65,12 @@ export class FakeCashfree {
    * (a timeout or dropped connection after the work was done).
    */
   loseNextResponse = false;
+  /**
+   * Per Cashfree order: fields Cashfree's GET /orders/:id answer is altered
+   * with — an answer about the wrong order, or a gateway order tagged for a
+   * different AdiOne order.
+   */
+  readonly orderViewOverrides = new Map<string, Partial<FakeOrder>>();
 
   readonly fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const response = await this.handle(input, init);
@@ -131,10 +139,12 @@ export class FakeCashfree {
     if (!order) return json(404, { message: 'order not found', code: 'order_not_found', type: 'invalid_request_error' });
 
     // GET /orders/:id
-    if (method === 'GET' && parts.length === 2) return json(200, orderView(order));
+    if (method === 'GET' && parts.length === 2) {
+      return json(200, { ...orderView(order), ...(this.orderViewOverrides.get(order.order_id) ?? {}) });
+    }
     // GET /orders/:id/payments
     if (method === 'GET' && parts.length === 3 && parts[2] === 'payments') {
-      return json(200, order.payments.map((p) => ({ ...p, order_id: order.order_id, payment_currency: 'INR' })));
+      return json(200, order.payments.map((p) => ({ ...p, order_id: order.order_id, payment_currency: p.payment_currency ?? 'INR' })));
     }
     // POST /orders/:id/refunds
     if (method === 'POST' && parts.length === 3 && parts[2] === 'refunds') {
@@ -167,13 +177,14 @@ export class FakeCashfree {
     this.failNext = null;
     this.refundStartStatus = 'PENDING';
     this.loseNextResponse = false;
+    this.orderViewOverrides.clear();
   }
 
   /** The customer completes (or fails) one attempt in Cashfree's checkout. */
   attempt(
     orderId: string,
     status: 'SUCCESS' | 'FAILED' | 'USER_DROPPED' | 'PENDING',
-    options: { amountRupees?: number } = {},
+    options: { amountRupees?: number; currency?: string } = {},
   ): FakePayment {
     const order = this.orders.get(orderId);
     if (!order) throw new Error(`fake cashfree: no order ${orderId}`);
@@ -184,8 +195,23 @@ export class FakeCashfree {
       payment_group: 'upi',
       payment_message: status === 'SUCCESS' ? 'Transaction Successful' : status === 'USER_DROPPED' ? 'User dropped' : 'Payment failed',
       payment_time: nextTime(),
+      ...(options.currency ? { payment_currency: options.currency } : {}),
     };
     order.payments.push(payment);
+    if (status === 'SUCCESS') order.order_status = 'PAID';
+    return payment;
+  }
+
+  /**
+   * A PENDING attempt reaches its final state later — the bank answered after
+   * the customer was already back in the app (a delayed UPI status update).
+   */
+  finish(orderId: string, cfPaymentId: string, status: 'SUCCESS' | 'FAILED'): FakePayment {
+    const order = this.orders.get(orderId);
+    const payment = order?.payments.find((p) => p.cf_payment_id === cfPaymentId);
+    if (!order || !payment) throw new Error(`fake cashfree: no payment ${cfPaymentId} on ${orderId}`);
+    payment.payment_status = status;
+    payment.payment_message = status === 'SUCCESS' ? 'Transaction Successful' : 'Payment failed';
     if (status === 'SUCCESS') order.order_status = 'PAID';
     return payment;
   }

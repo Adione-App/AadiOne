@@ -858,17 +858,7 @@ export default function HomeScreen({
           </ReanimatedAnimated.View>
         </ReanimatedAnimated.View>
 
-        {/* ==========================================================
-            SEARCH — once the address/profile row above has collapsed,
-            this is the only thing left looking pinned at the top (it's
-            still part of the same overlay — see the wrapper's own comment
-            — it just stops moving once its own `translateY` clamps).
-        ========================================================== */}
-
-        {/* Same `collapsable={false}` reasoning as the header row above —
-            its `transform` is also continuously animated in lockstep with
-            the header's collapse, so it is exposed to the exact same
-            Android flatten/unflatten flicker risk. */}
+       
         <ReanimatedAnimated.View
           collapsable={false}
           style={[styles.searchBarRow, searchBarAnimatedStyle]}

@@ -53,10 +53,19 @@ export interface ProviderOrderStatus {
   amountPaise: number;
   /** The AdiOne order id the provider order was tagged with, when known. */
   adioneOrderId: string | null;
-  /** Set only when the provider says the order is PAID by this payment. */
-  captured: { providerPaymentId: string; amountPaise: number; method: string | null } | null;
+  /**
+   * Set only when the provider says the order is PAID by this payment.
+   * `currency` is the provider's own (ISO 4217); settlement refuses anything but INR.
+   */
+  captured: { providerPaymentId: string; amountPaise: number; method: string | null; currency: string } | null;
   /** Most recent unsuccessful attempt, if any. */
   lastFailure: { providerPaymentId: string; status: string; reason: string | null } | null;
+  /**
+   * The newest attempt is still in progress at the provider (a UPI collect or
+   * intent the customer has not finished, or the bank has not answered yet).
+   * Not a failure: the order must stay payable, and a retry risks paying twice.
+   */
+  attemptPending: boolean;
 }
 
 export interface RefundInput {

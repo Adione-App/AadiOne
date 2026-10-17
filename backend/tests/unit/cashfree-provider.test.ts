@@ -166,7 +166,9 @@ describe('fetchOrder — server-side verification', () => {
       providerPaymentId: paid.cf_payment_id,
       amountPaise: 25_300,
       method: 'upi',
+      currency: 'INR',
     });
+    expect(status.attemptPending).toBe(false);
   });
 
   it('reports a failed attempt without a capture — the order is still payable', async () => {
@@ -189,6 +191,26 @@ describe('fetchOrder — server-side verification', () => {
     const status = await provider.fetchOrder(intent.providerOrderId);
     expect(status.captured).toBeNull();
     expect(status.lastFailure).toBeNull();
+    // ...it is reported as pending instead, so the app does not invite a second payment.
+    expect(status.attemptPending).toBe(true);
+  });
+
+  it('reports the currency Cashfree took the money in, so settlement can refuse anything but INR', async () => {
+    const { gateway, provider } = setup();
+    const intent = await openCheckout(provider);
+    gateway.attempt(intent.providerOrderId, 'SUCCESS', { currency: 'usd' });
+    expect((await provider.fetchOrder(intent.providerOrderId)).captured?.currency).toBe('USD');
+  });
+
+  it('refuses an answer about a different Cashfree order than the one asked about', async () => {
+    const { gateway, provider } = setup();
+    const intent = await openCheckout(provider);
+    gateway.attempt(intent.providerOrderId, 'SUCCESS');
+    gateway.orderViewOverrides.set(intent.providerOrderId, { order_id: 'AD000_other' });
+
+    const error = await provider.fetchOrder(intent.providerOrderId).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AppError);
+    expect((error as AppError).code).toBe(ErrorCode.PAYMENT_VERIFICATION_FAILED);
   });
 
   it('does not trust a SUCCESS attempt on an order Cashfree does not call PAID', async () => {

@@ -316,10 +316,20 @@ export class CashfreeProvider implements PaymentProvider {
   async fetchOrder(providerOrderId: string): Promise<ProviderOrderStatus> {
     const path = `/orders/${encodeURIComponent(providerOrderId)}`;
     const order = await this.call<CashfreeOrder>("GET", path);
+    // The transaction reference must be the one asked about — an answer for
+    // any other Cashfree order is never evidence about this one.
+    if (order.order_id !== providerOrderId) {
+      throw new AppError(ErrorCode.PAYMENT_VERIFICATION_FAILED, {
+        internalMessage: `cashfree answered for order ${String(order.order_id)} when asked about ${providerOrderId}`,
+      });
+    }
     const attempts = await this.call<CashfreePayment[]>("GET", `${path}/payments`);
     const list = Array.isArray(attempts) ? attempts : [];
 
-    const success = list.find((p) => p.payment_status === "SUCCESS");
+    // A SUCCESS attempt counts only for THIS Cashfree order.
+    const success = list.find(
+      (p) => p.payment_status === "SUCCESS" && (p.order_id === undefined || p.order_id === order.order_id),
+    );
     // Only when the NEWEST attempt ended badly — a customer retrying right
     // now (PENDING) has not failed.
     const newest = [...list].sort((a, b) =>
@@ -340,8 +350,12 @@ export class CashfreeProvider implements PaymentProvider {
               providerPaymentId: String(success.cf_payment_id),
               amountPaise: rupeesToPaise(success.payment_amount),
               method: success.payment_group ?? null,
+              // Cashfree's own currency for the money taken (the payment's,
+              // else the order's) — settlement accepts INR only.
+              currency: String(success.payment_currency ?? order.order_currency ?? "").toUpperCase(),
             }
           : null,
+      attemptPending: orderStatus !== "PAID" && newest?.payment_status === "PENDING",
       lastFailure: lastFailure
         ? {
             providerPaymentId: String(lastFailure.cf_payment_id),

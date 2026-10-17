@@ -39,6 +39,12 @@ export interface PaymentRefreshResult {
   totalPaise: number;
   /** The newest attempt failed or was abandoned; the customer may retry. */
   lastAttemptFailed: boolean;
+  /**
+   * The newest attempt is still in progress at Cashfree (the UPI app or bank
+   * has not answered). Show "Payment pending" and keep checking. Absent from
+   * older servers.
+   */
+  attemptPending?: boolean;
   /** Until when payment is accepted, while the order still awaits it. */
   payBy: string | null;
   /** Money arrived after the payment window closed and is being refunded. */

@@ -43,7 +43,8 @@ async function otpSession(mobile: string): Promise<string> {
   await otpService.clearOtpState(mobile);
   const sent = await api().post('/api/v1/auth/send-otp').send({ mobile }).expect(200);
   const otp = expectSuccess<{ devOtp: string }>(sent.body).data.devOtp;
-  const res = await api().post('/api/v1/auth/verify-otp').send({ mobile, otp }).expect(200);
+  // 201 on the first sign-in: the number's separate customer account is created (auth/account-type.ts).
+  const res = await api().post('/api/v1/auth/verify-otp').send({ mobile, otp });
   return expectSuccess<{ tokens: { accessToken: string } }>(res.body).data.tokens.accessToken;
 }
 

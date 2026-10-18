@@ -7,18 +7,11 @@
  * and signs the applicant in — they then see their application status, not
  * the Seller Panel. Everything else (address, location, bank, PAN, documents)
  * is collected in onboarding after approval. Commission is never asked for.
- *
- * This page is for NEW accounts and is not signed in, so it never attaches to
- * an existing one (a typed number proves nothing). When the number already has
- * an Aadione account, the server answers with signInToApply and this page says
- * where to apply instead: signed in to the Aadione app, Account → Sell on
- * Aadione — the store is then added to that same account. No code, no OTP.
  */
 
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { SellerType } from '@shared';
-import { ApiRequestError } from '@/lib/api';
 import { ErrorBanner, Icon, inputClass } from '@/components/ui';
 import { LoginInput, PartnerLoginLayout, PasswordInput, SubmitButton } from '@/components/PartnerLogin';
 import { SELLER_TYPE_LABEL } from '@/components/SellerBadges';
@@ -65,8 +58,6 @@ export default function SellerRegisterPage() {
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** The number already has an Aadione account: apply from the app, signed in (same account). */
-  const [existingAccount, setExistingAccount] = useState<string | null>(null);
 
   const set = <K extends keyof FormState>(key: K) => (value: FormState[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -78,7 +69,6 @@ export default function SellerRegisterPage() {
     if (problem) return setError(problem);
     setBusy(true);
     setError(null);
-    setExistingAccount(null);
     try {
       await signup({
         fullName: form.fullName.trim(),
@@ -90,10 +80,7 @@ export default function SellerRegisterPage() {
       });
       // SellerApp shows the application status once the session is set.
     } catch (err) {
-      const signInToApply =
-        err instanceof ApiRequestError && (err.details ?? []).some((detail) => detail.field === 'mobile' && detail.signInToApply === true);
-      if (signInToApply) setExistingAccount(err.message);
-      else setError(sellerErrorMessage(err));
+      setError(sellerErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -124,25 +111,11 @@ export default function SellerRegisterPage() {
           type="tel"
           inputMode="numeric"
           value={form.mobile}
-          onChange={(e) => {
-            set('mobile')(e.target.value);
-            setExistingAccount(null);
-          }}
+          onChange={(e) => set('mobile')(e.target.value)}
           placeholder="10-digit mobile number"
           autoComplete="tel"
           required
         />
-        {existingAccount && (
-          <div className="space-y-2 rounded-xl border border-brand-200 bg-brand-50 p-4 text-sm text-gray-700" role="status">
-            <p>{existingAccount}</p>
-            <p>
-              Already selling on Aadione?{' '}
-              <Link to="/seller/login" className="font-semibold text-brand-600 hover:text-brand-700">
-                Sign in to the Seller Panel
-              </Link>
-            </p>
-          </div>
-        )}
         <LoginInput
           label="Email address"
           icon="mail"

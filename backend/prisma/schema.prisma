@@ -440,9 +440,12 @@ enum CouponOrigin {
 
 model User {
   id           String     @id @default(uuid()) @db.Uuid
-  /// Canonical 10-digit Indian mobile, no country code. Uniqueness is the
-  /// business rule ("one account per number") as well as the login lookup.
-  mobile       String     @unique @db.VarChar(15)
+  /// Canonical 10-digit Indian mobile, no country code. One number may have
+  /// ONE customer account (role CUSTOMER — the shopping app) and ONE partner
+  /// account (any other role — Seller Panel, admin, staff, delivery): two
+  /// separate accounts, never merged. Unique per account type through partial
+  /// indexes (see below); every lookup names the account type it wants.
+  mobile       String     @db.VarChar(15)
   fullName     String?    @map("full_name") @db.VarChar(120)
   email        String?    @db.VarChar(160)
   /// Admin/seller login only. Customers authenticate by OTP and have no
@@ -501,9 +504,13 @@ model User {
   deliveryTasksAssigned    DeliveryTask[]             @relation("DeliveryTaskAssignedBy")
   productImports           ProductImport[]
 
-  // Indexes for this table are partial and live in the hardening migration:
-  //   users_email_unique   UNIQUE (lower(email)) WHERE email IS NOT NULL
+  // Partial indexes (hand-written: v2_hardening, v2_separate_customer_partner_accounts):
+  //   users_customer_mobile_key   UNIQUE (mobile)       WHERE role =  'CUSTOMER'
+  //   users_partner_mobile_key    UNIQUE (mobile)       WHERE role <> 'CUSTOMER'
+  //   users_customer_email_unique UNIQUE (lower(email)) WHERE email IS NOT NULL AND deleted_at IS NULL AND role =  'CUSTOMER'
+  //   users_partner_email_unique  UNIQUE (lower(email)) WHERE email IS NOT NULL AND deleted_at IS NULL AND role <> 'CUSTOMER'
   //   users_staff_roles    (role)                WHERE role <> 'CUSTOMER'
+  @@index([mobile], map: "users_mobile_idx")
   @@map("users")
 }
 

@@ -23,7 +23,8 @@ vi.mock('../../src/modules/auth/auth.repository', () => ({
   revokeTokenFamily: vi.fn(async () => 0),
   revokeAllUserTokens: vi.fn(async () => 0),
   findUserById: vi.fn(),
-  findUserByMobile: vi.fn(),
+  findCustomerAppAccount: vi.fn(),
+  findAccountByMobile: vi.fn(),
   findUserByEmail: vi.fn(),
   touchLastLogin: vi.fn(async () => undefined),
   markMobileVerified: vi.fn(async () => undefined),
@@ -75,8 +76,8 @@ beforeEach(() => {
 
 describe('customer-app OTP login (verifyOtpAndAuthenticate)', () => {
   for (const role of [UserRole.SELLER_OWNER, UserRole.ADMIN, UserRole.SUPER_ADMIN]) {
-    it(`${role} account: allowed — the SAME account, a shopper session`, async () => {
-      repo.findUserByMobile.mockResolvedValueOnce(account(role));
+    it(`an older ${role} account that already shops (findCustomerAppAccount): the SAME account, a shopper session`, async () => {
+      repo.findCustomerAppAccount.mockResolvedValueOnce(account(role));
 
       const result = await verifyOtpAndAuthenticate('9400000201', '123456');
 
@@ -90,14 +91,14 @@ describe('customer-app OTP login (verifyOtpAndAuthenticate)', () => {
   }
 
   it('existing customer: unchanged — a CUSTOMER session', async () => {
-    repo.findUserByMobile.mockResolvedValueOnce(account(UserRole.CUSTOMER));
+    repo.findCustomerAppAccount.mockResolvedValueOnce(account(UserRole.CUSTOMER));
     const result = await verifyOtpAndAuthenticate('9400000201', '123456');
     expect(result.user.role).toBe(UserRole.CUSTOMER);
     expect(verifyAccessToken(result.tokens.accessToken)).toMatchObject({ role: UserRole.CUSTOMER, scp: 'customer' });
   });
 
   it('new number: still creates a customer account on first OTP', async () => {
-    repo.findUserByMobile.mockResolvedValueOnce(null);
+    repo.findCustomerAppAccount.mockResolvedValueOnce(null);
     repo.createCustomer.mockResolvedValueOnce(account(UserRole.CUSTOMER, { id: 'new-user' }));
     const result = await verifyOtpAndAuthenticate('9400000299', '123456');
     expect(repo.createCustomer).toHaveBeenCalledTimes(1);
@@ -106,7 +107,7 @@ describe('customer-app OTP login (verifyOtpAndAuthenticate)', () => {
   });
 
   it('blocked account: still refused', async () => {
-    repo.findUserByMobile.mockResolvedValueOnce(account(UserRole.SELLER_OWNER, { status: UserStatus.BLOCKED }));
+    repo.findCustomerAppAccount.mockResolvedValueOnce(account(UserRole.SELLER_OWNER, { status: UserStatus.BLOCKED }));
     await expect(verifyOtpAndAuthenticate('9400000201', '123456')).rejects.toMatchObject({ code: ErrorCode.ACCOUNT_BLOCKED });
     expect(repo.createRefreshToken).not.toHaveBeenCalled();
   });

@@ -420,7 +420,7 @@ describe('UPDATE mode, mode switch, isolation', () => {
     await otpService.clearOtpState('9400000824');
     const sent = await api().post('/api/v1/auth/send-otp').send({ mobile: '9400000824' }).expect(200);
     const otp = expectSuccess<{ devOtp: string }>(sent.body).data.devOtp;
-    const otpSession = expectSuccess<{ tokens: { accessToken: string } }>((await api().post('/api/v1/auth/verify-otp').send({ mobile: '9400000824', otp }).expect(200)).body).data.tokens.accessToken;
+    const otpSession = expectSuccess<{ tokens: { accessToken: string } }>((await api().post('/api/v1/auth/verify-otp').send({ mobile: '9400000824', otp })).body).data.tokens.accessToken;
     expect((await as(otpSession).get('/seller/imports')).status).toBe(403);
     expect((await as(otpSession).get(`/seller/imports/${job.id}`)).status).toBe(403);
     expect((await uploadProducts(otpSession, `${HEADER}\n`)).status).toBe(403);

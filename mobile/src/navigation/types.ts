@@ -93,7 +93,6 @@ export type AccountStackParamList = {
   About: undefined;
   Legal: { slug: "privacy" | "terms" };
   ReferEarn: undefined;
-  SellOnAadione: undefined;
 };
 
 /** The Wishlist tab's own stack — "My Wishlist" on Account (see stacks.tsx)

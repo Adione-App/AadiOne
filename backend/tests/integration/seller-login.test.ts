@@ -130,13 +130,14 @@ describe('seller sign-in — email + password only', () => {
     const sent = await api().post('/api/v1/auth/send-otp').send({ mobile: '9400000103' }).expect(200);
     const otp = expectSuccess<{ devOtp: string }>(sent.body).data.devOtp;
     const verified = await api().post('/api/v1/auth/verify-otp').send({ mobile: '9400000103', otp });
-    expect(verified.status).toBe(200);
+    expect(verified.status).toBe(201);
     const session = expectSuccess<{ user: { id: string; role: string }; tokens: { accessToken: string } }>(verified.body).data;
-    // The SAME account — no customer duplicate is created for the seller.
-    expect(session.user.id).toBe(owner.userId);
-    expect(await prisma.user.count()).toBe(usersBefore);
-    // Stored as a customer-app session.
-    expect(await prisma.refreshToken.findFirstOrThrow({ where: { userId: owner.userId }, orderBy: { createdAt: 'desc' } })).toMatchObject({ scope: 'CUSTOMER' });
+    // A SEPARATE customer account for the same number (auth/account-type.ts) — the seller account is untouched.
+    expect(session.user.id).not.toBe(owner.userId);
+    expect(session.user.role).toBe('CUSTOMER');
+    expect(await prisma.user.count()).toBe(usersBefore + 1);
+    // Stored as a customer-app session of the customer account.
+    expect(await prisma.refreshToken.findFirstOrThrow({ where: { userId: session.user.id }, orderBy: { createdAt: 'desc' } })).toMatchObject({ scope: 'CUSTOMER' });
 
     // It shops like a customer…
     await api().get('/api/v1/cart').set('Authorization', bearer(session.tokens.accessToken)).expect(200);

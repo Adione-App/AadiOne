@@ -545,7 +545,14 @@ async function buildPlan(
       reason = 'also a member of another seller that is kept';
     } else {
       const footprint = await customerFootprint(db, userId);
-      if (footprint.length > 0) {
+      // The number may already have its own, separate customer account
+      // (auth/account-type.ts): one customer account per number, so this one
+      // cannot become another — it keeps its history, with no membership.
+      const separateCustomer = await db.user.count({ where: { mobile: user.mobile, role: UserRole.CUSTOMER, id: { not: userId } } });
+      if (footprint.length > 0 && separateCustomer > 0) {
+        decision = 'MEMBERSHIP_REMOVED';
+        reason = `also a shopper (${footprint.join(', ')}), and the number has its own customer account — this account keeps its history, with no seller membership`;
+      } else if (footprint.length > 0) {
         decision = 'TURNED_CUSTOMER';
         reason = `also a shopper (${footprint.join(', ')}) — kept as a CUSTOMER account`;
       } else {

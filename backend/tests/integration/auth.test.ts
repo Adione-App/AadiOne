@@ -304,7 +304,7 @@ describe('session lifecycle', () => {
 describe('account status', () => {
   it('blocks a blocked user at send-otp, before an SMS is paid for', async () => {
     await loginAs(MOBILE);
-    await prisma.user.update({ where: { mobile: MOBILE }, data: { status: 'BLOCKED' } });
+    await prisma.user.updateMany({ where: { mobile: MOBILE }, data: { status: 'BLOCKED' } });
     await otpService.clearOtpState(MOBILE);
 
     const res = await api().post('/api/v1/auth/send-otp').send({ mobile: MOBILE });

@@ -1,12 +1,15 @@
 /**
  * Seller owners and admins in the CUSTOMER app.
  *
- *   - Any registered number may sign in to the customer app with an OTP —
- *     a seller owner's and an admin's too — as the SAME account (no duplicate
- *     identity), and shop: cart, checkout, their own orders.
+ *   - Any number may sign in to the customer app with an OTP — a seller
+ *     owner's and an admin's too. The customer app uses the number's own
+ *     CUSTOMER account (auth/account-type.ts): a SEPARATE account from the
+ *     Seller / Admin Panel one, created on first sign-in and never merged
+ *     with it. They shop with it: cart, checkout, their own orders.
  *   - That session is CUSTOMER-scoped: it never reaches a Seller Panel or
  *     Admin Panel API, and refreshing it does not change that.
- *   - The panels' email + password logins are unchanged.
+ *   - The panels' email + password logins are unchanged and reach the panel
+ *     account.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -28,7 +31,7 @@ async function otpLogin(mobile: string) {
   const res = await api().post('/api/v1/auth/verify-otp').send({ mobile, otp });
   return {
     status: res.status,
-    data: expectSuccess<{ user: { id: string; role: string }; tokens: { accessToken: string; refreshToken: string } }>(res.body).data,
+    data: expectSuccess<{ user: { id: string; role: string; isNewUser?: boolean }; tokens: { accessToken: string; refreshToken: string } }>(res.body).data,
   };
 }
 
@@ -64,31 +67,39 @@ beforeEach(async () => {
 });
 
 describe('customer-app OTP login for seller owners and admins', () => {
-  it('a seller owner signs in as the same account with a CUSTOMER session', async () => {
+  it("a seller owner's number gets its own, separate CUSTOMER account — the seller account is untouched", async () => {
     const ownerId = await createSellerOwner();
-    const users = await prisma.user.count();
+    const ownerBefore = await prisma.user.findUniqueOrThrow({ where: { id: ownerId } });
 
     const { status, data } = await otpLogin(SELLER_MOBILE);
 
-    expect(status).toBe(200);
-    expect(data.user.id).toBe(ownerId);
-    expect(data.user.role).toBe(UserRole.SELLER_OWNER);
-    expect(await prisma.user.count()).toBe(users);
+    expect(status).toBe(201);
+    expect(data.user.isNewUser).toBe(true);
+    expect(data.user.id).not.toBe(ownerId);
+    expect(data.user.role).toBe(UserRole.CUSTOMER);
+    expect(await prisma.user.findUniqueOrThrow({ where: { id: ownerId } })).toEqual(ownerBefore);
     await expectForbidden(data.tokens.accessToken, MANAGEMENT);
+
+    // Signing in again reaches the SAME customer account — no duplicates.
+    const again = await otpLogin(SELLER_MOBILE);
+    expect(again.status).toBe(200);
+    expect(again.data.user.id).toBe(data.user.id);
+    expect(await prisma.user.count({ where: { mobile: SELLER_MOBILE } })).toBe(2);
   });
 
-  it('an admin with a mobile number signs in as the same account with a CUSTOMER session; the Admin Panel login is unchanged', async () => {
+  it("an admin's number gets a separate CUSTOMER account; the Admin Panel login is unchanged", async () => {
     const adminId = await createAdmin();
 
     const { status, data } = await otpLogin(ADMIN.mobile);
 
-    expect(status).toBe(200);
-    expect(data.user.id).toBe(adminId);
+    expect(status).toBe(201);
+    expect(data.user.id).not.toBe(adminId);
     await expectForbidden(data.tokens.accessToken, MANAGEMENT);
 
     const panel = await api().post('/api/v1/auth/admin/login').send({ email: ADMIN.email, password: ADMIN.password }).expect(200);
-    const panelToken = expectSuccess<{ tokens: { accessToken: string } }>(panel.body).data.tokens.accessToken;
-    await api().get('/api/v1/admin/orders').set('Authorization', bearer(panelToken)).expect(200);
+    const panelData = expectSuccess<{ user: { id: string }; tokens: { accessToken: string } }>(panel.body).data;
+    expect(panelData.user.id).toBe(adminId);
+    await api().get('/api/v1/admin/orders').set('Authorization', bearer(panelData.tokens.accessToken)).expect(200);
   });
 
   it('refreshing a customer-app session keeps it CUSTOMER-scoped', async () => {
@@ -102,7 +113,7 @@ describe('customer-app OTP login for seller owners and admins', () => {
     await expectForbidden(accessToken, MANAGEMENT);
     await api().get('/api/v1/cart').set('Authorization', bearer(accessToken)).expect(200);
     // Every token of THIS session (its rotation family) is CUSTOMER. The seller also has a FULL
-    // Seller Panel session from signing up — a separate family, untouched.
+    // Seller Panel session from signing up — a separate account and family, untouched.
     const opened = await prisma.refreshToken.findUniqueOrThrow({ where: { tokenHash: sha256(data.tokens.refreshToken) } });
     const family = await prisma.refreshToken.findMany({ where: { familyId: opened.familyId }, select: { scope: true } });
     expect(family.length).toBe(2); // the original and its rotation
@@ -110,15 +121,16 @@ describe('customer-app OTP login for seller owners and admins', () => {
   });
 });
 
-describe('seller owners and admins place customer orders as themselves', () => {
+describe('seller owners and admins shop with their CUSTOMER account', () => {
   for (const kind of ['seller owner', 'admin'] as const) {
-    it(`${kind}: cart -> COD order -> own order history`, async () => {
+    it(`${kind}: cart -> COD order -> the customer account's own order history`, async () => {
       const storeId = await seedStore();
       const product = await seedProduct(storeId, { pricePaise: 24900, mrpPaise: 28500, stockQty: 10 });
-      const userId = kind === 'seller owner' ? await createSellerOwner() : await createAdmin();
-      const { data } = await otpLogin(kind === 'seller owner' ? SELLER_MOBILE : ADMIN.mobile);
+      const panelUserId = kind === 'seller owner' ? await createSellerOwner() : await createAdmin();
+      const mobile = kind === 'seller owner' ? SELLER_MOBILE : ADMIN.mobile;
+      const { data } = await otpLogin(mobile);
       const token = data.tokens.accessToken;
-      const addressId = await seedAddress(userId);
+      const addressId = await seedAddress(data.user.id);
 
       await api().post('/api/v1/cart/items').set('Authorization', bearer(token)).send({ sellerListingId: product.storeVariantId, qty: 1 }).expect(200);
       const placed = await api()
@@ -128,10 +140,11 @@ describe('seller owners and admins place customer orders as themselves', () => {
         .send({ addressId, paymentMethod: PaymentMethod.COD });
       expect(placed.status).toBe(201);
 
-      // The order belongs to the signed-in account itself — no stand-in customer.
+      // The order belongs to the customer account — never to the panel account.
       const order = await prisma.order.findFirstOrThrow();
-      expect(order.userId).toBe(userId);
-      expect(await prisma.user.count({ where: { mobile: kind === 'seller owner' ? SELLER_MOBILE : ADMIN.mobile } })).toBe(1);
+      expect(order.userId).toBe(data.user.id);
+      expect(await prisma.order.count({ where: { userId: panelUserId } })).toBe(0);
+      expect(await prisma.user.count({ where: { mobile, role: UserRole.CUSTOMER } })).toBe(1);
 
       const history = await api().get('/api/v1/orders').set('Authorization', bearer(token)).expect(200);
       expect(JSON.stringify(history.body)).toContain(order.orderNumber);

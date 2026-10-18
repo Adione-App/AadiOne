@@ -1,6 +1,8 @@
 /**
- * READ-ONLY: which kind of account holds a mobile number, as seller signup
- * classifies it (src/modules/sellers/seller-mobile-conflict.ts). Prints the
+ * READ-ONLY: the accounts a mobile number has — its partner (Seller Panel /
+ * staff) account as seller signup classifies it
+ * (src/modules/sellers/seller-mobile-conflict.ts), and its separate customer
+ * (shopping app) account. Prints the
  * classification, roles and store names/states only — the number is masked,
  * and no other personal data is printed.
  *
@@ -38,9 +40,14 @@ async function main(): Promise<void> {
           },
         })
       : null;
-    return { conflict, user };
+    // The number's separate customer (shopping app) account — never a conflict for seller signup.
+    const customer = await tx.user.findFirst({
+      where: { mobile, role: 'CUSTOMER' },
+      select: { status: true, createdAt: true, _count: { select: { orders: true } } },
+    });
+    return { conflict, user, customer };
   });
-  const { conflict, user } = result;
+  const { conflict, user, customer } = result;
   console.log(
     JSON.stringify(
       {
@@ -64,6 +71,9 @@ async function main(): Promise<void> {
                 membershipActive: m.isActive && m.deletedAt === null,
               })),
             }
+          : null,
+        customerAppAccount: customer
+          ? { status: customer.status, createdAt: customer.createdAt.toISOString(), orders: customer._count.orders }
           : null,
       },
       null,

@@ -90,7 +90,7 @@ describe('POST /auth/signup', () => {
     expect(expectSuccess<{ user: { mobileVerified: boolean } }>(res.body).data.user
       .mobileVerified).toBe(false);
 
-    const row = await prisma.user.findUniqueOrThrow({ where: { mobile: SIGNUP.mobile } });
+    const row = await prisma.user.findFirstOrThrow({ where: { mobile: SIGNUP.mobile } });
     expect(row.mobileVerifiedAt).toBeNull();
   });
 
@@ -119,7 +119,7 @@ describe('POST /auth/signup', () => {
 
   it('never stores the password in plaintext', async () => {
     await api().post('/api/v1/auth/signup').send(SIGNUP).expect(201);
-    const row = await prisma.user.findUniqueOrThrow({ where: { mobile: SIGNUP.mobile } });
+    const row = await prisma.user.findFirstOrThrow({ where: { mobile: SIGNUP.mobile } });
 
     expect(row.passwordHash).toBeTruthy();
     expect(row.passwordHash).not.toBe(SIGNUP.password);
@@ -198,7 +198,7 @@ describe('POST /auth/signup', () => {
       .send({ ...SIGNUP, mobile: '+91 98765 43210' })
       .expect(201);
 
-    expect(await prisma.user.findUnique({ where: { mobile: '9876543210' } })).not.toBeNull();
+    expect(await prisma.user.findFirst({ where: { mobile: '9876543210' } })).not.toBeNull();
   });
 
   it('rate-limits repeated signups from one source', async () => {
@@ -285,7 +285,7 @@ describe('POST /auth/login', () => {
       .expect(200);
     const otp = expectSuccess<{ devOtp?: string }>(sent.body).data.devOtp!;
     await api().post('/api/v1/auth/verify-otp').send({ mobile: SIGNUP.mobile, otp }).expect(201);
-    await prisma.user.update({
+    await prisma.user.updateMany({
       where: { mobile: SIGNUP.mobile },
       data: { email: SIGNUP.email },
     });
@@ -301,7 +301,7 @@ describe('POST /auth/login', () => {
 
   it('refuses a blocked account', async () => {
     await register();
-    await prisma.user.update({ where: { mobile: SIGNUP.mobile }, data: { status: 'BLOCKED' } });
+    await prisma.user.updateMany({ where: { mobile: SIGNUP.mobile }, data: { status: 'BLOCKED' } });
 
     const res = await api()
       .post('/api/v1/auth/login')

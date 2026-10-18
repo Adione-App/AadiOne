@@ -131,7 +131,7 @@ describe('PATCH /seller/availability (the Store Open / Closed switch)', () => {
   it('records who switched the store off', async () => {
     await setSwitch({ isAcceptingOrders: false }).expect(200);
 
-    const owner = await prisma.user.findUniqueOrThrow({ where: { mobile: OWNER_MOBILE } });
+    const owner = await prisma.user.findFirstOrThrow({ where: { mobile: OWNER_MOBILE } });
     const log = await prisma.auditLog.findFirst({ where: { action: 'seller.store_close' } });
     expect(log).not.toBeNull();
     expect(log?.entityId).toBe(sellerId);

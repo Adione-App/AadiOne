@@ -30,6 +30,7 @@ import { env } from '../../config/env';
 import { prisma } from '../../infra/db/prisma';
 import { maskEmail } from '../../infra/email';
 import * as tokenService from './token.service';
+import { PARTNER_ACCOUNT } from './account-type';
 
 const log = moduleLogger('admin-bootstrap');
 
@@ -173,14 +174,15 @@ export async function applyAdminBootstrap(
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('aadione:admin-bootstrap'))`;
 
   stage.current = 'load';
-  const byEmail = await tx.user.findFirst({ where: { email: { equals: config.email, mode: 'insensitive' } }, select: USER_SELECT });
+  // Admins are PARTNER accounts: a customer account with the same email is a separate account (account-type.ts).
+  const byEmail = await tx.user.findFirst({ where: { email: { equals: config.email, mode: 'insensitive' }, ...PARTNER_ACCOUNT }, select: USER_SELECT });
   const admins = await tx.user.findMany({ where: { role: { in: [...ADMIN_ACCOUNT_ROLES] } }, select: USER_SELECT, orderBy: { createdAt: 'asc' } });
   const plan = planAdminBootstrap({ name: config.name }, { byEmail: byEmail ? toBootstrapUser(byEmail) : null, admins: admins.map(toBootstrapUser) });
 
   if (plan.kind === 'refuse') return { plan, changed: [] };
 
   if (plan.kind === 'create') {
-    const mobileTaken = await tx.user.count({ where: { mobile: ADMIN_RESERVED_MOBILE } });
+    const mobileTaken = await tx.user.count({ where: { mobile: ADMIN_RESERVED_MOBILE, ...PARTNER_ACCOUNT } });
     if (mobileTaken) {
       return { plan: { kind: 'refuse', reason: `reserved admin mobile ${ADMIN_RESERVED_MOBILE} is already used by another account` }, changed: [] };
     }

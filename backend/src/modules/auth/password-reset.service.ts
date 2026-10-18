@@ -53,7 +53,8 @@ function resetLink(token: string): string {
  * not make a known address slower to answer than an unknown one.
  */
 export async function requestSellerPasswordReset(email: string, context: { ip?: string | null } = {}): Promise<void> {
-  const user = await repository.findUserByEmail(email);
+  // Seller Panel reset: the number's / email's PARTNER account, never a customer account.
+  const user = await repository.findUserByEmail(email, 'partner');
   const eligible =
     user !== null &&
     user.deletedAt === null &&

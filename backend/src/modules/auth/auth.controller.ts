@@ -18,7 +18,6 @@ import type {
   SellerLoginInput,
   SellerResetPasswordInput,
   SellerSignupInput,
-  SellerApplyInput,
   SendOtpInput,
   SignupInput,
   UpdateProfileInput,
@@ -36,16 +35,6 @@ function contextOf(req: Request): { userAgent: string | null; ip: string | null 
  */
 export async function sellerSignup(req: Request, res: Response): Promise<void> {
   created(res, await sellerLifecycleService.signupSeller(req.body as SellerSignupInput, contextOf(req)));
-}
-
-/** GET /auth/seller/application — the signed-in account's own seller status. */
-export async function sellerApplicationStatus(req: Request, res: Response): Promise<void> {
-  ok(res, await sellerLifecycleService.getOwnSellerApplication(requireUser(req).id));
-}
-
-/** POST /auth/seller/apply — the signed-in account opens a store (same account; the session says who). */
-export async function sellerApply(req: Request, res: Response): Promise<void> {
-  created(res, await sellerLifecycleService.applyToSellAsSignedInUser(requireUser(req).id, req.body as SellerApplyInput, contextOf(req)));
 }
 
 /** POST /auth/send-otp */

@@ -7,7 +7,7 @@
  * SMS credit).
  */
 
-import { SessionScope, type User } from '@prisma/client';
+import { Prisma, SessionScope, type User } from '@prisma/client';
 import {
   ACTIVE_ORDER_STATUSES,
   ErrorCode,
@@ -99,8 +99,9 @@ async function allocateReferralCode(): Promise<string> {
 
 export async function sendOtp(mobile: string): Promise<otpService.SendOtpOutcome> {
   // A blocked user is stopped here rather than after they have paid for an SMS
-  // and typed the code.
-  const existing = await repository.findUserByMobile(mobile);
+  // and typed the code. Only the CUSTOMER-app account counts: the number's
+  // separate Seller Panel / staff account (if any) has nothing to do with it.
+  const existing = await repository.findCustomerAppAccount(mobile);
   if (existing) assertUsable(existing);
 
   return otpService.sendOtp(mobile);
@@ -117,15 +118,17 @@ export async function verifyOtpAndAuthenticate(
 ): Promise<AuthResponse> {
   await otpService.verifyOtp(mobile, code);
 
-  let user = await repository.findUserByMobile(mobile);
+  // OTP is the CUSTOMER-APP sign-in: it reaches the number's CUSTOMER account
+  // (account-type.ts). A Seller Panel / staff account with the same number is
+  // a separate account and is never used or changed here — the customer app
+  // gets its own account instead (an older account that already shops keeps
+  // serving the app: findCustomerAppAccount). The session is CUSTOMER-scoped
+  // (below), so an SMS code never opens the Seller or Admin Panel.
+  let user = await repository.findCustomerAppAccount(mobile);
   let isNewUser = false;
 
   if (user) {
     assertUsable(user);
-    // OTP is the CUSTOMER-APP sign-in, for every account — a seller owner or
-    // an admin may shop for themselves with their own number. The session is
-    // CUSTOMER-scoped (below), so an SMS code still never opens the Seller or
-    // Admin Panel: those need the email + password login.
     await repository.touchLastLogin(user.id);
     // A password-signup account proves its number here, on the first OTP login.
     if (!user.mobileVerifiedAt) {
@@ -135,11 +138,20 @@ export async function verifyOtpAndAuthenticate(
   } else {
     // First successful OTP creates the account. There is no separate signup
     // step — the mockup's flow is "enter number, enter OTP, you are in".
-    user = await repository.createCustomer({
-      mobile,
-      referralCode: await allocateReferralCode(),
-    });
-    isNewUser = true;
+    try {
+      user = await repository.createCustomer({
+        mobile,
+        referralCode: await allocateReferralCode(),
+      });
+      isNewUser = true;
+    } catch (error) {
+      // Two first sign-ins at once: the unique customer-account index lets one
+      // create it; the other signs in to that same account.
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')) throw error;
+      user = await repository.findAccountByMobile(mobile, 'customer');
+      if (!user) throw error;
+      assertUsable(user);
+    }
   }
 
   const tokens = await tokenService.issueTokens({
@@ -193,9 +205,11 @@ export async function signup(
 ): Promise<AuthResponse> {
   const email = input.email.toLowerCase();
 
+  // A customer account only collides with another CUSTOMER account: the
+  // number's Seller Panel account (if any) is separate (account-type.ts).
   const [byMobile, byEmail] = await Promise.all([
-    repository.findUserByMobile(input.mobile),
-    repository.findUserByEmail(email),
+    repository.findCustomerAppAccount(input.mobile),
+    repository.findUserByEmail(email, 'customer'),
   ]);
 
   if (byMobile) {
@@ -257,7 +271,14 @@ export async function loginWithPassword(
   context: RequestContextInput = {},
   options: PasswordLoginOptions = {},
 ): Promise<AuthResponse> {
-  const user = await repository.findUserByEmail(email);
+  // Each portal signs in to ITS account (account-type.ts): the Admin and
+  // Seller Panels to the number's partner account; customer password login to
+  // the customer account (an older partner account that used to sign in here
+  // still can — a login creates or merges nothing).
+  const panel = options.requireStaffRole === true || options.requireSellerRole === true;
+  const user = panel
+    ? await repository.findUserByEmail(email, 'partner')
+    : ((await repository.findUserByEmail(email, 'customer')) ?? (await repository.findUserByEmail(email, 'partner')));
 
   // ONE generic error for "no such account", "no password set", "wrong role"
   // and "wrong password". Distinguishing them would turn this endpoint into an

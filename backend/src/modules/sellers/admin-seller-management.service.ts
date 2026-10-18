@@ -25,6 +25,7 @@
  */
 
 import type { Prisma } from '@prisma/client';
+import { PARTNER_ACCOUNT } from '../auth/account-type';
 import {
   UserRole,
   UserStatus,
@@ -134,7 +135,9 @@ export async function assignSellerOwner(
       throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'This seller already has an owner account.' });
     }
 
-    const existingUser = await tx.user.findUnique({ where: { mobile: ownerMobile } });
+    // The number's PARTNER (Seller Panel) account — its customer account, if
+    // any, is a separate account and is never used or changed (account-type.ts).
+    const existingUser = await tx.user.findFirst({ where: { mobile: ownerMobile, ...PARTNER_ACCOUNT } });
     if (existingUser && SELLER_INCOMPATIBLE_ROLES.includes(existingUser.role)) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, {
         message: 'This mobile number already belongs to a staff or delivery account and cannot also own a seller.',
@@ -146,11 +149,9 @@ export async function assignSellerOwner(
     let ownerUserId: string;
     let isNewOwnerAccount: boolean;
     if (existingUser) {
+      // Already a Seller Panel account (e.g. staffing another seller): reused as is.
       ownerUserId = existingUser.id;
       isNewOwnerAccount = false;
-      if (existingUser.role === UserRole.CUSTOMER) {
-        await tx.user.update({ where: { id: existingUser.id }, data: { role: UserRole.SELLER_OWNER } });
-      }
     } else {
       const created = await tx.user.create({
         data: { mobile: ownerMobile, fullName: input.ownerFullName.trim(), role: UserRole.SELLER_OWNER },
@@ -209,9 +210,11 @@ export async function createSeller(
     // Duplicate-ownership / duplicate-identity check, race-safe: this runs
     // inside the same transaction that creates the Seller/User/SellerStaff
     // rows below, and the schema's own unique constraints
-    // (users.mobile, sellers.code, seller_staff (seller_id, user_id)) are
-    // the final backstop against a concurrent duplicate regardless.
-    const existingUser = await tx.user.findUnique({ where: { mobile: ownerMobile } });
+    // (one partner account per number, sellers.code, seller_staff
+    // (seller_id, user_id)) are the final backstop against a concurrent
+    // duplicate regardless. Only the number's PARTNER account counts: its
+    // customer account (if any) stays separate and untouched (account-type.ts).
+    const existingUser = await tx.user.findFirst({ where: { mobile: ownerMobile, ...PARTNER_ACCOUNT } });
 
     if (existingUser && SELLER_INCOMPATIBLE_ROLES.includes(existingUser.role)) {
       throw new AppError(ErrorCode.VALIDATION_ERROR, {
@@ -252,14 +255,12 @@ export async function createSeller(
     let isNewOwnerAccount: boolean;
 
     if (existingUser) {
+      // A user who is ALREADY a Seller Panel account (staffing another seller)
+      // is left exactly as they are — multi-seller staffing is a supported
+      // case, not a conflict. A customer account is never promoted: the owner
+      // gets a separate Seller Panel account below.
       ownerUserId = existingUser.id;
       isNewOwnerAccount = false;
-      // Promote a plain customer to seller owner. A user who is ALREADY a
-      // seller role (staffing another seller) is left exactly as they are —
-      // multi-seller staffing is a supported case, not a conflict.
-      if (existingUser.role === UserRole.CUSTOMER) {
-        await tx.user.update({ where: { id: existingUser.id }, data: { role: UserRole.SELLER_OWNER } });
-      }
     } else {
       const created = await tx.user.create({
         data: {

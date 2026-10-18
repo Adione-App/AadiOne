@@ -140,21 +140,6 @@ export const sellerSignupSchema = z
   })
   .strict();
 
-/**
- * Signed-in Apply to Sell (POST /auth/seller/apply): the account comes from
- * the session, never from the body — so there is no mobile field at all.
- * Email / password only for an account that has none (the service checks).
- */
-export const sellerApplySchema = z
-  .object({
-    businessName: sellerSignupSchema.shape.businessName,
-    sellerType: sellerSignupSchema.shape.sellerType,
-    ownerFullName: signupSchema.shape.fullName.optional(),
-    email: emailSchema.optional(),
-    password: newPasswordSchema.optional(),
-  })
-  .strict();
-
 export const updateProfileSchema = z
   .object({
     fullName: z
@@ -178,5 +163,4 @@ export type SellerLoginInput = z.infer<typeof sellerLoginSchema>;
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type SignupInput = z.infer<typeof signupSchema>;
 export type SellerSignupInput = z.infer<typeof sellerSignupSchema>;
-export type SellerApplyInput = z.infer<typeof sellerApplySchema>;
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;

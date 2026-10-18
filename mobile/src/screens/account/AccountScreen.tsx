@@ -20,7 +20,6 @@ import {
   MapPin,
   Package,
   ShieldCheck,
-  Store,
   UserRound,
   type LucideIcon,
 } from 'lucide-react-native';
@@ -41,7 +40,6 @@ const SUPPORT_MENU: MenuItem[] = [
   { key: 'personal', label: 'Personal Information', subtitle: 'Manage your details', icon: UserRound },
   { key: 'addresses', label: 'Addresses', subtitle: 'Manage your delivery addresses', icon: MapPin },
   { key: 'refer', label: 'Refer & Earn', subtitle: 'Invite friends and earn rewards', icon: Gift },
-  { key: 'sell', label: 'Sell on Aadione', subtitle: 'Open your store with this account', icon: Store },
   { key: 'help', label: 'Help & Support', subtitle: 'Get help or contact us', icon: Headphones },
 ];
 

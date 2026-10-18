@@ -9,7 +9,6 @@ import {
   sellerForgotPasswordPerIp,
   sellerLoginPerIp,
   sellerResetPasswordPerIp,
-  sellerApplyPerUser,
   sellerSignupPerIp,
   sellerSignupPerMobile,
   loginPerEmail,
@@ -28,7 +27,6 @@ import {
   loginSchema,
   logoutSchema,
   refreshSchema,
-  sellerApplySchema,
   sellerForgotPasswordSchema,
   sellerLoginSchema,
   sellerResetPasswordSchema,
@@ -140,19 +138,6 @@ authRouter.post(
   sellerSignupPerMobile,
   sellerSignupPerIp,
   asyncHandler(controller.sellerSignup),
-);
-
-/**
- * Signed-in Apply to Sell (customer app → Account → Sell on Aadione): the
- * store is added to the account of THIS session — the body names no account.
- */
-authRouter.get('/seller/application', authenticate, asyncHandler(controller.sellerApplicationStatus));
-authRouter.post(
-  '/seller/apply',
-  authenticate,
-  sellerApplyPerUser,
-  validate({ body: sellerApplySchema }),
-  asyncHandler(controller.sellerApply),
 );
 
 authRouter.post(

@@ -58,12 +58,22 @@ export async function loginAs(mobile: string): Promise<{
   refreshToken: string;
   userId: string;
 }> {
+  // A number may have a customer AND a partner account (auth/account-type.ts):
+  // a seller account, when there is one, is what `loginAs` means.
   const existing = await prisma.user.findFirst({
-    where: { mobile, deletedAt: null },
+    where: { mobile, deletedAt: null, role: { not: 'CUSTOMER' } },
     select: { id: true, role: true, email: true, passwordHash: true },
   });
   if (existing && isSellerRole(existing.role)) return loginSellerWithPassword(existing);
+  return loginCustomerApp(mobile);
+}
 
+/** The customer app's OTP sign-in (send + verify) — always the number's customer account. */
+export async function loginCustomerApp(mobile: string): Promise<{
+  accessToken: string;
+  refreshToken: string;
+  userId: string;
+}> {
   const sent = await api().post('/api/v1/auth/send-otp').send({ mobile }).expect(200);
   const otp = expectSuccess<{ devOtp?: string }>(sent.body).data.devOtp;
   if (!otp) throw new Error('console OTP provider did not return devOtp');

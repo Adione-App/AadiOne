@@ -41,16 +41,13 @@ import {
   type SellerOnboardingChecklistItemDto,
   type SellerSignupRequest,
   type SellerType,
-  type SellerApplicationStatusDto,
-  type SellerApplyRequest,
-  type SellerApplyResult,
 } from '../../shared';
 import { AppError } from '../../common/errors';
 import { hashPassword } from '../../common/crypto';
 import { moduleLogger } from '../../common/logger';
 import { maskMobile } from '../../shared/phone';
-import { canApplyWithExistingAccount, findMobileConflict, sellerSignupConflictError } from './seller-mobile-conflict';
-import { maskEmail } from '../../infra/email';
+import { findMobileConflict, sellerSignupConflictError } from './seller-mobile-conflict';
+import { PARTNER_ACCOUNT } from '../auth/account-type';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import * as notificationService from '../notifications/notification.service';
 import * as tokenService from '../auth/token.service';
@@ -188,7 +185,7 @@ export interface SellerSignupResult extends AuthResponse {
   passwordChangeRequired: false;
 }
 
-/** The application rows themselves — the same for a brand-new applicant and a signed-in customer. */
+/** The application rows themselves (Seller, OWNER membership, profile, audit). */
 async function createSellerApplication(
   tx: Prisma.TransactionClient,
   input: {
@@ -200,7 +197,6 @@ async function createSellerApplication(
     ownerEmail: string;
     now: Date;
     ip: string | null;
-    linkedExistingAccount: boolean;
   },
 ): Promise<string> {
   const seller = await tx.seller.create({
@@ -250,8 +246,6 @@ async function createSellerApplication(
         code: seller.code,
         sellerType: seller.sellerType,
         ownerUserId: input.userId,
-        // The store was added to an account that already existed (a signed-in customer).
-        linkedExistingAccount: input.linkedExistingAccount,
       },
     },
   });
@@ -269,13 +263,15 @@ async function createSellerApplication(
  * empty until onboarding (the checklist requires them; an unapproved seller
  * is never shown to customers — onboardingStatus stays PENDING).
  *
- * This form is unauthenticated, so it NEVER attaches to an existing account:
- * the mobile number in the body proves nothing. An existing account's number
- * or email is refused (409), naming WHICH kind of account holds the number
- * (seller-mobile-conflict.ts). For a shopper (or a former seller) that is not
- * a dead end — details.signInToApply sends them to sign in to the Aadione app
- * and apply there (applyToSellAsSignedInUser), on the same account. A lost
- * race on the unique index answers the same way.
+ * SEPARATE ACCOUNTS (auth/account-type.ts): this creates the number's PARTNER
+ * (Seller Panel) account. The number's CUSTOMER account — the shopping app —
+ * is a different account and is neither a conflict nor touched: the same
+ * number shops in the app and sells in the Seller Panel, never merged. No
+ * OTP or phone code is asked for here.
+ *
+ * Only another PARTNER account with the same number or email is refused
+ * (409), naming WHICH kind it is (seller-mobile-conflict.ts); a lost race on
+ * the per-type unique indexes answers the same way.
  */
 export async function signupSeller(
   input: SellerSignupRequest,
@@ -287,7 +283,7 @@ export async function signupSeller(
 
   const [mobileConflict, byEmail] = await Promise.all([
     findMobileConflict(prisma, input.mobile),
-    prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: { id: true } }),
+    prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' }, ...PARTNER_ACCOUNT }, select: { id: true } }),
   ]);
   if (mobileConflict.kind !== 'NONE') throw sellerSignupConflictError(mobileConflict, input.mobile);
   if (byEmail) {
@@ -323,7 +319,6 @@ export async function signupSeller(
         ownerEmail: email,
         now,
         ip: context.ip ?? null,
-        linkedExistingAccount: false,
       });
       return { user, sellerId };
     });
@@ -369,174 +364,6 @@ async function notifyApplicationSubmitted(sellerId: string, businessName: string
     dedupeKey: `seller-application:${sellerId}:submitted`,
     context: { sellerName: businessName },
   });
-}
-
-/* -------------------------------------------------------------------------- */
-/* Signed-in Apply to Sell (customer app → same account)                     */
-/* -------------------------------------------------------------------------- */
-
-/** The session's own account — never anything named in a request body. */
-async function sessionAccount(db: Prisma.TransactionClient | typeof prisma, userId: string): Promise<User> {
-  const user = await db.user.findUnique({ where: { id: userId } });
-  if (!user || user.deletedAt || user.status !== UserStatus.ACTIVE) {
-    throw new AppError(ErrorCode.UNAUTHENTICATED, { message: 'Please sign in again.', internalMessage: `apply-to-sell: user ${userId} not usable` });
-  }
-  return user;
-}
-
-/**
- * GET /auth/seller/application — the signed-in account's own seller status,
- * so the app shows either the application form (with only the Seller Panel
- * credentials this account still lacks) or the application's progress.
- */
-export async function getOwnSellerApplication(userId: string): Promise<SellerApplicationStatusDto> {
-  const user = await sessionAccount(prisma, userId);
-  const conflict = await findMobileConflict(prisma, user.mobile);
-  const store =
-    conflict.kind === 'SELLER'
-      ? await prisma.seller.findFirst({
-          where: { deletedAt: null, staff: { some: { userId: user.id, isActive: true, deletedAt: null } } },
-          orderBy: { createdAt: 'asc' },
-          select: { name: true, lifecycleStatus: true, lifecycleReason: true },
-        })
-      : null;
-  return {
-    status: store ? (store.lifecycleStatus as SellerLifecycleStatus) : 'NONE',
-    canApply: canApplyWithExistingAccount(conflict.kind),
-    sellerName: store?.name ?? null,
-    reason: store?.lifecycleReason ?? null,
-    sellerPanelEmail: user.email,
-    needsEmail: !user.email,
-    needsPassword: !user.passwordHash,
-  };
-}
-
-/**
- * POST /auth/seller/apply — a SIGNED-IN customer opens a store on the account
- * of that session. Nothing in the body identifies the account (there is no
- * mobile field): the session already proved who this is, so there is no OTP
- * step and no "existing account" warning.
- *
- *   - The account is reused: role → SELLER_OWNER, plus the Seller at
- *     APPLICATION_PENDING, its OWNER membership and profile. No second user.
- *   - Nothing of the customer's changes: orders, addresses, coupons, wallet,
- *     referrals and every app session stay as they are. The account's OWN
- *     email and password are never replaced — `email` / `password` are only
- *     accepted (and then required) when the account has none, to give it the
- *     Seller Panel sign-in; sending one the account already has is refused.
- *   - One store per account: a live seller membership is a 409; staff,
- *     delivery and blocked accounts cannot open a store (403).
- *   - The application waits for an admin exactly like any other: the Seller
- *     Panel shows only its status until approval (sellerPanelAccess).
- *   - The account row is locked for the whole transaction, so two taps (or two
- *     devices) create exactly one store.
- */
-export async function applyToSellAsSignedInUser(
-  userId: string,
-  input: SellerApplyRequest,
-  context: RequestContextInput = {},
-): Promise<SellerApplyResult> {
-  const businessName = input.businessName.trim();
-  const email = input.email?.trim().toLowerCase();
-  const passwordHash = input.password ? await hashPassword(input.password) : null;
-  const now = new Date();
-
-  let result: SellerApplyResult;
-  try {
-    result = await runInTransaction(async (tx) => {
-      // Lock first: a second, concurrent application waits here and then sees the first's store.
-      await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId}::uuid FOR UPDATE`;
-      const user = await sessionAccount(tx, userId);
-
-      const conflict = await findMobileConflict(tx, user.mobile);
-      if (conflict.kind === 'SELLER') {
-        throw new AppError(ErrorCode.MOBILE_ALREADY_REGISTERED, {
-          message: 'Your account already has a store on Aadione. Track it under Account → Sell on Aadione, or sign in to the Seller Panel.',
-          internalMessage: `apply-to-sell: user ${user.id} already staffs a live seller`,
-        });
-      }
-      if (!canApplyWithExistingAccount(conflict.kind)) {
-        throw new AppError(ErrorCode.FORBIDDEN, {
-          message: 'This account cannot open a store on Aadione. Contact Aadione support.',
-          internalMessage: `apply-to-sell: user ${user.id} is ${conflict.kind}`,
-        });
-      }
-
-      // Seller Panel sign-in: the account's own email/password, or — only if it has none — the ones given now.
-      if (user.email && email !== undefined) {
-        const message = `Your account already uses the email ${maskEmail(user.email)} — the Seller Panel signs in with it.`;
-        throw new AppError(ErrorCode.VALIDATION_ERROR, { message, details: [{ field: 'email', message }] });
-      }
-      if (user.passwordHash && passwordHash) {
-        const message = 'Your account already has a Seller Panel password. Sign in with it, or reset it with "Forgot password".';
-        throw new AppError(ErrorCode.VALIDATION_ERROR, { message, details: [{ field: 'password', message }] });
-      }
-      const sellerPanelEmail = user.email ?? email;
-      if (!sellerPanelEmail) {
-        const message = 'Enter an email address — you will sign in to the Seller Panel with it.';
-        throw new AppError(ErrorCode.VALIDATION_ERROR, { message, details: [{ field: 'email', message }] });
-      }
-      if (!user.passwordHash && !passwordHash) {
-        const message = 'Choose a password for the Seller Panel.';
-        throw new AppError(ErrorCode.VALIDATION_ERROR, { message, details: [{ field: 'password', message }] });
-      }
-      if (!user.email) {
-        const taken = await tx.user.findFirst({
-          where: { email: { equals: sellerPanelEmail, mode: 'insensitive' }, id: { not: user.id } },
-          select: { id: true },
-        });
-        if (taken) {
-          throw new AppError(ErrorCode.EMAIL_ALREADY_REGISTERED, {
-            message: 'Another Aadione account already uses this email. Enter a different email.',
-            internalMessage: `apply-to-sell: email of user ${taken.id}`,
-          });
-        }
-      }
-
-      const ownerFullName = input.ownerFullName?.trim() || user.fullName;
-      if (!ownerFullName) {
-        const message = "Enter the owner's full name.";
-        throw new AppError(ErrorCode.VALIDATION_ERROR, { message, details: [{ field: 'ownerFullName', message }] });
-      }
-
-      // Only what the account does not have yet is filled in.
-      await tx.user.update({
-        where: { id: user.id },
-        data: {
-          role: UserRole.SELLER_OWNER,
-          ...(user.email ? {} : { email: sellerPanelEmail }),
-          ...(user.passwordHash ? {} : { passwordHash }),
-          ...(user.fullName ? {} : { fullName: ownerFullName }),
-        },
-      });
-
-      const sellerId = await createSellerApplication(tx, {
-        userId: user.id,
-        businessName,
-        sellerType: input.sellerType,
-        ownerFullName,
-        ownerMobile: user.mobile,
-        ownerEmail: sellerPanelEmail,
-        now,
-        ip: context.ip ?? null,
-        linkedExistingAccount: true,
-      });
-      return { sellerId, lifecycleStatus: SellerLifecycleStatus.APPLICATION_PENDING, sellerPanelEmail };
-    });
-  } catch (error) {
-    // The email was taken between the check and the write.
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-      throw new AppError(ErrorCode.EMAIL_ALREADY_REGISTERED, {
-        message: 'Another Aadione account already uses this email. Enter a different email.',
-        internalMessage: `apply-to-sell: unique conflict for user ${userId}`,
-      });
-    }
-    throw error;
-  }
-
-  await notifyApplicationSubmitted(result.sellerId, businessName);
-  log.info({ sellerId: result.sellerId, userId }, 'seller application submitted by a signed-in customer (same account)');
-  return result;
 }
 
 /* -------------------------------------------------------------------------- */

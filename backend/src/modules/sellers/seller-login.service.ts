@@ -24,6 +24,7 @@ import { ErrorCode, UserStatus, isSellerRole } from '../../shared';
 import { AppError } from '../../common/errors';
 import { moduleLogger } from '../../common/logger';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
+import { PARTNER_ACCOUNT } from '../auth/account-type';
 
 const log = moduleLogger('seller-login');
 
@@ -101,10 +102,10 @@ export async function setInitialSellerLoginEmail(
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  // Emails are unique case-insensitively across every account (the
-  // users_email_unique index covers deleted rows too).
+  // Seller Panel emails are unique case-insensitively among PARTNER accounts
+  // (users_partner_email_unique); a customer account may use the same email.
   const clash = await prisma.user.findFirst({
-    where: { email: { equals: normalizedEmail, mode: 'insensitive' }, id: { not: owner.id } },
+    where: { email: { equals: normalizedEmail, mode: 'insensitive' }, id: { not: owner.id }, ...PARTNER_ACCOUNT },
     select: { id: true },
   });
   if (clash) {

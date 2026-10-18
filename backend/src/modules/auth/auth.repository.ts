@@ -5,12 +5,35 @@
 import type { SessionScope, User } from '@prisma/client';
 import { UserRole, UserStatus } from '../../shared';
 import { prisma, type DbClient } from '../../infra/db/prisma';
+import { accountFilter, PARTNER_ACCOUNT, type AccountType } from './account-type';
 
-export async function findUserByMobile(
+/** The account of ONE type for a number (account-type.ts) — at most one exists. */
+export async function findAccountByMobile(
+  mobile: string,
+  type: AccountType,
+  client: DbClient = prisma,
+): Promise<User | null> {
+  return client.user.findFirst({ where: { mobile, ...accountFilter(type) } });
+}
+
+/**
+ * The account the CUSTOMER APP signs in to for a number: its customer
+ * account — or, for an account from before customer and partner accounts were
+ * separated, the partner account that already shops (it has orders or saved
+ * addresses), so that history is never stranded and no duplicate is made.
+ * A partner account with no shopping history is NOT used: the customer app
+ * gets its own, separate account.
+ */
+export async function findCustomerAppAccount(
   mobile: string,
   client: DbClient = prisma,
 ): Promise<User | null> {
-  return client.user.findUnique({ where: { mobile } });
+  return (
+    (await findAccountByMobile(mobile, 'customer', client)) ??
+    (await client.user.findFirst({
+      where: { mobile, ...PARTNER_ACCOUNT, OR: [{ orders: { some: {} } }, { addresses: { some: {} } }] },
+    }))
+  );
 }
 
 export async function findUserById(
@@ -22,11 +45,12 @@ export async function findUserById(
 
 export async function findUserByEmail(
   email: string,
+  type: AccountType,
   client: DbClient = prisma,
 ): Promise<User | null> {
-  // Case-insensitive: the unique index is on lower(email).
+  // Case-insensitive: the unique indexes are on lower(email), one per account type.
   return client.user.findFirst({
-    where: { email: { equals: email, mode: 'insensitive' }, deletedAt: null },
+    where: { email: { equals: email, mode: 'insensitive' }, deletedAt: null, ...accountFilter(type) },
   });
 }
 

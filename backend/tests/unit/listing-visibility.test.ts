@@ -10,7 +10,7 @@ const base: ListingVisibilityInput = {
   store: { isActive: true, deletedAt: null, onboardingStatus: 'APPROVED' },
   product: { status: 'ACTIVE', deletedAt: null, approvalStatus: 'APPROVED' },
   variant: { status: 'ACTIVE', deletedAt: null },
-  listing: { isAvailable: true, stockQty: 20, reservedQty: 2, lowStockThreshold: 5 },
+  listing: { isAvailable: true, tracksStock: true, stockQty: 20, reservedQty: 2, lowStockThreshold: 5 },
 };
 const withs = (patch: Partial<{ [K in keyof ListingVisibilityInput]: Partial<NonNullable<ListingVisibilityInput[K]>> | null }>) =>
   listingVisibility({

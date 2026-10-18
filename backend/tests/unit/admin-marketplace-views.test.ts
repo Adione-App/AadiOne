@@ -17,17 +17,17 @@ import {
 
 describe('stockState', () => {
   it('uses available = stock − reserved, like the seller panel', () => {
-    expect(stockState({ stockQty: 20, reservedQty: 2, lowStockThreshold: 5 })).toEqual({ availableQty: 18, state: 'IN_STOCK' });
-    expect(stockState({ stockQty: 6, reservedQty: 1, lowStockThreshold: 5 })).toEqual({ availableQty: 5, state: 'LOW' });
-    expect(stockState({ stockQty: 2, reservedQty: 2, lowStockThreshold: 5 })).toEqual({ availableQty: 0, state: 'OUT' });
+    expect(stockState({ tracksStock: true, stockQty: 20, reservedQty: 2, lowStockThreshold: 5 })).toEqual({ availableQty: 18, state: 'IN_STOCK' });
+    expect(stockState({ tracksStock: true, stockQty: 6, reservedQty: 1, lowStockThreshold: 5 })).toEqual({ availableQty: 5, state: 'LOW' });
+    expect(stockState({ tracksStock: true, stockQty: 2, reservedQty: 2, lowStockThreshold: 5 })).toEqual({ availableQty: 0, state: 'OUT' });
   });
 
   it('never reports negative availability', () => {
-    expect(stockState({ stockQty: 1, reservedQty: 3, lowStockThreshold: 0 })).toEqual({ availableQty: 0, state: 'OUT' });
+    expect(stockState({ tracksStock: true, stockQty: 1, reservedQty: 3, lowStockThreshold: 0 })).toEqual({ availableQty: 0, state: 'OUT' });
   });
 
   it('a zero threshold means nothing is ever "low", only in or out', () => {
-    expect(stockState({ stockQty: 1, reservedQty: 0, lowStockThreshold: 0 }).state).toBe('IN_STOCK');
+    expect(stockState({ tracksStock: true, stockQty: 1, reservedQty: 0, lowStockThreshold: 0 }).state).toBe('IN_STOCK');
   });
 });
 

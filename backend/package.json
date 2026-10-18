@@ -16,6 +16,7 @@
     "images:optimize": "node scripts/assert-v2-database.mjs && tsx scripts/optimize-images.ts",
     "seller:change-type:v2": "node scripts/with-env.mjs .env.v2 node scripts/assert-v2-database.mjs && node scripts/with-env.mjs .env.v2 tsx scripts/change-seller-type.ts",
     "seller:correct-name:v2": "node scripts/with-env.mjs .env.v2 node scripts/assert-v2-database.mjs && node scripts/with-env.mjs .env.v2 tsx scripts/correct-seller-name.ts",
+    "db:verify-backup": "node scripts/verify-backup-restore.mjs",
     "seller:cleanup:v2": "node scripts/with-env.mjs .env.v2 node scripts/assert-v2-database.mjs && node scripts/with-env.mjs --no-payments .env.v2 tsx scripts/seller-cleanup.ts",
     "inventory:food-stock:v2": "node scripts/with-env.mjs .env.v2 node scripts/assert-v2-database.mjs && node scripts/with-env.mjs --no-payments .env.v2 tsx scripts/food-stock-backfill.ts",
     "seller:mobile-conflict:v2": "node scripts/with-env.mjs .env.v2 node scripts/assert-v2-database.mjs && node scripts/with-env.mjs --no-payments .env.v2 tsx scripts/mobile-conflict.ts",

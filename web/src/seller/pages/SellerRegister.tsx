@@ -7,15 +7,21 @@
  * and signs the applicant in — they then see their application status, not
  * the Seller Panel. Everything else (address, location, bank, PAN, documents)
  * is collected in onboarding after approval. Commission is never asked for.
+ *
+ * A number that already has an Aadione account (a shopper, or a seller whose
+ * store is gone) is not a dead end: the server answers with requiresOtp, this
+ * page asks for the code sent to that number, and the application is then
+ * added to the SAME account — orders, addresses and saved details untouched.
  */
 
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { SellerType } from '@shared';
+import { SellerType, type SendOtpResponse } from '@shared';
+import { ApiRequestError } from '@/lib/api';
 import { ErrorBanner, Icon, inputClass } from '@/components/ui';
 import { LoginInput, PartnerLoginLayout, PasswordInput, SubmitButton } from '@/components/PartnerLogin';
 import { SELLER_TYPE_LABEL } from '@/components/SellerBadges';
-import { sellerErrorMessage } from '../sellerApi';
+import { sellerApi, sellerErrorMessage } from '../sellerApi';
 import { useSellerAuth } from '../sellerAuth';
 
 const SELLER_TYPES = Object.values(SellerType);
@@ -58,6 +64,8 @@ export default function SellerRegisterPage() {
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The number already has an account: the code proves it is yours, and the store joins that account. */
+  const [verify, setVerify] = useState<{ message: string; sentTo: string | null; code: string; sending: boolean } | null>(null);
 
   const set = <K extends keyof FormState>(key: K) => (value: FormState[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -67,6 +75,8 @@ export default function SellerRegisterPage() {
     if (busy) return;
     const problem = problemWith(form);
     if (problem) return setError(problem);
+    if (verify && !verify.sentTo) return setError('Send the verification code to your mobile number first.');
+    if (verify && !/^\d{4,8}$/.test(verify.code.trim())) return setError('Enter the verification code we sent to your mobile number.');
     setBusy(true);
     setError(null);
     try {
@@ -77,12 +87,32 @@ export default function SellerRegisterPage() {
         password: form.password,
         businessName: form.businessName.trim(),
         sellerType: form.sellerType as SellerType,
+        ...(verify ? { otp: verify.code.trim() } : {}),
       });
       // SellerApp shows the application status once the session is set.
     } catch (err) {
-      setError(sellerErrorMessage(err));
+      const needsCode =
+        err instanceof ApiRequestError && (err.details ?? []).some((detail) => detail.field === 'mobile' && detail.requiresOtp === true);
+      if (needsCode && !verify) {
+        setVerify({ message: err.message, sentTo: null, code: '', sending: false });
+      } else {
+        setError(sellerErrorMessage(err));
+      }
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function sendCode(): Promise<void> {
+    if (!verify || verify.sending) return;
+    setVerify({ ...verify, sending: true });
+    setError(null);
+    try {
+      await sellerApi.post<SendOtpResponse>('/auth/send-otp', { mobile: form.mobile.trim() });
+      setVerify((current) => current && { ...current, sending: false, sentTo: form.mobile.replace(/\D/g, '').slice(-4) });
+    } catch (err) {
+      setVerify((current) => current && { ...current, sending: false });
+      setError(sellerErrorMessage(err));
     }
   }
 
@@ -111,11 +141,52 @@ export default function SellerRegisterPage() {
           type="tel"
           inputMode="numeric"
           value={form.mobile}
-          onChange={(e) => set('mobile')(e.target.value)}
+          onChange={(e) => {
+            set('mobile')(e.target.value);
+            setVerify(null); // a different number needs its own check
+          }}
           placeholder="10-digit mobile number"
           autoComplete="tel"
           required
         />
+        {verify && (
+          <div className="space-y-3 rounded-xl border border-brand-200 bg-brand-50 p-4 text-sm text-gray-700" role="status">
+            <p>{verify.message}</p>
+            {verify.sentTo ? (
+              <>
+                <LoginInput
+                  label="Verification code"
+                  icon="shield"
+                  inputMode="numeric"
+                  value={verify.code}
+                  onChange={(e) => setVerify({ ...verify, code: e.target.value.replace(/\D/g, '') })}
+                  placeholder={`Code sent to the number ending ${verify.sentTo}`}
+                  autoComplete="one-time-code"
+                  maxLength={8}
+                  autoFocus
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => void sendCode()}
+                  disabled={verify.sending}
+                  className="font-semibold text-brand-600 hover:text-brand-700 disabled:opacity-50"
+                >
+                  {verify.sending ? 'Sending…' : 'Send the code again'}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void sendCode()}
+                disabled={verify.sending}
+                className="rounded-lg bg-brand-600 px-4 py-2 font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
+              >
+                {verify.sending ? 'Sending code…' : 'Send verification code'}
+              </button>
+            )}
+          </div>
+        )}
         <LoginInput
           label="Email address"
           icon="mail"
@@ -174,7 +245,7 @@ export default function SellerRegisterPage() {
         </div>
         <div className="pt-1">
           <SubmitButton busy={busy} busyLabel="Submitting application…">
-            Submit Application
+            {verify ? 'Verify & Submit Application' : 'Submit Application'}
           </SubmitButton>
         </div>
         <p className="text-center text-sm text-gray-500">

@@ -25,7 +25,7 @@
  * same browser.
  */
 
-import type { ApiError, ApiResponse, ErrorCode } from "@shared";
+import type { ApiError, ApiErrorBody, ApiResponse, ErrorCode } from "@shared";
 
 const BASE =
   (import.meta.env["VITE_API_URL"] as string | undefined) ?? "/api/v1";
@@ -41,6 +41,8 @@ export class ApiRequestError extends Error {
     message: string,
     readonly status: number,
     readonly requestId?: string,
+    /** Field-level detail from the server (e.g. `requiresOtp` on a seller signup). */
+    readonly details?: ApiErrorBody["details"],
   ) {
     super(message);
     this.name = "ApiRequestError";
@@ -418,6 +420,8 @@ export function createApiClient(refreshStorageKey: string) {
         response.status,
 
         error?.requestId,
+
+        error?.details,
       );
     }
 

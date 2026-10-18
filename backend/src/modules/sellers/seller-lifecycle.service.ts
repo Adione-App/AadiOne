@@ -42,10 +42,12 @@ import {
   type SellerSignupRequest,
 } from '../../shared';
 import { AppError } from '../../common/errors';
-import { hashPassword } from '../../common/crypto';
+import { hashPassword, verifyPassword } from '../../common/crypto';
 import { moduleLogger } from '../../common/logger';
 import { maskMobile } from '../../shared/phone';
-import { findMobileConflict, sellerSignupConflictError } from './seller-mobile-conflict';
+import { canApplyWithExistingAccount, findMobileConflict, sellerSignupConflictError } from './seller-mobile-conflict';
+import * as otpService from '../auth/otp.service';
+import { maskEmail } from '../../infra/email';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import * as notificationService from '../notifications/notification.service';
 import * as tokenService from '../auth/token.service';
@@ -183,6 +185,56 @@ export interface SellerSignupResult extends AuthResponse {
   passwordChangeRequired: false;
 }
 
+type Db = Prisma.TransactionClient | typeof prisma;
+
+/**
+ * May this applicant add a store to the existing account `userId`? Its own
+ * email and password, when it has them, are never replaced — the applicant
+ * must enter them (a shopping account usually has neither: they are set now).
+ */
+async function assertCanJoinAccount(db: Db, userId: string, email: string, password: string): Promise<User> {
+  const user = await db.user.findUniqueOrThrow({ where: { id: userId } });
+  if (user.email && user.email.toLowerCase() !== email) {
+    const message = `This account already uses the email ${maskEmail(user.email)}. Enter that email to add your store to it.`;
+    throw new AppError(ErrorCode.VALIDATION_ERROR, { message, details: [{ field: 'email', message }] });
+  }
+  if (user.passwordHash && !(await verifyPassword(password, user.passwordHash))) {
+    const message =
+      'This account already has a Partner Portal password. Enter that password, or reset it with "Forgot password" on the sign-in page.';
+    throw new AppError(ErrorCode.VALIDATION_ERROR, { message, details: [{ field: 'password', message }] });
+  }
+  return user;
+}
+
+/**
+ * Adds the seller role to an existing account (the number was just proven by
+ * OTP). Locks the row first, so two applications racing for one account
+ * produce exactly one store: the second sees the first's and gets the SELLER
+ * conflict. Only fields the account does not have yet are filled in.
+ */
+async function joinExistingAccount(
+  tx: Prisma.TransactionClient,
+  mobile: string,
+  userId: string,
+  input: { email: string; fullName: string; password: string; passwordHash: string; now: Date },
+): Promise<User> {
+  await tx.$queryRaw`SELECT id FROM users WHERE id = ${userId}::uuid FOR UPDATE`;
+  const conflict = await findMobileConflict(tx, mobile);
+  if (!canApplyWithExistingAccount(conflict.kind) || conflict.userId !== userId) throw sellerSignupConflictError(conflict, mobile);
+  const user = await assertCanJoinAccount(tx, userId, input.email, input.password);
+  return tx.user.update({
+    where: { id: userId },
+    data: {
+      role: UserRole.SELLER_OWNER,
+      email: user.email ?? input.email,
+      fullName: user.fullName ?? input.fullName,
+      passwordHash: user.passwordHash ?? input.passwordHash,
+      mobileVerifiedAt: user.mobileVerifiedAt ?? input.now,
+      lastLoginAt: input.now,
+    },
+  });
+}
+
 /**
  * POST /auth/seller/signup. Creates, in one transaction: the owner account
  * (SELLER_OWNER, email + password — the normal seller login), the Seller at
@@ -192,12 +244,24 @@ export interface SellerSignupResult extends AuthResponse {
  * empty until onboarding (the checklist requires them; an unapproved seller
  * is never shown to customers — onboardingStatus stays PENDING).
  *
- * An existing account's mobile or email is refused (409), as in customer
- * signup — never silently attached: the applicant has proven neither. The
- * refusal names WHICH kind of account holds the number (seller, former
- * seller, shopping customer, staff — seller-mobile-conflict.ts), so the
- * applicant knows what to do; a lost race on the unique index answers the
- * same way.
+ * ONE ACCOUNT CAN SHOP AND SELL. A number that already has a shopping
+ * (CUSTOMER) account — or an account whose earlier store is gone
+ * (FORMER_SELLER) — may apply: the applicant proves the number with the OTP
+ * from POST /auth/send-otp, and the store is added to that SAME account
+ * (joinExistingAccount). No second account is created and nothing of the
+ * customer's is touched: orders, addresses, coupons, referrals, wallet and
+ * shopping-app sessions stay as they are; the account's own email, name and
+ * password are never replaced (the applicant must use them). Without the code
+ * the answer is a 409 with details.requiresOtp, so the client asks for it.
+ *
+ * Every other existing account — a live seller (one application per account),
+ * staff/delivery, blocked — and another account's email are refused (409),
+ * naming WHICH kind of account holds the number (seller-mobile-conflict.ts);
+ * a lost race on the unique index or the row lock answers the same way.
+ *
+ * The new seller is APPLICATION_PENDING exactly like a brand-new applicant:
+ * the Seller Panel stays limited to the application status until an admin
+ * approves (sellerPanelAccess) — shopping access is unaffected throughout.
  */
 export async function signupSeller(
   input: SellerSignupRequest,
@@ -211,12 +275,20 @@ export async function signupSeller(
     findMobileConflict(prisma, input.mobile),
     prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } }, select: { id: true } }),
   ]);
-  if (mobileConflict.kind !== 'NONE') throw sellerSignupConflictError(mobileConflict, input.mobile);
-  if (byEmail) {
+  const joinExisting = canApplyWithExistingAccount(mobileConflict.kind) && mobileConflict.userId !== null;
+  if (mobileConflict.kind !== 'NONE' && !joinExisting) throw sellerSignupConflictError(mobileConflict, input.mobile);
+  // The account's own email is fine; anyone else's is not.
+  if (byEmail && byEmail.id !== mobileConflict.userId) {
     throw new AppError(ErrorCode.EMAIL_ALREADY_REGISTERED, {
       message: 'An Aadione account with this email already exists. Sign in instead, or use another email.',
       internalMessage: `seller signup: email already registered (user ${byEmail.id})`,
     });
+  }
+  if (joinExisting) {
+    if (!input.otp) throw sellerSignupConflictError(mobileConflict, input.mobile);
+    // Checked BEFORE the code is used up, so a fixable mistake never wastes an OTP.
+    await assertCanJoinAccount(prisma, mobileConflict.userId!, email, input.password);
+    await otpService.verifyOtp(input.mobile, input.otp);
   }
 
   const passwordHash = await hashPassword(input.password);
@@ -225,17 +297,19 @@ export async function signupSeller(
   let created: { user: User; sellerId: string };
   try {
     created = await runInTransaction(async (tx) => {
-      const user = await tx.user.create({
-        data: {
-          mobile: input.mobile,
-          email,
-          fullName,
-          passwordHash,
-          role: UserRole.SELLER_OWNER,
-          status: UserStatus.ACTIVE,
-          lastLoginAt: now,
-        },
-      });
+      const user = joinExisting
+        ? await joinExistingAccount(tx, input.mobile, mobileConflict.userId!, { email, fullName, password: input.password, passwordHash, now })
+        : await tx.user.create({
+            data: {
+              mobile: input.mobile,
+              email,
+              fullName,
+              passwordHash,
+              role: UserRole.SELLER_OWNER,
+              status: UserStatus.ACTIVE,
+              lastLoginAt: now,
+            },
+          });
 
       const seller = await tx.seller.create({
         data: {
@@ -284,6 +358,8 @@ export async function signupSeller(
             code: seller.code,
             sellerType: seller.sellerType,
             ownerUserId: user.id,
+            // The store was added to an account that already existed (shopper / former seller).
+            linkedExistingAccount: joinExisting,
           },
         },
       });
@@ -320,7 +396,7 @@ export async function signupSeller(
     ip: context.ip ?? null,
   });
 
-  log.info({ sellerId: created.sellerId, userId: created.user.id }, 'seller application submitted');
+  log.info({ sellerId: created.sellerId, userId: created.user.id, linkedExistingAccount: joinExisting }, 'seller application submitted');
   return {
     user: toUserDto(created.user),
     tokens,

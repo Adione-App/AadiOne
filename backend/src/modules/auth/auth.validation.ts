@@ -137,6 +137,8 @@ export const sellerSignupSchema = z
     sellerType: z.nativeEnum(SellerType, {
       errorMap: () => ({ message: 'Choose your seller type' }),
     }),
+    // Only when the number already has an account: proves it is the applicant's.
+    otp: verifyOtpSchema.shape.otp.optional(),
   })
   .strict();
 

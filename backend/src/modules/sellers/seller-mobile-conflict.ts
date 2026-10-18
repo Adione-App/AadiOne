@@ -1,9 +1,12 @@
 /**
  * Who already uses a mobile number — the ONE classification seller signup
  * decides on, so the answer always names the actual conflicting record
- * instead of a generic "already exists". Admin seller creation
+ * instead of a generic "already exists". One account can both shop and sell:
+ * a CUSTOMER (or FORMER_SELLER) number may apply, and the store is added to
+ * that SAME account once the applicant proves the number with an OTP
+ * (seller-lifecycle.service signupSeller). Admin seller creation
  * (admin-seller-management.service.ts) applies the same refusals (STAFF,
- * BLOCKED) and, unlike signup, makes an existing CUSTOMER account the owner.
+ * BLOCKED) and makes an existing CUSTOMER account the owner directly.
  *
  * Every account has one unique, canonical 10-digit mobile (users.mobile,
  * normalised by normalizeIndianMobile everywhere it is written), shared by
@@ -66,6 +69,11 @@ const REJECTED: readonly SellerLifecycleStatus[] = [
   SellerLifecycleStatus.ONBOARDING_REJECTED,
 ];
 
+/** Accounts a seller application may be added to, once the number is proven by OTP. */
+export function canApplyWithExistingAccount(kind: MobileConflictKind): boolean {
+  return kind === 'CUSTOMER' || kind === 'FORMER_SELLER';
+}
+
 /** The customer-facing message for a seller-signup conflict. */
 export function sellerSignupConflictMessage(conflict: MobileConflict): string {
   switch (conflict.kind) {
@@ -74,9 +82,9 @@ export function sellerSignupConflictMessage(conflict: MobileConflict): string {
         ? 'This mobile number already has a seller application. Sign in to the Seller Panel to correct and resubmit it.'
         : 'This mobile number is already registered as a seller on Aadione. Sign in to the Seller Panel instead.';
     case 'FORMER_SELLER':
-      return 'This mobile number belongs to a seller account whose store is no longer active. Contact Aadione support to reopen it or to register a new store with it.';
+      return 'This mobile number already has an Aadione account whose earlier store is closed. Verify the number with the code we send, and your new store application is added to the same account.';
     case 'CUSTOMER':
-      return 'This mobile number is already used by an Aadione shopping (customer) account, so it cannot be used to sign up a new seller here. Use another number for your store, or contact Aadione support to add your store to this account.';
+      return 'This mobile number already has an Aadione shopping account. Verify the number with the code we send, and your store application is added to the same account — your orders, addresses and saved details stay exactly as they are.';
     case 'STAFF':
       return 'This mobile number belongs to an Aadione staff or delivery account and cannot be used for a seller.';
     case 'BLOCKED':
@@ -91,7 +99,8 @@ export function sellerSignupConflictError(conflict: MobileConflict, mobile: stri
   const message = sellerSignupConflictMessage(conflict);
   return new AppError(ErrorCode.MOBILE_ALREADY_REGISTERED, {
     message,
-    details: [{ field: 'mobile', message, conflict: conflict.kind }],
+    // requiresOtp: the client asks for the code and resubmits with it (no dead end).
+    details: [{ field: 'mobile', message, conflict: conflict.kind, requiresOtp: canApplyWithExistingAccount(conflict.kind) }],
     internalMessage: `seller signup: mobile ${maskMobile(mobile)} already used by a ${conflict.kind} account (user ${conflict.userId})`,
   });
 }

@@ -414,6 +414,13 @@ export interface SellerSignupRequest {
   password: string;
   businessName: string;
   sellerType: SellerType;
+  /**
+   * The code sent by POST /auth/send-otp. Required only when the number
+   * already has an Aadione account (a shopper, or a seller whose store is
+   * gone): it proves the number is the applicant's, and the store is then
+   * added to that SAME account — no second account, nothing overwritten.
+   */
+  otp?: string;
 }
 
 /** One row of the admin Seller Applications view. Applicant contact details

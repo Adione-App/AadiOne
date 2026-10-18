@@ -276,6 +276,14 @@ export const sellerSignupPerMobile = rateLimit({
   identify: byMobile,
 });
 
+/** Signed-in Apply to Sell: per account (a store is one per account anyway). */
+export const sellerApplyPerUser = rateLimit({
+  scope: 'seller-apply:user',
+  limit: 5,
+  windowSeconds: HOUR,
+  identify: byUser,
+});
+
 /* --- Referrals -------------------------------------------------------------- */
 
 /** Guards a new account from grinding through referral codes to find a valid one. */

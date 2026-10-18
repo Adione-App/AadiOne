@@ -421,13 +421,47 @@ export interface SellerSignupRequest {
   password: string;
   businessName: string;
   sellerType: SellerType;
-  /**
-   * The code sent by POST /auth/send-otp. Required only when the number
-   * already has an Aadione account (a shopper, or a seller whose store is
-   * gone): it proves the number is the applicant's, and the store is then
-   * added to that SAME account — no second account, nothing overwritten.
-   */
-  otp?: string;
+}
+
+/**
+ * GET /auth/seller/application — the SIGNED-IN account's own seller status,
+ * for the customer app's "Sell on Aadione" screen. The account is the one
+ * the session belongs to (never a number typed into a form).
+ */
+export interface SellerApplicationStatusDto {
+  /** NONE: no store on this account yet. */
+  status: 'NONE' | SellerLifecycleStatus;
+  /** false for staff / delivery / blocked accounts: they cannot open a store. */
+  canApply: boolean;
+  sellerName: string | null;
+  /** The admin's reason, when an application or onboarding was rejected. */
+  reason: string | null;
+  /** The email this account signs in to the Seller Panel with (its own), if it has one. */
+  sellerPanelEmail: string | null;
+  /** The account has no email yet: the application must give one (for the Seller Panel sign-in). */
+  needsEmail: boolean;
+  /** The account has no password yet: the application must set one (for the Seller Panel sign-in). */
+  needsPassword: boolean;
+}
+
+/**
+ * POST /auth/seller/apply — a signed-in customer opens a store on the SAME
+ * account. `email` / `password` are accepted only when the account has
+ * none (see SellerApplicationStatusDto): an existing one is never replaced.
+ */
+export interface SellerApplyRequest {
+  businessName: string;
+  sellerType: SellerType;
+  /** Defaults to the account's own name. */
+  ownerFullName?: string;
+  email?: string;
+  password?: string;
+}
+
+export interface SellerApplyResult {
+  sellerId: string;
+  lifecycleStatus: SellerLifecycleStatus;
+  sellerPanelEmail: string;
 }
 
 /** One row of the admin Seller Applications view. Applicant contact details

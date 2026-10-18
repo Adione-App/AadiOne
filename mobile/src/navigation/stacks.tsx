@@ -42,6 +42,7 @@ import AccountScreen from "@/screens/account/AccountScreen";
 import UpiPaymentScreen from "@/screens/checkout/UpiPaymentScreen";
 import WishlistScreen from "@/screens/wishlist/WishlistScreen";
 import RewardsScreen from "@/screens/account/RewardsScreen";
+import SellOnAadioneScreen from "@/screens/account/SellOnAadioneScreen";
 
 /* =====================================================================
    NAVIGATORS
@@ -585,9 +586,21 @@ export function AccountStack() {
               if (key === "refer") {
                 navigation.navigate("ReferEarn");
               }
+
+              if (key === "sell") {
+                navigation.navigate("SellOnAadione");
+              }
             }}
           />
         )}
+      </AccountNav.Screen>
+
+      {/* ---------------------------------------------------------------
+          SELL ON AADIONE — the signed-in account opens a store (same account)
+      --------------------------------------------------------------- */}
+
+      <AccountNav.Screen name="SellOnAadione">
+        {({ navigation }) => <SellOnAadioneScreen onBack={() => navigation.goBack()} />}
       </AccountNav.Screen>
 
       {/* ---------------------------------------------------------------

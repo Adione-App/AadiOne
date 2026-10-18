@@ -54,14 +54,14 @@ describe('seller signup — which account already uses the number', () => {
     expect(user.role).toBe(UserRole.SELLER_OWNER);
   });
 
-  it('a number used by the SHOPPING app (customer account) is recognised in every format — and, without a code, asked to verify (never silently attached)', async () => {
+  it('a number used by the SHOPPING app (customer account) is recognised in every format — and sent to sign in to apply (never attached by a typed number)', async () => {
     await loginAs(MOBILE); // the customer app's first OTP login creates the account
     for (const typed of ['8690530973', '+91 86905 30973', '08690530973']) {
       const res = await signup(typed);
       expect(res.status).toBe(409);
       expect(expectError(res.body).code).toBe(ErrorCode.MOBILE_ALREADY_REGISTERED);
       expect(conflictOf(res.body)).toBe('CUSTOMER');
-      expect(expectError(res.body).details?.[0]).toMatchObject({ requiresOtp: true });
+      expect(expectError(res.body).details?.[0]).toMatchObject({ signInToApply: true });
       expect(expectError(res.body).message).toMatch(/already has an Aadione shopping account/);
     }
     // Nothing was created or changed.
@@ -82,12 +82,12 @@ describe('seller signup — which account already uses the number', () => {
     expect(expectError(rejected.body).message).toMatch(/correct and resubmit/);
   });
 
-  it('a seller account whose store is gone is a FORMER_SELLER — asked to verify, never deleted or reused silently', async () => {
+  it('a seller account whose store is gone is a FORMER_SELLER — sent to sign in to apply, never deleted or reused silently', async () => {
     expect((await signup(MOBILE)).status).toBe(201);
     await prisma.seller.updateMany({ data: { deletedAt: new Date(), isActive: false } });
     const res = await signup(MOBILE);
     expect(conflictOf(res.body)).toBe('FORMER_SELLER');
-    expect(expectError(res.body).details?.[0]).toMatchObject({ requiresOtp: true });
+    expect(expectError(res.body).details?.[0]).toMatchObject({ signInToApply: true });
     expect(await prisma.user.count({ where: { mobile: MOBILE } })).toBe(1);
     expect(await prisma.seller.count()).toBe(1);
   });

@@ -1,10 +1,13 @@
 /**
- * One account can shop AND sell. An existing customer applies to sell with
- * the same mobile number: the number is proven with an OTP and the store is
- * added to the SAME account — no second user, nothing of the customer's lost
- * or overwritten, the application PENDING until an admin approves, and the
- * Seller Panel limited to the application status until then. Shopping keeps
- * working throughout.
+ * One account can shop AND sell. A SIGNED-IN customer applies to sell from
+ * the app (GET /auth/seller/application, POST /auth/seller/apply): the
+ * account is the session's — no mobile number in the body, no OTP, no
+ * "existing account" warning. The store is added to the SAME account: no
+ * second user, nothing of the customer's lost or overwritten (an existing
+ * email or password is never replaced), the application PENDING until an
+ * admin approves, and the Seller Panel limited to the application status until
+ * then. Shopping keeps working throughout. The public signup form never
+ * attaches to an existing account: it sends the applicant to sign in.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -19,37 +22,27 @@ import * as configService from '../../src/modules/configuration/configuration.se
 import * as otpService from '../../src/modules/auth/otp.service';
 
 const MOBILE = '8690530973';
-const OTHER = '9876500077';
 const PASSWORD = 'Seller@12345';
 
-let counter = 0;
-function signup(mobile: string, overrides: Record<string, unknown> = {}) {
-  counter += 1;
-  return api()
-    .post('/api/v1/auth/seller/signup')
-    .send({
-      fullName: 'Store Owner',
-      mobile,
-      email: `owner${counter}@adione.test`,
-      password: PASSWORD,
-      businessName: `Corner Store ${counter}`,
-      sellerType: SellerType.GROCERY,
-      ...overrides,
-    });
+interface ApplicationStatus {
+  status: string;
+  canApply: boolean;
+  sellerName: string | null;
+  sellerPanelEmail: string | null;
+  needsEmail: boolean;
+  needsPassword: boolean;
 }
 
-async function sendOtp(mobile: string): Promise<string> {
-  // Test-only: reset the in-memory OTP cooldown and per-number send limit (3/hour) between codes.
-  await cache.clear();
-  const res = await api().post('/api/v1/auth/send-otp').send({ mobile }).expect(200);
-  const code = expectSuccess<{ devOtp?: string }>(res.body).data.devOtp;
-  if (!code) throw new Error('console OTP provider did not return devOtp');
-  return code;
-}
+const status = async (token: string) =>
+  expectSuccess<ApplicationStatus>((await api().get('/api/v1/auth/seller/application').set('Authorization', bearer(token)).expect(200)).body).data;
 
-const mobileDetail = (body: unknown) => expectError(body).details?.find((detail) => detail.field === 'mobile');
+const apply = (token: string | null, body: Record<string, unknown>) => {
+  const req = api().post('/api/v1/auth/seller/apply');
+  if (token) req.set('Authorization', bearer(token));
+  return req.send({ businessName: 'Asha General Store', sellerType: SellerType.GROCERY, ...body });
+};
 
-/** A shopper with real history: an address, a placed order, an issued coupon, and a live app session. */
+/** A shopper with real history: an address, a placed order, an issued coupon, a signed-in app session. */
 async function existingCustomer() {
   const storeId = await seedStore();
   const product = await seedProduct(storeId, { stockQty: 10 });
@@ -70,144 +63,178 @@ beforeEach(async () => {
   await truncateAll();
   await configService.invalidateAll();
   await cache.clear();
-  for (const mobile of [MOBILE, OTHER]) await otpService.clearOtpState(mobile);
+  await otpService.clearOtpState(MOBILE);
 });
 
-describe('an existing customer applies to sell with the same number', () => {
-  it('is asked to verify the number, then the store joins the SAME account — customer data intact, shopping still works', async () => {
+describe('a signed-in customer applies to sell (same account)', () => {
+  it('no OTP, no warning: the store joins the SAME account — customer data intact, shopping works, Seller Panel waits for approval', async () => {
     const customer = await existingCustomer();
     const before = await prisma.user.findUniqueOrThrow({ where: { id: customer.userId } });
 
-    // 1. Without the code: not a dead end — the server asks for it.
-    const first = await signup(MOBILE, { email: 'shopper@adione.test', fullName: 'Asha Shopper' });
-    expect(first.status).toBe(409);
-    expect(mobileDetail(first.body)).toMatchObject({ conflict: 'CUSTOMER', requiresOtp: true });
-    expect(expectError(first.body).message).toMatch(/verify the number/i);
-    expect(await prisma.seller.count()).toBe(1); // only the seeded store
+    // What the app shows: the form, asking only for the Seller Panel sign-in this account lacks.
+    expect(await status(customer.accessToken)).toEqual({
+      status: 'NONE', canApply: true, sellerName: null, reason: null, sellerPanelEmail: null, needsEmail: true, needsPassword: true,
+    });
 
-    // 2. With the code: one account, now also a seller applicant.
-    const code = await sendOtp(MOBILE);
-    const joined = await signup(MOBILE, { email: 'shopper@adione.test', fullName: 'Asha Shopper', otp: code });
-    expect(joined.status).toBe(201);
-    const data = expectSuccess<{ user: { id: string; role: string }; sellerId: string; lifecycleStatus: string; tokens: { accessToken: string } }>(joined.body).data;
-    expect(data.user.id).toBe(customer.userId);
-    expect(data.lifecycleStatus).toBe(SellerLifecycleStatus.APPLICATION_PENDING);
+    const res = await apply(customer.accessToken, { ownerFullName: 'Asha Shopper', email: 'Asha@Store.test', password: PASSWORD });
+    expect(res.status).toBe(201);
+    const data = expectSuccess<{ sellerId: string; lifecycleStatus: string; sellerPanelEmail: string }>(res.body).data;
+    expect(data).toMatchObject({ lifecycleStatus: SellerLifecycleStatus.APPLICATION_PENDING, sellerPanelEmail: 'asha@store.test' });
 
+    // One account, now also a seller applicant.
     expect(await prisma.user.count({ where: { mobile: MOBILE } })).toBe(1);
     const after = await prisma.user.findUniqueOrThrow({ where: { id: customer.userId } });
-    expect(after).toMatchObject({ role: UserRole.SELLER_OWNER, status: UserStatus.ACTIVE, email: 'shopper@adione.test', referralCode: before.referralCode });
+    expect(after).toMatchObject({ role: UserRole.SELLER_OWNER, status: UserStatus.ACTIVE, email: 'asha@store.test', referralCode: before.referralCode, mobile: MOBILE });
     expect(after.passwordHash).not.toBeNull();
-    expect(after.mobileVerifiedAt).not.toBeNull();
     const seller = await prisma.seller.findUniqueOrThrow({ where: { id: data.sellerId } });
-    expect(seller).toMatchObject({ lifecycleStatus: SellerLifecycleStatus.APPLICATION_PENDING, onboardingStatus: 'PENDING' });
+    expect(seller).toMatchObject({ lifecycleStatus: SellerLifecycleStatus.APPLICATION_PENDING, onboardingStatus: 'PENDING', name: 'Asha General Store' });
     expect(await prisma.sellerStaff.count({ where: { userId: customer.userId, sellerId: data.sellerId, role: 'OWNER', isActive: true } })).toBe(1);
+    expect(await prisma.sellerProfile.findUniqueOrThrow({ where: { sellerId: data.sellerId } })).toMatchObject({ ownerMobile: MOBILE, ownerEmail: 'asha@store.test', ownerFullName: 'Asha Shopper' });
     const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: 'seller_application.submit', entityId: data.sellerId } });
+    expect(audit).toMatchObject({ actorUserId: customer.userId });
     expect(audit.after).toMatchObject({ linkedExistingAccount: true, ownerUserId: customer.userId });
 
-    // Customer data untouched.
+    // Customer data untouched; the same app session keeps shopping.
     expect(await prisma.address.count({ where: { id: customer.addressId, userId: customer.userId } })).toBe(1);
     expect(await prisma.order.count({ where: { id: customer.orderId, userId: customer.userId } })).toBe(1);
     expect(await prisma.coupon.count({ where: { id: customer.couponId, issuedToUserId: customer.userId } })).toBe(1);
-
-    // Shopping still works with the existing app session (and a fresh OTP sign-in is still a shopper session).
     const orders = await api().get('/api/v1/orders').set('Authorization', bearer(customer.accessToken)).expect(200);
     expect(JSON.stringify(orders.body)).toContain(customer.orderId);
-    const otpLogin = await api().post('/api/v1/auth/verify-otp').send({ mobile: MOBILE, otp: await sendOtp(MOBILE) }).expect(200);
-    const shopperToken = expectSuccess<{ tokens: { accessToken: string } }>(otpLogin.body).data.tokens.accessToken;
-    await api().get('/api/v1/orders').set('Authorization', bearer(shopperToken)).expect(200);
-    // …and an SMS code never opens the Seller Panel.
-    expect((await api().get('/api/v1/seller/lifecycle').set('Authorization', bearer(shopperToken))).status).toBe(403);
 
-    // Seller Panel: application status only, until an admin approves.
-    const login = await api().post('/api/v1/auth/seller/login').send({ email: 'shopper@adione.test', password: PASSWORD }).expect(200);
+    // The app now shows the application's progress.
+    expect(await status(customer.accessToken)).toMatchObject({ status: SellerLifecycleStatus.APPLICATION_PENDING, sellerName: 'Asha General Store', needsEmail: false, needsPassword: false });
+
+    // The customer-app session never opens the Seller Panel; the Seller Panel login does — limited until approval.
+    expect((await api().get('/api/v1/seller/lifecycle').set('Authorization', bearer(customer.accessToken))).status).toBe(403);
+    const login = await api().post('/api/v1/auth/seller/login').send({ email: 'asha@store.test', password: PASSWORD }).expect(200);
     const sellerToken = expectSuccess<{ tokens: { accessToken: string } }>(login.body).data.tokens.accessToken;
     await api().get('/api/v1/seller/lifecycle').set('Authorization', bearer(sellerToken)).expect(200);
-    const blocked = await api().get('/api/v1/seller/products').set('Authorization', bearer(sellerToken));
-    expect(expectError(blocked.body).code).toBe(ErrorCode.SELLER_ACCOUNT_NOT_ACTIVE);
-
-    // Approved (both gates) -> the dashboard opens; shopping still works.
+    expect(expectError((await api().get('/api/v1/seller/products').set('Authorization', bearer(sellerToken))).body).code).toBe(ErrorCode.SELLER_ACCOUNT_NOT_ACTIVE);
     await prisma.seller.update({ where: { id: data.sellerId }, data: { lifecycleStatus: SellerLifecycleStatus.ACTIVE, onboardingStatus: 'APPROVED' } });
     await api().get('/api/v1/seller/products').set('Authorization', bearer(sellerToken)).expect(200);
     await api().get('/api/v1/orders').set('Authorization', bearer(customer.accessToken)).expect(200);
 
-    // One application per account: applying again is refused as a SELLER.
-    const again = await signup(MOBILE, { email: 'shopper@adione.test', otp: await sendOtp(MOBILE) });
+    // One store per account.
+    const again = await apply(customer.accessToken, { businessName: 'Second Store' });
     expect(again.status).toBe(409);
-    expect(mobileDetail(again.body)).toMatchObject({ conflict: 'SELLER', requiresOtp: false });
-    expect(await prisma.seller.count({ where: { staff: { some: { userId: customer.userId } } } })).toBe(1);
+    expect(expectError(again.body).message).toMatch(/already has a store/);
+    expect(await prisma.sellerStaff.count({ where: { userId: customer.userId } })).toBe(1);
   });
 
-  it('a wrong code changes nothing; a fixable mistake (the account already has another email) does not use up the code', async () => {
+  it("the account's own email and password are kept — never replaced, never asked for again", async () => {
     const customer = await loginAs(MOBILE);
-    await prisma.user.update({ where: { id: customer.userId }, data: { email: 'asha@family.test', fullName: 'Asha' } });
-    const code = await sendOtp(MOBILE);
+    await api().patch('/api/v1/auth/me').set('Authorization', bearer(customer.accessToken)).send({ fullName: 'Asha', email: 'asha@family.test' }).expect(200);
+    const hash = await hashPassword('Existing@123');
+    await prisma.user.update({ where: { id: customer.userId }, data: { passwordHash: hash } });
 
-    const wrong = await signup(MOBILE, { email: 'asha@family.test', otp: code === '000000' ? '111111' : '000000' });
-    expect(wrong.status).toBeGreaterThanOrEqual(400);
-    expect(await prisma.seller.count()).toBe(0);
-    expect((await prisma.user.findUniqueOrThrow({ where: { id: customer.userId } })).role).toBe(UserRole.CUSTOMER);
+    expect(await status(customer.accessToken)).toMatchObject({ needsEmail: false, needsPassword: false, sellerPanelEmail: 'asha@family.test' });
 
-    // The account has its own email: never overwritten — the applicant is told which to use (masked).
-    const otherEmail = await signup(MOBILE, { email: 'someone.else@adione.test', otp: code });
+    const otherEmail = await apply(customer.accessToken, { email: 'someone.else@store.test' });
     expect(otherEmail.status).toBe(400);
     expect(expectError(otherEmail.body).message).toMatch(/already uses the email a\*\*\*@family\.test/);
-    expect(expectError(otherEmail.body).message).not.toContain('asha@family.test');
+    const newPassword = await apply(customer.accessToken, { password: PASSWORD });
+    expect(newPassword.status).toBe(400);
+    expect(expectError(newPassword.body).message).toMatch(/already has a Seller Panel password/);
+    expect(await prisma.seller.count()).toBe(0);
 
-    // Same code, right email: accepted. Name and email stay the customer's own.
-    const ok = await signup(MOBILE, { email: 'ASHA@family.test', fullName: 'Different Name', otp: code });
+    const ok = await apply(customer.accessToken, {});
     expect(ok.status).toBe(201);
-    expect(await prisma.user.findUniqueOrThrow({ where: { id: customer.userId } })).toMatchObject({ email: 'asha@family.test', fullName: 'Asha' });
+    expect(expectSuccess<{ sellerPanelEmail: string }>(ok.body).data.sellerPanelEmail).toBe('asha@family.test');
+    expect(await prisma.user.findUniqueOrThrow({ where: { id: customer.userId } })).toMatchObject({ email: 'asha@family.test', fullName: 'Asha', passwordHash: hash });
+    expect(await prisma.sellerProfile.count({ where: { ownerFullName: 'Asha' } })).toBe(1); // defaults to the account's own name
   });
 
-  it("another account's email is refused; brand-new numbers sign up exactly as before (no code needed)", async () => {
-    await prisma.user.create({ data: { mobile: OTHER, email: 'taken@adione.test', fullName: 'Someone', role: UserRole.CUSTOMER } });
-    await loginAs(MOBILE);
-    const res = await signup(MOBILE, { email: 'taken@adione.test', otp: await sendOtp(MOBILE) });
-    expect(expectError(res.body).code).toBe(ErrorCode.EMAIL_ALREADY_REGISTERED);
+  it('missing Seller Panel credentials, or another account’s email, are refused — nothing created', async () => {
+    const customer = await loginAs(MOBILE);
+    await prisma.user.create({ data: { mobile: '9876500077', email: 'taken@store.test', fullName: 'Someone', role: UserRole.CUSTOMER } });
 
-    const fresh = await signup('9876500099');
-    expect(fresh.status).toBe(201);
-    expect(expectSuccess<{ lifecycleStatus: string }>(fresh.body).data.lifecycleStatus).toBe(SellerLifecycleStatus.APPLICATION_PENDING);
+    expect(expectError((await apply(customer.accessToken, { ownerFullName: 'Asha', password: PASSWORD })).body).details?.[0]).toMatchObject({ field: 'email' });
+    expect(expectError((await apply(customer.accessToken, { ownerFullName: 'Asha', email: 'asha@store.test' })).body).details?.[0]).toMatchObject({ field: 'password' });
+    expect(expectError((await apply(customer.accessToken, { email: 'asha@store.test', password: PASSWORD })).body).details?.[0]).toMatchObject({ field: 'ownerFullName' });
+    expect(expectError((await apply(customer.accessToken, { ownerFullName: 'Asha', email: 'TAKEN@store.test', password: PASSWORD })).body).code).toBe(
+      ErrorCode.EMAIL_ALREADY_REGISTERED,
+    );
+    expect(await prisma.seller.count()).toBe(0);
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: customer.userId } })).role).toBe(UserRole.CUSTOMER);
+  });
+});
+
+describe('who may apply, and on which account', () => {
+  it('signed out is refused; the body can never name an account (no mobile field)', async () => {
+    const customer = await loginAs(MOBILE);
+    expect((await apply(null, { email: 'x@store.test', password: PASSWORD })).status).toBe(401);
+    expect((await api().get('/api/v1/auth/seller/application')).status).toBe(401);
+
+    const named = await apply(customer.accessToken, { mobile: '9876500088', ownerFullName: 'Asha', email: 'x@store.test', password: PASSWORD });
+    expect(named.status).toBe(400); // strict body: there is nothing to point at another account with
+    expect(await prisma.seller.count()).toBe(0);
   });
 
-  it('a former seller (store gone) re-applies on the same account — with its own Partner Portal password', async () => {
+  it('staff / admin accounts cannot open a store; blocked accounts are rejected', async () => {
+    await prisma.user.create({
+      data: { mobile: '9000000011', email: 'admin@adione.test', fullName: 'Admin', passwordHash: await hashPassword('TestAdmin@123'), role: UserRole.ADMIN },
+    });
+    const login = await api().post('/api/v1/auth/admin/login').send({ email: 'admin@adione.test', password: 'TestAdmin@123' }).expect(200);
+    const adminToken = expectSuccess<{ tokens: { accessToken: string } }>(login.body).data.tokens.accessToken;
+    expect((await status(adminToken)).canApply).toBe(false);
+    expect((await apply(adminToken, { ownerFullName: 'Admin' })).status).toBe(403);
+
+    const customer = await loginAs(MOBILE);
+    await prisma.user.update({ where: { id: customer.userId }, data: { status: 'BLOCKED' } });
+    expect((await apply(customer.accessToken, { ownerFullName: 'Asha', email: 'x@store.test', password: PASSWORD })).status).toBeGreaterThanOrEqual(401);
+    expect(await prisma.seller.count()).toBe(0);
+  });
+
+  it('a former seller (store gone) re-applies on the same account', async () => {
     const user = await prisma.user.create({
-      data: { mobile: MOBILE, email: 'former@adione.test', fullName: 'Former', role: UserRole.SELLER_OWNER, passwordHash: await hashPassword(PASSWORD) },
+      data: { mobile: MOBILE, email: 'former@store.test', fullName: 'Former', role: UserRole.SELLER_OWNER, passwordHash: await hashPassword(PASSWORD) },
     });
     const old = await prisma.seller.create({
       data: { name: 'Old Store', code: 'OLDSTORE', addressLine: '', city: '', state: '', pincode: '', latitude: 0, longitude: 0, deletedAt: new Date(), isActive: false },
     });
     await prisma.sellerStaff.create({ data: { sellerId: old.id, userId: user.id, role: 'OWNER', isActive: false, deletedAt: new Date() } });
-
-    const code = await sendOtp(MOBILE);
-    const wrongPassword = await signup(MOBILE, { email: 'former@adione.test', password: 'Another@12345', otp: code });
-    expect(wrongPassword.status).toBe(400);
-    expect(expectError(wrongPassword.body).message).toMatch(/already has a Partner Portal password/);
-
-    const ok = await signup(MOBILE, { email: 'former@adione.test', otp: code });
-    expect(ok.status).toBe(201);
-    expect(expectSuccess<{ user: { id: string } }>(ok.body).data.user.id).toBe(user.id);
+    // Signed in to the customer app (OTP) — how this person reaches Account → Sell on Aadione.
+    const sent = await api().post('/api/v1/auth/send-otp').send({ mobile: MOBILE }).expect(200);
+    const otp = expectSuccess<{ devOtp: string }>(sent.body).data.devOtp;
+    const verified = await api().post('/api/v1/auth/verify-otp').send({ mobile: MOBILE, otp }).expect(200);
+    const token = expectSuccess<{ tokens: { accessToken: string } }>(verified.body).data.tokens.accessToken;
+    expect(await status(token)).toMatchObject({ status: 'NONE', canApply: true, needsEmail: false, needsPassword: false });
+    expect((await apply(token, {})).status).toBe(201);
     expect(await prisma.user.count({ where: { mobile: MOBILE } })).toBe(1);
   });
 
-  it('staff and blocked numbers stay refused even with a valid code', async () => {
-    await prisma.user.create({ data: { mobile: MOBILE, fullName: 'Rider', role: UserRole.DELIVERY_AGENT } });
-    const staff = await signup(MOBILE, { otp: await sendOtp(MOBILE) });
-    expect(mobileDetail(staff.body)).toMatchObject({ conflict: 'STAFF', requiresOtp: false });
-
-    await prisma.user.create({ data: { mobile: OTHER, fullName: 'Blocked', role: UserRole.CUSTOMER, status: 'BLOCKED' } });
-    const blocked = await signup(OTHER, { otp: '123456' });
-    expect(mobileDetail(blocked.body)).toMatchObject({ conflict: 'BLOCKED', requiresOtp: false });
-    expect(await prisma.seller.count()).toBe(0);
-  });
-
-  it('two applications racing for one customer account create exactly one store', async () => {
+  it('two taps / two devices at once create exactly one store', async () => {
     const customer = await loginAs(MOBILE);
-    const code = await sendOtp(MOBILE);
-    const [a, b] = await Promise.all([signup(MOBILE, { otp: code }), signup(MOBILE, { otp: code })]);
-    expect([a.status, b.status].filter((status) => status === 201)).toHaveLength(1);
-    expect(await prisma.user.count({ where: { mobile: MOBILE } })).toBe(1);
+    const body = { ownerFullName: 'Asha', email: 'asha@store.test', password: PASSWORD };
+    const [a, b] = await Promise.all([apply(customer.accessToken, body), apply(customer.accessToken, body)]);
+    expect([a.status, b.status].sort()).toEqual([201, 409]);
     expect(await prisma.sellerStaff.count({ where: { userId: customer.userId } })).toBe(1);
-    expect(await prisma.seller.count()).toBe(1);
+    expect(await prisma.user.count({ where: { mobile: MOBILE } })).toBe(1);
+  });
+});
+
+describe('the public Partner Portal form (signed out)', () => {
+  it("never attaches to an existing customer's account — it sends them to sign in; new numbers sign up as before", async () => {
+    const customer = await loginAs(MOBILE);
+    const res = await api()
+      .post('/api/v1/auth/seller/signup')
+      .send({ fullName: 'Asha', mobile: MOBILE, email: 'asha@store.test', password: PASSWORD, businessName: 'Asha Store', sellerType: SellerType.GROCERY });
+    expect(res.status).toBe(409);
+    expect(expectError(res.body).details?.[0]).toMatchObject({ conflict: 'CUSTOMER', signInToApply: true });
+    expect(expectError(res.body).message).toMatch(/Sign in to the Aadione app/);
+    expect(await prisma.seller.count()).toBe(0);
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: customer.userId } })).role).toBe(UserRole.CUSTOMER);
+
+    // An OTP field is not accepted any more.
+    const withOtp = await api()
+      .post('/api/v1/auth/seller/signup')
+      .send({ fullName: 'Asha', mobile: MOBILE, email: 'asha@store.test', password: PASSWORD, businessName: 'Asha Store', sellerType: SellerType.GROCERY, otp: '123456' });
+    expect(withOtp.status).toBe(400);
+
+    const fresh = await api()
+      .post('/api/v1/auth/seller/signup')
+      .send({ fullName: 'New Owner', mobile: '9876500099', email: 'new@store.test', password: PASSWORD, businessName: 'New Store', sellerType: SellerType.GROCERY });
+    expect(fresh.status).toBe(201);
+    expect(expectSuccess<{ lifecycleStatus: string }>(fresh.body).data.lifecycleStatus).toBe(SellerLifecycleStatus.APPLICATION_PENDING);
   });
 });

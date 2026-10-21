@@ -1,12 +1,14 @@
--- Close the Supabase Data API (PostgREST) on every application table.
+-- Harden Supabase Data API (PostgREST) permissions on every application table.
 --
--- WHY: the V2 database is a Supabase project. Supabase publishes the `public`
--- schema over its REST Data API to the `anon` and `authenticated` roles, and
--- its default privileges GRANT those roles access to every table a migration
--- creates there. No migration ever enabled Row-Level Security or revoked those
--- grants, so anyone holding the project's anon key (a key Supabase treats as
--- public) could read or write users, orders, addresses, payments and seller
--- bank details directly — bypassing every check in the backend.
+-- WHY: the V2 database is a Supabase project, and Supabase publishes the
+-- `public` schema over its REST Data API to the `anon` and `authenticated`
+-- roles. No migration ever enabled Row-Level Security, so table access for
+-- those roles rested on grants alone. The production audit (2026-10-21) found
+-- NO read/write grants for them (no SELECT/INSERT/UPDATE/DELETE on any table)
+-- — only TRUNCATE/REFERENCES/TRIGGER/MAINTAIN from Supabase's default
+-- privileges, which the Data API cannot use. So this is defence-in-depth, not
+-- the closing of a live exposure: with RLS on and the remaining privileges
+-- revoked, a grant added by mistake later still exposes nothing.
 --
 -- Aadione never uses the Data API: the mobile app, web panels and admin only
 -- talk to the backend, which connects as the table OWNER (Prisma). Row-Level

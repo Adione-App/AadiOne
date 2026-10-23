@@ -4,9 +4,18 @@
  * Each tab owns its own stack so back behaviour matches the customer's
  * mental model: backing out of a product opened from Search returns to
  * Search, not to Home.
+ *
+ * Guests browse every catalogue screen freely. Account screens (cart,
+ * orders, addresses, profile, rewards, notifications) are reached through
+ * `requireAuth` — which asks for a login first and then continues to the
+ * screen — and are wrapped in `RequireAccount`, which shows a login prompt
+ * if one is ever on screen without a session (e.g. it expired meanwhile).
  */
 
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
+
+import { requireAuth } from "@/lib/authGate";
+import { RequireAccount } from "@/components/RequireAccount";
 
 import type {
   AccountStackParamList,
@@ -108,7 +117,9 @@ export function HomeStack() {
              */
             onOpenLocation={() => navigation.navigate("SelectLocation")}
             onOpenCart={() =>
-              navigation.getParent()?.navigate("Cart", { screen: "CartHome" })
+              requireAuth("checkout", () =>
+                navigation.getParent()?.navigate("Cart", { screen: "CartHome" }),
+              )
             }
             onOpenProfile={() =>
               navigation.getParent()?.navigate("Account", {
@@ -116,13 +127,17 @@ export function HomeStack() {
               })
             }
             onOpenOrders={() =>
-              navigation.getParent()?.navigate("Account", {
-                screen: "Orders",
-                // Keep Account's home underneath, so "back" lands there.
-                initial: false,
-              })
+              requireAuth("orders", () =>
+                navigation.getParent()?.navigate("Account", {
+                  screen: "Orders",
+                  // Keep Account's home underneath, so "back" lands there.
+                  initial: false,
+                }),
+              )
             }
-            onOpenNotifications={() => navigation.navigate("Notifications")}
+            onOpenNotifications={() =>
+              requireAuth("notifications", () => navigation.navigate("Notifications"))
+            }
             onOpenOrderTracking={(orderId) =>
               navigation.navigate("OrderTracking", { orderId })
             }
@@ -178,12 +193,14 @@ export function HomeStack() {
 
       <CatalogStack.Screen name="Notifications">
         {({ navigation }) => (
-          <NotificationsScreen
-            onBack={() => navigation.goBack()}
-            onOpenOrder={(orderId) =>
-              navigation.navigate("OrderTracking", { orderId })
-            }
-          />
+          <RequireAccount reason="notifications" title="Notifications" onBack={() => navigation.goBack()}>
+            <NotificationsScreen
+              onBack={() => navigation.goBack()}
+              onOpenOrder={(orderId) =>
+                navigation.navigate("OrderTracking", { orderId })
+              }
+            />
+          </RequireAccount>
         )}
       </CatalogStack.Screen>
 
@@ -213,7 +230,11 @@ export function HomeStack() {
         {({ navigation }) => (
           <SelectLocationScreen
             onBack={() => navigation.goBack()}
-            onAddAddress={() => navigation.navigate("AddressForm")}
+            // "Use current location" works for guests; saving an address
+            // is an account's.
+            onAddAddress={() =>
+              requireAuth("addresses", () => navigation.navigate("AddressForm"))
+            }
           />
         )}
       </CatalogStack.Screen>
@@ -224,13 +245,15 @@ export function HomeStack() {
 
       <CatalogStack.Screen name="AddressForm">
         {({ navigation, route }) => (
-          <AddressFormScreen
-            addressId={route.params?.addressId}
-            live={route.params?.live}
-            onBack={() => navigation.goBack()}
-            // Past Select Location, back to where the choice began.
-            onLiveConfirmed={() => navigation.popTo("HomeFeed")}
-          />
+          <RequireAccount reason="addresses" title="Address" onBack={() => navigation.goBack()}>
+            <AddressFormScreen
+              addressId={route.params?.addressId}
+              live={route.params?.live}
+              onBack={() => navigation.goBack()}
+              // Past Select Location, back to where the choice began.
+              onLiveConfirmed={() => navigation.popTo("HomeFeed")}
+            />
+          </RequireAccount>
         )}
       </CatalogStack.Screen>
 
@@ -260,10 +283,12 @@ export function HomeStack() {
 
       <CatalogStack.Screen name="OrderTracking">
         {({ navigation, route }) => (
-          <OrderTrackingScreen
-            orderId={route.params.orderId}
-            onBack={() => navigation.goBack()}
-          />
+          <RequireAccount reason="orders" title="Order details" onBack={() => navigation.goBack()}>
+            <OrderTrackingScreen
+              orderId={route.params.orderId}
+              onBack={() => navigation.goBack()}
+            />
+          </RequireAccount>
         )}
       </CatalogStack.Screen>
 
@@ -414,25 +439,27 @@ export function CartStack() {
 
       <CartNav.Screen name="CartHome">
         {({ navigation }) => (
-          <CartScreen
-            onAddAddress={() => navigation.navigate("AddressForm")}
-            onChangeLocation={() => navigation.navigate("SelectLocation")}
-            // The selected live location still lacks a detail the order needs.
-            onCompleteLiveDetails={(live) => navigation.navigate("AddressForm", { live })}
-            onBrowse={() => navigation.getParent()?.navigate("Home")}
-            onOpenSearch={() =>
-              navigation.getParent()?.navigate("Home", { screen: "SearchHome" })
-            }
-            onPlaced={(order, requiresPayment) =>
-              requiresPayment
-                ? navigation.replace("UpiPayment", {
-                    orderId: order.id,
-                  })
-                : navigation.replace("OrderTracking", {
-                    orderId: order.id,
-                  })
-            }
-          />
+          <RequireAccount reason="checkout" title="Your Cart">
+            <CartScreen
+              onAddAddress={() => navigation.navigate("AddressForm")}
+              onChangeLocation={() => navigation.navigate("SelectLocation")}
+              // The selected live location still lacks a detail the order needs.
+              onCompleteLiveDetails={(live) => navigation.navigate("AddressForm", { live })}
+              onBrowse={() => navigation.getParent()?.navigate("Home")}
+              onOpenSearch={() =>
+                navigation.getParent()?.navigate("Home", { screen: "SearchHome" })
+              }
+              onPlaced={(order, requiresPayment) =>
+                requiresPayment
+                  ? navigation.replace("UpiPayment", {
+                      orderId: order.id,
+                    })
+                  : navigation.replace("OrderTracking", {
+                      orderId: order.id,
+                    })
+              }
+            />
+          </RequireAccount>
         )}
       </CartNav.Screen>
 
@@ -442,27 +469,29 @@ export function CartStack() {
 
       <CartNav.Screen name="UpiPayment">
         {({ navigation, route }) => (
-          <UpiPaymentScreen
-            orderId={route.params.orderId}
-            onPaid={() =>
-              navigation.replace("OrderTracking", {
-                orderId: route.params.orderId,
-              })
-            }
-            // Left the screen without cancelling — a real payment attempt
-            // may still be in flight, so land on Order Tracking where the
-            // customer can check its status later.
-            onCancel={() =>
-              navigation.replace("OrderTracking", {
-                orderId: route.params.orderId,
-              })
-            }
-            // The order was actually cancelled (nothing was ever attempted)
-            // — there's nothing to track, so go back to a normal cart
-            // instead of a tracking page for an order that no longer
-            // matters.
-            onCancelled={() => navigation.replace("CartHome")}
-          />
+          <RequireAccount reason="checkout" title="Payment">
+            <UpiPaymentScreen
+              orderId={route.params.orderId}
+              onPaid={() =>
+                navigation.replace("OrderTracking", {
+                  orderId: route.params.orderId,
+                })
+              }
+              // Left the screen without cancelling — a real payment attempt
+              // may still be in flight, so land on Order Tracking where the
+              // customer can check its status later.
+              onCancel={() =>
+                navigation.replace("OrderTracking", {
+                  orderId: route.params.orderId,
+                })
+              }
+              // The order was actually cancelled (nothing was ever attempted)
+              // — there's nothing to track, so go back to a normal cart
+              // instead of a tracking page for an order that no longer
+              // matters.
+              onCancelled={() => navigation.replace("CartHome")}
+            />
+          </RequireAccount>
         )}
       </CartNav.Screen>
 
@@ -472,10 +501,16 @@ export function CartStack() {
 
       <CartNav.Screen name="OrderTracking">
         {({ navigation, route }) => (
-          <OrderTrackingScreen
-            orderId={route.params.orderId}
+          <RequireAccount
+            reason="orders"
+            title="Order details"
             onBack={() => navigation.getParent()?.navigate("Home")}
-          />
+          >
+            <OrderTrackingScreen
+              orderId={route.params.orderId}
+              onBack={() => navigation.getParent()?.navigate("Home")}
+            />
+          </RequireAccount>
         )}
       </CartNav.Screen>
 
@@ -485,13 +520,15 @@ export function CartStack() {
 
       <CartNav.Screen name="Addresses">
         {({ navigation }) => (
-          <AddressesScreen
-            onBack={() => navigation.goBack()}
-            onAddAddress={() => navigation.navigate("AddressForm")}
-            onEditAddress={(addressId) =>
-              navigation.navigate("AddressForm", { addressId })
-            }
-          />
+          <RequireAccount reason="addresses" title="Addresses" onBack={() => navigation.goBack()}>
+            <AddressesScreen
+              onBack={() => navigation.goBack()}
+              onAddAddress={() => navigation.navigate("AddressForm")}
+              onEditAddress={(addressId) =>
+                navigation.navigate("AddressForm", { addressId })
+              }
+            />
+          </RequireAccount>
         )}
       </CartNav.Screen>
 
@@ -515,13 +552,15 @@ export function CartStack() {
 
       <CartNav.Screen name="AddressForm">
         {({ navigation, route }) => (
-          <AddressFormScreen
-            addressId={route.params?.addressId}
-            live={route.params?.live}
-            onBack={() => navigation.goBack()}
-            // Straight back to checkout with the live location selected.
-            onLiveConfirmed={() => navigation.popTo("CartHome")}
-          />
+          <RequireAccount reason="addresses" title="Address" onBack={() => navigation.goBack()}>
+            <AddressFormScreen
+              addressId={route.params?.addressId}
+              live={route.params?.live}
+              onBack={() => navigation.goBack()}
+              // Straight back to checkout with the live location selected.
+              onLiveConfirmed={() => navigation.popTo("CartHome")}
+            />
+          </RequireAccount>
         )}
       </CartNav.Screen>
     </CartNav.Navigator>
@@ -543,16 +582,17 @@ export function AccountStack() {
         {({ navigation }) => (
           <AccountScreen
             onSelect={(key) => {
+              // Account-only rows ask a guest to log in first, then open.
               if (key === "personal") {
-                navigation.navigate("PersonalInfo");
+                requireAuth("profile", () => navigation.navigate("PersonalInfo"));
               }
 
               if (key === "orders") {
-                navigation.navigate("Orders");
+                requireAuth("orders", () => navigation.navigate("Orders"));
               }
 
               if (key === "addresses") {
-                navigation.navigate("Addresses");
+                requireAuth("addresses", () => navigation.navigate("Addresses"));
               }
 
               if (key === "help") {
@@ -583,7 +623,7 @@ export function AccountStack() {
               }
 
               if (key === "refer") {
-                navigation.navigate("ReferEarn");
+                requireAuth("rewards", () => navigation.navigate("ReferEarn"));
               }
             }}
           />
@@ -596,17 +636,19 @@ export function AccountStack() {
 
       <AccountNav.Screen name="ReferEarn">
         {({ navigation }) => (
-          <RewardsScreen
-            onBack={() => navigation.goBack()}
-            // Pinned to CartHome for the same reason navigationRef.ts's
-            // `navigateToCart` is: a bare `navigate("Cart")` re-focuses
-            // whatever screen an earlier order's `replace()` left on top of
-            // the Cart tab's stack (OrderTracking/UpiPayment), not an
-            // actual cart.
-            onGoToCart={() =>
-              navigation.getParent()?.navigate("Cart", { screen: "CartHome" })
-            }
-          />
+          <RequireAccount reason="rewards" title="Refer & Earn" onBack={() => navigation.goBack()}>
+            <RewardsScreen
+              onBack={() => navigation.goBack()}
+              // Pinned to CartHome for the same reason navigationRef.ts's
+              // `navigateToCart` is: a bare `navigate("Cart")` re-focuses
+              // whatever screen an earlier order's `replace()` left on top of
+              // the Cart tab's stack (OrderTracking/UpiPayment), not an
+              // actual cart.
+              onGoToCart={() =>
+                navigation.getParent()?.navigate("Cart", { screen: "CartHome" })
+              }
+            />
+          </RequireAccount>
         )}
       </AccountNav.Screen>
 
@@ -616,14 +658,16 @@ export function AccountStack() {
 
       <AccountNav.Screen name="Orders">
         {({ navigation }) => (
-          <OrdersListScreen
-            onOpenOrder={(orderId) =>
-              navigation.navigate("OrderTracking", {
-                orderId,
-              })
-            }
-            onBrowse={() => navigation.getParent()?.navigate("Home")}
-          />
+          <RequireAccount reason="orders" title="My Orders" onBack={() => navigation.goBack()}>
+            <OrdersListScreen
+              onOpenOrder={(orderId) =>
+                navigation.navigate("OrderTracking", {
+                  orderId,
+                })
+              }
+              onBrowse={() => navigation.getParent()?.navigate("Home")}
+            />
+          </RequireAccount>
         )}
       </AccountNav.Screen>
 
@@ -633,10 +677,12 @@ export function AccountStack() {
 
       <AccountNav.Screen name="OrderTracking">
         {({ navigation, route }) => (
-          <OrderTrackingScreen
-            orderId={route.params.orderId}
-            onBack={() => navigation.goBack()}
-          />
+          <RequireAccount reason="orders" title="Order details" onBack={() => navigation.goBack()}>
+            <OrderTrackingScreen
+              orderId={route.params.orderId}
+              onBack={() => navigation.goBack()}
+            />
+          </RequireAccount>
         )}
       </AccountNav.Screen>
 
@@ -646,13 +692,15 @@ export function AccountStack() {
 
       <AccountNav.Screen name="Addresses">
         {({ navigation }) => (
-          <AddressesScreen
-            onBack={() => navigation.goBack()}
-            onAddAddress={() => navigation.navigate("AddressForm")}
-            onEditAddress={(addressId) =>
-              navigation.navigate("AddressForm", { addressId })
-            }
-          />
+          <RequireAccount reason="addresses" title="Addresses" onBack={() => navigation.goBack()}>
+            <AddressesScreen
+              onBack={() => navigation.goBack()}
+              onAddAddress={() => navigation.navigate("AddressForm")}
+              onEditAddress={(addressId) =>
+                navigation.navigate("AddressForm", { addressId })
+              }
+            />
+          </RequireAccount>
         )}
       </AccountNav.Screen>
 
@@ -662,10 +710,12 @@ export function AccountStack() {
 
       <AccountNav.Screen name="AddressForm">
         {({ navigation, route }) => (
-          <AddressFormScreen
-            addressId={route.params?.addressId}
-            onBack={() => navigation.goBack()}
-          />
+          <RequireAccount reason="addresses" title="Address" onBack={() => navigation.goBack()}>
+            <AddressFormScreen
+              addressId={route.params?.addressId}
+              onBack={() => navigation.goBack()}
+            />
+          </RequireAccount>
         )}
       </AccountNav.Screen>
 
@@ -675,7 +725,9 @@ export function AccountStack() {
 
       <AccountNav.Screen name="PersonalInfo">
         {({ navigation }) => (
-          <PersonalInfoScreen onBack={() => navigation.goBack()} />
+          <RequireAccount reason="profile" title="Personal Information" onBack={() => navigation.goBack()}>
+            <PersonalInfoScreen onBack={() => navigation.goBack()} />
+          </RequireAccount>
         )}
       </AccountNav.Screen>
 

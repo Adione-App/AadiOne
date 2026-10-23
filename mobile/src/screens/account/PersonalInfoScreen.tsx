@@ -50,8 +50,12 @@ export default function PersonalInfoScreen({ onBack }: { onBack: () => void }) {
   const deleteAccount = useMutation({
     mutationFn: () => api.delete('/auth/me'),
     // The session is dead server-side, so clear locally rather than leaving
-    // the app holding tokens for an account that no longer exists.
-    onSuccess: () => clear(),
+    // the app holding tokens for an account that no longer exists — then
+    // back to Account, which the customer keeps using as a guest.
+    onSuccess: () => {
+      clear();
+      onBack();
+    },
     onError: (err: Error) =>
       setError(err instanceof ApiRequestError ? err.message : 'Could not delete your account.'),
   });

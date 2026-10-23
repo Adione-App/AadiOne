@@ -6,6 +6,7 @@
  * without an order id.
  */
 
+import type { NavigatorScreenParams } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { AddressSuggestion, FixQuality } from "@shared/location";
 
@@ -25,8 +26,18 @@ export interface LiveFixParams {
 /** Edit a saved address, add one, or (with `live`) confirm a live location. */
 type AddressFormParams = { addressId?: string; live?: LiveFixParams } | undefined;
 
+/**
+ * The app's root: the shopping tabs, open to everyone (guest browsing), and
+ * the login flow presented over them as a modal only when an action needs an
+ * account (lib/authGate.ts). Closing the modal returns to the same screen.
+ */
+export type RootStackParamList = {
+  Main: undefined;
+  Login: NavigatorScreenParams<AuthStackParamList> | undefined;
+};
+
+/** The existing mobile-number → OTP screens, inside the Login modal. */
 export type AuthStackParamList = {
-  Splash: undefined;
   MobileEntry: undefined;
   OtpVerify: {
     mobile: string;
@@ -108,6 +119,6 @@ export type AuthScreenProps<T extends keyof AuthStackParamList> =
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace ReactNavigation {
-    interface RootParamList extends AuthStackParamList {}
+    interface RootParamList extends RootStackParamList {}
   }
 }

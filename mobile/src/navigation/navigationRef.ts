@@ -17,8 +17,8 @@ export const navigationRef = createNavigationContainerRef();
 /** Go to the Cart tab from anywhere, without needing a screen's own `navigation` prop. */
 export function navigateToCart(): void {
   if (!navigationRef.isReady()) return;
-  // `RootParamList` (declared in types.ts) only covers the auth stack — the
-  // bottom tab navigator (Home/Categories/Food/Cart/Account) was never
+  // `RootParamList` (declared in types.ts) only covers the root stack (Main /
+  // Login) — the bottom tab navigator (Home/Categories/Food/Cart/Account) was never
   // given its own typed param list (see `MainTabs.tsx`'s untyped
   // `createBottomTabNavigator()`), so every OTHER call site that navigates
   // to a tab by name (e.g. HomeScreen's `navigation.getParent()?.navigate

@@ -11,7 +11,8 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { AuthResponse, LiveLocationInput, ServiceabilityResult, UserDto } from '@shared';
 import { isValidCoordinates } from '@shared/distance';
-import { api, readRefreshToken, saveRefreshToken, setAccessToken } from './api';
+import { api, ApiRequestError, readRefreshToken, saveRefreshToken, setAccessToken } from './api';
+import { refreshFailureKind } from './guestAccess';
 import { connectSocket, disconnectSocket } from './socket';
 import { forgetPushRegistration, registerForPush } from './push';
 
@@ -19,18 +20,37 @@ import { forgetPushRegistration, registerForPush } from './push';
 /* Auth                                                                       */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * `loading` — restoring a saved session at launch (the startup screen).
+ * `authenticated` — a verified customer session.
+ * `anonymous` — a guest: browsing works fully; account actions ask for a
+ *   login through lib/authGate.ts. Signing out, an invalid saved session and
+ *   an expired one all land here — never on a forced login screen.
+ */
 interface AuthState {
   user: UserDto | null;
   status: 'loading' | 'authenticated' | 'anonymous';
+  /** The last session ended on its own (expired / revoked), not by logging out. */
+  sessionExpired: boolean;
   setSession: (result: AuthResponse) => Promise<void>;
   restore: () => Promise<void>;
   logout: () => Promise<void>;
   clear: () => void;
+  /** The server refused the session mid-use: signed out, and says so. */
+  expire: () => void;
 }
 
-export const useAuth = create<AuthState>((set) => ({
+/**
+ * True when the launch-time restore could not reach the server: the saved
+ * session is kept (it may be perfectly valid) and retried when the app
+ * returns to the foreground, instead of being thrown away over a bad network.
+ */
+let restoreInterrupted = false;
+
+export const useAuth = create<AuthState>((set, get) => ({
   user: null,
   status: 'loading',
+  sessionExpired: false,
 
   async setSession(result) {
     setAccessToken(result.tokens.accessToken);
@@ -41,13 +61,20 @@ export const useAuth = create<AuthState>((set) => ({
     // Registers the push token. Without this the server queues every order
     // update correctly and has nowhere to deliver it.
     void registerForPush();
-    set({ user: result.user, status: 'authenticated' });
+    restoreInterrupted = false;
+    set({ user: result.user, status: 'authenticated', sessionExpired: false });
   },
 
-  /** Silent re-login on cold start, so the customer is not asked for an OTP daily. */
+  /**
+   * Silent re-login on cold start, so the customer is not asked for an OTP
+   * daily. No saved session is not an error: the app opens for browsing as a
+   * guest. A session the server refuses is cleared (guest again); one it
+   * could not be asked about (offline, 5xx, rate limit) is kept for a retry.
+   */
   async restore() {
     const refreshToken = await readRefreshToken();
     if (!refreshToken) {
+      restoreInterrupted = false;
       set({ status: 'anonymous' });
       return;
     }
@@ -57,12 +84,20 @@ export const useAuth = create<AuthState>((set) => ({
       await saveRefreshToken(result.tokens.refreshToken);
       connectSocket(result.tokens.accessToken);
       void registerForPush();
-      set({ user: result.user, status: 'authenticated' });
-    } catch {
+      restoreInterrupted = false;
+      set({ user: result.user, status: 'authenticated', sessionExpired: false });
+    } catch (error) {
       setAccessToken(null);
-      await saveRefreshToken(null);
       disconnectSocket();
-      set({ user: null, status: 'anonymous' });
+      const status = error instanceof ApiRequestError ? error.status : 0;
+      if (refreshFailureKind(status) === 'rejected') {
+        restoreInterrupted = false;
+        await saveRefreshToken(null);
+        set({ user: null, status: 'anonymous', sessionExpired: true });
+      } else {
+        restoreInterrupted = true;
+        set({ user: null, status: 'anonymous' });
+      }
     }
   },
 
@@ -78,7 +113,8 @@ export const useAuth = create<AuthState>((set) => ({
     forgetPushRegistration();
     // …nor offer them the previous customer's recipient / address.
     useLocation.getState().forgetPersonalChoice();
-    set({ user: null, status: 'anonymous' });
+    restoreInterrupted = false;
+    set({ user: null, status: 'anonymous', sessionExpired: false });
   },
 
   clear() {
@@ -89,9 +125,28 @@ export const useAuth = create<AuthState>((set) => ({
     // updates to whoever logs in next.
     forgetPushRegistration();
     useLocation.getState().forgetPersonalChoice();
-    set({ user: null, status: 'anonymous' });
+    restoreInterrupted = false;
+    set({ user: null, status: 'anonymous', sessionExpired: false });
+  },
+
+  expire() {
+    get().clear();
+    set({ sessionExpired: true });
   },
 }));
+
+/** Re-tries a launch restore that never reached the server (see `restoreInterrupted`). */
+export function retryInterruptedRestore(): void {
+  if (restoreInterrupted && useAuth.getState().status === 'anonymous') {
+    restoreInterrupted = false;
+    void useAuth.getState().restore();
+  }
+}
+
+/** True for a verified customer session; false for a guest (or while restoring). */
+export function useSignedIn(): boolean {
+  return useAuth((state) => state.status === 'authenticated');
+}
 
 /* -------------------------------------------------------------------------- */
 /* Location & serviceability                                                  */

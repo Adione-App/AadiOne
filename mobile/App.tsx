@@ -1,14 +1,16 @@
 /**
  * App root.
  *
- * Navigation is driven by auth state rather than by imperative navigate calls.
- *
  * Startup flow:
  *
  * 1. Android native splash is kept visually blank.
  * 2. React Native StartupLoading is shown immediately.
  * 3. StartupLoading remains visible for at least 1.5 seconds.
- * 4. After auth restore finishes, the normal app flow continues.
+ * 4. After session restore finishes, the shopping tabs open — signed in or
+ *    not. Browsing never requires an account (App Store guideline 5.1.1(v)):
+ *    a guest gets the same Home, categories, search, products and food menus,
+ *    and the login flow (the "Login" modal below) opens only when they start
+ *    something that belongs to an account — see lib/authGate.ts.
  */
 
 import { useEffect, useState } from "react";
@@ -24,10 +26,13 @@ import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persi
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { onSessionExpired } from "@/lib/api";
-import { useAuth, useLocation } from "@/lib/store";
+import { retryInterruptedRestore, useAuth, useLocation } from "@/lib/store";
+import { loginClosed } from "@/lib/authGate";
+import { isPrivateQueryKey } from "@/lib/guestAccess";
+import { forgetPrivateQueries } from "@/lib/queries";
 import { useRecentSearches } from "@/lib/recentSearches";
 import { useWishlist } from "@/lib/useWishlist";
-import { hydrateCartFromDisk } from "@/lib/useCartActions";
+import { forgetCartAfterSignOut, hydrateCartFromDisk } from "@/lib/useCartActions";
 import { selectUpdateRequired, useAppUpdate } from "@/lib/appUpdate";
 import { AppUpdatePrompt } from "@/components/AppUpdatePrompt";
 import UpdateRequiredScreen from "@/screens/update/UpdateRequiredScreen";
@@ -37,17 +42,21 @@ import { FlyToCartOverlay } from "@/lib/flyToCart";
 import { VariantSheetHost } from "@/components/VariantSheet";
 import { CartNoticeToast } from "@/components/CartNoticeToast";
 
-import SplashScreen from "@/screens/auth/SplashScreen";
 import MobileEntryScreen from "@/screens/auth/MobileEntryScreen";
 import OtpVerifyScreen from "@/screens/auth/OtpVerifyScreen";
 
 import { MainTabs } from "@/navigation/MainTabs";
 import { navigationRef } from "@/navigation/navigationRef";
-import type { AuthStackParamList } from "@/navigation/types";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
+import { installCrashHandlers } from "@/lib/crashReporter";
+import type { AuthStackParamList, RootStackParamList } from "@/navigation/types";
 
 /* -------------------------------------------------------------------------- */
 /* Keep native splash visible until React Native is ready.                    */
 /* -------------------------------------------------------------------------- */
+
+// Crash reports (lib/crashReporter.ts): before anything else can throw.
+installCrashHandlers();
 
 void ExpoSplashScreen.preventAutoHideAsync().catch(() => {
   // Native splash may already be hidden. Safe to ignore.
@@ -55,7 +64,8 @@ void ExpoSplashScreen.preventAutoHideAsync().catch(() => {
 
 /* -------------------------------------------------------------------------- */
 
-const Stack = createNativeStackNavigator<AuthStackParamList>();
+const Root = createNativeStackNavigator<RootStackParamList>();
+const LoginNav = createNativeStackNavigator<AuthStackParamList>();
 
 /* -------------------------------------------------------------------------- */
 
@@ -88,41 +98,24 @@ const asyncStoragePersister = createAsyncStoragePersister({
 });
 
 /* -------------------------------------------------------------------------- */
-/* Auth Stack                                                                 */
-/* -------------------------------------------------------------------------- */
-
-function AuthStack() {
-  return (
-    <Stack.Navigator screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="Splash">
-        {({ navigation }) => (
-          <SplashScreen
-            onGetStarted={() => navigation.navigate("MobileEntry")}
-          />
-        )}
-      </Stack.Screen>
-
-      <Stack.Screen name="MobileEntry" component={MobileEntryScreen} />
-
-      <Stack.Screen name="OtpVerify" component={OtpVerifyScreen} />
-    </Stack.Navigator>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/* Main Flow                                                                  */
+/* Login flow                                                                 */
 /* -------------------------------------------------------------------------- */
 
 /**
- * A signed-in customer always lands on Home. The location is never asked for
- * up front (no automatic GPS fix or permission prompt at launch): a returning
- * customer's saved choice is restored by `hydrate()` above, and one without a
- * location chooses it when they want to, from Home's location header / prompt
- * → SelectLocation (detect current location, or pick / add an address).
- * Ordering still needs a chosen address that the server confirms it delivers to.
+ * The existing mobile-number → OTP screens, presented as one modal over the
+ * shopping tabs (the "Login" root route) — opened only by lib/authGate.ts.
+ * However it goes away (login, back, swipe down, "Not now"), unmounting here
+ * tells the gate; anything still waiting for a login is then dropped.
  */
-function MainFlow() {
-  return <MainTabs />;
+function LoginFlow() {
+  useEffect(() => () => loginClosed(), []);
+
+  return (
+    <LoginNav.Navigator screenOptions={{ headerShown: false }}>
+      <LoginNav.Screen name="MobileEntry" component={MobileEntryScreen} />
+      <LoginNav.Screen name="OtpVerify" component={OtpVerifyScreen} />
+    </LoginNav.Navigator>
+  );
 }
 
 /**
@@ -132,9 +125,16 @@ function MainFlow() {
  * which is why this isn't just inlined into `App`. While it's true, queries
  * are held back from fetching so a real network response can't race a
  * still-loading disk read and overwrite it — so this is also the one moment
- * `MainFlow`/`HomeScreen` must not be allowed to mount yet, or a returning
+ * `MainTabs`/`HomeScreen` must not be allowed to mount yet, or a returning
  * customer would see a flash of "could not load" before the restored Home
  * feed appears a beat later.
+ *
+ * After startup, signed in or not, the root is always the same tree: the
+ * shopping tabs, with the login modal above them when needed. Logging in or
+ * out never swaps the tree, so the customer stays on the screen they were on.
+ * The location is never asked for up front: it is chosen from Home's location
+ * header → SelectLocation; ordering still needs a chosen address the server
+ * confirms it delivers to.
  */
 function RootNavigator({
   status,
@@ -158,10 +158,17 @@ function RootNavigator({
     <NavigationContainer ref={navigationRef}>
       {status === "loading" || !startupReady || isRestoring ? (
         <StartupLoading />
-      ) : status === "authenticated" ? (
-        <MainFlow />
       ) : (
-        <AuthStack />
+        <Root.Navigator screenOptions={{ headerShown: false }}>
+          <Root.Screen name="Main" component={MainTabs} />
+          <Root.Screen
+            name="Login"
+            component={LoginFlow}
+            // iOS: a card sheet, swipe down to close; Android: slides up,
+            // back closes it. Either way the screen beneath stays as it was.
+            options={{ presentation: "modal" }}
+          />
+        </Root.Navigator>
       )}
     </NavigationContainer>
   );
@@ -174,7 +181,7 @@ function RootNavigator({
 export default function App() {
   const status = useAuth((state) => state.status);
   const restore = useAuth((state) => state.restore);
-  const clear = useAuth((state) => state.clear);
+  const expire = useAuth((state) => state.expire);
 
   /*
    * This state controls the minimum time for the branded startup screen.
@@ -185,9 +192,27 @@ export default function App() {
    *      ↓
    * AadiOne StartupLoading
    *      ↓ at least 1.5 sec
-   * Auth / Get Started screen
+   * Shopping tabs (Home) — signed in or browsing as a guest
    */
   const [startupReady, setStartupReady] = useState(false);
+
+  /* ------------------------------------------------------------------------ */
+  /* Signed out: forget the previous customer's data                          */
+  /* ------------------------------------------------------------------------ */
+
+  // Logout, an expired session, or a launch without one: the cart, orders,
+  // addresses and rewards of whoever was signed in leave memory and disk, so
+  // a guest (or the next account on a shared phone) never sees them.
+  useEffect(
+    () =>
+      useAuth.subscribe((state, previous) => {
+        if (state.status === "anonymous" && previous.status !== "anonymous") {
+          forgetPrivateQueries(queryClient);
+          forgetCartAfterSignOut();
+        }
+      }),
+    [],
+  );
 
   /* ------------------------------------------------------------------------ */
   /* Restore authentication session                                           */
@@ -196,7 +221,8 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
 
-    onSessionExpired(clear);
+    // A session the server refuses mid-use: signed out, browsing continues.
+    onSessionExpired(expire);
 
     const startTime = Date.now();
 
@@ -224,6 +250,9 @@ export default function App() {
           // The last update answer for this installed version (offline launch).
           useAppUpdate.getState().hydrate(),
         ]);
+        // The cart snapshot is read from disk alongside the restore, so it
+        // can land after the status already turned guest: drop it again.
+        if (useAuth.getState().status !== "authenticated") forgetCartAfterSignOut();
         // Ask the server about this installed version before the app shows,
         // so a required update appears first — but never hold a slow or
         // offline launch for long: the server enforces it on its own too.
@@ -262,7 +291,7 @@ export default function App() {
     return () => {
       mounted = false;
     };
-  }, [restore, clear]);
+  }, [restore, expire]);
 
   /* ------------------------------------------------------------------------ */
   /* Re-check the update policy whenever the app comes back to the front      */
@@ -271,7 +300,10 @@ export default function App() {
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
-      if (next === "active") void useAppUpdate.getState().refresh();
+      if (next !== "active") return;
+      void useAppUpdate.getState().refresh();
+      // A saved session the launch could not verify (offline) gets another go.
+      retryInterruptedRestore();
     });
     return () => subscription.remove();
   }, []);
@@ -296,74 +328,72 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <PersistQueryClientProvider
-        client={queryClient}
-        persistOptions={{
-          persister: asyncStoragePersister,
-          // A stale week-old cache still beats a blank screen on a bad
-          // connection (see requirement on offline usability) — every
-          // restored query re-validates itself the moment it's observed
-          // again, per its own staleTime, exactly as if it had never left
-          // memory.
-          maxAge: 7 * 24 * 60 * 60_000,
-          // Bump this whenever a persisted DTO shape changes incompatibly
-          // (e.g. HomeFeedDto gaining a required `categoryRails` field), or
-          // — as here — whenever what's ALLOWED to be persisted changes.
-          // `shouldDehydrateQuery` below only takes effect on the next save;
-          // without bumping this, a device that already has an old snapshot
-          // on disk (written before cart/orders were excluded) would still
-          // restore that stale cart/order data one more time before its next
-          // save overwrites it clean. Bumping discards every old snapshot
-          // outright, so the exclusion is in effect from the very next
-          // launch instead of one session later.
-          buster: "v3",
-          // Cart and order data are excluded from disk persistence entirely.
-          // Unlike Home/categories/products — read-heavy, low-stakes, fine to
-          // paint stale-then-refresh — a week-old cart or order snapshot is
-          // an ACTIVE mistake, not just a stale paint: it directly caused a
-          // cancelled order's items to reappear as if they were still in the
-          // cart on a later app open, and a cancelled order to still read
-          // "Ongoing" until something happened to trigger a refetch. These
-          // queries hit the network fresh every time they're first observed
-          // in a session (see `refetchOnMount: 'always'` on them in
-          // queries.ts) — persistence would only reintroduce that staleness
-          // window, not help it. Notifications are excluded for the same
-          // reason, and because they are one customer's private messages.
-          dehydrateOptions: {
-            shouldDehydrateQuery: (query) => {
-              const rootKey = query.queryKey[0];
-              return (
-                rootKey !== "cart" &&
-                rootKey !== "orders" &&
-                rootKey !== "order" &&
-                rootKey !== "notifications"
-              );
+      <AppErrorBoundary>
+        <PersistQueryClientProvider
+          client={queryClient}
+          persistOptions={{
+            persister: asyncStoragePersister,
+            // A stale week-old cache still beats a blank screen on a bad
+            // connection (see requirement on offline usability) — every
+            // restored query re-validates itself the moment it's observed
+            // again, per its own staleTime, exactly as if it had never left
+            // memory.
+            maxAge: 7 * 24 * 60 * 60_000,
+            // Bump this whenever a persisted DTO shape changes incompatibly
+            // (e.g. HomeFeedDto gaining a required `categoryRails` field), or
+            // — as here — whenever what's ALLOWED to be persisted changes.
+            // `shouldDehydrateQuery` below only takes effect on the next save;
+            // without bumping this, a device that already has an old snapshot
+            // on disk (written before cart/orders were excluded) would still
+            // restore that stale cart/order data one more time before its next
+            // save overwrites it clean. Bumping discards every old snapshot
+            // outright, so the exclusion is in effect from the very next
+            // launch instead of one session later.
+            // v4: addresses, rewards, previous orders, checkout quotes and
+            // payment intents stopped being persisted (customer data does not
+            // belong in plain-text AsyncStorage) — drop old snapshots holding them.
+            buster: "v4",
+            // Cart and order data are excluded from disk persistence entirely.
+            // Unlike Home/categories/products — read-heavy, low-stakes, fine to
+            // paint stale-then-refresh — a week-old cart or order snapshot is
+            // an ACTIVE mistake, not just a stale paint: it directly caused a
+            // cancelled order's items to reappear as if they were still in the
+            // cart on a later app open, and a cancelled order to still read
+            // "Ongoing" until something happened to trigger a refetch. These
+            // queries hit the network fresh every time they're first observed
+            // in a session (see `refetchOnMount: 'always'` on them in
+            // queries.ts) — persistence would only reintroduce that staleness
+            // window, not help it. Notifications are excluded for the same
+            // reason, and because they are one customer's private messages —
+            // as is everything else in PRIVATE_QUERY_ROOTS (lib/guestAccess.ts).
+            dehydrateOptions: {
+              shouldDehydrateQuery: (query) => !isPrivateQueryKey(query.queryKey),
             },
-          },
-        }}
-      >
-        <StatusBar style="dark" />
-
-        <RootNavigator status={status} startupReady={startupReady} />
-
-        {/* Nothing of the app is layered over a required update. */}
-        {updateRequired ? null : (
-          <>
-            {/* Mounted last so it paints above the tab bar/screens — see
-                flyToCart.tsx for why this needs to be a root-level overlay. */}
-            <FlyToCartOverlay />
-
-            {/* The variant sheet any product card opens (lib/variantSheet.ts). */}
-            <VariantSheetHost />
-
-            {/* Cart popups, e.g. a quantity limit reached (lib/cartNotice.ts). */}
-            <CartNoticeToast />
-
-            {/* An optional update: one dismissible prompt (lib/appUpdate.ts). */}
-            {startupReady ? <AppUpdatePrompt /> : null}
-          </>
-        )}
-      </PersistQueryClientProvider>
+          }}
+        >
+          <StatusBar style="dark" />
+  
+          <RootNavigator status={status} startupReady={startupReady} />
+  
+          {/* Nothing of the app is layered over a required update. */}
+          {updateRequired ? null : (
+            <>
+              {/* Mounted last so it paints above the tab bar/screens — see
+                  flyToCart.tsx for why this needs to be a root-level overlay. */}
+              <FlyToCartOverlay />
+  
+              {/* The variant sheet any product card opens (lib/variantSheet.ts). */}
+              <VariantSheetHost />
+  
+              {/* Cart popups, e.g. a quantity limit reached (lib/cartNotice.ts). */}
+              <CartNoticeToast />
+  
+              {/* An optional update: one dismissible prompt (lib/appUpdate.ts). */}
+              {startupReady ? <AppUpdatePrompt /> : null}
+            </>
+          )}
+        </PersistQueryClientProvider>
+      </AppErrorBoundary>
     </SafeAreaProvider>
   );
 }

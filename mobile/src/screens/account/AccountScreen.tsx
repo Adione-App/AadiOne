@@ -25,9 +25,10 @@ import {
 } from 'lucide-react-native';
 import { formatIndianMobile } from '@shared/phone';
 import { colors, radius, spacing } from '@shared/theme';
+import { openLogin } from '@/lib/authGate';
 import { useAuth } from '@/lib/store';
 import { useTabBarClearance } from '@/lib/tabBarVisibility';
-import { AppText, NoticeStrip, Screen } from '@/components/ui';
+import { AppText, Button, NoticeStrip, Screen } from '@/components/ui';
 
 interface MenuItem {
   key: string;
@@ -104,27 +105,46 @@ export default function AccountScreen({ onSelect }: { onSelect: (key: string) =>
             PROFILE CARD
         ========================================================== */}
 
-        <View style={styles.profileCard}>
-          <View style={styles.avatar}>
-            <UserRound size={30} color={colors.onPrimary} strokeWidth={2} />
-          </View>
+        {/* A guest: everything below that is not account-only (wishlist,
+            help, about, policies) works as it is; the rest asks for a login
+            when tapped (stacks.tsx). */}
+        {!user ? (
+          <View style={styles.profileCard}>
+            <View style={styles.avatar}>
+              <UserRound size={30} color={colors.onPrimary} strokeWidth={2} />
+            </View>
 
-          <View style={{ marginLeft: spacing.base, flex: 1 }}>
-            <AppText variant="h3">{user?.fullName ?? 'AdiOne customer'}</AppText>
-            <AppText variant="body" color={colors.textSecondary} style={{ marginTop: 2 }}>
-              {user ? formatIndianMobile(user.mobile) : ''}
-            </AppText>
-
-            {user?.mobileVerified && (
-              <View style={styles.verifiedBadge}>
-                <CheckCircle2 size={13} color={colors.primary} strokeWidth={2.4} />
-                <AppText variant="caption" color={colors.primary} style={styles.verifiedText}>
-                  Verified
-                </AppText>
-              </View>
-            )}
+            <View style={{ marginLeft: spacing.base, flex: 1 }}>
+              <AppText variant="h3">Welcome to AadiOne</AppText>
+              <AppText variant="caption" color={colors.textSecondary} style={{ marginTop: 2 }}>
+                Log in to place orders, track them and save your addresses.
+              </AppText>
+              <Button label="Log in" onPress={() => openLogin('account')} style={styles.loginButton} />
+            </View>
           </View>
-        </View>
+        ) : (
+          <View style={styles.profileCard}>
+            <View style={styles.avatar}>
+              <UserRound size={30} color={colors.onPrimary} strokeWidth={2} />
+            </View>
+
+            <View style={{ marginLeft: spacing.base, flex: 1 }}>
+              <AppText variant="h3">{user.fullName ?? 'AdiOne customer'}</AppText>
+              <AppText variant="body" color={colors.textSecondary} style={{ marginTop: 2 }}>
+                {formatIndianMobile(user.mobile)}
+              </AppText>
+
+              {user.mobileVerified && (
+                <View style={styles.verifiedBadge}>
+                  <CheckCircle2 size={13} color={colors.primary} strokeWidth={2.4} />
+                  <AppText variant="caption" color={colors.primary} style={styles.verifiedText}>
+                    Verified
+                  </AppText>
+                </View>
+              )}
+            </View>
+          </View>
+        )}
 
         {user && !user.mobileVerified && (
           <View style={{ marginTop: spacing.base }}>
@@ -196,12 +216,14 @@ export default function AccountScreen({ onSelect }: { onSelect: (key: string) =>
             LOGOUT
         ========================================================== */}
 
-        <Pressable style={styles.logoutButton} onPress={() => void logout()}>
-          <LogOut size={18} color={colors.danger} strokeWidth={2} />
-          <AppText variant="bodyStrong" color={colors.danger} style={{ marginLeft: spacing.sm }}>
-            Logout
-          </AppText>
-        </Pressable>
+        {user ? (
+          <Pressable style={styles.logoutButton} onPress={() => void logout()}>
+            <LogOut size={18} color={colors.danger} strokeWidth={2} />
+            <AppText variant="bodyStrong" color={colors.danger} style={{ marginLeft: spacing.sm }}>
+              Logout
+            </AppText>
+          </Pressable>
+        ) : null}
       </ScrollView>
     </Screen>
   );
@@ -238,6 +260,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   verifiedText: { fontWeight: '700' },
+  loginButton: {
+    alignSelf: 'flex-start',
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.xl,
+  },
 
   quickRow: {
     flexDirection: 'row',

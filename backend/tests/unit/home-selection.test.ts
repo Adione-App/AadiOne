@@ -1,10 +1,17 @@
 /**
  * Home feed selection rules (src/modules/catalog/home-selection.ts): admin
- * category order and subcategory-balanced shelves.
+ * category order, subcategory-balanced shelves, rail de-duplication and the
+ * paced (bounded-concurrency) shelf queries.
  */
 
 import { describe, expect, it } from 'vitest';
-import { balanceBySubcategory, orderByPreference, subcategoryOf } from '../../src/modules/catalog/home-selection';
+import {
+  balanceBySubcategory,
+  mapWithConcurrency,
+  orderByPreference,
+  pickRailProducts,
+  subcategoryOf,
+} from '../../src/modules/catalog/home-selection';
 
 const row = (id: string, path: string) => ({ id, path });
 
@@ -77,5 +84,72 @@ describe('balanceBySubcategory', () => {
   it('ignores a product listed twice and is the same on every call', () => {
     const twice = [...candidates, row('r1', 'grocery/rice')];
     expect(balanceBySubcategory(twice, 'grocery', 10)).toEqual(balanceBySubcategory(candidates, 'grocery', 10));
+  });
+});
+
+describe('pickRailProducts', () => {
+  it('fills rails in order; each skips what an earlier rail already used', () => {
+    const rails = pickRailProducts(
+      [
+        ['a', 'b', 'c', 'd', 'e', 'f'],
+        ['a', 'b', 'g', 'h', 'i', 'j', 'k'],
+      ],
+      4,
+      2,
+    );
+    expect(rails).toEqual([
+      ['a', 'b', 'c', 'd'],
+      ['g', 'h', 'i', 'j'],
+    ]);
+  });
+
+  it('a rail left with fewer than the minimum fresh products shows its own top products, repeats included', () => {
+    const rails = pickRailProducts(
+      [
+        ['a', 'b', 'c'],
+        ['a', 'b', 'c', 'd'], // only "d" is fresh: fewer than 2
+        ['e', 'd', 'f'],
+      ],
+      3,
+      2,
+    );
+    expect(rails[1]).toEqual(['a', 'b', 'c']);
+    // Everything a rail shows counts as used afterwards — including its repeats.
+    expect(rails[2]).toEqual(['e', 'd', 'f']); // "d" was never shown, so it is still fresh
+  });
+
+  it('empty candidate lists give empty rails', () => {
+    expect(pickRailProducts([[], []], 10, 4)).toEqual([[], []]);
+    expect(pickRailProducts([], 10, 4)).toEqual([]);
+  });
+});
+
+describe('mapWithConcurrency', () => {
+  it('keeps the input order and never runs more than the limit at once', async () => {
+    let running = 0;
+    let peak = 0;
+    const out = await mapWithConcurrency([30, 5, 20, 1, 15, 2, 8], 3, async (ms, index) => {
+      running += 1;
+      peak = Math.max(peak, running);
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      running -= 1;
+      return `${index}:${ms}`;
+    });
+    expect(out).toEqual(['0:30', '1:5', '2:20', '3:1', '4:15', '5:2', '6:8']);
+    expect(peak).toBe(3);
+  });
+
+  it('handles an empty list and a limit larger than the list', async () => {
+    expect(await mapWithConcurrency([], 4, async () => 1)).toEqual([]);
+    expect(await mapWithConcurrency([1, 2], 10, async (n) => n * 2)).toEqual([2, 4]);
+  });
+
+  it('a failing item rejects the whole call (no silently missing shelf)', async () => {
+    await expect(
+      mapWithConcurrency([1, 2, 3], 2, async (n) => {
+        if (n === 2) throw new Error('shelf query failed');
+        return n;
+      }),
+    ).rejects.toThrow('shelf query failed');
   });
 });

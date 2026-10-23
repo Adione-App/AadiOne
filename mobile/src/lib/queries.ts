@@ -33,7 +33,8 @@ import type {
   StoreSummaryDto,
 } from "@shared";
 import { api, ApiRequestError } from "./api";
-import { useAuth } from "./store";
+import { useAuth, useSignedIn } from "./store";
+import { isPrivateQueryKey } from "./guestAccess";
 import {
   NOTIFICATION_PAGE_SIZE,
   parseNotificationPage,
@@ -295,8 +296,11 @@ export function useOffers() {
  * without the endpoint (404) simply means no section — never an error state.
  */
 export function usePreviouslyOrdered() {
+  // A guest has no order history: no request, no section.
+  const signedIn = useSignedIn();
   return useQuery({
     queryKey: keys.previouslyOrdered,
+    enabled: signedIn,
     queryFn: async () => {
       try {
         return await api.get<ProductSummaryDto[]>("/products/previously-ordered");
@@ -477,10 +481,15 @@ function reconcileCart(queryClient: QueryClient): void {
 export function useCart(distanceKm: number | null = null) {
   const queryClient = useQueryClient();
   const queryKey = [...keys.cart, distanceKm];
+  // The cart belongs to an account (the server has no guest cart): a guest
+  // browses with no cart request at all, and the first one goes out the
+  // moment they log in.
+  const signedIn = useSignedIn();
 
   return useQuery({
     queryKey,
     queryFn: () => fetchCartGuarded(queryClient, queryKey, distanceKm),
+    enabled: signedIn,
     // The cart must never sit on a stale answer just because it was already
     // in memory — every screen that shows it refetches fresh the instant
     // it's observed, regardless of the app's default 30s staleTime. Without
@@ -725,9 +734,11 @@ export function useCartMutations() {
 /* -------------------------------------------------------------------------- */
 
 export function useOrders() {
+  const signedIn = useSignedIn();
   return useQuery({
     queryKey: keys.orders,
     queryFn: () => api.get<CursorPage<OrderSummaryDto>>("/orders?limit=20"),
+    enabled: signedIn,
     // A cancelled/delivered order must show its real status the moment this
     // list is opened, not whatever it was up to 30s ago — see useCart's same
     // reasoning above.
@@ -736,9 +747,11 @@ export function useOrders() {
 }
 
 export function useOrder(id: string, live: boolean) {
+  const signedIn = useSignedIn();
   return useQuery({
     queryKey: keys.order(id),
     queryFn: () => api.get<OrderDetailDto>(`/orders/${id}`),
+    enabled: signedIn,
     // Polling backs up the socket. A tracking screen that silently stops
     // updating is worse than one that costs a request every 30 seconds.
     refetchInterval: live ? 30_000 : false,
@@ -756,17 +769,31 @@ export function useOrder(id: string, live: boolean) {
 /* -------------------------------------------------------------------------- */
 
 export function useReferralSummary() {
+  const signedIn = useSignedIn();
   return useQuery({
     queryKey: keys.referralSummary,
     queryFn: () => api.get<ReferralSummaryDto>("/referrals/me"),
+    enabled: signedIn,
   });
 }
 
 export function useMyCoupons() {
+  const signedIn = useSignedIn();
   return useQuery({
     queryKey: keys.myCoupons,
     queryFn: () => api.get<RewardCouponDto[]>("/rewards/coupons"),
+    enabled: signedIn,
   });
+}
+
+/**
+ * On becoming signed out (logout, an expired session, a guest launch): drop
+ * every customer-owned query from memory, so a guest — or the next account on
+ * a shared phone — never sees the previous customer's cart, orders, addresses
+ * or rewards. A disabled query would otherwise keep serving its cached data.
+ */
+export function forgetPrivateQueries(queryClient: QueryClient): void {
+  queryClient.removeQueries({ predicate: (query) => isPrivateQueryKey(query.queryKey) });
 }
 
 export function useApplyReferralCode() {

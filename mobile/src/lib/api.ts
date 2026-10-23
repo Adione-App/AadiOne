@@ -18,6 +18,7 @@ import Constants from "expo-constants";
 import * as SecureStore from "expo-secure-store";
 import type { ApiError, ApiErrorDetail, ApiResponse, AppUpdateCheckDto, ErrorCode } from "@shared";
 import { appVersionHeaders } from "./appVersion";
+import { isSessionLoss, refreshFailureKind } from "./guestAccess";
 
 const BASE_URL =
   process.env["EXPO_PUBLIC_API_URL"] ??
@@ -26,6 +27,16 @@ const BASE_URL =
   // Last resort (no env, no app.json extra): the V2 dev backend from an
   // Android emulator. V2 runs on :4100; :4000 was V1.
   "http://10.0.2.2:4100/api/v1";
+
+/** The API base URL (used by the crash reporter, which must not go through `request`). */
+export const API_BASE_URL = BASE_URL;
+
+let lastRequestId: string | null = null;
+
+/** X-Request-Id of the most recent API response — ties a crash report to the server log. */
+export function lastApiRequestId(): string | null {
+  return lastRequestId;
+}
 
 /**
  * Converts a backend-relative image path into an absolute URL.
@@ -222,15 +233,22 @@ export function onAppUpdateRequired(handler: (update: AppUpdateCheckDto | null) 
   onUpdateRequired = handler;
 }
 
-let refreshInFlight: Promise<boolean> | null = null;
+/**
+ * `rejected` — the server refused the session: it is over.
+ * `unavailable` — the server could not be asked (offline, timeout, 5xx, 429):
+ * the session may be fine, so it is kept and this request just fails.
+ */
+type RefreshOutcome = "refreshed" | "rejected" | "unavailable";
 
-async function refreshSession(): Promise<boolean> {
-  refreshInFlight ??= (async () => {
+let refreshInFlight: Promise<RefreshOutcome> | null = null;
+
+async function refreshSession(): Promise<RefreshOutcome> {
+  refreshInFlight ??= (async (): Promise<RefreshOutcome> => {
     try {
       const refreshToken = await readRefreshToken();
 
       if (!refreshToken) {
-        return false;
+        return "rejected";
       }
 
       const response = await fetch(`${BASE_URL}/auth/refresh`, {
@@ -245,7 +263,7 @@ async function refreshSession(): Promise<boolean> {
       });
 
       if (!response.ok) {
-        return false;
+        return refreshFailureKind(response.status);
       }
 
       const body = (await response.json()) as ApiResponse<{
@@ -256,16 +274,16 @@ async function refreshSession(): Promise<boolean> {
       }>;
 
       if (!body.success) {
-        return false;
+        return "rejected";
       }
 
       accessToken = body.data.tokens.accessToken;
 
       await saveRefreshToken(body.data.tokens.refreshToken);
 
-      return true;
+      return "refreshed";
     } catch {
-      return false;
+      return "unavailable";
     } finally {
       refreshInFlight = null;
     }
@@ -329,6 +347,8 @@ async function performRequest<T>(
     ...appVersionHeaders(),
   };
 
+  // A guest's requests carry no token — the catalogue is public.
+  const sentToken = accessToken !== null;
   if (accessToken) {
     headers["Authorization"] = `Bearer ${accessToken}`;
   }
@@ -348,6 +368,8 @@ async function performRequest<T>(
         : {}),
       signal: controller.signal,
     });
+    // Diagnostics only: must never fail the request itself.
+    lastRequestId = response.headers?.get?.("x-request-id") ?? lastRequestId;
 
     if (response.status === 204) {
       return undefined as T;
@@ -357,19 +379,25 @@ async function performRequest<T>(
       .json()
       .catch(() => null)) as ApiResponse<T> | null;
 
-    if (response.status === 401 && !options.retried) {
-      if (await refreshSession()) {
+    // Only a request that carried a session can lose it: a guest's 401 is
+    // just this request's answer, and signs nobody out.
+    if (isSessionLoss(response.status, sentToken) && !options.retried) {
+      const outcome = await refreshSession();
+
+      if (outcome === "refreshed") {
         return performRequest<T>(path, {
           ...options,
           retried: true,
         });
       }
 
-      accessToken = null;
+      if (outcome === "rejected") {
+        accessToken = null;
 
-      await saveRefreshToken(null);
+        await saveRefreshToken(null);
 
-      onSessionLost?.();
+        onSessionLost?.();
+      }
     }
 
     if (!body || body.success === false) {

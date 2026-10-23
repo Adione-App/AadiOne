@@ -7,9 +7,9 @@
  * client flag, and nothing here can be reached again from the profile).
  *
  * A plain presentational step, not a navigator screen: OtpVerifyScreen holds
- * the just-fetched `AuthResponse` locally and defers `setSession()` (which is
- * what flips the app into MainTabs) until `onDone` fires here, whether that's
- * a successful code apply or Skip.
+ * the just-fetched `AuthResponse` locally and defers `setSession()` (and
+ * closing the login modal) until `onDone` fires here, whether that's a
+ * successful code apply or Skip.
  */
 
 import { useState } from "react";

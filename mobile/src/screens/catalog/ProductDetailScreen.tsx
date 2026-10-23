@@ -19,6 +19,7 @@ import type { ProductSummaryDto, VariantDto } from "@shared";
 import { formatPaise } from "@shared/money";
 import { colors, layout, radius, spacing } from "@shared/theme";
 import { api, resolveImageUrl } from "@/lib/api";
+import { requireAuth } from "@/lib/authGate";
 import { useProduct } from "@/lib/queries";
 import { snapshotFromProduct, useCartActions } from "@/lib/useCartActions";
 import { flyToCart } from "@/lib/flyToCart";
@@ -111,12 +112,18 @@ export default function ProductDetailScreen({
   // `useMiniCartScreen`'s "productDetail" case).
   const flightImageUrl = resolveImageUrl(variant?.imageUrl ?? detail.imageUrl);
 
-  async function requestNotify(): Promise<void> {
+  function requestNotify(): void {
     if (!variant) return;
-    // Best-effort: failing to register a back-in-stock alert is not worth an
-    // error screen, and the optimistic state is honest either way.
-    await api.post(`/products/${variant.id}/notify-me`).catch(() => undefined);
-    setNotifyRequested(true);
+    const variantId = variant.id;
+    // The alert goes to an account: a guest logs in first, then it is set.
+    requireAuth("notify-me", () => {
+      // Best-effort: failing to register a back-in-stock alert is not worth an
+      // error screen, and the optimistic state is honest either way.
+      void api
+        .post(`/products/${variantId}/notify-me`)
+        .catch(() => undefined)
+        .then(() => setNotifyRequested(true));
+    });
   }
 
   return (
@@ -252,7 +259,7 @@ export default function ProductDetailScreen({
                 label={notifyRequested ? "We’ll notify you" : "Notify me"}
                 variant="secondary"
                 disabled={notifyRequested}
-                onPress={() => void requestNotify()}
+                onPress={requestNotify}
                 style={{ marginTop: spacing.base }}
               />
             </Card>

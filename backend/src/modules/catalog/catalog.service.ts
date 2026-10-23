@@ -43,7 +43,7 @@ import { ConfigKey, optionGroupsOf, optionValuesOf } from "../../shared";
 import * as repository from "./catalog.repository";
 import { MARKETPLACE_SELLER_WHERE, type HydratedProduct, type ProductSort } from "./catalog.repository";
 import { HOME_TOP_PLACEMENT, listActiveBanners, listActiveBannersByPlacement } from "../banners/banner.service";
-import { balanceBySubcategory, orderByPreference } from "./home-selection";
+import { balanceBySubcategory, mapWithConcurrency, orderByPreference, pickRailProducts } from "./home-selection";
 import { hasStockToSell, sellableQty } from "../inventory/stock-rules";
 
 /* -------------------------------------------------------------------------- */
@@ -659,20 +659,56 @@ const HOME_SECTION_PLACEMENTS: readonly HomeSectionBannerPlacement[] = [
   HOME_BANNER_PLACEMENTS.BOTTOM,
 ];
 
+/** Category shelves whose candidate queries may run at once (the production pool has 5 connections). */
+const SHELF_QUERY_CONCURRENCY = 4;
+/** Products per hydration query, and how many such queries run at once. */
+const HOME_HYDRATE_BATCH = 100;
+const HOME_HYDRATE_CONCURRENCY = 2;
+
+/**
+ * Every product a Home rail or shelf shows, hydrated once (in batches) instead
+ * of once per rail. Each hydration is several statements — one per related
+ * table — so this is where most of Home's database round trips used to go.
+ */
+async function hydrateHomeProducts(ids: readonly string[]): Promise<Map<string, HydratedProduct>> {
+  const unique = [...new Set(ids)];
+  const batches: string[][] = [];
+  for (let start = 0; start < unique.length; start += HOME_HYDRATE_BATCH) {
+    batches.push(unique.slice(start, start + HOME_HYDRATE_BATCH));
+  }
+  const hydrated = await mapWithConcurrency(batches, HOME_HYDRATE_CONCURRENCY, (batch) => repository.hydrateProducts(batch));
+  return new Map(hydrated.flat().map((product) => [product.id, product]));
+}
+
 /**
  * One call fills the whole Home screen.
  *
  * The screen needs five collections plus categories; on rural 3G one 250 ms
  * round trip beats six. This is a read-only composition over existing
  * services, not a new domain.
+ *
+ * Built in three database rounds rather than one per rail (Railway and the
+ * database sit in different regions, so every sequential query costs a full
+ * network round trip):
+ *   1. everything independent, at once: shared context, the category tree,
+ *      Home order, banners, the category map and EVERY rail's ranked
+ *      candidates (each rail is its own query; none depends on another);
+ *   2. the category shelves' candidates (they need the Home category order),
+ *      a few at a time;
+ *   3. one hydration of every product any rail or shelf shows.
+ * Which products appear, in what order, with what de-duplication, is decided
+ * exactly as before — in memory, from the same queries. Nothing is cached:
+ * stock, prices and seller availability are read live on every call.
  */
 export async function getHomeFeed(): Promise<HomeFeedDto> {
-  const [context, groups, preferredOrder, topBanners, sectionBannerMap] = await Promise.all([
+  const [context, groups, preferredOrder, topBanners, sectionBannerMap, railCandidates, categoryById] = await Promise.all([
     mappingContext(),
     marketplaceCategoryGroups(),
     configService.get(ConfigKey.HOME_CATEGORY_ORDER),
     listActiveBanners(HOME_TOP_PLACEMENT),
     listActiveBannersByPlacement([...HOME_SECTION_PLACEMENTS, HOME_BANNER_PLACEMENTS.CATEGORY]),
+    Promise.all(RAILS.map((rail) => repository.listRailProductIds(rail.key, RAIL_CANDIDATE_LIMIT))),
+    getCategoryMap(),
   ]);
 
   /*
@@ -697,33 +733,7 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
    * already used — except when that would leave it with almost nothing to
    * show, in which case a repeat is still better than a near-empty shelf.
    */
-  const usedProductIds = new Set<string>();
-  const rails: HomeFeedDto["rails"] = [];
-
-  for (const rail of RAILS) {
-    const candidateIds = await repository.listRailProductIds(rail.key, RAIL_CANDIDATE_LIMIT);
-
-    const freshIds = candidateIds
-      .filter((id) => !usedProductIds.has(id))
-      .slice(0, RAIL_DISPLAY_SIZE);
-
-    const ids =
-      freshIds.length >= MIN_RAIL_SIZE
-        ? freshIds
-        : candidateIds.slice(0, RAIL_DISPLAY_SIZE);
-
-    for (const id of ids) usedProductIds.add(id);
-
-    const products = await repository.hydrateProducts(ids);
-
-    rails.push({
-      key: rail.key,
-      title: rail.title,
-      products: await Promise.all(
-        products.map((product) => toSummaryDto(product, context)),
-      ),
-    });
-  }
+  const railIds = pickRailProducts(railCandidates, RAIL_DISPLAY_SIZE, MIN_RAIL_SIZE);
 
   /*
    * One shelf per top-level category, in Home order, so a category the
@@ -734,24 +744,33 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
    * rather than ten of whichever subcategory ranks highest. The candidate
    * path filter matches every product beneath the category.
    */
-  const shelfIds = await Promise.all(
-    topLevel.map(async ({ group }) =>
-      balanceBySubcategory(
-        await repository.listCategoryShelfCandidates(group.path, CATEGORY_SHELF_CANDIDATES),
-        group.path,
-        CATEGORY_RAIL_SIZE,
-      ),
+  const shelfIds = await mapWithConcurrency(topLevel, SHELF_QUERY_CONCURRENCY, async ({ group }) =>
+    balanceBySubcategory(
+      await repository.listCategoryShelfCandidates(group.path, CATEGORY_SHELF_CANDIDATES),
+      group.path,
+      CATEGORY_RAIL_SIZE,
     ),
   );
-  // Every shelf's products hydrated in one query, then dealt back out.
-  const shelfProducts = new Map(
-    (await repository.hydrateProducts([...new Set(shelfIds.flat())])).map((product) => [product.id, product]),
+
+  // Every rail's and shelf's products hydrated together, then dealt back out
+  // in each list's own order (a product that is no longer there is skipped,
+  // exactly as hydrating each list on its own did).
+  const productById = await hydrateHomeProducts([...railIds.flat(), ...shelfIds.flat()]);
+  const productsIn = (ids: readonly string[]): HydratedProduct[] =>
+    ids.map((id) => productById.get(id)).filter((product): product is HydratedProduct => product !== undefined);
+
+  const rails: HomeFeedDto["rails"] = await Promise.all(
+    RAILS.map(async (rail, index) => ({
+      key: rail.key,
+      title: rail.title,
+      products: await Promise.all(productsIn(railIds[index] ?? []).map((product) => toSummaryDto(product, context))),
+    })),
   );
 
   const categoryRails: HomeFeedDto["categoryRails"] = [];
   for (const [index, { group }] of topLevel.entries()) {
     const products = (shelfIds[index] ?? [])
-      .map((id) => shelfProducts.get(id))
+      .map((id) => productById.get(id))
       .filter((product): product is HydratedProduct => product !== undefined);
     if (products.length === 0) continue;
     categoryRails.push({
@@ -773,7 +792,6 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
    * of that category's TOP category. One whose category is gone, or has no
    * shelf on Home right now, is left out rather than shown somewhere random.
    */
-  const categoryById = await getCategoryMap();
   const shelfByPath = new Map(
     topLevel
       .filter(({ group }) => categoryRails.some((rail) => rail.categoryId === group.rep.id))

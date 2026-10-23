@@ -1,4 +1,10 @@
-/** Mobile number entry — single authentication entry point. */
+/**
+ * Mobile number entry — single authentication entry point.
+ *
+ * Opened as a modal over the app (lib/authGate.ts) only when the customer
+ * starts something that needs an account; "Not now" (or back / swipe down)
+ * returns them to the screen they were browsing.
+ */
 
 import { useState } from "react";
 import {
@@ -6,6 +12,7 @@ import {
   ImageBackground,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   View,
@@ -18,6 +25,9 @@ import { normalizeIndianMobile } from "@shared/phone";
 import { colors, radius, spacing } from "@shared/theme";
 
 import { api, ApiRequestError } from "@/lib/api";
+import { cancelLogin, useAuthGate } from "@/lib/authGate";
+import { AUTH_REASON_COPY } from "@/lib/guestAccess";
+import { useAuth } from "@/lib/store";
 import { AppText, Button, Input } from "@/components/ui";
 
 import adioneLogo from "../../../assets/adione-logo.png";
@@ -50,6 +60,17 @@ export default function MobileEntryScreen({
   const [mobile, setMobile] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Why the login was asked for ("Log in to add items to your cart."); none
+  // for a plain "Log in" from Account.
+  const reason = useAuthGate((state) => state.reason);
+  const sessionExpired = useAuth((state) => state.sessionExpired);
+  const reasonLine =
+    reason && reason !== "account"
+      ? AUTH_REASON_COPY[reason]
+      : sessionExpired
+        ? "Your session has expired. Please log in again."
+        : null;
 
   const normalizedMobile = normalizeIndianMobile(mobile);
   const isValid = normalizedMobile !== null;
@@ -108,6 +129,20 @@ export default function MobileEntryScreen({
               style={styles.heroBackground}
               resizeMode="cover"
             >
+              {/* Back to browsing — login is never required to look around */}
+              <Pressable
+                onPress={cancelLogin}
+                hitSlop={10}
+                style={styles.notNow}
+                accessibilityRole="button"
+                accessibilityLabel="Not now, continue browsing"
+              >
+                <Ionicons name="close" size={16} color={colors.textPrimary} />
+                <AppText variant="caption" color={colors.textPrimary} style={styles.notNowText}>
+                  Not now
+                </AppText>
+              </Pressable>
+
               {/* Text sits over the empty left/top portion of the artwork */}
               <View style={styles.heroContent}>
                 <AppText
@@ -175,6 +210,12 @@ export default function MobileEntryScreen({
           {/* -------------------------------------------------------------- */}
 
           <View style={styles.sheet}>
+            {reasonLine ? (
+              <AppText variant="bodyStrong" color={colors.primary} style={styles.reason}>
+                {reasonLine}
+              </AppText>
+            ) : null}
+
             <AppText variant="h2">Enter Mobile Number</AppText>
 
             <AppText
@@ -370,6 +411,30 @@ const styles = StyleSheet.create({
     flex: 1,
     width: "100%",
     height: "100%",
+  },
+
+  notNow: {
+    position: "absolute",
+    top: spacing.md,
+    right: spacing.base,
+    zIndex: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.circle,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+
+  notNowText: {
+    marginLeft: 4,
+    fontWeight: "700",
+  },
+
+  reason: {
+    marginBottom: spacing.sm,
   },
 
   heroContent: {

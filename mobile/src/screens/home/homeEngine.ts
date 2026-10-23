@@ -535,7 +535,7 @@ export function topCuisines(
     .map(([name]) => name);
 }
 
-export function offerHeadline(
+ export function offerHeadline(
   offer: OfferDto,
   formatPaise: (paise: number) => string,
 ): string {

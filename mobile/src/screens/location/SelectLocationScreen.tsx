@@ -23,7 +23,7 @@ import {
 } from "@/lib/liveLocation";
 import { detectDeviceLocation, suggestAddressFor } from "@/lib/deviceLocation";
 import { api } from "@/lib/api";
-import { useAuth, useLocation } from "@/lib/store";
+import { useAuth, useLocation, useSignedIn } from "@/lib/store";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { AppText, Button, Card, Loading, Screen } from "@/components/ui";
 
@@ -42,15 +42,20 @@ export default function SelectLocationScreen({
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
   const user = useAuth((s) => s.user);
+  const signedIn = useSignedIn();
 
   const { selectedAddressId, setLocation, setLiveDestination, selectAddress, liveDestination, location } = useLocation();
 
   const [detecting, setDetecting] = useState<"gps" | "address" | null>(null);
   const [detectError, setDetectError] = useState<SelectError | null>(null);
 
+  // Saved addresses are an account's. A guest still chooses where they are
+  // with "Use current location" (permission asked only on that tap), which is
+  // enough to see what delivers there.
   const addresses = useQuery({
     queryKey: ["addresses"],
     queryFn: () => api.get<AddressDto[]>("/addresses"),
+    enabled: signedIn,
   });
 
   /**

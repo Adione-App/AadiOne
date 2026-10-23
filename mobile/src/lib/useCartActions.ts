@@ -90,7 +90,11 @@ import { showCartNotice } from "./cartNotice";
 import { quantityLimitMessage, quantityLimitOf, type QuantityLimit } from "./quantityLimit";
 import { useCart, useCartMutations } from "./queries";
 import { singleCartVariantOf } from "./cartVariant";
-import { useLocation } from "@/lib/store";
+import { requireAuth } from "./authGate";
+import { deferredAddDecision, type DeferredCartAdd } from "./guestAccess";
+import { useAuth, useLocation, useSignedIn } from "@/lib/store";
+
+const isSignedIn = (): boolean => useAuth.getState().status === "authenticated";
 
 type KnownLine = { id: string; qty: number } | null;
 
@@ -352,6 +356,11 @@ interface PendingCartState {
    * (a Home shelf) was invisible to the notice another (Home) showed.
    */
   error: string | null;
+  /**
+   * A guest's "Add", waiting for login and then for the account's own cart
+   * to load (see `deferredAddDecision`). Memory only — never persisted.
+   */
+  deferredAdd: DeferredCartAdd<CartItemSnapshot> | null;
   setPending: (variantId: string, qty: number) => void;
   clearPending: (variantId: string) => void;
   setBusy: (variantId: string, busy: boolean) => void;
@@ -364,6 +373,7 @@ const usePendingCartStore = create<PendingCartState>((set) => ({
   busyVariants: {},
   pendingSnapshots: {},
   error: null,
+  deferredAdd: null,
 
   setError: (error) => set((state) => (state.error === error ? state : { error })),
 
@@ -440,6 +450,19 @@ export function resetPendingCartAfterOrder(): void {
 }
 
 /**
+ * On becoming signed out (App.tsx): the previous customer's cart must not
+ * linger — not the startup snapshot restored from disk, not the copy on
+ * disk, not anything pending or waiting for a login.
+ */
+export function forgetCartAfterSignOut(): void {
+  hydratedQtyByVariant = new Map();
+  hydratedFallbackCart = null;
+  lastPersistedCartJson = null;
+  usePendingCartStore.setState({ pendingQty: {}, pendingSnapshots: {}, error: null, deferredAdd: null });
+  AsyncStorage.removeItem(CART_HYDRATION_STORAGE_KEY).catch(() => undefined);
+}
+
+/**
  * Serializes Clear Cart against every screen's dispatches, not just calls
  * made through the same hook instance — module scope, so there is exactly
  * one of these for the whole app, same reasoning as the store above.
@@ -450,6 +473,7 @@ export function useCartActions() {
   // IMPORTANT: pass the current serviceability distance
   // so cart pricing includes the correct delivery fee.
   const serviceability = useLocation((state) => state.serviceability);
+  const signedIn = useSignedIn();
 
   const distanceKm = serviceability?.distanceKm ?? null;
 
@@ -554,7 +578,7 @@ export function useCartActions() {
     // defined, this branch is never reached again for the rest of the
     // session — every read after that reflects genuine server truth
     // exactly as it always has.
-    if (cartRef.current === undefined) {
+    if (cartRef.current === undefined && isSignedIn()) {
       const hydratedQty = hydratedQtyByVariant.get(variantId);
       if (hydratedQty !== undefined) return hydratedQty;
     }
@@ -603,7 +627,8 @@ export function useCartActions() {
     // "empty" while the first `/cart` request is still in flight. The
     // moment `cart` is defined, `baseCart` is `cart` from then on, forever
     // — this never reintroduces stale data once real data exists.
-    const baseCart = cart ?? hydratedFallbackCart;
+    // A guest has no cart — never a restored one from an earlier session.
+    const baseCart = cart ?? (signedIn ? hydratedFallbackCart : null);
     if (!baseCart) return cart;
 
     let itemsSubtotalPaise = 0;
@@ -691,7 +716,7 @@ export function useCartActions() {
     };
     // `pendingQty` is a new object reference on every store update (see the
     // store above), so this recomputes exactly when it should.
-  }, [cart, pendingQty]);
+  }, [cart, pendingQty, signedIn]);
 
   // Derived from the SHARED busy set (also true while Clear Cart is
   // running — `clear()` marks every affected variant busy) rather than this
@@ -932,6 +957,15 @@ export function useCartActions() {
 
   const add = useCallback(
     (variantId: string, snapshot?: CartItemSnapshot): boolean => {
+      // The cart is an account's (there is no guest cart on the server): a
+      // guest's Add asks for a login, and is carried out once after it — see
+      // the `deferredAdd` effect below. False: nothing was added (no fly-in).
+      if (!isSignedIn()) {
+        requireAuth("cart", () =>
+          usePendingCartStore.setState({ deferredAdd: { variantId, snapshot, at: Date.now() } }),
+        );
+        return false;
+      }
       // Stored BEFORE setPending so the same render pass that reacts to the
       // new pendingQty already has display data to synthesize a line with —
       // see `optimisticCart` above.
@@ -948,6 +982,10 @@ export function useCartActions() {
 
   /** One more unit — refused (false, with the limit popup) at the variant's limit. */
   const increment = useCallback((variantId: string): boolean => {
+    if (!isSignedIn()) {
+      requireAuth("cart");
+      return false;
+    }
     if (!allowQty(variantId, qtyForImpl(variantId) + 1)) return false;
     setPending(variantId, qtyForImpl(variantId) + 1);
     void dispatch(variantId);
@@ -1051,6 +1089,23 @@ export function useCartActions() {
     await run;
     if (clearInFlightPromise === run) clearInFlightPromise = null;
   }, []);
+
+  // A guest's Add that asked for a login (see `add`), carried out once the
+  // customer is signed in AND their account's own cart has loaded — never
+  // earlier: `POST /cart/items` adds to whatever that cart already holds.
+  // Taken from the store atomically, so of all the mounted instances exactly
+  // one acts on it. The server re-checks the listing, stock and limits as for
+  // any other add.
+  const deferredAdd = usePendingCartStore((state) => state.deferredAdd);
+  useEffect(() => {
+    if (!deferredAdd || !signedIn || !cart) return;
+    const entry = usePendingCartStore.getState().deferredAdd;
+    if (!entry) return;
+    usePendingCartStore.setState({ deferredAdd: null });
+    const decision = deferredAddDecision(entry, Date.now(), qtyForImpl(entry.variantId));
+    if (decision === "add") add(entry.variantId, entry.snapshot);
+    else if (decision === "already-in-cart") showCartNotice("This item is already in your cart.");
+  }, [deferredAdd, signedIn, cart, add]);
 
   return {
     // The optimistic view — see `optimisticCart` above. Every screen

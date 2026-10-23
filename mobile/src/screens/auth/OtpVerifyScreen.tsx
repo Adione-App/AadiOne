@@ -27,6 +27,7 @@ import { formatIndianMobile } from "@shared/phone";
 import { colors, radius, spacing } from "@shared/theme";
 
 import { api, ApiRequestError, setAccessToken } from "@/lib/api";
+import { loginCompleted } from "@/lib/authGate";
 import { useAuth } from "@/lib/store";
 import { AppText, Button, Screen } from "@/components/ui";
 import type { AuthScreenProps } from "@/navigation/types";
@@ -53,8 +54,8 @@ export default function OtpVerifyScreen({
   const [resendBusy, setResendBusy] = useState(false);
 
   // Holds a brand-new account's auth response while the referral-code step
-  // (below) is shown in its place — `setSession` (which is what flips the
-  // whole app from AuthStack to MainTabs) is deliberately deferred until
+  // (below) is shown in its place — `setSession` (and closing the login
+  // modal after it) is deliberately deferred until
   // that step finishes, so it never gets a chance to unmount this screen
   // before the referral step has been shown. Stays null for every existing
   // (non-`isNewUser`) login, which never sees this step at all.
@@ -167,9 +168,9 @@ export default function OtpVerifyScreen({
 
       await setSession(result);
 
-      /*
-       * Root navigator changes automatically after authentication.
-       */
+      // Closes the login modal — back on the screen the customer was on —
+      // and carries out the action that asked for the login, once.
+      loginCompleted();
     } catch (err) {
       const message =
         err instanceof ApiRequestError
@@ -193,7 +194,7 @@ export default function OtpVerifyScreen({
   async function finishSignup(): Promise<void> {
     if (!pendingNewUserAuth) return;
     await setSession(pendingNewUserAuth);
-    // Root navigator changes automatically once `status` flips above.
+    loginCompleted();
   }
 
   /* ---------------------------------------------------------------------- */

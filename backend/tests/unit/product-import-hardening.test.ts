@@ -45,12 +45,36 @@ function median(fn: () => void): number {
   return times.sort((a, b) => a - b)[1]!;
 }
 
-/** Time at n and 4n: linear work grows ~4x; the old regexes grew ~16x or worse. */
+/**
+ * Fastest wall time of `fn` over 5 runs (ms). Interference — a GC pause, the
+ * scheduler, other work on the machine — only ever ADDS time, so the fastest
+ * run is the closest measure of the code's own cost. (A median of 3 let two
+ * disturbed runs through: measured ratios up to ~45 for code that is ~4.)
+ */
+function fastest(fn: () => void): number {
+  return Math.min(
+    ...[0, 1, 2, 3, 4].map(() => {
+      const t = process.hrtime.bigint();
+      try {
+        fn();
+      } catch {
+        /* a refusal is a valid, timed outcome */
+      }
+      return Number(process.hrtime.bigint() - t) / 1e6;
+    }),
+  );
+}
+
+/**
+ * Time at n and 4n: linear work grows ~4x; the old regexes grew ~16x or worse.
+ * Quadratic work is ~16x even in its fastest run, so taking the fastest run
+ * removes noise without hiding a regression (see the control case below).
+ */
 function scaling(make: (n: number) => string, run: (xml: string) => void, n: number) {
   const small = make(n);
   const large = make(n * 4);
-  const tSmall = Math.max(median(() => run(small)), 1);
-  const tLarge = median(() => run(large));
+  const tSmall = Math.max(fastest(() => run(small)), 1);
+  const tLarge = fastest(() => run(large));
   return { ratio: tLarge / tSmall, tLarge, chars: large.length };
 }
 
@@ -86,6 +110,17 @@ describe('XLSX parsing stays linear on adversarial XML', () => {
       // Absolute bound: ~1 MB-scale inputs take well under a second.
       expect({ label, chars, fast: tLarge < 1500 }).toEqual({ label, chars, fast: true });
     }
+  });
+
+  it('control: the same measurement flags quadratic work (so the linear checks above can fail)', () => {
+    // Deliberately O(n²): every position rescans the rest of the input, as the old regexes did.
+    const quadratic = (input: string) => {
+      let sum = 0;
+      for (let i = 0; i < input.length; i += 1) for (let j = i; j < input.length; j += 32) sum += input.charCodeAt(j);
+      return sum;
+    };
+    const { ratio } = scaling((n) => 'x'.repeat(n), quadratic, 6_000);
+    expect(ratio).toBeGreaterThan(8);
   });
 
   it('refuses DOCTYPE/ENTITY declarations, oversized tags, deep nesting, huge text and oversized parts', () => {

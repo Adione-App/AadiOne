@@ -55,6 +55,13 @@ export class MemoryCacheStore implements CacheStore {
     this.cache.del(key);
   }
 
+  async deleteIfEquals(key: string, value: string): Promise<boolean> {
+    // No await between the read and the delete: atomic within this process.
+    if (this.cache.get<string>(key) !== value) return false;
+    this.cache.del(key);
+    return true;
+  }
+
   /**
    * The TTL is applied only when the counter is created, so a caller cannot
    * extend their own window by making more requests — which would quietly turn

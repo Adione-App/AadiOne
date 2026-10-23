@@ -50,6 +50,9 @@ import type {
   WebhookEvent,
 } from "../../infra/payment";
 import { moduleLogger } from "../../common/logger";
+import { randomUUID } from "node:crypto";
+import { cache } from "../../infra/cache";
+import { CacheKey } from "../../infra/cache/types";
 import * as configService from "../configuration/configuration.service";
 import * as notificationService from "../notifications/notification.service";
 import { customerPaidPaise } from "../orders/coupon-allocation";
@@ -201,10 +204,8 @@ export function planCheckoutExpiry(input: {
   return { gatewayExpiresAt, extendedHoldTo };
 }
 
-export async function createPayment(
-  userId: string,
-  orderId: string,
-): Promise<CreatePaymentResult> {
+/** The customer's own ONLINE order, still awaiting payment — or the reason it cannot be paid. */
+async function loadPayableOrder(userId: string, orderId: string): Promise<Order & { user: User }> {
   const order = await prisma.order.findFirst({
     where: { id: orderId, userId },
     include: { user: true },
@@ -226,9 +227,21 @@ export async function createPayment(
       message: "This order is no longer awaiting payment.",
     });
   }
+  return order;
+}
+
+export async function createPayment(
+  userId: string,
+  orderId: string,
+): Promise<CreatePaymentResult> {
+  const order = await loadPayableOrder(userId, orderId);
 
   if (provider.fetchOrder) {
-    return createCheckoutSession(order);
+    // Checked again UNDER the lock: while this request waited, the order may
+    // have been paid, cancelled or expired, and its hold may have changed.
+    return withPaymentInitLock(order.id, async () =>
+      createCheckoutSession(await loadPayableOrder(userId, orderId)),
+    );
   }
 
   // Reuse an existing intent when the customer reopens the payment sheet —
@@ -374,6 +387,83 @@ function checkoutResponse(
  * order's hold to ~17 — once, before the Cashfree order exists, so the
  * gateway can never outlive the hold.
  */
+/**
+ * How long one initiation may hold the lock. The slowest path inside it makes
+ * two gateway calls (fetchOrder, then createIntent), each aborted after 15 s
+ * with no retry (cashfree.provider), plus a few database round trips — about
+ * 35 s at worst. 60 s covers that with margin; a holder that dies frees the
+ * order by itself after this.
+ */
+export const PAYMENT_INIT_LOCK_SECONDS = 60;
+/**
+ * How long a second request waits for the first. Kept well under the lock
+ * lifetime AND under the app's 30 s timeout for this call, so a waiter that
+ * then reuses the first request's checkout still answers in time; past it the
+ * customer gets a clear "try again" instead of a hung request.
+ */
+export const PAYMENT_INIT_WAIT_MS = 10_000;
+const PAYMENT_INIT_POLL_MS = 200;
+const PAYMENT_INIT_RETRY_AFTER_SECONDS = 5;
+
+/**
+ * One payment initiation per ORDER at a time. Two "Pay" requests for the same
+ * order at once (a double tap, a retry after a lost response, two devices)
+ * would otherwise both find no open checkout and each open its OWN gateway
+ * order — and the customer could pay both. The second request waits here for
+ * the first, then finds and reuses the checkout it opened.
+ *
+ * A short-lived lock in the shared cache (Redis in production, so it holds
+ * across instances), not a database transaction: the gateway call must never
+ * hold a database connection or row lock (runInTransaction's rule).
+ *
+ *   - Owned: the lock holds a random token, and release is an atomic
+ *     compare-and-delete — a holder that overran its lifetime can never remove
+ *     the lock another request has since taken.
+ *   - Fail closed: if the cache cannot be reached, no checkout is opened
+ *     ("try again"), rather than risking two payable gateway orders. The
+ *     duplicate-capture refund in settleCapture stays the last backstop.
+ *
+ * Exported for tests.
+ */
+export async function withPaymentInitLock<T>(orderId: string, fn: () => Promise<T>): Promise<T> {
+  const key = CacheKey.paymentInit(orderId);
+  const token = randomUUID();
+  const deadline = Date.now() + PAYMENT_INIT_WAIT_MS;
+  try {
+    while (!(await cache.setIfAbsent(key, token, PAYMENT_INIT_LOCK_SECONDS))) {
+      if (Date.now() >= deadline) {
+        throw new AppError(ErrorCode.SERVICE_UNAVAILABLE, {
+          message: "Your payment is still being prepared. Please try again in a moment.",
+          internalMessage: `payment initiation lock busy for order ${orderId}`,
+          retryAfterSeconds: PAYMENT_INIT_RETRY_AFTER_SECONDS,
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, PAYMENT_INIT_POLL_MS));
+    }
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    log.warn({ err: error, orderId }, "payment initiation lock unavailable — checkout not opened");
+    throw new AppError(ErrorCode.SERVICE_UNAVAILABLE, {
+      message: "We couldn't start the payment just now. Please try again in a moment.",
+      internalMessage: `payment initiation lock unavailable for order ${orderId}`,
+      retryAfterSeconds: PAYMENT_INIT_RETRY_AFTER_SECONDS,
+    });
+  }
+
+  try {
+    return await fn();
+  } finally {
+    const released = await cache.deleteIfEquals(key, token).catch((error: unknown) => {
+      // The lock expires by itself; the result of the work stands.
+      log.warn({ err: error, orderId }, "payment initiation lock could not be released");
+      return null;
+    });
+    if (released === false) {
+      log.warn({ orderId, lockSeconds: PAYMENT_INIT_LOCK_SECONDS }, "payment initiation outlived its lock");
+    }
+  }
+}
+
 async function createCheckoutSession(
   order: Order & { user: User },
 ): Promise<CreatePaymentResult> {

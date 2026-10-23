@@ -30,6 +30,13 @@ export interface CacheStore {
   delete(key: string): Promise<void>;
 
   /**
+   * Deletes the key only if it still holds `value`, atomically. Returns true
+   * when it was deleted. Releases a lock without ever removing a lock that
+   * expired and was then taken by someone else (a different value).
+   */
+  deleteIfEquals(key: string, value: string): Promise<boolean>;
+
+  /**
    * Atomically increments a counter, applying `ttlSeconds` on first creation.
    * Returns the new value. This is the primitive every rate limit is built on,
    * so it must be atomic — a read-then-write would let concurrent requests
@@ -79,4 +86,6 @@ export const CacheKey = {
   rateLimit: (scope: string, identifier: string) => `rl:${scope}:${identifier}`,
   config: (sellerId: string) => `config:${sellerId}`,
   sellerOpen: (sellerId: string) => `seller:open:${sellerId}`,
+  /** One payment initiation per order at a time (payment.service withPaymentInitLock). */
+  paymentInit: (orderId: string) => `pay:init:${orderId}`,
 } as const;

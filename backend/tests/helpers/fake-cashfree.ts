@@ -72,8 +72,32 @@ export class FakeCashfree {
    */
   readonly orderViewOverrides = new Map<string, Partial<FakeOrder>>();
 
+  private holds: { method: string; path: string; arrived: () => void; released: Promise<void>; release: () => void }[] = [];
+
+  /**
+   * A slow Cashfree: the next `method path` call is processed, but its answer
+   * is held back until `release()` — `reached` resolves once the call is
+   * waiting. Lets a test act while a request is in the middle of a gateway call.
+   */
+  holdNext(method: string, path: string): { reached: Promise<void>; release: () => void } {
+    let arrived!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>((resolve) => (arrived = resolve));
+    const released = new Promise<void>((resolve) => (release = resolve));
+    this.holds.push({ method: method.toUpperCase(), path, arrived, released, release });
+    return { reached, release };
+  }
+
   readonly fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const response = await this.handle(input, init);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    const path = new URL(String(input)).pathname.replace(/^\/pg/, '');
+    const hold = this.holds.findIndex((h) => h.method === method && h.path === path);
+    if (hold !== -1) {
+      const [held] = this.holds.splice(hold, 1);
+      held!.arrived();
+      await held!.released;
+    }
     if (this.loseNextResponse) {
       this.loseNextResponse = false;
       throw new TypeError('fetch failed: the connection was closed before the response arrived');
@@ -178,6 +202,7 @@ export class FakeCashfree {
     this.refundStartStatus = 'PENDING';
     this.loseNextResponse = false;
     this.orderViewOverrides.clear();
+    for (const hold of this.holds.splice(0)) hold.release();
   }
 
   /** The customer completes (or fails) one attempt in Cashfree's checkout. */

@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/infra/payment', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/infra/payment')>();
@@ -46,9 +46,15 @@ import { api, bearer, expectError, expectSuccess, loginAs } from '../helpers/api
 import { prisma, truncateAll } from '../helpers/db';
 import { hashPassword } from '../../src/common/crypto';
 import { cache } from '../../src/infra/cache';
+import { CacheKey } from '../../src/infra/cache/types';
 import * as configService from '../../src/modules/configuration/configuration.service';
 import * as otpService from '../../src/modules/auth/otp.service';
-import { reconcileCheckoutPayments } from '../../src/modules/payments/payment.service';
+import {
+  PAYMENT_INIT_LOCK_SECONDS,
+  PAYMENT_INIT_WAIT_MS,
+  reconcileCheckoutPayments,
+  withPaymentInitLock,
+} from '../../src/modules/payments/payment.service';
 import { transitionOrder } from '../../src/modules/orders/order-state.service';
 import { releaseExpiredReservations } from '../../src/jobs';
 import { cashfreeRefundId } from '../../src/infra/payment/cashfree.provider';
@@ -212,6 +218,16 @@ describe('Cashfree checkout — create', () => {
     expect(await prisma.payment.count({ where: { orderId: order.orderId } })).toBe(1);
   });
 
+  it('simultaneous Pay requests for one order (double tap, two devices) open ONE Cashfree order — never two payable checkouts', async () => {
+    const order = await placeOnlineOrder();
+    const checkouts = await Promise.all([openCheckout(order), openCheckout(order), openCheckout(order)]);
+
+    expect(new Set(checkouts.map((c) => c.providerOrderId)).size).toBe(1);
+    expect(new Set(checkouts.map((c) => c.cashfree.paymentSessionId)).size).toBe(1);
+    expect(cashfree.orders.size).toBe(1);
+    expect(await prisma.payment.count({ where: { orderId: order.orderId } })).toBe(1);
+  });
+
   it('a late checkout still gets Cashfree’s full window (>15 min) by stretching only this order’s hold — once', async () => {
     const order = await placeOnlineOrder();
     const now = Date.now();
@@ -239,6 +255,187 @@ describe('Cashfree checkout — create', () => {
       .send({ orderId: order.orderId });
     expect(again.status).toBe(400);
     expect(expectError(again.body).message).toMatch(/time to pay/i);
+  });
+});
+
+describe('payment initiation lock — one checkout per order at a time', () => {
+  /** Starts a Pay request now (supertest is lazy) and returns its pending response. */
+  const startPay = (order: OnlineOrder) =>
+    Promise.resolve(
+      api()
+        .post('/api/v1/payments/create')
+        .set('Authorization', bearer(order.token))
+        .set('Idempotency-Key', randomUUID())
+        .send({ orderId: order.orderId }),
+    );
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const createOrderCalls = () => cashfree.requests.filter((r) => r.method === 'POST' && r.path === '/orders').length;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('a second Pay while the first is still talking to Cashfree waits, then reuses the first checkout', async () => {
+    const order = await placeOnlineOrder();
+    const slow = cashfree.holdNext('POST', '/orders');
+    const first = startPay(order);
+    await slow.reached;
+
+    const second = startPay(order);
+    await pause(400); // the second request is now waiting on the lock
+    slow.release();
+
+    const [a, b] = await Promise.all([first, second]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect(expectSuccess<Checkout>(b.body).data.providerOrderId).toBe(expectSuccess<Checkout>(a.body).data.providerOrderId);
+    expect(createOrderCalls()).toBe(1);
+    expect(await prisma.payment.count({ where: { orderId: order.orderId } })).toBe(1);
+  });
+
+  it('busy lock: after waiting, a clear 503 "try again" with Retry-After — no Cashfree order, and the holder keeps its lock', async () => {
+    const order = await placeOnlineOrder();
+    const key = CacheKey.paymentInit(order.orderId);
+    await cache.set(key, 'held-by-another-instance', PAYMENT_INIT_LOCK_SECONDS);
+
+    vi.useFakeTimers({ toFake: ['Date'] }); // the clock moves only when the test says so
+    const pending = startPay(order);
+    await pause(400);
+    vi.setSystemTime(Date.now() + PAYMENT_INIT_WAIT_MS + 1_000);
+    const res = await pending;
+
+    expect(res.status).toBe(503);
+    expect(expectError(res.body).code).toBe(ErrorCode.SERVICE_UNAVAILABLE);
+    expect(expectError(res.body).message).toMatch(/still being prepared/i);
+    expect(res.headers['retry-after']).toBe('5');
+    expect(createOrderCalls()).toBe(0);
+    expect(await prisma.payment.count({ where: { orderId: order.orderId } })).toBe(0);
+    expect(await cache.get(key)).toBe('held-by-another-instance');
+  });
+
+  it('cache unavailable: no checkout is opened (fails closed) and the customer is told to try again; the retry works', async () => {
+    const order = await placeOnlineOrder();
+    vi.spyOn(cache, 'setIfAbsent').mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:6379'));
+
+    const res = await startPay(order);
+    expect(res.status).toBe(503);
+    expect(expectError(res.body).message).toMatch(/couldn.t start the payment/i);
+    expect(res.headers['retry-after']).toBe('5');
+    expect(createOrderCalls()).toBe(0);
+    expect(await prisma.payment.count({ where: { orderId: order.orderId } })).toBe(0);
+
+    const retry = await openCheckout(order);
+    expect(cashfree.orders.has(retry.providerOrderId)).toBe(true);
+    expect(createOrderCalls()).toBe(1);
+  });
+
+  it('a lock that cannot be released does not fail the payment — it simply expires', async () => {
+    const order = await placeOnlineOrder();
+    vi.spyOn(cache, 'deleteIfEquals').mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:6379'));
+
+    const checkout = await openCheckout(order);
+    expect(cashfree.orders.has(checkout.providerOrderId)).toBe(true);
+    expect(await cache.get(CacheKey.paymentInit(order.orderId))).not.toBeNull();
+    expect(await cache.ttl(CacheKey.paymentInit(order.orderId))).toBeLessThanOrEqual(PAYMENT_INIT_LOCK_SECONDS);
+  });
+
+  it('slow Cashfree near its timeouts (two 15 s calls): the lock outlives the worst case, so a late second Pay never opens a second order', async () => {
+    const order = await placeOnlineOrder();
+    const slow = cashfree.holdNext('POST', '/orders');
+    const first = startPay(order);
+    await slow.reached;
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = Date.now();
+    vi.setSystemTime(start + 31_000); // fetchOrder + createIntent both at their 15 s limit
+    const late = startPay(order);
+    await pause(400);
+    vi.setSystemTime(start + 31_000 + PAYMENT_INIT_WAIT_MS + 1_000); // still inside the 60 s lock
+    const lateRes = await late;
+    expect(lateRes.status).toBe(503);
+    expect(createOrderCalls()).toBe(1);
+
+    slow.release();
+    const firstRes = await first;
+    expect(firstRes.status).toBe(200);
+    const opened = expectSuccess<Checkout>(firstRes.body).data;
+
+    const again = await openCheckout(order); // the customer taps again: the SAME checkout
+    expect(again.providerOrderId).toBe(opened.providerOrderId);
+    expect(createOrderCalls()).toBe(1);
+    expect(await prisma.payment.count({ where: { orderId: order.orderId } })).toBe(1);
+  });
+
+  it('lock expiry and release race: a holder that outlived its lock never deletes the lock another request took since', async () => {
+    const orderId = randomUUID();
+    const key = CacheKey.paymentInit(orderId);
+
+    let ownToken: string | null = null;
+
+    await withPaymentInitLock(orderId, async () => {
+      ownToken = await cache.get(key);
+      expect(ownToken).not.toBeNull();
+      // This holder is still working when its lock runs out. Expiry is
+      // simulated by removing the key, exactly what a TTL expiry does, so the
+      // test behaves the same on the in-memory cache and on real Redis (whose
+      // TTL runs on the server's clock, which a test cannot move). Another
+      // request then takes the order's lock.
+      await cache.delete(key);
+      expect(await cache.setIfAbsent(key, 'second-holder', PAYMENT_INIT_LOCK_SECONDS)).toBe(true);
+    });
+
+    // The first holder's own release (its `finally`) left the newer lock alone…
+    expect(ownToken).not.toBe('second-holder');
+    expect(await cache.get(key)).toBe('second-holder');
+    // …and a later stale release with the first holder's token is refused as well.
+    expect(await cache.deleteIfEquals(key, ownToken!)).toBe(false);
+    expect(await cache.get(key)).toBe('second-holder');
+    await cache.delete(key);
+  });
+
+  it('a normal run releases its own lock, also when the work fails', async () => {
+    const orderId = randomUUID();
+    const key = CacheKey.paymentInit(orderId);
+
+    await withPaymentInitLock(orderId, async () => expect(await cache.get(key)).not.toBeNull());
+    expect(await cache.get(key)).toBeNull();
+
+    await expect(withPaymentInitLock(orderId, async () => { throw new Error('gateway refused'); })).rejects.toThrow('gateway refused');
+    expect(await cache.get(key)).toBeNull();
+  });
+
+  it('order cancelled while a Pay request waits for the lock: the waiter re-checks and refuses instead of reusing or opening a checkout', async () => {
+    const order = await placeOnlineOrder();
+    const slow = cashfree.holdNext('POST', '/orders');
+    const first = startPay(order);
+    await slow.reached;
+
+    const waiter = startPay(order);
+    await pause(400);
+    await prisma.order.update({ where: { id: order.orderId }, data: { status: OrderStatus.CANCELLED } });
+    slow.release();
+
+    const [, res] = await Promise.all([first, waiter]);
+    expect(res.status).toBe(400);
+    expect(expectError(res.body).message).toMatch(/no longer awaiting payment/i);
+    expect(createOrderCalls()).toBe(1);
+  });
+
+  it('order paid while a Pay request waits for the lock: the waiter answers "already paid" instead of handing out a checkout', async () => {
+    const order = await placeOnlineOrder();
+    const slow = cashfree.holdNext('POST', '/orders');
+    const first = startPay(order);
+    await slow.reached;
+
+    const waiter = startPay(order);
+    await pause(400);
+    await prisma.order.update({ where: { id: order.orderId }, data: { paymentStatus: 'PAID' } });
+    slow.release();
+
+    const [, res] = await Promise.all([first, waiter]);
+    expect(res.status).toBe(409);
+    expect(expectError(res.body).code).toBe(ErrorCode.PAYMENT_ALREADY_CAPTURED);
+    expect(createOrderCalls()).toBe(1);
   });
 });
 

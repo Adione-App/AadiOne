@@ -8,11 +8,16 @@ import { assertClearAllowed, type CacheStore } from './types';
 
 const log = moduleLogger('cache:redis');
 
+/** GET and DEL in one server-side step, so no other client can act in between. */
+export const DELETE_IF_EQUALS_SCRIPT =
+  'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end';
+
 export class RedisCacheStore implements CacheStore {
   private readonly client: Redis;
 
-  constructor(url: string) {
-    this.client = new Redis(url, {
+  /** `client` is a test seam; production always connects from `url`. */
+  constructor(url: string, client?: Redis) {
+    this.client = client ?? new Redis(url, {
       // Fail fast rather than queueing commands behind a dead connection —
       // a stuck OTP request is worse than a clear error.
       maxRetriesPerRequest: 3,
@@ -41,6 +46,10 @@ export class RedisCacheStore implements CacheStore {
 
   async delete(key: string): Promise<void> {
     await this.client.del(key);
+  }
+
+  async deleteIfEquals(key: string, value: string): Promise<boolean> {
+    return (await this.client.eval(DELETE_IF_EQUALS_SCRIPT, 1, key, value)) === 1;
   }
 
   /**

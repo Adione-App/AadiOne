@@ -269,6 +269,13 @@ export const sellerSignupPerIp = rateLimit({
   windowSeconds: HOUR,
 });
 
+/** App crash reports (client-errors): generous enough for a crash loop, bounded per IP. */
+export const clientErrorPerIp = rateLimit({
+  scope: 'client-errors:ip',
+  limit: 30,
+  windowSeconds: HOUR,
+});
+
 export const sellerSignupPerMobile = rateLimit({
   scope: 'seller-signup:mobile',
   limit: 3,

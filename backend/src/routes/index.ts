@@ -37,6 +37,7 @@ import { sellerLifecycleRouter } from '../modules/sellers/seller-lifecycle.route
 import { authenticatedApiLimit } from '../middleware/rateLimit';
 import { paymentRouter } from '../modules/payments/payment.routes';
 import { appVersionRouter } from '../modules/app-version/app-version.routes';
+import { clientErrorRouter } from '../modules/client-errors/client-errors.routes';
 import { requireSupportedAppVersion, requireSupportedAppVersionForPayments } from '../middleware/appVersion';
 import {
   deviceRouter,
@@ -53,6 +54,8 @@ apiRouter.use(publicApiLimit);
 apiRouter.use('/config', configurationRouter);
 // Public, never version-gated: an app that must update has to learn that.
 apiRouter.use('/app-version', appVersionRouter);
+// Public: app crash reports (redacted, rate-limited, log-only).
+apiRouter.use('/client-errors', clientErrorRouter);
 apiRouter.use('/legal', legalRouter);
 apiRouter.use('/auth', authRouter);
 apiRouter.use('/store', sellerRouter);

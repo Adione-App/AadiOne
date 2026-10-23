@@ -25,6 +25,8 @@ import SellerDetailPage from '@/pages/SellerDetail';
 import { usePendingApprovalCount } from '@/lib/productApprovals';
 import CategoriesPage from '@/pages/Categories';
 import BannersPage from '@/pages/Banners';
+import HomeBuilderPage from '@/pages/HomeBuilder';
+import CategoryDisplayPage from '@/pages/CategoryDisplay';
 import InventoryPage from '@/pages/Inventory';
 import CustomersPage from '@/pages/Customers';
 import DeliveryPage from '@/pages/Delivery';
@@ -123,11 +125,29 @@ const NAV: NavItem[] = [
   },
   {
     to: '/banners',
-    label: 'Banners',
+    label: 'Banners & Cards',
     icon: 'image',
     section: 'MARKETPLACE',
-    title: 'Banners',
-    subtitle: 'Promotional images shown in the customer app, by placement.',
+    title: 'Banners & Cards',
+    subtitle: 'Promotional banners, top cards and carousel cards shown in the customer app, by placement.',
+    permission: Permission.CATALOG_READ,
+  },
+  {
+    to: '/home-builder',
+    label: 'Home Page Builder',
+    icon: 'dashboard',
+    section: 'MARKETPLACE',
+    title: 'Home Page Builder',
+    subtitle: 'Order, show and style the customer Home page — draft, preview, publish.',
+    permission: Permission.CATALOG_READ,
+  },
+  {
+    to: '/category-display',
+    label: 'Category Management',
+    icon: 'categories',
+    section: 'MARKETPLACE',
+    title: 'Category Management',
+    subtitle: 'Where and how categories are shown — each placement on its own.',
     permission: Permission.CATALOG_READ,
   },
   { to: '/inventory', label: 'Inventory', icon: 'inventory', section: 'MARKETPLACE', title: 'Inventory', subtitle: 'Stock across every seller' },
@@ -434,6 +454,8 @@ function AdminApp() {
         <Route path="/sellers/:id" element={<SellerDetailPage />} />
         <Route path="/categories" element={<CategoriesPage />} />
         <Route path="/banners" element={<BannersPage />} />
+        <Route path="/home-builder" element={<HomeBuilderPage />} />
+        <Route path="/category-display" element={<CategoryDisplayPage />} />
         <Route path="/inventory" element={<InventoryPage />} />
         <Route path="/customers" element={<CustomersPage />} />
         <Route path="/delivery" element={<DeliveryPage />} />

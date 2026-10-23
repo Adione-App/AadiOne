@@ -39,6 +39,7 @@ import type {
   UserRole,
 } from './enums';
 import type { CustomerTimelineStep } from './order-state-machine';
+import { CONTENT_COLOR_PRESETS, type ContentColorPreset } from './home-layout';
 
 /* -------------------------------------------------------------------------- */
 /* Auth & user                                                                */
@@ -899,9 +900,15 @@ export interface BannerLayoutDto {
   alignX?: 'left' | 'center' | 'right';
   alignY?: 'top' | 'center' | 'bottom';
   radius?: 'none' | 'sm' | 'md' | 'lg';
-  /** Theme colors only. */
-  background?: 'none' | 'white' | 'green' | 'grey';
+  /** Named colours only (CONTENT_COLOR_PRESETS) — behind the image, and the whole card for a top card. */
+  background?: BannerBackground;
+  /** Text drawn on the banner (top cards): dark on light artwork, light on dark artwork. */
+  textTone?: 'dark' | 'light';
 }
+
+/** A banner's background: one of the shared named colours. */
+export const BANNER_BACKGROUNDS = Object.keys(CONTENT_COLOR_PRESETS) as ContentColorPreset[];
+export type BannerBackground = ContentColorPreset;
 
 export const BANNER_HEIGHT_LIMITS = { min: 48, max: 420 } as const;
 export const BANNER_ASPECT_LIMITS = { min: 0.5, max: 6 } as const;
@@ -941,7 +948,8 @@ export function resolveBannerLayout(layout: BannerLayoutDto | null | undefined, 
     alignX: pick(value.alignX, ['left', 'center', 'right'] as const, 'center'),
     alignY: pick(value.alignY, ['top', 'center', 'bottom'] as const, 'center'),
     radius: pick(value.radius, ['none', 'sm', 'md', 'lg'] as const, 'lg'),
-    background: pick(value.background, ['none', 'white', 'green', 'grey'] as const, 'none'),
+    background: pick(value.background, BANNER_BACKGROUNDS, 'none'),
+    textTone: pick(value.textTone, ['dark', 'light'] as const, 'dark'),
   };
 }
 
@@ -1066,8 +1074,9 @@ export interface BannerPlacementInfo {
 }
 
 export const BANNER_PLACEMENTS: readonly BannerPlacementInfo[] = [
-  { key: 'home_top', screen: 'Home', label: 'Home — top carousel', hint: 'The swipeable banners at the top of Home.', defaultVariant: 'banner' },
-  { key: 'home_food', screen: 'Home', label: 'Home — above the restaurants', hint: 'Shown above the Food section on Home.', defaultVariant: 'banner' },
+  { key: 'home_top', screen: 'Home', label: 'Home — promotional area', hint: 'Between the search bar and the top cards (several become a swipeable carousel). With none live, the area is left out.', defaultVariant: 'banner' },
+  { key: 'home_cards', screen: 'Home', label: 'Home — top cards', hint: 'The cards side by side under the promotional area (three by default — Home Page Builder sets how many). Title and subtitle are drawn on the card.', defaultVariant: 'tile' },
+  { key: 'home_food', screen: 'Home', label: 'Home — food carousel', hint: 'Swipeable food cards under the main categories (three by default). With none live, the standard food banner shows.', defaultVariant: 'banner' },
   { key: 'home_category', screen: 'Home', label: 'Home — above a category shelf', hint: 'Must open a category; shown above that category\'s shelf.', defaultVariant: 'banner' },
   { key: 'home_explore', screen: 'Home', label: 'Home — explore more categories', hint: 'Shown above the subcategory grid.', defaultVariant: 'banner' },
   { key: 'home_bottom', screen: 'Home', label: 'Home — final banner (bottom)', hint: 'The last banner on the page.', defaultVariant: 'banner' },

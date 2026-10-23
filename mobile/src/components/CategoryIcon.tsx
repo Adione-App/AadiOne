@@ -35,15 +35,20 @@ export default function CategoryIcon({
   name,
   imageUrl,
   size = 56,
+  fit = "contain",
+  radius = 10,
 }: {
   name: string;
   imageUrl?: string | null;
   size?: number;
+  /** contain = the whole image; cover = fills the tile (Category Management → placement "Image"). */
+  fit?: "contain" | "cover";
+  radius?: number;
 }) {
   const box = {
     width: size,
     height: size,
-    borderRadius: 10,
+    borderRadius: radius,
   };
 
   const imageSource = imageUrl ? resolveImageUrl(imageUrl) : undefined;
@@ -53,7 +58,7 @@ export default function CategoryIcon({
       <Image
         source={{ uri: imageSource }}
         style={[box, styles.image]}
-        contentFit="contain"
+        contentFit={fit}
         transition={150}
         cachePolicy="memory-disk"
         accessibilityLabel={name}
@@ -234,11 +239,9 @@ function resolveCategoryVisual(name: string): CategoryVisual {
 const styles = StyleSheet.create({
   image: {
     backgroundColor: "transparent",
-    borderRadius: 10,
   },
   iconBox: {
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 10,
   },
 });

@@ -2158,6 +2158,36 @@ model Banner {
   @@map("banners")
 }
 
+enum ContentDocumentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+/// Admin-edited storefront configuration — today one key, "home_layout" (the
+/// shared HomeLayoutContent: Home sections, top background, top cards,
+/// category placements and category display). Each key has at most ONE draft
+/// and ONE published row (partial unique indexes in the migration);
+/// publishing archives the previous published row, so every published
+/// revision stays restorable. Customers only ever receive the published copy.
+/// User ids are plain columns (no foreign key): the audit log is the record.
+model ContentDocument {
+  id                String                @id @default(uuid()) @db.Uuid
+  key               String                @db.VarChar(60)
+  status            ContentDocumentStatus
+  /// PUBLISHED / ARCHIVED: the revision number (1, 2, …). DRAFT: the published revision it started from (0 = none).
+  revision          Int
+  content           Json
+  updatedByUserId   String?               @map("updated_by_user_id") @db.Uuid
+  publishedByUserId String?               @map("published_by_user_id") @db.Uuid
+  publishedAt       DateTime?             @map("published_at") @db.Timestamptz(3)
+  createdAt         DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([key, status, revision])
+  @@map("content_documents")
+}
+
 /// Business configuration. Every rule an admin might want to change lives
 /// here — nothing in the codebase hardcodes any of these values.
 /// What a bulk import brings in: product rows (CSV/XLSX, optional image ZIP)

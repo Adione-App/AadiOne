@@ -38,6 +38,7 @@ import { authenticatedApiLimit } from '../middleware/rateLimit';
 import { paymentRouter } from '../modules/payments/payment.routes';
 import { appVersionRouter } from '../modules/app-version/app-version.routes';
 import { clientErrorRouter } from '../modules/client-errors/client-errors.routes';
+import { contentRouter } from '../modules/content/content.routes';
 import { requireSupportedAppVersion, requireSupportedAppVersionForPayments } from '../middleware/appVersion';
 import {
   deviceRouter,
@@ -63,6 +64,8 @@ apiRouter.use('/', catalogRouter);
 apiRouter.use('/restaurants', restaurantRouter);
 apiRouter.use('/offers', offerRouter);
 apiRouter.use('/banners', bannerRouter);
+// Public: the published Home page layout (Admin Panel → Home Page Builder).
+apiRouter.use('/content', contentRouter);
 // Customer commerce routes refuse an app below the supported version
 // (middleware/appVersion.ts — requests without app headers, i.e. the admin and
 // seller panels, webhooks and integrations, pass untouched; payment

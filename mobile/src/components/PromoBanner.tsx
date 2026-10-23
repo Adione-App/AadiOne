@@ -21,6 +21,7 @@ import { Pressable, ScrollView, StyleSheet, View, useWindowDimensions, type Styl
 import { Image, type ImageContentPosition } from "expo-image";
 import {
   BANNER_SIDE_MARGIN,
+  CONTENT_COLOR_PRESETS,
   bannerFrameSize,
   resolveBannerLayout,
   type BannerDto,
@@ -36,7 +37,8 @@ import { useBanners } from "@/lib/queries";
 const AUTOPLAY_MS = 4000;
 const GAP = 10;
 const RADIUS = { none: 0, sm: radius.sm, md: radius.md, lg: radius.lg } as const;
-const BACKGROUND = { none: "transparent", white: colors.surface, green: colors.primarySurface, grey: colors.surfaceMuted } as const;
+/** Named banner backgrounds (shared CONTENT_COLOR_PRESETS — the Admin Panel preview uses the same). */
+const BACKGROUND = CONTENT_COLOR_PRESETS;
 const AXIS = { left: "0%", center: "50%", right: "100%", top: "0%", bottom: "100%" } as const;
 
 const imageAspect = (banner: BannerDto) => (banner.imageWidth > 0 && banner.imageHeight > 0 ? banner.imageWidth / banner.imageHeight : 2);

@@ -10,14 +10,18 @@ import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   BANNER_ASPECT_PRESETS,
+  BANNER_BACKGROUNDS,
   BANNER_HEIGHT_LIMITS,
   BANNER_RAIL_TARGETS,
   BANNER_SIDE_MARGIN,
   BANNER_VARIANTS,
+  CONTENT_COLOR_PRESETS,
+  CONTENT_COLOR_PRESET_LABELS,
   bannerFrameSize,
   isFoodSellerType,
   resolveBannerLayout,
   type AdminBannerDto,
+  type BannerBackground,
   type BannerLayoutDto,
   type BannerVariant,
 } from '@shared';
@@ -286,16 +290,26 @@ export function LayoutControls({
           <option value="lg">Very rounded</option>
         </select>
       </Field>
-      <Field label="Background" hint="Fills any space a contained image leaves.">
-        <select
-          className={inputClass}
-          value={resolved.background}
-          onChange={(event) => set({ background: event.target.value as 'none' | 'white' | 'green' | 'grey' })}
-        >
-          <option value="none">None</option>
-          <option value="white">White</option>
-          <option value="green">Light green</option>
-          <option value="grey">Light grey</option>
+      <Field label="Background" hint="Fills any space a contained image leaves; on a top card, the whole card.">
+        <div className="flex items-center gap-2">
+          <span className="h-6 w-6 shrink-0 rounded border border-gray-300" style={{ background: BACKGROUND[resolved.background] }} aria-hidden />
+          <select
+            className={inputClass}
+            value={resolved.background}
+            onChange={(event) => set({ background: event.target.value as BannerBackground })}
+          >
+            {BANNER_BACKGROUNDS.map((value) => (
+              <option key={value} value={value}>
+                {CONTENT_COLOR_PRESET_LABELS[value]}
+              </option>
+            ))}
+          </select>
+        </div>
+      </Field>
+      <Field label="Text colour" hint="For a title drawn on the image (top cards).">
+        <select className={inputClass} value={resolved.textTone} onChange={(event) => set({ textTone: event.target.value as 'dark' | 'light' })}>
+          <option value="dark">Dark text (light artwork)</option>
+          <option value="light">White text (dark artwork)</option>
         </select>
       </Field>
     </div>
@@ -325,7 +339,8 @@ export function fromLocalInput(value: string): string | null {
 
 const PHONE_WIDTH = 360;
 const RADIUS_PX = { none: 0, sm: 6, md: 10, lg: 14 } as const;
-const BACKGROUND = { none: 'transparent', white: '#FFFFFF', green: '#F1F9F3', grey: '#F3F4F6' } as const;
+/** The same named colours the app draws (shared CONTENT_COLOR_PRESETS). */
+const BACKGROUND = CONTENT_COLOR_PRESETS;
 const ALIGN = { left: 'left', center: 'center', right: 'right', top: 'top', bottom: 'bottom' } as const;
 
 /**

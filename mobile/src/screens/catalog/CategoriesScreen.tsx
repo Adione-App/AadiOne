@@ -43,6 +43,9 @@ import { ProductCard } from '@/components/ProductCard';
 import CategoryIcon from '@/components/CategoryIcon';
 import { buildCategoryTree, searchCategories } from './categorySections';
 import { PromoSlot } from '@/components/PromoBanner';
+import { usePreferences } from '@/lib/store';
+import { useHomeLayout } from '@/lib/homeLayoutQuery';
+import { arrangeCategoriesPage } from '../home/homeLayout';
 
 /* =====================================================================
    DRILL STATE
@@ -72,6 +75,15 @@ export default function CategoriesScreen({
   const tabBarClearance = useTabBarClearance();
   const { width } = useWindowDimensions();
   const categories = useCategories();
+  // The admin's "Categories page" placement (Category Management): which main
+  // categories, in which order, how many and how many per row — on its own,
+  // whatever Home shows. Hidden categories and display names apply here too.
+  const homeLayout = useHomeLayout();
+  const language = usePreferences((state) => state.language);
+  const arranged = useMemo(
+    () => arrangeCategoriesPage(categories.data ?? [], homeLayout, language),
+    [categories.data, homeLayout, language],
+  );
   const cart = useCartActions();
   const columns = useGridColumns();
 
@@ -283,7 +295,8 @@ export default function CategoriesScreen({
 
       {drill.level === 'root' && (
         <CategoryLanding
-          categories={categories.data}
+          categories={arranged.categories}
+          columns={arranged.columns}
           onOpenRoot={openCategory}
           onOpenChild={(category, parent) => setDrill({ level: 'category', parent, selectedChildId: category.id })}
         />
@@ -511,10 +524,13 @@ function tileColumns(innerWidth: number): number {
  */
 function CategoryLanding({
   categories,
+  columns: fixedColumns,
   onOpenRoot,
   onOpenChild,
 }: {
   categories: CategoryDto[];
+  /** Tiles per row from the admin's placement; null = as many as fit. */
+  columns: number | null;
   onOpenRoot: (category: CategoryDto) => void;
   onOpenChild: (category: CategoryDto, parent: CategoryDto) => void;
 }) {
@@ -533,7 +549,7 @@ function CategoryLanding({
   const [activeRootId, setActiveRootId] = useState<string | null>(null);
 
   const innerWidth = width - SECTION_MARGIN * 2 - SECTION_PADDING * 2 - 2;
-  const columns = tileColumns(innerWidth);
+  const columns = fixedColumns ?? tileColumns(innerWidth);
   const tileWidth = Math.floor((innerWidth - TILE_GAP * (columns - 1)) / columns);
   const imageSize = tileWidth - TILE_PADDING * 2;
 

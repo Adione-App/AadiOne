@@ -28,7 +28,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useIsFocused } from "@react-navigation/native";
 import * as Clipboard from "expo-clipboard";
 
-import type { CategoryDto } from "@shared";
+import { HOME_SPACING_DP, contentColor, type CategoryDto } from "@shared";
 import { colors, radius, spacing } from "@shared/theme";
 
 import {
@@ -42,7 +42,7 @@ import {
 } from "@/lib/queries";
 import { formatUnreadBadge } from "@/lib/notifications";
 import { useCartError } from "@/lib/useCartActions";
-import { useLocation } from "@/lib/store";
+import { useLocation, usePreferences } from "@/lib/store";
 import { isActiveLiveDestination, liveLocationLabel } from "@/lib/liveLocation";
 import { openBannerAction } from "@/lib/bannerAction";
 
@@ -68,6 +68,10 @@ import { OfferSection } from "./sections/OfferSection";
 import { ProductShelf, SHELF_CARD_WIDTH } from "./sections/ProductShelf";
 import { PromoCarousel } from "./sections/PromoCarousel";
 import { HOME_BACKGROUND } from "./sections/SectionShell";
+import { FoodCarousel } from "./sections/FoodCarousel";
+import { HomeHero, heroHeaderColor } from "./sections/HomeHero";
+import { applyHomeLayout, type LaidOutSection } from "./homeLayout";
+import { useHomeLayout } from "@/lib/homeLayoutQuery";
 import { StoreSection } from "./sections/StoreSection";
 
 const NO_RESULTS: never[] = [];
@@ -517,6 +521,19 @@ export default function HomeScreen({
     ],
   );
 
+  // The admin's published layout (Home Page Builder / Category Management):
+  // order, visibility and style of the sections the engine built above.
+  const homeLayout = useHomeLayout();
+  const language = usePreferences((state) => state.language);
+  const laidOut = useMemo(
+    () =>
+      feed.data
+        ? applyHomeLayout({ sections, feed: feed.data, layout: homeLayout, language })
+        : { promo: [], sections: NO_RESULTS as LaidOutSection[] },
+    [sections, feed.data, homeLayout, language],
+  );
+  const headerColor = heroHeaderColor(homeLayout.hero);
+
   const phrases = useMemo(
     () => searchPhrases(feed.data?.categories),
     [feed.data?.categories],
@@ -599,8 +616,8 @@ export default function HomeScreen({
     [],
   );
 
-  const renderSection = useCallback(
-    ({ item }: { item: HomeSection }) => {
+  const renderBody = useCallback(
+    (item: LaidOutSection) => {
       switch (item.kind) {
         case "banners":
           return (
@@ -608,28 +625,30 @@ export default function HomeScreen({
           );
         case "categoryGrid": {
           const viewAll = item.viewAll;
-
-          // Banner sirf first category grid ke niche show hoga
-          const firstCategoryGridKey = sections.find(
-            (section) => section.kind === "categoryGrid",
-          )?.key;
-
           return (
-            <>
-              <CategoryGrid
-                title={item.title}
-                categories={item.categories}
-                columns={item.columns}
-                onOpenCategory={handlers.openCategory}
-                onViewAll={viewAll ? () => handlers.action(viewAll) : undefined}
-              />
-
-              {item.key === firstCategoryGridKey && (
-                <RestaurantBanner onPress={handlers.openFood} />
-              )}
-            </>
+            <CategoryGrid
+              title={item.title}
+              subtitle={item.subtitle}
+              tiles={item.tiles}
+              display={item.display}
+              onOpenCategory={handlers.openCategory}
+              onViewAll={viewAll ? () => handlers.action(viewAll) : undefined}
+            />
           );
         }
+        case "foodCarousel":
+          return (
+            <FoodCarousel
+              title={item.title}
+              subtitle={item.subtitle}
+              slides={item.slides}
+              onAction={handlers.action}
+              onOpenFood={handlers.openFood}
+            />
+          );
+        case "foodFallback":
+          // No live food carousel card (Admin Panel → Banners & Cards): the standard food banner.
+          return <RestaurantBanner onPress={handlers.openFood} />;
         case "food":
           return (
             <FoodSection
@@ -650,7 +669,7 @@ export default function HomeScreen({
           return <OfferSection offers={offers} />;
         case "shelf":
           return (
-            <ProductShelf 
+            <ProductShelf
               section={item}
               onOpenProduct={handlers.openProduct}
               onAction={handlers.action}
@@ -661,6 +680,30 @@ export default function HomeScreen({
       }
     },
     [restaurants, stores, offers, near, handlers],
+  );
+
+  // Each section on its admin background, with the admin's spacing around
+  // it ("normal" = exactly the spacing Home always had).
+  const renderSection = useCallback(
+    ({ item }: { item: LaidOutSection }) => {
+      const body = renderBody(item);
+      if (body === null) return null;
+      const tinted = item.frame.background !== "none";
+      const extra = HOME_SPACING_DP[item.frame.spacing] - HOME_SPACING_DP.normal;
+      if (!tinted && extra === 0) return body;
+      return (
+        <View
+          style={{
+            backgroundColor: tinted ? contentColor(item.frame.background, "transparent") : undefined,
+            paddingVertical: tinted ? spacing.xs : 0,
+            marginVertical: extra / 2,
+          }}
+        >
+          {body}
+        </View>
+      );
+    },
+    [renderBody],
   );
 
   return (
@@ -714,7 +757,11 @@ export default function HomeScreen({
             scrolling underneath, right where the header used to be. This
             spacer only ever needs to cover the truly constant, never-
             animated status-bar strip at the very top. */}
-        <View style={{ height: insets.top, backgroundColor: colors.surface }} />
+        {/* The status-bar strip, header and search bar sit on the Home
+            background's first colour (HomeHero below continues it), so the
+            background reads as one surface from the very top of the screen.
+            Colour only — their layout and transforms are unchanged. */}
+        <View style={{ height: insets.top, backgroundColor: headerColor }} />
 
         <ReanimatedAnimated.View
           // Android specifically: this view has NO dynamic style at all
@@ -740,7 +787,11 @@ export default function HomeScreen({
             if (headerHeight === 0)
               setHeaderHeight(event.nativeEvent.layout.height);
           }}
-          style={[styles.header, { paddingTop: 4 }, headerAnimatedStyle]}
+          style={[
+            styles.header,
+            { paddingTop: 4, backgroundColor: headerColor, borderBottomColor: "transparent" },
+            headerAnimatedStyle,
+          ]}
         >
           {/* Wraps just the address/profile CONTENT with the opacity fade
               that used to sit on the outer view above (see
@@ -861,7 +912,7 @@ export default function HomeScreen({
        
         <ReanimatedAnimated.View
           collapsable={false}
-          style={[styles.searchBarRow, searchBarAnimatedStyle]}
+          style={[styles.searchBarRow, { backgroundColor: headerColor }, searchBarAnimatedStyle]}
         >
           <Pressable
             onPress={onOpenSearch}
@@ -883,7 +934,7 @@ export default function HomeScreen({
       ============================================================ */}
 
       <ReanimatedAnimated.FlatList
-        data={sections}
+        data={laidOut.sections}
         keyExtractor={sectionKey}
         renderItem={renderSection}
         onScroll={scrollHandler}
@@ -909,6 +960,17 @@ export default function HomeScreen({
         }}
         ListHeaderComponent={
           <>
+            {/* ====================================================
+                TOP OF THE PAGE — promotional area + top cards on the
+                admin's background (Home Page Builder).
+            ==================================================== */}
+
+            <HomeHero
+              hero={homeLayout.hero}
+              promo={laidOut.promo}
+              onAction={handlers.action}
+            />
+
             {/* ====================================================
                 SERVICEABILITY / CART NOTICES
             ==================================================== */}
@@ -1025,7 +1087,7 @@ export default function HomeScreen({
   );
 }
 
-const sectionKey = (section: HomeSection) => section.key;
+const sectionKey = (section: { key: string }) => section.key;
 
 /* =====================================================================
    STYLES

@@ -33,7 +33,13 @@ export const SELLER_DIRECT_UPLOAD_PATH = '/api/v1/seller/uploads/direct';
 
 /** The storage folder this seller's uploads live under. */
 export function sellerImageFolder(sellerId: string): string {
-  const tag = createHmac('sha256', env.JWT_SECRET).update(`seller-image-folder:${sellerId}`).digest('hex').slice(0, 24);
+  // Its own key when set, so rotating JWT_SECRET does not move every seller's folder (env.ts).
+  return sellerImageFolderFor(sellerId, env.SELLER_IMAGE_FOLDER_KEY ?? env.JWT_SECRET);
+}
+
+/** The folder name for `sellerId` under HMAC key `key` (pure; exported for tests). */
+export function sellerImageFolderFor(sellerId: string, key: string): string {
+  const tag = createHmac('sha256', key).update(`seller-image-folder:${sellerId}`).digest('hex').slice(0, 24);
   return `products/s-${tag}`;
 }
 

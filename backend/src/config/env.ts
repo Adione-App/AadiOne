@@ -161,6 +161,19 @@ const envSchema = z
 
     JWT_REFRESH_TTL_DAYS: z.coerce.number().int().positive().default(30),
 
+    /**
+     * Key of the HMAC that names each seller's image folder (seller-image.service).
+     * Optional: unset (or empty), JWT_SECRET is used — the original behaviour, so
+     * existing folders keep their names. Before rotating JWT_SECRET, set this to
+     * the CURRENT JWT_SECRET value: the folders then stay where they are.
+     */
+    SELLER_IMAGE_FOLDER_KEY: z
+      .string()
+      .trim()
+      .transform((v) => v || undefined)
+      .pipe(z.string().min(32, "SELLER_IMAGE_FOLDER_KEY must be at least 32 characters").optional())
+      .optional(),
+
     // OTP
     OTP_PEPPER: nonEmpty("OTP_PEPPER").min(
       32,

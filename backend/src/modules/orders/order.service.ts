@@ -1092,6 +1092,21 @@ export async function placeOrder(
 
       /* --- coupon redemption (parent-level) ------------------------------ */
       if (coupon) {
+        // Claim one use ATOMICALLY. resolveCoupon's earlier read is advisory:
+        // two checkouts at once could both see a free use. This UPDATE takes
+        // the coupon row's lock until commit, so concurrent checkouts with the
+        // same coupon queue here and both limits are checked against COMMITTED
+        // uses — a limited coupon is never used beyond its limit.
+        const claimed = await tx.$queryRaw<{ usage_limit_per_user: number }[]>`
+          UPDATE coupons SET used_count = used_count + 1, updated_at = now()
+          WHERE id = ${coupon.id}::uuid AND is_active
+            AND (usage_limit_total IS NULL OR used_count < usage_limit_total)
+          RETURNING usage_limit_per_user`;
+        if (claimed.length === 0) throw new AppError(ErrorCode.COUPON_LIMIT_REACHED);
+        const usedByUser = await tx.couponRedemption.count({ where: { couponId: coupon.id, userId: input.userId } });
+        if (usedByUser >= claimed[0]!.usage_limit_per_user) {
+          throw new AppError(ErrorCode.COUPON_LIMIT_REACHED, { message: "You have already used this coupon." });
+        }
         await tx.couponRedemption.create({
           data: {
             couponId: coupon.id,
@@ -1099,10 +1114,6 @@ export async function placeOrder(
             orderId: order.id,
             discountPaise: bill.couponDiscountPaise,
           },
-        });
-        await tx.coupon.update({
-          where: { id: coupon.id },
-          data: { usedCount: { increment: 1 } },
         });
       }
 

@@ -80,10 +80,22 @@ async function getOrCreateCart(userId: string, client: DbClient = prisma) {
 
   // The partial unique index `carts_one_active_per_user` guarantees a
   // concurrent duplicate create fails rather than producing two live carts.
-  return client.cart.create({
-    data: { userId, status: "ACTIVE" },
-    include: CART_INCLUDE,
-  });
+  try {
+    return await client.cart.create({
+      data: { userId, status: "ACTIVE" },
+      include: CART_INCLUDE,
+    });
+  } catch (error) {
+    // A simultaneous request (double tap, two screens loading the cart, two
+    // devices) created it a moment ago: use that cart instead of failing the
+    // shopper's request with "already exists". (No caller passes a
+    // transaction — inside one, the failed insert would abort it.)
+    if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) throw error;
+    return client.cart.findFirstOrThrow({
+      where: { userId, status: "ACTIVE" },
+      include: CART_INCLUDE,
+    });
+  }
 }
 
 type LoadedCart = Awaited<ReturnType<typeof getOrCreateCart>>;

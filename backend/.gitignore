@@ -14,11 +14,15 @@ node_modules/
 .env
 .env.*
 !.env.example
-.env.test
 
 **/.env
 **/.env.*
 !**/.env.example
+
+# The ONE committed env file: the test configuration, dummy/local values only
+# (tests/test-env.ts refuses to run if a real credential appears in it).
+# Anchored to this folder, so no other .env.test anywhere is un-ignored.
+!/.env.test
 
 # ---------------------------------------------------------
 # Build output

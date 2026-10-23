@@ -21,7 +21,7 @@ import path from 'node:path';
 import { env } from '../../config/env';
 import { AppError } from '../../common/errors';
 import { ErrorCode } from '../../shared';
-import { presignS3 } from './index';
+import { presignS3, STORAGE_REQUEST_TIMEOUT_MS } from './index';
 
 export interface PrivateDocumentStore {
   readonly name: string;
@@ -96,6 +96,7 @@ class S3PrivateDocumentStore implements PrivateDocumentStore {
       method: 'PUT',
       body: new Uint8Array(body),
       headers: { 'Content-Type': contentType },
+      signal: AbortSignal.timeout(STORAGE_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
       throw new AppError(ErrorCode.INTERNAL_ERROR, { internalMessage: `private document upload failed: ${response.status}` });
@@ -104,7 +105,9 @@ class S3PrivateDocumentStore implements PrivateDocumentStore {
 
   async get(key: string): Promise<Buffer> {
     assertDocumentKey(key);
-    const response = await fetch(presignS3('GET', this.bucket(), key, undefined, 120));
+    const response = await fetch(presignS3('GET', this.bucket(), key, undefined, 120), {
+      signal: AbortSignal.timeout(STORAGE_REQUEST_TIMEOUT_MS),
+    });
     if (response.status === 404) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Document file not found.' });
     }
@@ -116,7 +119,10 @@ class S3PrivateDocumentStore implements PrivateDocumentStore {
 
   async remove(key: string): Promise<void> {
     assertDocumentKey(key);
-    await fetch(presignS3('DELETE', this.bucket(), key, undefined, 120), { method: 'DELETE' }).catch(() => undefined);
+    await fetch(presignS3('DELETE', this.bucket(), key, undefined, 120), {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(STORAGE_REQUEST_TIMEOUT_MS),
+    }).catch(() => undefined);
   }
 }
 

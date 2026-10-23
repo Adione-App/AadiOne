@@ -115,6 +115,13 @@ const ALLOWED_CONTENT_TYPES = new Set([
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
 /**
+ * Upper bound for one object-storage request. Without it a hung connection
+ * holds the request (an upload, an image read) for undici's ~5-minute default;
+ * an aborted request fails like any other storage error.
+ */
+export const STORAGE_REQUEST_TIMEOUT_MS = 60_000;
+
+/**
  * Cache-Control stored on every image the server writes to the bucket. Keys
  * are UUID-named and never rewritten with other content, so a year with
  * `immutable` is safe. (Supabase/Cloudflare answer HEAD with `no-cache`
@@ -537,6 +544,8 @@ class S3StorageProvider implements StorageProvider {
 
       body: new Uint8Array(body),
 
+      signal: AbortSignal.timeout(STORAGE_REQUEST_TIMEOUT_MS),
+
       headers: {
         "Content-Type": contentType,
         "Cache-Control": IMAGE_CACHE_CONTROL,
@@ -599,7 +608,9 @@ class S3StorageProvider implements StorageProvider {
   /* ------------------------------------------------------------------------ */
 
   async get(key: string, maxBytes: number): Promise<Buffer | null> {
-    const response = await fetch(this.sign("GET", key, undefined, 300));
+    const response = await fetch(this.sign("GET", key, undefined, 300), {
+      signal: AbortSignal.timeout(STORAGE_REQUEST_TIMEOUT_MS),
+    });
 
     // Supabase answers a missing object with 400 or 404.
     if (response.status === 404 || response.status === 400) {
@@ -657,6 +668,7 @@ class S3StorageProvider implements StorageProvider {
 
       const response = await fetch(url, {
         method: "DELETE",
+        signal: AbortSignal.timeout(STORAGE_REQUEST_TIMEOUT_MS),
       });
 
       if (!response.ok) {

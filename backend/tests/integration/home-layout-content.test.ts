@@ -351,3 +351,46 @@ describe('top cards and banner presets', () => {
     expect((await published()).layout.hero.background).toMatchObject({ type: 'image', imageUrl: image.url, overlayOpacity: 0.3 });
   });
 });
+
+describe('Food Section destination', () => {
+  it('a banner can open the Food section: no target is stored, and customers get FOOD', async () => {
+    const imageKey = await adminUpload(admin, 'banner');
+    const created = expectSuccess<AdminBannerDto>(
+      (await as(admin).post('/admin/banners', { placement: 'home_top', title: 'Hungry?', imageKey, actionType: 'FOOD', actionValue: 'ignored-anything' }).expect(201)).body,
+    ).data;
+    expect(created).toMatchObject({ actionType: 'FOOD', actionValue: null });
+    const live = expectSuccess<BannerDto[]>((await api().get('/api/v1/banners?placement=home_top').expect(200)).body).data;
+    expect(live.map((banner) => [banner.title, banner.actionType, banner.actionValue])).toEqual([['Hungry?', 'FOOD', null]]);
+  });
+
+  it('an unknown destination is still refused', async () => {
+    const imageKey = await adminUpload(admin, 'banner');
+    fails((await as(admin).post('/admin/banners', { placement: 'home_top', imageKey, actionType: 'SCREEN' }).expect(400)).body, ErrorCode.VALIDATION_ERROR);
+  });
+});
+
+describe('Latest products (GET /products/rail/RECENTLY_ADDED — the Home "Latest products" section)', () => {
+  it('newest eligible products first; out-of-stock products and switched-off sellers are left out', async () => {
+    const one = await seedSeller('9400000817');
+    const two = await seedSeller('9400000818');
+    await branch(one, admin, 'Grocery', 'Rice');
+    await branch(one, admin, 'Snacks', 'Chips');
+    await branch(one, admin, 'Dairy', 'Milk');
+    await branch(two, admin, 'Bakery', 'Bread');
+
+    const product = (sub: string, seller: { id: string }) => prisma.product.findFirstOrThrow({ where: { name: `${sub} 1 kg ${seller.id.slice(0, 4)}` } });
+    const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000);
+    const [rice, chips, milk, bread] = await Promise.all([product('Rice', one), product('Chips', one), product('Milk', one), product('Bread', two)]);
+    await prisma.product.update({ where: { id: rice.id }, data: { createdAt: hoursAgo(72) } });
+    await prisma.product.update({ where: { id: chips.id }, data: { createdAt: hoursAgo(24) } });
+    await prisma.product.update({ where: { id: milk.id }, data: { createdAt: hoursAgo(1) } });
+    await prisma.product.update({ where: { id: bread.id }, data: { createdAt: hoursAgo(2) } });
+    // Newest, but nothing left to sell.
+    await prisma.sellerListing.updateMany({ where: { variant: { productId: milk.id } }, data: { stockQty: 0 } });
+    // Second newest, but its seller is switched off.
+    await prisma.seller.update({ where: { id: two.id }, data: { isActive: false } });
+
+    const rail = expectSuccess<{ products: { id: string; name: string }[] }>((await api().get('/api/v1/products/rail/RECENTLY_ADDED?limit=10').expect(200)).body).data;
+    expect(rail.products.map((p) => p.id)).toEqual([chips.id, rice.id]);
+  });
+});

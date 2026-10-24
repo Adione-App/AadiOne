@@ -14,7 +14,14 @@ import assert from "node:assert/strict";
 import { DEFAULT_HOME_LAYOUT, resolveHomeLayout } from "../src/shared/home-layout.ts";
 import type { CategoryDto, HomeFeedDto, HomeLayoutContent } from "../src/shared/index.ts";
 import type { HomeSection, PromoSlide } from "../src/screens/home/homeEngine.ts";
-import { FOOD_CAROUSEL_DEFAULT_CARDS, applyHomeLayout, arrangeCategoriesPage, type LaidOutSection } from "../src/screens/home/homeLayout.ts";
+import {
+  FOOD_CAROUSEL_DEFAULT_CARDS,
+  LATEST_DEFAULT_COUNT,
+  LATEST_DEFAULT_TITLE,
+  applyHomeLayout,
+  arrangeCategoriesPage,
+  type LaidOutSection,
+} from "../src/screens/home/homeLayout.ts";
 
 /* Fixtures ------------------------------------------------------------------ */
 
@@ -116,7 +123,7 @@ describe("applyHomeLayout — the default layout", () => {
       "rail:TOP_PICKS",
       "rail:OFFERS",
       "offers",
-      "rail:RECENTLY_ADDED",
+      "latest-products", // newest-first list, fetched by the screen (not the engine's de-duplicated rail)
       "previous-orders",
       "banners:bottom",
       "footer",
@@ -227,5 +234,34 @@ describe("applyHomeLayout — the admin's choices", () => {
   it("a malformed layout from the server still yields a complete Home (resolveHomeLayout first)", () => {
     const result = applyHomeLayout({ sections: engineSections(), feed, layout: resolveHomeLayout({ sections: "nope", hero: 7 }) });
     assert.equal(result.sections.length, applyHomeLayout({ sections: engineSections(), feed, layout: defaults() }).sections.length);
+  });
+});
+
+describe("applyHomeLayout — latest products and the Food section destination", () => {
+  it("the latest-products section is always there (unless hidden), with the admin's heading and count", () => {
+    const latest = (layout: HomeLayoutContent) => applyHomeLayout({ sections: engineSections(), feed, layout }).sections.find((s) => s.kind === "latest");
+    const byDefault = latest(defaults());
+    assert.ok(byDefault && byDefault.kind === "latest");
+    assert.deepEqual([byDefault.title, byDefault.maxItems], [LATEST_DEFAULT_TITLE, LATEST_DEFAULT_COUNT]);
+    const set = latest(edit((l) => {
+      const section = l.sections.find((x) => x.key === "recently_added")!;
+      section.title = "New in";
+      section.maxItems = 6;
+    }));
+    assert.ok(set && set.kind === "latest");
+    assert.deepEqual([set.title, set.maxItems], ["New in", 6]);
+    assert.equal(latest(edit((l) => void (l.sections.find((x) => x.key === "recently_added")!.visible = false))), undefined);
+    // It replaces the engine's de-duplicated rail — never both.
+    assert.equal(keys(applyHomeLayout({ sections: engineSections(), feed, layout: defaults() }).sections).includes("rail:RECENTLY_ADDED"), false);
+  });
+
+  it("a banner set to open the Food section opens Food, wherever on Home it shows; others keep their action", () => {
+    const banner = (id: string, actionType: string) => ({ id, imageUrl: "x", imageWidth: 2, imageHeight: 1, title: id, subtitle: null, actionType, actionValue: null }) as never;
+    const withBanners = { ...feed, banners: [banner("top1", "FOOD"), banner("top2", "NONE")], sectionBanners: { home_bottom: [banner("bottom", "FOOD")] } } as HomeFeedDto;
+    const result = applyHomeLayout({ sections: engineSections(), feed: withBanners, layout: defaults() });
+    assert.deepEqual(result.promo.map((s) => s.action.type), ["food", "none"]);
+    const bottom = result.sections.find((s) => s.key === "banners:bottom");
+    assert.ok(bottom && bottom.kind === "banners");
+    assert.equal(bottom.slides[0]!.action.type, "food");
   });
 });

@@ -156,6 +156,8 @@ async function withLiveTargets(banners: Banner[]): Promise<BannerDto[]> {
     const value = banner.actionValue ?? '';
     const live =
       banner.actionType === BannerActionType.NONE ||
+      // The Food section always exists (with no restaurant live it simply says so).
+      banner.actionType === BannerActionType.FOOD ||
       (banner.actionType === BannerActionType.CATEGORY && liveCategory.has(value)) ||
       (banner.actionType === BannerActionType.PRODUCT && liveProduct.has(value)) ||
       (banner.actionType === BannerActionType.STORE && sellerType.has(value) && !isFoodSellerType(sellerType.get(value)!)) ||
@@ -236,7 +238,8 @@ function storedLayout(placement: string, layout: BannerLayoutDto): Prisma.InputJ
 
 /** A tap action must point at something that exists — never a dead link. */
 async function assertAction(type: BannerActionType, value: string | null): Promise<string | null> {
-  if (type === BannerActionType.NONE) return null;
+  // NONE and FOOD (the Food section) carry no target: any value sent is dropped.
+  if (type === BannerActionType.NONE || type === BannerActionType.FOOD) return null;
   const target = value?.trim();
   if (!target) {
     throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Choose what the banner opens.', details: [{ field: 'actionValue', message: 'required' }] });

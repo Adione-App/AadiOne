@@ -165,7 +165,8 @@ export default function CategoryDisplayPage() {
 
 /* Placements ------------------------------------------------------------- */
 
-function PlacementEditor({
+/** One placement's settings, chosen categories and preview — used here and inside the Home Page Builder. */
+export function PlacementEditor({
   placementKey,
   layout,
   options,
@@ -187,8 +188,25 @@ function PlacementEditor({
   const columns = placement.columns ?? 4;
   const visibleCount = Math.min(shown.length, categoryPlacementLimit(placement, columns));
   const byPath = new Map(options.map((option) => [option.path, option]));
-  const eligible = options.filter((option) => (info.level === 'top' ? option.depth === 0 : info.level === 'sub' ? option.depth > 0 : true));
-  const addable = eligible.filter((option) => !placement.paths.includes(option.path) && (!search || `${option.name} ${option.path}`.toLowerCase().includes(search.toLowerCase())));
+  // Home placements can hand-pick top categories AND subcategories; the
+  // Categories tab is organised by main category, so it picks top ones only.
+  const pickLevel = placementKey === 'categories_page' ? 'top' : 'any';
+  const [levelFilter, setLevelFilter] = useState<'all' | 'top' | 'sub'>(info.level === 'sub' ? 'sub' : 'all');
+  const styleOf = new Map(layout.categoryStyles.map((style) => [style.path, style]));
+  const parentName = (option: AdminCategoryOptionDto) => (option.parentPath ? byPath.get(option.parentPath)?.name ?? option.parentPath : null);
+  const pickLabel = (option: AdminCategoryOptionDto) => (option.parentPath ? `${parentName(option)} › ${option.name}` : option.name);
+  const term = search.trim().toLowerCase();
+  const addable = options.filter((option) => {
+    if (placement.paths.includes(option.path)) return false;
+    if (pickLevel === 'top' && option.depth !== 0) return false;
+    if (levelFilter === 'top' && option.depth !== 0) return false;
+    if (levelFilter === 'sub' && option.depth === 0) return false;
+    if (!term) return true;
+    const style = styleOf.get(option.path);
+    // English and Hindi names, the admin's display names, the parent's name and the path.
+    return [option.name, option.nameHi, style?.displayName, style?.displayNameHi, parentName(option), option.path]
+      .some((value) => value?.toLowerCase().includes(term));
+  });
 
   return (
     <Surface className="space-y-4 p-4">
@@ -304,7 +322,7 @@ function PlacementEditor({
                       {canEdit && <MoveButtons index={index} count={placement.paths.length} onMove={(to) => onChange((p) => void (p.paths = moved(p.paths, index, to)))} label={option?.name ?? path} />}
                       <Thumb src={imageSrc(option?.imageUrl)} alt={option?.name ?? path} />
                       <span className="min-w-0 flex-1 truncate">
-                        {option?.name ?? <span className="text-danger-600">{path} — no longer live</span>}
+                        {option ? pickLabel(option) : <span className="text-danger-600">{path} — no longer live</span>}
                         <span className="ml-1 text-xs text-gray-400">{path}</span>
                       </span>
                       {canEdit && (
@@ -320,7 +338,16 @@ function PlacementEditor({
           </div>
           {canEdit && (
             <div>
-              <SearchInput value={search} onChange={setSearch} placeholder={`Find a ${info.level === 'sub' ? 'subcategory' : 'category'}…`} />
+              <div className="flex flex-wrap items-center gap-2">
+                <SearchInput value={search} onChange={setSearch} placeholder="Search by name (English or हिन्दी)…" className="min-w-[200px] flex-1" />
+                {pickLevel === 'any' && (
+                  <select aria-label="Show" className={`${inputClass} w-auto`} value={levelFilter} onChange={(event) => setLevelFilter(event.target.value as 'all')}>
+                    <option value="all">All</option>
+                    <option value="top">Top categories</option>
+                    <option value="sub">Subcategories</option>
+                  </select>
+                )}
+              </div>
               <ul className="mt-2 max-h-72 space-y-1 overflow-y-auto">
                 {addable.slice(0, 50).map((option) => (
                   <li key={option.path}>
@@ -331,7 +358,7 @@ function PlacementEditor({
                       className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm hover:bg-brand-50 disabled:opacity-40"
                     >
                       <Icon name="plus" className="h-4 w-4 text-brand-600" />
-                      <span className="flex-1 truncate">{option.name}</span>
+                      <span className="flex-1 truncate">{pickLabel(option)}</span>
                       <span className="text-xs text-gray-400">{option.productCount} products</span>
                     </button>
                   </li>

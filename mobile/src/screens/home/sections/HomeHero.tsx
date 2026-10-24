@@ -4,11 +4,14 @@
  * Page Builder → Top of the page): a solid colour, a gradient or an image
  * with an optional tint.
  *
- * The header and search bar above it are painted in the background's first
- * colour (`heroHeaderColor`), so the background reads as one surface from
- * the very top of the screen down to below the cards. The hero is part of
- * the scrolling list — it scrolls away like any section and never changes
- * the header overlay's own layout (HomeScreen's transform-only header).
+ * The hero owns the background of the WHOLE top of the screen: it starts at
+ * the very top of the list (`topInset` = the floating header + search bar's
+ * height), so its background is what shows behind the header and search bar
+ * — HomeScreen keeps those transparent until the page scrolls, then fades in
+ * a solid `heroHeaderColor` fill. There is no gap any other view could paint
+ * (or leave white) between the search bar and the promotional banner. The
+ * hero scrolls away like any section and never changes the header overlay's
+ * own layout (HomeScreen's transform-only header).
  *
  * With no promotional banner and no card live, only a small strip of the
  * background is drawn — never an empty placeholder.
@@ -27,7 +30,7 @@ import { PromoCarousel } from "./PromoCarousel";
 
 const FALLBACK = "#FFFFFF";
 
-/** The colour the header and search bar sit on — the background's first colour. */
+/** The header and search bar's fill once the page scrolls — the background's first colour. */
 export function heroHeaderColor(hero: HomeHeroConfig): string {
   return contentColor(hero.background.color, FALLBACK);
 }
@@ -69,7 +72,18 @@ function Background({ hero, width, height }: { hero: HomeHeroConfig; width: numb
   return <View style={[StyleSheet.absoluteFill, { backgroundColor: contentColor(background.color, FALLBACK) }]} />;
 }
 
-function HomeHeroImpl({ hero, promo, onAction }: { hero: HomeHeroConfig; promo: PromoSlide[]; onAction: (action: HomeAction) => void }) {
+function HomeHeroImpl({
+  hero,
+  promo,
+  onAction,
+  topInset,
+}: {
+  hero: HomeHeroConfig;
+  promo: PromoSlide[];
+  onAction: (action: HomeAction) => void;
+  /** Height of the floating header + search bar the hero sits behind. */
+  topInset: number;
+}) {
   const [size, setSize] = useState({ width: 0, height: 0 });
   const onLayout = (event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
@@ -77,12 +91,10 @@ function HomeHeroImpl({ hero, promo, onAction }: { hero: HomeHeroConfig; promo: 
   };
   const pad = HOME_SPACING_DP[hero.padding];
   return (
-    <View onLayout={onLayout} style={[styles.hero, { paddingBottom: pad }]}>
+    <View onLayout={onLayout} style={[styles.hero, { paddingTop: topInset + spacing.xs, paddingBottom: pad }]}>
       <Background hero={hero} width={size.width} height={size.height} />
       {promo.length > 0 ? (
-        <View style={styles.promo}>
-          <PromoCarousel slides={promo} onAction={onAction} />
-        </View>
+        <PromoCarousel slides={promo} onAction={onAction} onBackdrop />
       ) : null}
       <View style={{ marginTop: promo.length > 0 ? spacing.sm : pad / 2 }}>
         <FeatureCards config={hero.cards} />
@@ -96,9 +108,5 @@ export const HomeHero = memo(HomeHeroImpl);
 const styles = StyleSheet.create({
   hero: {
     overflow: "hidden",
-    paddingTop: spacing.xs,
-  },
-  promo: {
-    marginTop: spacing.xs,
   },
 });

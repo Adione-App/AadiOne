@@ -69,12 +69,16 @@ import { ProductShelf, SHELF_CARD_WIDTH } from "./sections/ProductShelf";
 import { PromoCarousel } from "./sections/PromoCarousel";
 import { HOME_BACKGROUND } from "./sections/SectionShell";
 import { FoodCarousel } from "./sections/FoodCarousel";
+import { LatestProducts } from "./sections/LatestProducts";
 import { HomeHero, heroHeaderColor } from "./sections/HomeHero";
 import { applyHomeLayout, type LaidOutSection } from "./homeLayout";
 import { useHomeLayout } from "@/lib/homeLayoutQuery";
 import { StoreSection } from "./sections/StoreSection";
 
 const NO_RESULTS: never[] = [];
+
+/** Scroll distance (dp) over which the header's solid fill fades in. */
+const OVERLAY_FILL_SCROLL = 12;
 
 function RestaurantBanner({ onPress }: { onPress: () => void }) {
   return (
@@ -467,6 +471,19 @@ export default function HomeScreen({
     };
   }, [headerHeight]);
 
+  // The header, search bar and status-bar strip are TRANSPARENT at rest, so
+  // the Home hero's own background (which starts at the very top of the
+  // list, behind them) is what shows — one continuous surface from the top of
+  // the screen to below the top cards. Their solid fill fades in over the
+  // first few pixels of scroll, so content scrolling underneath is covered
+  // again. Opacity only, on each piece's OWN fill layer (inside the view that
+  // already translates), so this never changes any layout or re-creates the
+  // stale-block bug described on `topOverlay`. A pull-down past the top
+  // (iOS bounce) keeps the fill on, so no gap opens above the hero.
+  const overlayFillStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(scrollY.value, [-1, 0, OVERLAY_FILL_SCROLL], [1, 0, 1], Extrapolation.CLAMP),
+  }));
+
   useEffect(() => {
     void refresh();
 
@@ -646,6 +663,16 @@ export default function HomeScreen({
               onOpenFood={handlers.openFood}
             />
           );
+        case "latest":
+          return (
+            <LatestProducts
+              title={item.title}
+              subtitle={item.subtitle}
+              maxItems={item.maxItems}
+              onOpenProduct={handlers.openProduct}
+              onAction={handlers.action}
+            />
+          );
         case "foodFallback":
           // No live food carousel card (Admin Panel → Banners & Cards): the standard food banner.
           return <RestaurantBanner onPress={handlers.openFood} />;
@@ -761,7 +788,10 @@ export default function HomeScreen({
             background's first colour (HomeHero below continues it), so the
             background reads as one surface from the very top of the screen.
             Colour only — their layout and transforms are unchanged. */}
-        <View style={{ height: insets.top, backgroundColor: headerColor }} />
+        <ReanimatedAnimated.View
+          collapsable={false}
+          style={[{ height: insets.top, backgroundColor: headerColor }, overlayFillStyle]}
+        />
 
         <ReanimatedAnimated.View
           // Android specifically: this view has NO dynamic style at all
@@ -789,10 +819,15 @@ export default function HomeScreen({
           }}
           style={[
             styles.header,
-            { paddingTop: 4, backgroundColor: headerColor, borderBottomColor: "transparent" },
+            { paddingTop: 4, backgroundColor: "transparent", borderBottomColor: "transparent" },
             headerAnimatedStyle,
           ]}
         >
+          <ReanimatedAnimated.View
+            pointerEvents="none"
+            collapsable={false}
+            style={[StyleSheet.absoluteFill, { backgroundColor: headerColor }, overlayFillStyle]}
+          />
           {/* Wraps just the address/profile CONTENT with the opacity fade
               that used to sit on the outer view above (see
               `headerContentAnimatedStyle`'s own comment) — the outer view's
@@ -912,8 +947,13 @@ export default function HomeScreen({
        
         <ReanimatedAnimated.View
           collapsable={false}
-          style={[styles.searchBarRow, { backgroundColor: headerColor }, searchBarAnimatedStyle]}
+          style={[styles.searchBarRow, { backgroundColor: "transparent" }, searchBarAnimatedStyle]}
         >
+          <ReanimatedAnimated.View
+            pointerEvents="none"
+            collapsable={false}
+            style={[StyleSheet.absoluteFill, { backgroundColor: headerColor }, overlayFillStyle]}
+          />
           <Pressable
             onPress={onOpenSearch}
             style={styles.searchBar}
@@ -951,7 +991,9 @@ export default function HomeScreen({
           // scrollY=0. This is what lets the overlay float ABOVE the list
           // (rather than push it down) without covering the first row of
           // content while fully expanded.
-          paddingTop: overlayHeight,
+          // (The overlay's height is reserved INSIDE the hero — `topInset` —
+          // so the hero's background owns that space; see HomeHero.)
+          paddingTop: 0,
           // `tabBarClearance` keeps the last section clear of the floating
           // tab bar; the extra `spacing.base` covers MiniCartBar's resting
           // footprint on devices with no bottom inset (see MainTabs.tsx's
@@ -969,6 +1011,7 @@ export default function HomeScreen({
               hero={homeLayout.hero}
               promo={laidOut.promo}
               onAction={handlers.action}
+              topInset={overlayHeight}
             />
 
             {/* ====================================================

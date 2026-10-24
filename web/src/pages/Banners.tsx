@@ -48,7 +48,7 @@ import {
   useHomeCategoryOrder,
   type BannerFields,
 } from '@/lib/content';
-import { ACTION_LABEL, LayoutControls, PhonePreview, TargetPicker, VISIBILITY_LABEL, fromLocalInput, toLocalInput } from './bannerEditor';
+import { ACTION_LABEL, LayoutControls, actionNeedsTarget, PhonePreview, TargetPicker, VISIBILITY_LABEL, fromLocalInput, toLocalInput } from './bannerEditor';
 
 type Notice = { ok: boolean; text: string };
 type Editing = { mode: 'create' } | { mode: 'edit'; banner: AdminBannerDto };
@@ -316,7 +316,7 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
     const placement = chosenPlacement;
     if (!placement) return setError('Choose where the banner shows.');
     if (!current && !file) return setError('Choose a banner image.');
-    if (actionType !== 'NONE' && !actionValue.trim()) return setError('Choose what the banner opens.');
+    if (actionNeedsTarget(actionType) && !actionValue.trim()) return setError('Choose what the banner opens.');
     if (placement === HOME_BANNER_PLACEMENTS.CATEGORY && actionType !== 'CATEGORY') {
       return setError('A banner shown above a category shelf must open that category. Choose "Opens a category".');
     }
@@ -332,7 +332,7 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
       subtitle: subtitle.trim() || null,
       ctaLabel: ctaLabel.trim() || null,
       actionType,
-      actionValue: actionType === 'NONE' ? null : actionValue.trim(),
+      actionValue: actionNeedsTarget(actionType) ? actionValue.trim() : null,
       displayOrder: order,
       isActive,
       status: publish,

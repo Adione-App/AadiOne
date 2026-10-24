@@ -551,7 +551,11 @@ function CategoryLanding({
   const innerWidth = width - SECTION_MARGIN * 2 - SECTION_PADDING * 2 - 2;
   const columns = fixedColumns ?? tileColumns(innerWidth);
   const tileWidth = Math.floor((innerWidth - TILE_GAP * (columns - 1)) / columns);
+  // The image box fills the tile's width; the IMAGE inside it has its own
+  // size — the box less a margin, capped — so a wider tile (wider phone)
+  // gets more room around the image, not a bigger, zoomed-in image.
   const imageSize = tileWidth - TILE_PADDING * 2;
+  const iconSize = Math.min(imageSize - TILE_IMAGE_MARGIN, TILE_IMAGE_MAX);
 
   // A main category opens its full product listing (its subcategories + all its products).
   const openRoot = (root: CategoryDto) => {
@@ -700,7 +704,7 @@ function CategoryLanding({
                       accessibilityLabel={`Open ${category.name}`}
                     >
                       <View style={[styles.tileImage, { height: imageSize }]}>
-                        <CategoryIcon name={category.name} imageUrl={category.imageUrl} size={imageSize - 6} />
+                        <CategoryIcon name={category.name} imageUrl={category.imageUrl} size={iconSize} />
                       </View>
                       <AppText variant="caption" numberOfLines={2} style={styles.tileLabel}>
                         {category.name}
@@ -725,6 +729,10 @@ const SECTION_MARGIN = spacing.md;
 const SECTION_PADDING = spacing.md;
 const TILE_GAP = spacing.sm;
 const TILE_PADDING = 6;
+/** Space between a category image and its box's edge. */
+const TILE_IMAGE_MARGIN = 6;
+/** A category image never grows past this, however wide its tile (the size typical phones already showed). */
+const TILE_IMAGE_MAX = 62;
 /** Narrowest a tile may get before a column is dropped. */
 const MIN_TILE_WIDTH = 68;
 
@@ -888,7 +896,10 @@ const styles = StyleSheet.create({
     gap: TILE_GAP,
   },
   tile: {
-    padding: TILE_PADDING,
+    paddingHorizontal: TILE_PADDING,
+    // A little taller than the image alone, so the label has room to breathe.
+    paddingTop: TILE_PADDING + 2,
+    paddingBottom: TILE_PADDING + 4,
     borderRadius: radius.md,
     backgroundColor: colors.primarySurface,
     alignItems: 'center',
@@ -900,8 +911,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   tileLabel: {
-    marginTop: spacing.xs,
+    marginTop: spacing.xs + 2,
+    // Two lines on every tile, so a row's labels line up.
     minHeight: 32,
+    fontSize: 12,
+    lineHeight: 16,
     textAlign: 'center',
     color: colors.textPrimary,
     fontWeight: '600',

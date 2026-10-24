@@ -18,7 +18,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  CATEGORY_PLACEMENT_INFO,
   HOME_BACKGROUND_TYPES,
   HOME_CARD_COUNT_LIMITS,
   HOME_CARD_GAP_DP,
@@ -35,6 +34,8 @@ import {
   roleHasPermission,
   type AdminBannerDto,
   type AdminCategoryOptionDto,
+  type CategoryPlacementConfig,
+  type CategoryPlacementKey,
   type HomeLayoutContent,
   type HomeSectionConfig,
 } from '@shared';
@@ -46,7 +47,7 @@ import { adminErrorMessage } from '@/lib/marketplace';
 import { useAdminBanners } from '@/lib/content';
 import { uploadHomeBackground, useCategoryOptions, useLayoutEditor } from '@/lib/homeLayout';
 import { ColorPicker, MoveButtons, NoticeLine, PublishBar, backgroundCss, moved, type Notice } from './homeLayoutUi';
-import { placementCategories } from './CategoryDisplay';
+import { PlacementEditor, placementCategories } from './CategoryDisplay';
 
 const SPACING_LABEL = { compact: 'Compact', normal: 'Normal', relaxed: 'Relaxed' } as const;
 const BACKGROUND_TYPE_LABEL = { solid: 'Solid colour', gradient: 'Gradient', image: 'Image' } as const;
@@ -255,6 +256,9 @@ export default function HomeBuilderPage() {
                   summary={sectionSummary(section, layout, liveBanners, categories.data ?? [])}
                   onChange={(change) => update((l) => change(l.sections.find((s) => s.key === section.key)!))}
                   onMove={(to) => update((l) => void (l.sections = moved(l.sections, index, to)))}
+                  layout={layout}
+                  categoryOptions={categories.data ?? []}
+                  onPlacement={(key, change) => update((l) => change(l.categoryPlacements[key]))}
                 />
               ))}
             </ol>
@@ -337,6 +341,9 @@ function SectionRow({
   summary,
   onChange,
   onMove,
+  layout,
+  categoryOptions,
+  onPlacement,
 }: {
   section: HomeSectionConfig;
   index: number;
@@ -347,6 +354,9 @@ function SectionRow({
   summary: string;
   onChange: (change: (section: HomeSectionConfig) => void) => void;
   onMove: (to: number) => void;
+  layout: HomeLayoutContent;
+  categoryOptions: AdminCategoryOptionDto[];
+  onPlacement: (key: CategoryPlacementKey, change: (placement: CategoryPlacementConfig) => void) => void;
 }) {
   const info = HOME_SECTION_INFO[section.key];
   return (
@@ -403,7 +413,7 @@ function SectionRow({
             </select>
           </Field>
           {info.countLimits && (
-            <Field label="Cards shown" hint={`${info.countLimits.min}–${info.countLimits.max}; ${info.countLimits.default} by default.`}>
+            <Field label={info.bannerPlacement ? 'Cards shown' : 'Products shown'} hint={`${info.countLimits.min}–${info.countLimits.max}; ${info.countLimits.default} by default.`}>
               <input
                 type="number"
                 className={inputClass}
@@ -417,15 +427,22 @@ function SectionRow({
               />
             </Field>
           )}
-          {info.categoryPlacement && (
-            <p className="text-sm text-gray-600 md:col-span-2">
-              Which categories, how many and how they look:{' '}
-              <Link to="/category-display" className="font-semibold text-brand-700 underline">
-                Category Management → {CATEGORY_PLACEMENT_INFO[info.categoryPlacement].label}
-              </Link>
-            </p>
-          )}
         </fieldset>
+      )}
+      {open && info.categoryPlacement && (
+        <div className="mt-3">
+          {/* The same placement editor as Category Management — one setting, edited from either page. */}
+          <PlacementEditor
+            placementKey={info.categoryPlacement}
+            layout={layout}
+            options={categoryOptions}
+            canEdit={canEdit}
+            onChange={(change) => onPlacement(info.categoryPlacement!, change)}
+          />
+          <p className="mt-2 text-xs text-gray-500">
+            Display names, colours and hiding a category everywhere: <Link to="/category-display" className="font-semibold text-brand-700 underline">Category Management → Categories</Link>.
+          </p>
+        </div>
       )}
     </li>
   );

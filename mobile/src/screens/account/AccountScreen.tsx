@@ -109,18 +109,21 @@ export default function AccountScreen({ onSelect }: { onSelect: (key: string) =>
             help, about, policies) works as it is; the rest asks for a login
             when tapped (stacks.tsx). */}
         {!user ? (
-          <View style={styles.profileCard}>
-            <View style={styles.avatar}>
-              <UserRound size={30} color={colors.onPrimary} strokeWidth={2} />
+          <View style={styles.guestCard}>
+            <View style={styles.guestRow}>
+              <View style={styles.guestAvatar}>
+                <UserRound size={24} color={colors.primary} strokeWidth={2.2} />
+              </View>
+              <View style={styles.guestText}>
+                <AppText variant="bodyLarge" style={styles.guestTitle}>
+                  Welcome to Aadione
+                </AppText>
+                <AppText variant="caption" color={colors.textSecondary} numberOfLines={2}>
+                  Log in to order, track deliveries and save addresses.
+                </AppText>
+              </View>
             </View>
-
-            <View style={{ marginLeft: spacing.base, flex: 1 }}>
-              <AppText variant="h3">Welcome to AadiOne</AppText>
-              <AppText variant="caption" color={colors.textSecondary} style={{ marginTop: 2 }}>
-                Log in to place orders, track them and save your addresses.
-              </AppText>
-              <Button label="Log in" onPress={() => openLogin('account')} style={styles.loginButton} />
-            </View>
+            <Button label="Log in / Sign up" onPress={() => openLogin('account')} style={styles.guestButton} />
           </View>
         ) : (
           <View style={styles.profileCard}>
@@ -260,10 +263,34 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   verifiedText: { fontWeight: '700' },
-  loginButton: {
-    alignSelf: 'flex-start',
-    marginTop: spacing.sm,
-    paddingHorizontal: spacing.xl,
+  /* Signed out: a compact white card — small avatar beside a short welcome,
+     then one full-width sign-in button. */
+  guestCard: {
+    marginTop: spacing.base,
+    padding: spacing.base,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  guestRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  guestAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: radius.circle,
+    backgroundColor: colors.primarySurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  guestText: { flex: 1, minWidth: 0, gap: 2 },
+  guestTitle: { fontWeight: '700', color: colors.textPrimary },
+  guestButton: {
+    marginTop: spacing.md,
+    alignSelf: 'stretch',
   },
 
   quickRow: {

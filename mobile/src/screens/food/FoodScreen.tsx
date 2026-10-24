@@ -315,12 +315,24 @@ export default function FoodScreen({
     </View>
   );
 
-  const emptyHint =
+  // Nothing to list. The server only returns places that deliver to the
+  // chosen location (each seller's own radius — the rule checkout enforces),
+  // so the usual reason is a location outside every delivery area: say so,
+  // and offer the one action that helps.
+  const empty: { title: string; hint: string; action?: { label: string; onPress: () => void } } =
     filterKey !== "ALL"
-      ? "Nothing matches this filter here right now. Try another filter."
+      ? { title: "No places to show", hint: "Nothing matches this filter here right now.", action: { label: "Show all", onPress: () => setFilterKey("ALL") } }
       : location
-        ? "No restaurant or cafe delivers to this location right now. Try another address."
-        : "Set your delivery location to see the restaurants and cafes near you.";
+        ? {
+            title: "Not delivering here yet",
+            hint: `No restaurant or cafe delivers to ${location.label ?? "this location"} right now. Try another delivery address.`,
+            ...(onOpenLocation ? { action: { label: "Change location", onPress: onOpenLocation } } : {}),
+          }
+        : {
+            title: "Where should we deliver?",
+            hint: "Set your delivery location to see the restaurants and cafes near you.",
+            ...(onOpenLocation ? { action: { label: "Set location", onPress: onOpenLocation } } : {}),
+          };
 
   return (
     <Screen style={styles.screen}>
@@ -369,8 +381,9 @@ export default function FoodScreen({
                   strokeWidth={1.75}
                 />
               }
-              title="No places to show"
-              hint={emptyHint}
+              title={empty.title}
+              hint={empty.hint}
+              {...(empty.action ? { action: empty.action } : {})}
             />
           )
         }

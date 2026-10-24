@@ -11,6 +11,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from "react-native";
 import { Image } from "expo-image";
+import { contentColor } from "@shared";
 import { colors, radius, spacing } from "@shared/theme";
 import { AppText } from "@/components/ui";
 import { resolveImageUrl } from "@/lib/api";
@@ -73,9 +74,16 @@ function actionHint(action: HomeAction): string | undefined {
 function PromoCarouselImpl({
   slides,
   onAction,
+  onBackdrop = false,
 }: {
   slides: PromoSlide[];
   onAction: (action: HomeAction) => void;
+  /**
+   * Drawn on a coloured backdrop (the Home hero): a banner with no background
+   * of its own lets the backdrop show around a contained image instead of
+   * the light frame colour — which on the hero read as a white strip.
+   */
+  onBackdrop?: boolean;
 }) {
   const { width: windowWidth } = useWindowDimensions();
   const slideWidth = Math.min(MAX_SLIDE_WIDTH, windowWidth - spacing.base * 2);
@@ -142,7 +150,18 @@ function PromoCarouselImpl({
             disabled={slide.action.type === "none"}
             style={[
               styles.slide,
-              { width: slideWidth, height: slideHeight, marginRight: index === slides.length - 1 ? 0 : spacing.sm },
+              {
+                width: slideWidth,
+                height: slideHeight,
+                marginRight: index === slides.length - 1 ? 0 : spacing.sm,
+                // The banner's own background (Admin Panel); none = the frame colour, or the backdrop on the hero.
+                backgroundColor:
+                  slide.layout.background !== "none"
+                    ? contentColor(slide.layout.background, colors.primarySurface)
+                    : onBackdrop
+                      ? "transparent"
+                      : colors.primarySurface,
+              },
             ]}
             accessibilityRole={slide.action.type === "none" ? "image" : "button"}
             accessibilityLabel={[slide.title, slide.subtitle].filter(Boolean).join(", ") || "Promotional banner"}

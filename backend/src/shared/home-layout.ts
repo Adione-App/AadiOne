@@ -222,7 +222,14 @@ export const HOME_SECTION_INFO: Record<HomeSectionKey, HomeSectionInfo> = {
   top_picks: { label: 'Top picks', hint: 'Best-selling products.', titleEditable: true, countLimits: null, categoryPlacement: null, bannerPlacement: null },
   offers_rail: { label: 'Products on offer', hint: 'Discounted products.', titleEditable: true, countLimits: null, categoryPlacement: null, bannerPlacement: null },
   offers: { label: 'Offers and coupons', hint: 'Live coupons and offers.', titleEditable: false, countLimits: null, categoryPlacement: null, bannerPlacement: null },
-  recently_added: { label: 'Recently added', hint: 'Newest products.', titleEditable: true, countLimits: null, categoryPlacement: null, bannerPlacement: null },
+  recently_added: {
+    label: 'Latest products',
+    hint: 'The newest products customers can buy right now, newest first — never best-sellers or random picks.',
+    titleEditable: true,
+    countLimits: { min: 4, max: 20, default: 10 },
+    categoryPlacement: null,
+    bannerPlacement: null,
+  },
   previous_orders: {
     label: 'Previous orders',
     hint: 'A signed-in customer\'s earlier purchases.',
@@ -303,25 +310,25 @@ export const CATEGORY_PLACEMENT_INFO: Record<CategoryPlacementKey, CategoryPlace
     label: 'Home — shop by category',
     hint: 'The main category grid near the top of Home.',
     level: 'top',
-    defaults: { mode: 'auto', maxItems: 8, columns: 4, rows: null, layout: 'grid', showViewAll: true, tileShape: 'rounded', imageFit: 'cover', tileBackground: 'green' },
+    defaults: { mode: 'auto', maxItems: 8, columns: 4, rows: null, layout: 'grid', showViewAll: true, tileShape: 'rounded', imageFit: 'contain', tileBackground: 'green' },
   },
   home_explore: {
     label: 'Home — explore subcategories',
     hint: 'Subcategories from across the catalogue, taking turns between their parents.',
     level: 'sub',
-    defaults: { mode: 'auto', maxItems: 10, columns: 5, rows: null, layout: 'grid', showViewAll: true, tileShape: 'rounded', imageFit: 'cover', tileBackground: 'green' },
+    defaults: { mode: 'auto', maxItems: 10, columns: 5, rows: null, layout: 'grid', showViewAll: true, tileShape: 'rounded', imageFit: 'contain', tileBackground: 'green' },
   },
   home_more: {
     label: 'Home — more categories',
     hint: 'Categories and subcategories not already shown higher up.',
     level: 'any',
-    defaults: { mode: 'auto', maxItems: 12, columns: 4, rows: null, layout: 'grid', showViewAll: true, tileShape: 'rounded', imageFit: 'cover', tileBackground: 'green' },
+    defaults: { mode: 'auto', maxItems: 12, columns: 4, rows: null, layout: 'grid', showViewAll: true, tileShape: 'rounded', imageFit: 'contain', tileBackground: 'green' },
   },
   categories_page: {
     label: 'Categories page — main categories',
     hint: 'The main grid of the Categories tab.',
     level: 'top',
-    defaults: { mode: 'auto', maxItems: 60, columns: null, rows: null, layout: 'grid', showViewAll: false, tileShape: 'rounded', imageFit: 'cover', tileBackground: 'green' },
+    defaults: { mode: 'auto', maxItems: 60, columns: null, rows: null, layout: 'grid', showViewAll: false, tileShape: 'rounded', imageFit: 'contain', tileBackground: 'green' },
   },
 };
 

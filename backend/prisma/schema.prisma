@@ -2108,6 +2108,8 @@ enum BannerActionType {
   RESTAURANT
   RAIL
   URL
+  /// The Food section (restaurants and cafes) — no target value.
+  FOOD
 }
 
 enum BannerStatus {

@@ -38,10 +38,14 @@ export const ACTION_LABEL: Record<ActionType, string> = {
   PRODUCT: 'Opens a product',
   STORE: 'Opens a store',
   RESTAURANT: 'Opens a restaurant or cafe',
+  FOOD: 'Opens the Food section (all restaurants & cafes)',
   RAIL: 'Opens a product listing',
   URL: 'Opens a web link (https)',
   COUPON: 'Copies a coupon code',
 };
+
+/** Whether an action needs a target (an id, a listing, a link, a code) — NONE and FOOD do not. */
+export const actionNeedsTarget = (type: ActionType): boolean => type !== 'NONE' && type !== 'FOOD';
 
 export const VARIANT_LABEL: Record<BannerVariant, string> = {
   banner: 'Banner — an image, several become a carousel',
@@ -188,6 +192,8 @@ export function TargetPicker({
           <input className={inputClass} value={value} maxLength={500} placeholder="https://" onChange={(event) => onChange(event.target.value.trim())} />
         </Field>
       );
+    case 'FOOD':
+      return <p className="text-sm text-gray-600">Tapping it opens the app's Food section — every restaurant and cafe that delivers to the customer.</p>;
     case 'COUPON':
       return (
         <Field label="Coupon code" required hint="Tapping the banner copies this code.">

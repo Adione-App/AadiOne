@@ -20,9 +20,18 @@ import { SectionHeader, SectionPanel } from "./SectionShell";
 const GRID_INSET = spacing.xs;
 /** A tile never gets narrower than this when the columns are automatic. */
 const MIN_TILE_WIDTH = 76;
-const ROW_TILE_WIDTH = 84;
-/** Image box per tiles-per-row — 4 and 5 keep the sizes Home always had. */
-const BOX_BY_COLUMNS: Record<number, number> = { 3: 96, 4: 80, 5: 70, 6: 58 };
+const ROW_TILE_WIDTH = 92;
+/** The tile (coloured box) per tiles-per-row — a little roomier than before, never wider than its cell. */
+const BOX_BY_COLUMNS: Record<number, number> = { 3: 104, 4: 88, 5: 76, 6: 62 };
+/**
+ * The category IMAGE per tiles-per-row, set on its own so a bigger tile does
+ * not blow up the image: 4 and 5 per row are the sizes Home always used
+ * (80 − 8 and 70 − 8), the whole image shown, centred, with a margin.
+ */
+const IMAGE_BY_COLUMNS: Record<number, number> = { 3: 80, 4: 72, 5: 62, 6: 50 };
+const ROW_IMAGE = 66;
+/** Space kept between a contained image and its tile's edge. */
+const IMAGE_MARGIN = 6;
 const DEFAULT_TILE_COLOR = "#F0F8F0";
 const TEXT_COLOR = { dark: "#26382A", light: "#FFFFFF" } as const;
 
@@ -36,17 +45,21 @@ function Tile({
   tile,
   display,
   width,
-  box: preferred,
+  box: preferredBox,
+  image: preferredImage,
   onOpenCategory,
 }: {
   tile: CategoryTile;
   display: CategoryGridDisplay;
   width: number;
   box: number;
+  image: number;
   onOpenCategory: (categoryId: string) => void;
 }) {
-  // Never wider than its cell (a little room either side), never tiny.
-  const box = Math.max(48, Math.min(preferred, Math.floor(width - 4)));
+  // The tile: never wider than its cell (a little room either side), never tiny.
+  const box = Math.max(48, Math.min(preferredBox, Math.floor(width - 4)));
+  // The image: its own size, inside the tile with a margin. "Fill the tile" (cover) is the admin's explicit choice.
+  const image = display.imageFit === "cover" ? box : Math.max(36, Math.min(preferredImage, box - IMAGE_MARGIN));
   const radius = display.tileShape === "circle" ? box / 2 : display.tileShape === "square" ? 0 : 14;
   return (
     <Pressable
@@ -64,7 +77,7 @@ function Tile({
         <CategoryIcon
           name={tile.category.name}
           imageUrl={tile.category.imageUrl}
-          size={display.imageFit === "cover" ? box : box - 8}
+          size={image}
           fit={display.imageFit}
           radius={display.imageFit === "cover" ? radius : 10}
         />
@@ -100,7 +113,7 @@ function CategoryGridImpl({
         <SectionHeader title={title} subtitle={subtitle} onViewAll={onViewAll} />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
           {tiles.map((tile) => (
-            <Tile key={tile.category.id} tile={tile} display={display} width={ROW_TILE_WIDTH} box={72} onOpenCategory={onOpenCategory} />
+            <Tile key={tile.category.id} tile={tile} display={display} width={ROW_TILE_WIDTH} box={80} image={ROW_IMAGE} onOpenCategory={onOpenCategory} />
           ))}
         </ScrollView>
       </SectionPanel>
@@ -117,7 +130,7 @@ function CategoryGridImpl({
       <SectionHeader title={title} subtitle={subtitle} onViewAll={onViewAll} />
       <View style={styles.grid}>
         {tiles.map((tile) => (
-          <Tile key={tile.category.id} tile={tile} display={display} width={cell} box={BOX_BY_COLUMNS[columns] ?? 80} onOpenCategory={onOpenCategory} />
+          <Tile key={tile.category.id} tile={tile} display={display} width={cell} box={BOX_BY_COLUMNS[columns] ?? 88} image={IMAGE_BY_COLUMNS[columns] ?? 72} onOpenCategory={onOpenCategory} />
         ))}
       </View>
     </SectionPanel>
@@ -151,9 +164,11 @@ const styles = StyleSheet.create({
   name: {
     marginTop: spacing.sm,
     paddingHorizontal: 2,
+    // Room for two lines on every tile, so a row's labels and tiles line up.
+    minHeight: 32,
     textAlign: "center",
-    fontSize: 12,
-    lineHeight: 14,
+    fontSize: 12.5,
+    lineHeight: 16,
     fontWeight: "600",
     color: TEXT_COLOR.dark,
   },

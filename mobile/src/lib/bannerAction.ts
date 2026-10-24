@@ -27,11 +27,18 @@ function isHttpsUrl(value: string): boolean {
 
 /** Whether a tap does anything — a decorative banner is not a button. */
 export function bannerIsTappable(banner: BannerAction): boolean {
+  // The Food section needs no target value.
+  if (banner.actionType === "FOOD") return true;
   if (banner.actionType === "NONE" || !banner.actionValue) return false;
   return banner.actionType !== "URL" || isHttpsUrl(banner.actionValue);
 }
 
 export function openBannerAction(banner: BannerAction): void {
+  if (banner.actionType === "FOOD") {
+    if (!navigationRef.isReady()) return;
+    (navigationRef.navigate as (name: string, params?: object) => void)("Food", { screen: "FoodHome" });
+    return;
+  }
   const value = banner.actionValue;
   if (!value || !bannerIsTappable(banner)) return;
 

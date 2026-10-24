@@ -861,15 +861,15 @@ export interface BannerDto {
   /**
    * What the tap opens, by actionType: a category / product / seller id, a
    * coupon code, a rail key (BANNER_RAIL_TARGETS) or an https URL; null for
-   * NONE. Customers get NONE (non-interactive) when the target no longer exists.
+   * NONE and FOOD. Customers get NONE (non-interactive) when the target no longer exists.
    */
   actionValue: string | null;
   /** How the banner is drawn (see BannerLayoutDto); absent from older servers = the defaults. */
   layout?: BannerLayoutDto;
 }
 
-/** What tapping a banner does. NONE = a purely decorative image. */
-export type BannerActionTypeDto = 'CATEGORY' | 'PRODUCT' | 'COUPON' | 'STORE' | 'RESTAURANT' | 'RAIL' | 'URL' | 'NONE';
+/** What tapping a banner does. NONE = a purely decorative image; FOOD = the Food section (no target value). */
+export type BannerActionTypeDto = 'CATEGORY' | 'PRODUCT' | 'COUPON' | 'STORE' | 'RESTAURANT' | 'RAIL' | 'URL' | 'FOOD' | 'NONE';
 
 /* -------------------------------------------------------------------------- */
 /* Banner presentation — set per banner in the Admin Panel                    */

@@ -17,7 +17,9 @@
  *   - the food banners become a carousel of at most N cards, or the standard
  *     food banner when none is live;
  *   - an engine section this file does not know is kept (before the footer),
- *     so a newer engine never loses content; the footer stays last.
+ *     so a newer engine never loses content; the footer stays last;
+ *   - a banner set to open the Food section (actionType FOOD — newer than the
+ *     engine's own mapping) opens it, wherever on Home it shows.
  *
  * Pure and dependency-free (types only), so it is unit tested with Node's
  * own test runner (tests/homeLayout.test.ts). The layout it receives has
@@ -25,6 +27,7 @@
  */
 
 import type {
+  BannerDto,
   CategoryDto,
   CategoryPlacementConfig,
   CategoryPlacementKey,
@@ -75,7 +78,14 @@ export type LaidOutSection =
       frame: SectionFrame;
     }
   /** No live food carousel card: the standard food banner (the app's own). */
-  | { kind: "foodFallback"; key: "food-fallback"; frame: SectionFrame };
+  | { kind: "foodFallback"; key: "food-fallback"; frame: SectionFrame }
+  /**
+   * Latest products: the newest buyable products, newest first, straight
+   * from the server's newest-first listing (GET /products/rail/RECENTLY_ADDED)
+   * — not the engine's de-duplicated preview, which skips products other
+   * sections already show. The screen fetches and draws it.
+   */
+  | { kind: "latest"; key: "latest-products"; title: string; subtitle: string | null; maxItems: number; frame: SectionFrame };
 
 /** Where a section sits on the page: its background and the space around it. */
 export interface SectionFrame {
@@ -96,6 +106,10 @@ export interface HomeLayoutResult {
 const PRIORITY_TITLES = ["grocery", "vegetables & fruits"];
 
 const NEUTRAL_FRAME: SectionFrame = { group: null, background: "none", spacing: "normal" };
+
+/** Latest products: default heading and count (HOME_SECTION_INFO.recently_added). */
+export const LATEST_DEFAULT_TITLE = "Latest Products";
+export const LATEST_DEFAULT_COUNT = 10;
 
 /** The default number of food carousel cards (HOME_SECTION_INFO.food_carousel). */
 export const FOOD_CAROUSEL_DEFAULT_CARDS = 3;
@@ -209,6 +223,24 @@ function placementTiles(key: CategoryPlacementKey, config: CategoryPlacementConf
   return take(index.tops.map((top) => ({ category: top, parent: null })));
 }
 
+/** Every banner Home received, by id (the engine's slide keys end in the banner id). */
+function homeBanners(feed: HomeFeedDto): Map<string, BannerDto> {
+  const all = [
+    ...feed.banners,
+    ...Object.values(feed.sectionBanners ?? {}).flatMap((list) => list ?? []),
+    ...(feed.categoryBanners ?? []).flatMap((entry) => entry.banners),
+  ];
+  return new Map(all.map((banner) => [banner.id, banner]));
+}
+
+/** A "Food section" banner opens Food (the engine predates that action and would leave it inert). */
+function withFoodActions(slides: PromoSlide[], banners: Map<string, BannerDto>): PromoSlide[] {
+  return slides.map((slide) => {
+    const banner = banners.get(slide.key.slice(slide.key.lastIndexOf(":") + 1));
+    return banner?.actionType === "FOOD" ? { ...slide, action: { type: "food" } } : slide;
+  });
+}
+
 const GRID_PLACEMENT: Partial<Record<string, CategoryPlacementKey>> = {
   "grid:top": "home_top",
   "grid:explore": "home_explore",
@@ -230,6 +262,7 @@ export function applyHomeLayout({ sections, feed, layout, language = "en" }: App
   const railTitle = new Map(feed.categoryRails.map((rail) => [rail.categoryId, rail.title.trim().toLowerCase()]));
   const featured = (categoryId: string) => featuredIds.has(categoryId) || PRIORITY_TITLES.includes(railTitle.get(categoryId) ?? "");
 
+  const banners = homeBanners(feed);
   const byGroup = new Map<HomeSectionKey, HomeSection[]>();
   const unknown: HomeSection[] = [];
   let promo: PromoSlide[] = [];
@@ -237,11 +270,12 @@ export function applyHomeLayout({ sections, feed, layout, language = "en" }: App
 
   for (const section of sections) {
     const group = groupOf(section, featured);
+    const fixed = section.kind === "banners" ? { ...section, slides: withFoodActions(section.slides, banners) } : section;
     if (group === "promo") {
-      if (section.kind === "banners") promo = section.slides;
-    } else if (group === "footer") footer = section;
-    else if (group === null) unknown.push(section);
-    else byGroup.set(group, [...(byGroup.get(group) ?? []), section]);
+      if (fixed.kind === "banners") promo = fixed.slides;
+    } else if (group === "footer") footer = fixed;
+    else if (group === null) unknown.push(fixed);
+    else byGroup.set(group, [...(byGroup.get(group) ?? []), fixed]);
   }
 
   const index = indexCategories(feed, layout.categoryStyles, language);
@@ -259,6 +293,18 @@ export function applyHomeLayout({ sections, feed, layout, language = "en" }: App
     if (!sectionConfig.visible) continue;
     const frame: SectionFrame = { group: sectionConfig.key, background: sectionConfig.background, spacing: sectionConfig.spacing };
     const members = byGroup.get(sectionConfig.key) ?? [];
+
+    if (sectionConfig.key === "recently_added") {
+      out.push({
+        kind: "latest",
+        key: "latest-products",
+        title: sectionConfig.title ?? LATEST_DEFAULT_TITLE,
+        subtitle: sectionConfig.subtitle,
+        maxItems: sectionConfig.maxItems ?? LATEST_DEFAULT_COUNT,
+        frame,
+      });
+      continue;
+    }
 
     if (sectionConfig.key === "food_carousel") {
       const slides = members.flatMap((member) => (member.kind === "banners" ? member.slides : []));

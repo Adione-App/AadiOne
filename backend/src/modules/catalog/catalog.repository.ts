@@ -476,6 +476,178 @@ export async function listRailProductIds(
 }
 
 /* -------------------------------------------------------------------------- */
+/* Home Page Builder — configured product shelves and the product picker     */
+/* -------------------------------------------------------------------------- */
+
+export interface ShelfProductQuery {
+  source: "random" | "latest" | "bestselling" | "manual";
+  /** Category paths (each includes its subcategories); empty = every category. Not applied to a manual shelf's own picks. */
+  categoryPaths: readonly string[];
+  /** manual: exactly these products, in this order (those not buyable right now are skipped). */
+  productIds?: readonly string[];
+  /** Never returned (a manual shelf's picks, when topping it up). */
+  excludeIds?: readonly string[];
+  /** random: today's seed — the same seed gives the same order. */
+  seed?: string;
+  limit: number;
+}
+
+const uuidList = (ids: readonly string[]) => Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`));
+
+/**
+ * One configured Home shelf's products, ids in display order. The same
+ * customer-visibility rules as every listing (LISTED_JOINS: live marketplace
+ * seller and switched-on categories; approved, active product; a listing that
+ * is available with stock to sell). GROUP BY p.id: a product is listed once
+ * however many sellers, variants or chosen categories match it.
+ *
+ *   random       md5(id || seed): a fixed order for a given seed (the shelf
+ *                id + the day), so the shelf does not reshuffle on every
+ *                visit; a product joining or leaving the scope changes it
+ *   latest       newest first (RECENTLY_ADDED's order)
+ *   bestselling  delivered quantity, then a stable order (TOP_PICKS' order)
+ *   manual       the chosen order
+ */
+export async function listShelfProductIds(query: ShelfProductQuery, client: DbClient = prisma): Promise<string[]> {
+  if (query.limit <= 0) return [];
+  const picks = query.productIds ?? [];
+  if (query.source === "manual" && picks.length === 0) return [];
+
+  const scope =
+    query.source !== "manual" && query.categoryPaths.length > 0
+      ? Prisma.sql`AND (${Prisma.join(
+          query.categoryPaths.map((path) => Prisma.sql`(c.path = ${path} OR c.path LIKE ${`${path}/%`})`),
+          " OR ",
+        )})`
+      : Prisma.empty;
+  const only = query.source === "manual" ? Prisma.sql`AND p.id IN (${uuidList(picks)})` : Prisma.empty;
+  const exclude = query.excludeIds && query.excludeIds.length > 0 ? Prisma.sql`AND p.id NOT IN (${uuidList(query.excludeIds)})` : Prisma.empty;
+  const soldJoin =
+    query.source === "bestselling"
+      ? Prisma.sql`
+          LEFT JOIN (
+            SELECT oi.variant_id, so.seller_id, SUM(oi.qty) AS qty
+            FROM order_items oi
+            JOIN seller_orders so ON so.id = oi.seller_order_id
+            JOIN orders o ON o.id = so.order_id AND o.status = 'DELIVERED'
+            GROUP BY oi.variant_id, so.seller_id
+          ) sold ON sold.variant_id = v.id AND sold.seller_id = sl.seller_id`
+      : Prisma.empty;
+  const ordering = {
+    random: Prisma.sql`md5(p.id::text || ${query.seed ?? ""})`,
+    latest: Prisma.sql`p.created_at DESC`,
+    bestselling: Prisma.sql`COALESCE(SUM(sold.qty), 0) DESC, p.popularity_score DESC, p.created_at ASC`,
+    manual: Prisma.sql`array_position(${[...picks]}::uuid[], p.id)`,
+  }[query.source];
+
+  const rows = await client.$queryRaw<{ id: string }[]>`
+    SELECT p.id
+    FROM products p
+    ${LISTED_JOINS}
+    ${soldJoin}
+    WHERE ${PUBLIC_PRODUCT_SQL}
+      AND sl.is_available
+      AND ${hasStockToSellSql("sl")}
+      ${scope}
+      ${only}
+      ${exclude}
+    GROUP BY p.id, p.popularity_score, p.created_at
+    ORDER BY ${ordering}, p.id ASC
+    LIMIT ${query.limit}`;
+  return rows.map((row) => row.id);
+}
+
+export interface ProductOptionRow {
+  id: string;
+  name: string;
+  image_url: string | null;
+  category_path: string;
+  category_name: string;
+  parent_name: string | null;
+  brand_name: string | null;
+  price_paise: number | null;
+  mrp_paise: number | null;
+  variant_count: number;
+  seller_count: number;
+  available: boolean;
+}
+
+/**
+ * The builder's product picker: published (active, approved) products under
+ * live marketplace categories — restaurants' menus are not part of Home
+ * shelves — with their lowest live price, how many variants and sellers they
+ * have, and whether customers can buy them right now. Name order, keyset
+ * paginated on (name, id).
+ */
+export async function listProductOptions(
+  input: {
+    search?: string;
+    categoryPath?: string;
+    sellerId?: string;
+    ids?: readonly string[];
+    after?: { name: string; id: string };
+    limit: number;
+  },
+  client: DbClient = prisma,
+): Promise<ProductOptionRow[]> {
+  const term = input.search?.trim();
+  const like = term ? `%${term.replace(/[\\%_]/g, (char) => `\\${char}`)}%` : null;
+  const search = like
+    ? Prisma.sql`AND (p.name ILIKE ${like} OR p.name_hi ILIKE ${like} OR b.name ILIKE ${like})`
+    : Prisma.empty;
+  const category = input.categoryPath
+    ? Prisma.sql`AND (c.path = ${input.categoryPath} OR c.path LIKE ${`${input.categoryPath}/%`})`
+    : Prisma.empty;
+  const seller = input.sellerId
+    ? Prisma.sql`AND EXISTS (
+        SELECT 1 FROM product_variants fv JOIN seller_listings fl ON fl.variant_id = fv.id
+        WHERE fv.product_id = p.id AND fv.deleted_at IS NULL AND fl.seller_id = ${input.sellerId}::uuid)`
+    : Prisma.empty;
+  const ids = input.ids ? (input.ids.length > 0 ? Prisma.sql`AND p.id IN (${uuidList(input.ids)})` : Prisma.sql`AND FALSE`) : Prisma.empty;
+  const after = input.after ? Prisma.sql`AND (p.name, p.id) > (${input.after.name}, ${input.after.id}::uuid)` : Prisma.empty;
+
+  return client.$queryRaw<ProductOptionRow[]>`
+    SELECT p.id, p.name,
+      (SELECT COALESCE(pi.card_url, pi.thumb_url, pi.url) FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.display_order, pi.created_at LIMIT 1) AS image_url,
+      c.path AS category_path, c.name AS category_name, parent.name AS parent_name, b.name AS brand_name,
+      agg.price_paise, agg.mrp_paise,
+      COALESCE(agg.seller_count, 0)::int AS seller_count,
+      COALESCE(agg.available, FALSE) AS available,
+      (SELECT count(*) FROM product_variants cv WHERE cv.product_id = p.id AND cv.status = 'ACTIVE' AND cv.deleted_at IS NULL)::int AS variant_count
+    FROM products p
+    JOIN categories c ON c.id = p.category_id AND c.is_active AND c.deleted_at IS NULL
+    JOIN sellers s ON s.id = c.seller_id AND ${MARKETPLACE_SELLER_SQL}
+    LEFT JOIN categories parent ON parent.id = c.parent_id
+    LEFT JOIN brands b ON b.id = p.brand_id
+    LEFT JOIN LATERAL (
+      SELECT MIN(sl.price_paise)::int AS price_paise,
+        (array_agg(sl.mrp_paise ORDER BY sl.price_paise))[1]::int AS mrp_paise,
+        count(DISTINCT sl.seller_id)::int AS seller_count,
+        bool_or(sl.is_available AND ${hasStockToSellSql("sl")}) AS available
+      FROM product_variants v
+      JOIN seller_listings sl ON sl.variant_id = v.id
+      JOIN sellers ls ON ls.id = sl.seller_id AND ls.deleted_at IS NULL AND ls.is_active AND ls.onboarding_status = 'APPROVED'
+      WHERE v.product_id = p.id AND v.status = 'ACTIVE' AND v.deleted_at IS NULL
+    ) agg ON TRUE
+    WHERE ${PUBLIC_PRODUCT_SQL}
+      ${search}
+      ${category}
+      ${seller}
+      ${ids}
+      ${after}
+    ORDER BY p.name, p.id
+    LIMIT ${input.limit}`;
+}
+
+/** Of `ids`, the products that still exist as published (active, approved, not deleted) products. */
+export async function findPublishedProductIds(ids: readonly string[], client: DbClient = prisma): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await client.$queryRaw<{ id: string }[]>`
+    SELECT p.id FROM products p WHERE p.id IN (${uuidList(ids)}) AND ${PUBLIC_PRODUCT_SQL}`;
+  return new Set(rows.map((row) => row.id));
+}
+
+/* -------------------------------------------------------------------------- */
 /* Store directory — what each marketplace seller shows a customer           */
 /* -------------------------------------------------------------------------- */
 

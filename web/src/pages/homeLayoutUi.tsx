@@ -221,6 +221,56 @@ export function MoveButtons({ index, count, onMove, label, disabled }: { index: 
   );
 }
 
+/**
+ * Drag-and-drop reordering for a list (sections, chosen products or
+ * categories). The handle starts the drag — so inputs inside a row stay
+ * usable — and the row it is dropped on takes its place. The ↑ / ↓ buttons
+ * (MoveButtons) remain the keyboard-accessible way to do the same.
+ */
+export function useDragReorder(onMove: (from: number, to: number) => void) {
+  const [dragging, setDragging] = useState<number | null>(null);
+  const [over, setOver] = useState<number | null>(null);
+  const reset = () => {
+    setDragging(null);
+    setOver(null);
+  };
+  return {
+    dragging,
+    over,
+    handleProps: (index: number) => ({
+      draggable: true,
+      onDragStart: (event: React.DragEvent) => {
+        setDragging(index);
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', String(index));
+      },
+      onDragEnd: reset,
+    }),
+    dropProps: (index: number) => ({
+      onDragOver: (event: React.DragEvent) => {
+        if (dragging === null) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        if (over !== index) setOver(index);
+      },
+      onDrop: (event: React.DragEvent) => {
+        event.preventDefault();
+        if (dragging !== null && dragging !== index) onMove(dragging, index);
+        reset();
+      },
+    }),
+  };
+}
+
+/** The drag handle drawn on a reorderable row. */
+export function DragHandle({ label, ...props }: { label: string } & React.HTMLAttributes<HTMLSpanElement> & { draggable?: boolean }) {
+  return (
+    <span {...props} title={`Drag to move ${label}`} aria-hidden className="cursor-grab select-none px-1 text-lg leading-none text-gray-400 hover:text-gray-600 active:cursor-grabbing">
+      ⋮⋮
+    </span>
+  );
+}
+
 /** Moves item `from` to `to` in a copy of the array. */
 export function moved<T>(items: readonly T[], from: number, to: number): T[] {
   const next = [...items];

@@ -1201,16 +1201,16 @@ export interface RestaurantDto {
   nextOpenText: string | null;
   /** The restaurant's own logo (Admin Panel → Seller → Restaurant); null when none. Absent from older servers. */
   logoUrl?: string | null;
-  /** The place itself (storefront / interior) — the Food list card; null when none was set. Absent from older servers. */
+  /** The Restaurant Image: the place itself (storefront / interior) — the Food list card; null when none was set. Absent from older servers. */
   coverImageUrl?: string | null;
-  /** The food / menu hero at the top of its menu page — never the Food list card; null when none. Absent from older servers. */
+  /** The Menu Cover Image: the hero at the top of its menu page — never the Food list card, never a menu item's photo; null when none. Absent from older servers. */
   menuImageUrl?: string | null;
 }
 
 /** One row of GET /restaurants. */
 export interface RestaurantSummaryDto extends RestaurantDto {
   menuItemCount: number;
-  /** The restaurant's cover photo, else a real photo of one of its menu items; null when it has neither. */
+  /** The restaurant's own Restaurant Image; null when none was set (never a photo borrowed from its menu). */
   coverImageUrl: string | null;
   /** Straight-line km from the customer; null when no location was given. */
   distanceKm: number | null;

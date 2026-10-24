@@ -7,7 +7,15 @@
  *                     promotional area and the cards show, and the cards'
  *                     size and spacing
  *   Sections          every section in the order customers see it: show or
- *                     hide, reorder, heading, background, spacing, item count
+ *                     hide, reorder (drag and drop, or ↑ / ↓), heading,
+ *                     background, spacing, item count; ADD product shelves
+ *                     and category sections (any number, each configured on
+ *                     its own — homeShelfEditor.tsx), duplicate, remove
+ *
+ * Sections are identified by their stable id (never position or title).
+ * Problems that would stop publishing (home-builder.ts homeLayoutProblems —
+ * the same checks the server runs) are listed above the sections and on the
+ * section concerned.
  *
  * The images and links themselves are banners (Banners & Cards page —
  * "Home — promotional area", "Home — top cards", "Home — food carousel"…);
@@ -23,16 +31,32 @@ import {
   HOME_CARD_GAP_DP,
   HOME_CARD_HEIGHT_LIMITS,
   HOME_GRADIENT_DIRECTIONS,
+  HOME_CUSTOM_SECTION_MAX,
   HOME_OVERLAY_OPACITY_MAX,
-  HOME_SECTION_INFO,
+  HOME_REPEATABLE_SECTION_INFO,
   HOME_SPACING,
   HOME_SPACING_DP,
   HOME_TEXT_LIMITS,
+  PRODUCT_SHELF_SOURCE_INFO,
   Permission,
+  addHomeSection,
+  canDuplicateHomeSection,
   categoryPlacementLimit,
   contentColor,
+  countAddedSections,
+  createHomeSection,
+  duplicateHomeSection,
+  homeLayoutProblems,
+  homeSectionInfo,
+  homeSectionTitle,
+  isRepeatableSectionKind,
+  moveHomeSection,
+  newHomeSectionId,
+  removeHomeSection,
   roleHasPermission,
   type AdminBannerDto,
+  type HomeLayoutProblem,
+  type HomeRepeatableSectionKind,
   type AdminCategoryOptionDto,
   type CategoryPlacementConfig,
   type CategoryPlacementKey,
@@ -45,9 +69,10 @@ import { imageSrc } from '@/lib/image';
 import { validateImage, ACCEPTED_IMAGE_TYPES } from '@/lib/upload';
 import { adminErrorMessage } from '@/lib/marketplace';
 import { useAdminBanners } from '@/lib/content';
-import { uploadHomeBackground, useCategoryOptions, useLayoutEditor } from '@/lib/homeLayout';
-import { ColorPicker, MoveButtons, NoticeLine, PublishBar, backgroundCss, moved, type Notice } from './homeLayoutUi';
-import { PlacementEditor, placementCategories } from './CategoryDisplay';
+import { uploadHomeBackground, useCategoryOptions, useLayoutEditor, useShelfPreview } from '@/lib/homeLayout';
+import { ColorPicker, DragHandle, MoveButtons, NoticeLine, PublishBar, backgroundCss, useDragReorder, type Notice } from './homeLayoutUi';
+import { PlacementEditor, categoriesForLevel, placementCategories } from './CategoryDisplay';
+import { CategorySectionEditor, ShelfEditor, categoryPathLabel } from './homeShelfEditor';
 
 const SPACING_LABEL = { compact: 'Compact', normal: 'Normal', relaxed: 'Relaxed' } as const;
 const BACKGROUND_TYPE_LABEL = { solid: 'Solid colour', gradient: 'Gradient', image: 'Image' } as const;
@@ -61,6 +86,7 @@ export default function HomeBuilderPage() {
   const categories = useCategoryOptions();
   const [notice, setNotice] = useState<Notice>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const drag = useDragReorder((from, to) => editor.update((l) => void Object.assign(l, moveHomeSection(l, from, to))));
 
   const liveBanners = useMemo(() => {
     const byPlacement = new Map<string, AdminBannerDto[]>();
@@ -76,6 +102,20 @@ export default function HomeBuilderPage() {
 
   const { layout, update } = editor;
   const hero = layout.hero;
+  const problems = homeLayoutProblems(editor.resolved);
+  const categoryByPath = new Map((categories.data ?? []).map((option) => [option.path, option]));
+  const categoryName = (path: string) => categoryByPath.get(path)?.name;
+  const addedCount = countAddedSections(layout);
+
+  /** A new shelf / category section at the end of the page, opened for editing. */
+  const addSection = (kind: HomeRepeatableSectionKind) => {
+    const id = newHomeSectionId(kind, layout);
+    update((l) => {
+      const next = addHomeSection(l, createHomeSection(kind, id));
+      if (next) Object.assign(l, next);
+    });
+    setOpen(id);
+  };
 
   return (
     <div className="space-y-5">
@@ -239,23 +279,82 @@ export default function HomeBuilderPage() {
 
           {/* Sections -------------------------------------------------------- */}
           <Surface className="p-4">
-            <div className="mb-3">
-              <h2 className="text-base font-semibold text-gray-900">Sections</h2>
-              <p className="text-sm text-gray-500">In the order customers see them, below the top of the page. A hidden section is skipped; one with nothing to show is left out automatically.</p>
+            <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold text-gray-900">Sections</h2>
+                <p className="text-sm text-gray-500">
+                  In the order customers see them, below the top of the page — drag ⋮⋮ or use ↑ / ↓. A hidden section is skipped; one with nothing to
+                  show is left out automatically.
+                </p>
+              </div>
+              {canEdit && (
+                <div className="flex flex-wrap gap-2">
+                  {(['product_shelf', 'category_section'] as const).map((kind) => (
+                    <Button key={kind} variant="soft" disabled={addedCount >= HOME_CUSTOM_SECTION_MAX} onClick={() => addSection(kind)}>
+                      <Icon name="plus" className="h-4 w-4" /> {HOME_REPEATABLE_SECTION_INFO[kind].label}
+                    </Button>
+                  ))}
+                </div>
+              )}
             </div>
+            {problems.length > 0 && (
+              <div className="mb-3 rounded-xl border border-danger-500/30 bg-danger-50 px-3 py-2 text-sm text-danger-700" role="alert">
+                <p className="font-semibold">Fix before publishing ({problems.length}):</p>
+                <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                  {problems.map((problem) => (
+                    <li key={`${problem.field}:${problem.message}`}>
+                      {problem.sectionId ? (
+                        <button type="button" className="text-left underline" onClick={() => setOpen(problem.sectionId)}>
+                          {problem.message}
+                        </button>
+                      ) : (
+                        problem.message
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <ol className="space-y-2">
               {layout.sections.map((section, index) => (
                 <SectionRow
-                  key={section.key}
+                  key={section.id}
                   section={section}
                   index={index}
                   count={layout.sections.length}
                   canEdit={canEdit}
-                  open={open === section.key}
-                  onToggleOpen={() => setOpen(open === section.key ? null : section.key)}
-                  summary={sectionSummary(section, layout, liveBanners, categories.data ?? [])}
-                  onChange={(change) => update((l) => change(l.sections.find((s) => s.key === section.key)!))}
-                  onMove={(to) => update((l) => void (l.sections = moved(l.sections, index, to)))}
+                  open={open === section.id}
+                  onToggleOpen={() => setOpen(open === section.id ? null : section.id)}
+                  summary={sectionSummary(section, layout, liveBanners, categories.data ?? [], categoryName)}
+                  problems={problems.filter((problem) => problem.sectionId === section.id)}
+                  onChange={(change) => update((l) => change(l.sections.find((s) => s.id === section.id)!))}
+                  onMove={(to) => update((l) => void Object.assign(l, moveHomeSection(l, index, to)))}
+                  onDuplicate={
+                    canDuplicateHomeSection(section) && addedCount < HOME_CUSTOM_SECTION_MAX
+                      ? () => {
+                          const id = newHomeSectionId(isRepeatableSectionKind(section.key) ? section.key : section.key === 'recently_added' || section.key === 'top_picks' ? 'product_shelf' : 'category_section', layout);
+                          update((l) => {
+                            const next = duplicateHomeSection(l, section.id, id);
+                            if (next) Object.assign(l, next);
+                          });
+                          setOpen(id);
+                          setNotice({ ok: true, text: 'Section duplicated — it is a separate section now; give it its own heading.' });
+                        }
+                      : null
+                  }
+                  onRemove={
+                    isRepeatableSectionKind(section.key)
+                      ? () => {
+                          if (window.confirm(`Remove "${homeSectionTitle(section, categoryName)}" from the Home page? Its categories and products are not affected.`)) {
+                            update((l) => void Object.assign(l, removeHomeSection(l, section.id)));
+                          }
+                        }
+                      : null
+                  }
+                  dragHandle={canEdit ? drag.handleProps(index) : null}
+                  dropProps={drag.dropProps(index)}
+                  dropTarget={drag.over === index && drag.dragging !== index}
+                  categoryName={categoryName}
                   layout={layout}
                   categoryOptions={categories.data ?? []}
                   onPlacement={(key, change) => update((l) => change(l.categoryPlacements[key]))}
@@ -316,8 +415,25 @@ function BackgroundImage({ url, onChange, onNotice }: { url: string | null; onCh
   );
 }
 
-function sectionSummary(section: HomeSectionConfig, layout: HomeLayoutContent, banners: Map<string, AdminBannerDto[]>, options: AdminCategoryOptionDto[]): string {
-  const info = HOME_SECTION_INFO[section.key];
+function sectionSummary(
+  section: HomeSectionConfig,
+  layout: HomeLayoutContent,
+  banners: Map<string, AdminBannerDto[]>,
+  options: AdminCategoryOptionDto[],
+  categoryName: (path: string) => string | undefined,
+): string {
+  if (section.shelf) {
+    const shelf = section.shelf;
+    const scope = shelf.categoryPaths.length ? shelf.categoryPaths.map((path) => categoryName(path) ?? path).join(', ') : 'whole catalogue';
+    const picked = shelf.source === 'manual' ? ` · ${shelf.productIds.length} chosen${shelf.fillFromScope ? ' + top-up' : ''}` : '';
+    return `${PRODUCT_SHELF_SOURCE_INFO[shelf.source].label} · ${scope}${picked} · up to ${shelf.count} · ${shelf.layout === 'grid' ? `grid of ${shelf.columns}` : 'scrolling row'}`;
+  }
+  if (section.categories) {
+    const config = section.categories;
+    const shown = categoriesForLevel(config.level, config, layout.categoryStyles, options).length;
+    return `${config.mode === 'manual' ? 'Chosen' : 'Automatic'} · ${shown} categor${shown === 1 ? 'y' : 'ies'} · ${config.layout === 'grid' ? `${config.columns ?? 'auto'} per row` : 'one row'}`;
+  }
+  const info = homeSectionInfo(section.key);
   if (info.categoryPlacement) {
     const placement = layout.categoryPlacements[info.categoryPlacement];
     const shown = placementCategories(info.categoryPlacement, placement, layout.categoryStyles, options).length;
@@ -339,8 +455,15 @@ function SectionRow({
   open,
   onToggleOpen,
   summary,
+  problems,
   onChange,
   onMove,
+  onDuplicate,
+  onRemove,
+  dragHandle,
+  dropProps,
+  dropTarget,
+  categoryName,
   layout,
   categoryOptions,
   onPlacement,
@@ -352,41 +475,71 @@ function SectionRow({
   open: boolean;
   onToggleOpen: () => void;
   summary: string;
+  problems: HomeLayoutProblem[];
   onChange: (change: (section: HomeSectionConfig) => void) => void;
   onMove: (to: number) => void;
+  /** Null = this section cannot be duplicated. */
+  onDuplicate: (() => void) | null;
+  /** Null = a built-in section (hide it instead). */
+  onRemove: (() => void) | null;
+  dragHandle: ReturnType<ReturnType<typeof useDragReorder>['handleProps']> | null;
+  dropProps: ReturnType<ReturnType<typeof useDragReorder>['dropProps']>;
+  dropTarget: boolean;
+  categoryName: (path: string) => string | undefined;
   layout: HomeLayoutContent;
   categoryOptions: AdminCategoryOptionDto[];
   onPlacement: (key: CategoryPlacementKey, change: (placement: CategoryPlacementConfig) => void) => void;
 }) {
-  const info = HOME_SECTION_INFO[section.key];
+  const info = homeSectionInfo(section.key);
+  const added = isRepeatableSectionKind(section.key);
+  const name = homeSectionTitle(section, categoryName);
   return (
-    <li className={`rounded-xl border p-2.5 ${section.visible ? 'border-gray-200' : 'border-dashed border-gray-300 bg-gray-50'}`}>
+    <li
+      {...dropProps}
+      className={`rounded-xl border p-2.5 ${dropTarget ? 'border-brand-500 ring-2 ring-brand-200' : problems.length ? 'border-danger-500/40' : section.visible ? 'border-gray-200' : 'border-dashed border-gray-300 bg-gray-50'}`}
+    >
       <div className="flex flex-wrap items-center gap-3">
-        {canEdit && <MoveButtons index={index} count={count} onMove={onMove} label={info.label} />}
+        {dragHandle && <DragHandle label={name} {...dragHandle} />}
+        {canEdit && <MoveButtons index={index} count={count} onMove={onMove} label={name} />}
         <span className="h-8 w-8 shrink-0 rounded-lg border border-gray-200" style={{ background: contentColor(section.background, '#FFFFFF') }} aria-hidden />
         <div className="min-w-0 flex-1">
           <p className="font-semibold text-gray-900">
-            {index + 1}. {section.title ?? info.label}
-            {section.title && <span className="ml-2 text-xs font-normal text-gray-500">({info.label})</span>}
+            {index + 1}. {name}
+            <span className="ml-2 text-xs font-normal text-gray-500">({added ? `${info.label} · added` : info.label})</span>
           </p>
           <p className="text-xs text-gray-500">{summary}</p>
+          {problems.map((problem) => (
+            <p key={problem.field} className="text-xs font-medium text-danger-600">
+              {problem.message}
+            </p>
+          ))}
         </div>
         <Toggle label={section.visible ? 'Shown' : 'Hidden'} checked={section.visible} disabled={!canEdit} onChange={(next) => onChange((s) => void (s.visible = next))} />
         <Button variant="ghost" onClick={onToggleOpen}>
           <Icon name="edit" className="h-4 w-4" /> {open ? 'Close' : 'Edit'}
         </Button>
+        {canEdit && onDuplicate && (
+          <Button variant="ghost" onClick={onDuplicate} title={added ? 'Duplicate this section' : 'Make an added section with the same settings'}>
+            <Icon name="plus" className="h-4 w-4" /> Duplicate
+          </Button>
+        )}
+        {canEdit && onRemove && (
+          <Button variant="ghost" onClick={onRemove} aria-label={`Remove ${name}`}>
+            <Icon name="trash" className="h-4 w-4" /> Remove
+          </Button>
+        )}
       </div>
       {open && (
         <fieldset disabled={!canEdit} className="mt-3 grid gap-3 border-t border-gray-100 pt-3 md:grid-cols-2">
           <p className="text-xs text-gray-500 md:col-span-2">{info.hint}</p>
           {info.titleEditable && (
             <>
-              <Field label="Heading" hint="Empty = the standard heading.">
+              <Field label="Heading" hint={added && section.key === 'product_shelf' ? 'Required for a product shelf — customers see it above the products.' : 'Empty = the standard heading.'}>
                 <input
                   className={inputClass}
                   maxLength={HOME_TEXT_LIMITS.title}
                   value={section.title ?? ''}
-                  placeholder={info.label}
+                  placeholder={added ? 'e.g. Fresh vegetables' : info.label}
                   onChange={(event) => onChange((s) => void (s.title = event.target.value || null))}
                 />
               </Field>
@@ -428,6 +581,22 @@ function SectionRow({
             </Field>
           )}
         </fieldset>
+      )}
+      {open && section.shelf && (
+        <div className="mt-3 border-t border-gray-100 pt-3">
+          <ShelfEditor sectionId={section.id} shelf={section.shelf} options={categoryOptions} canEdit={canEdit} onChange={(change) => onChange((s) => change(s.shelf!))} />
+        </div>
+      )}
+      {open && section.categories && (
+        <div className="mt-3">
+          <CategorySectionEditor
+            config={section.categories}
+            styles={layout.categoryStyles}
+            options={categoryOptions}
+            canEdit={canEdit}
+            onChange={(change) => onChange((s) => change(s.categories!))}
+          />
+        </div>
       )}
       {open && info.categoryPlacement && (
         <div className="mt-3">
@@ -503,7 +672,7 @@ function HomePreview({ layout, banners, categories }: { layout: HomeLayoutConten
         {layout.sections
           .filter((section) => section.visible)
           .map((section) => (
-            <PreviewSection key={section.key} section={section} layout={layout} banners={banners} categories={categories} />
+            <PreviewSection key={section.id} section={section} layout={layout} banners={banners} categories={categories} />
           ))}
         <p className="py-4 text-center text-[10px] text-gray-400">Aadione · footer</p>
       </div>
@@ -513,22 +682,26 @@ function HomePreview({ layout, banners, categories }: { layout: HomeLayoutConten
 }
 
 function PreviewSection({ section, layout, banners, categories }: { section: HomeSectionConfig; layout: HomeLayoutContent; banners: Map<string, AdminBannerDto[]>; categories: AdminCategoryOptionDto[] }) {
-  const info = HOME_SECTION_INFO[section.key];
+  if (section.shelf) return <PreviewShelf section={section} categories={categories} />;
+  const info = homeSectionInfo(section.key);
   const space = HOME_SPACING_DP[section.spacing];
   const wrap = (body: React.ReactNode) => (
     <div style={{ background: contentColor(section.background, 'transparent'), paddingTop: space / 2, paddingBottom: space / 2 }}>
       <div className="px-4">
-        <p className="text-[13px] font-bold text-gray-900">{section.title ?? info.label}</p>
+        <p className="text-[13px] font-bold text-gray-900">{homeSectionTitle(section)}</p>
         {section.subtitle && <p className="text-[10px] text-gray-500">{section.subtitle}</p>}
       </div>
       <div className="mt-1.5">{body}</div>
     </div>
   );
 
-  if (info.categoryPlacement) {
-    const placement = layout.categoryPlacements[info.categoryPlacement];
+  if (info.categoryPlacement || section.categories) {
+    const placement = section.categories ?? layout.categoryPlacements[info.categoryPlacement!];
     const columns = placement.columns ?? 4;
-    const list = placementCategories(info.categoryPlacement, placement, layout.categoryStyles, categories).slice(0, categoryPlacementLimit(placement, columns));
+    const all = section.categories
+      ? categoriesForLevel(section.categories.level, section.categories, layout.categoryStyles, categories)
+      : placementCategories(info.categoryPlacement!, placement, layout.categoryStyles, categories);
+    const list = all.slice(0, categoryPlacementLimit(placement, columns));
     if (list.length === 0) return null;
     return wrap(
       <div className={placement.layout === 'row' ? 'flex gap-2 overflow-x-auto px-4' : 'grid gap-2 px-4'} style={placement.layout === 'row' ? undefined : { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
@@ -574,5 +747,33 @@ function PreviewSection({ section, layout, banners, categories }: { section: Hom
         <div key={i} className="h-20 w-24 shrink-0 rounded-xl border border-gray-100 bg-gray-50" />
       ))}
     </div>,
+  );
+}
+
+/** A product shelf in the phone preview: the products the server would give customers now. */
+function PreviewShelf({ section, categories }: { section: HomeSectionConfig; categories: AdminCategoryOptionDto[] }) {
+  const shelf = section.shelf!;
+  const preview = useShelfPreview(section.id, shelf);
+  const products = preview.data ?? [];
+  if (products.length === 0) return null;
+  const byPath = new Map(categories.map((option) => [option.path, option]));
+  const space = HOME_SPACING_DP[section.spacing];
+  const grid = shelf.layout === 'grid';
+  return (
+    <div style={{ background: contentColor(section.background, 'transparent'), paddingTop: space / 2, paddingBottom: space / 2 }}>
+      <div className="px-4">
+        <p className="text-[13px] font-bold text-gray-900">{homeSectionTitle(section, (path) => byPath.get(path)?.name ?? categoryPathLabel(path, byPath))}</p>
+        {section.subtitle && <p className="text-[10px] text-gray-500">{section.subtitle}</p>}
+      </div>
+      <div className={`mt-1.5 px-4 ${grid ? `grid ${shelf.columns === 3 ? 'grid-cols-3' : 'grid-cols-2'} gap-2` : 'flex gap-2 overflow-x-auto'}`}>
+        {products.map((product) => (
+          <div key={product.id} className={`rounded-lg border border-gray-100 bg-white p-1 ${grid ? '' : 'shrink-0'}`} style={grid ? undefined : { width: { compact: 92, regular: 104, large: 120 }[shelf.cardSize] }}>
+            <div className="aspect-square overflow-hidden rounded bg-gray-50">{product.imageUrl && <img src={imageSrc(product.imageUrl)} alt="" className="h-full w-full object-contain" />}</div>
+            <p className="mt-0.5 line-clamp-2 text-[9px] leading-tight text-gray-800">{product.name}</p>
+          </div>
+        ))}
+      </div>
+      {shelf.viewAll.type !== 'none' && <p className="mx-4 mt-1.5 rounded-lg border border-gray-200 py-1 text-center text-[10px] font-semibold text-gray-700">See All</p>}
+    </div>
   );
 }

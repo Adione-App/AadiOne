@@ -15,6 +15,8 @@
  *   GET    /content/home-layout          CATALOG_READ   published, draft, history
  *   GET    /content/home-layout/preview  CATALOG_READ   the draft as customers would get it
  *   GET    /content/category-options     CATALOG_READ   live categories merged by path
+ *   GET    /content/product-options      CATALOG_READ   products for the shelves' picker (search, paged)
+ *   POST   /content/home-layout/shelf-preview  CATALOG_READ  one shelf's products right now (nothing stored)
  *   PUT    /content/home-layout/draft    CATALOG_WRITE  save the draft
  *   DELETE /content/home-layout/draft    CATALOG_WRITE  discard it
  *   POST   /content/home-layout/publish  CATALOG_WRITE  draft → next published revision
@@ -50,9 +52,20 @@ import {
   HOME_CARD_RADII,
   HOME_GRADIENT_DIRECTIONS,
   HOME_OVERLAY_OPACITY_MAX,
+  HOME_CUSTOM_SECTION_MAX,
+  HOME_REPEATABLE_SECTION_KINDS,
+  HOME_SECTION_ID_PATTERN,
   HOME_SECTION_KEYS,
   HOME_SPACING,
   HOME_TEXT_LIMITS,
+  PRODUCT_SHELF_CARD_SIZES,
+  PRODUCT_SHELF_COUNT_LIMITS,
+  PRODUCT_SHELF_GAPS,
+  PRODUCT_SHELF_LAYOUTS,
+  PRODUCT_SHELF_PICK_MAX,
+  PRODUCT_SHELF_SCOPE_MAX,
+  PRODUCT_SHELF_SOURCES,
+  PRODUCT_SHELF_VIEW_ALL_TYPES,
   Permission,
   type BannerBackground,
 } from '../../shared';
@@ -276,6 +289,74 @@ const categoryPlacementBody = z
   })
   .strict();
 
+/** A product shelf's settings (ProductShelfConfig). */
+const productShelfBody = z
+  .object({
+    source: z.enum(PRODUCT_SHELF_SOURCES),
+    categoryPaths: z.array(categoryPath).max(PRODUCT_SHELF_SCOPE_MAX).refine((paths) => new Set(paths).size === paths.length, 'Each category only once'),
+    productIds: z.array(uuid).max(PRODUCT_SHELF_PICK_MAX).refine((ids) => new Set(ids).size === ids.length, 'Each product only once'),
+    fillFromScope: z.boolean(),
+    count: z.number().int().min(PRODUCT_SHELF_COUNT_LIMITS.min).max(PRODUCT_SHELF_COUNT_LIMITS.max),
+    layout: z.enum(PRODUCT_SHELF_LAYOUTS),
+    columns: z.union([z.literal(2), z.literal(3)]),
+    cardSize: z.enum(PRODUCT_SHELF_CARD_SIZES),
+    gap: z.enum(PRODUCT_SHELF_GAPS),
+    viewAll: z.object({ type: z.enum(PRODUCT_SHELF_VIEW_ALL_TYPES), path: categoryPath.nullable() }).strict(),
+  })
+  .strict();
+
+/** A category section's settings (HomeCategorySectionConfig): a placement plus what "automatic" picks. */
+const categorySectionBody = categoryPlacementBody
+  .extend({ level: z.enum(['top', 'sub', 'any']), textColor: z.enum(['dark', 'light']).nullable() })
+  .strict();
+
+const sectionCommon = {
+  visible: z.boolean(),
+  title: layoutText(HOME_TEXT_LIMITS.title),
+  subtitle: layoutText(HOME_TEXT_LIMITS.subtitle),
+  background: contentColor,
+  spacing: z.enum(HOME_SPACING),
+  maxItems: z.number().int().min(1).max(60).nullable(),
+};
+
+/**
+ * One section. Built-in: `id` (optional, older builders send none) must be
+ * its key and it carries no shelf/categories. Added: a generated id, and the
+ * settings of its own type only. Anything else — an unknown type, code,
+ * stray fields — is refused.
+ */
+const homeSectionBody = z.discriminatedUnion('key', [
+  ...HOME_SECTION_KEYS.map((sectionKey) =>
+    z
+      .object({
+        key: z.literal(sectionKey),
+        id: z.literal(sectionKey).optional(),
+        ...sectionCommon,
+        shelf: z.null().optional(),
+        categories: z.null().optional(),
+      })
+      .strict(),
+  ),
+  z
+    .object({
+      key: z.literal(HOME_REPEATABLE_SECTION_KINDS[0]),
+      id: z.string().regex(HOME_SECTION_ID_PATTERN, 'Not a section id'),
+      ...sectionCommon,
+      shelf: productShelfBody,
+      categories: z.null().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal(HOME_REPEATABLE_SECTION_KINDS[1]),
+      id: z.string().regex(HOME_SECTION_ID_PATTERN, 'Not a section id'),
+      ...sectionCommon,
+      shelf: z.null().optional(),
+      categories: categorySectionBody,
+    })
+    .strict(),
+] as unknown as [z.ZodDiscriminatedUnionOption<'key'>, ...z.ZodDiscriminatedUnionOption<'key'>[]]);
+
 /**
  * The whole layout as the builder saves it. Strict: unknown fields and
  * out-of-range values are refused with a message rather than silently
@@ -311,21 +392,18 @@ const homeLayoutBody = z
       })
       .strict(),
     sections: z
-      .array(
-        z
-          .object({
-            key: z.enum(HOME_SECTION_KEYS),
-            visible: z.boolean(),
-            title: layoutText(HOME_TEXT_LIMITS.title),
-            subtitle: layoutText(HOME_TEXT_LIMITS.subtitle),
-            background: contentColor,
-            spacing: z.enum(HOME_SPACING),
-            maxItems: z.number().int().min(1).max(60).nullable(),
-          })
-          .strict(),
-      )
-      .max(HOME_SECTION_KEYS.length)
-      .refine((sections) => new Set(sections.map((section) => section.key)).size === sections.length, 'Each section may appear only once'),
+      .array(homeSectionBody)
+      .max(HOME_SECTION_KEYS.length + HOME_CUSTOM_SECTION_MAX)
+      .superRefine((sections, ctx) => {
+        const list = sections as { key: string; id?: string }[];
+        const ids = list.map((section) => section.id ?? section.key);
+        if (new Set(ids).size !== ids.length) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Each section may appear only once (section ids must be unique)' });
+        if (ids.some((id, index) => !HOME_SECTION_KEYS.includes(list[index]!.key as (typeof HOME_SECTION_KEYS)[number]) && HOME_SECTION_KEYS.includes(id as (typeof HOME_SECTION_KEYS)[number]))) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'An added section cannot use the id of a built-in section' });
+        }
+        const added = list.filter((section) => !HOME_SECTION_KEYS.includes(section.key as (typeof HOME_SECTION_KEYS)[number])).length;
+        if (added > HOME_CUSTOM_SECTION_MAX) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `At most ${HOME_CUSTOM_SECTION_MAX} added sections` });
+      }),
     categoryPlacements: z
       .object({
         home_top: categoryPlacementBody,
@@ -365,6 +443,43 @@ adminContentRouter.get(
   requirePermission(Permission.CATALOG_READ),
   asyncHandler(async (_req: Request, res: Response) => {
     ok(res, await homeLayout.previewHomeLayout());
+  }),
+);
+
+/** The product picker: ?q= (English / Hindi name or brand), ?categoryPath=, ?sellerId=, ?ids=a,b (a shelf's chosen products), ?cursor=, ?limit=. */
+adminContentRouter.get(
+  '/content/product-options',
+  requirePermission(Permission.CATALOG_READ),
+  validate({
+    query: z
+      .object({
+        q: z.string().trim().max(100).optional(),
+        categoryPath: categoryPath.optional(),
+        sellerId: uuid.optional(),
+        ids: z
+          .string()
+          .trim()
+          .max(PRODUCT_SHELF_PICK_MAX * 37)
+          .transform((value) => value.split(',').map((id) => id.trim()).filter(Boolean))
+          .pipe(z.array(uuid).max(PRODUCT_SHELF_PICK_MAX))
+          .optional(),
+        cursor: z.string().trim().max(400).optional(),
+        limit: z.coerce.number().int().min(1).max(50).default(20),
+      })
+      .strict(),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await homeLayout.listProductOptions(validatedQuery(req)));
+  }),
+);
+
+/** One shelf's products right now — the builder's live preview of a saved or unsaved shelf. */
+adminContentRouter.post(
+  '/content/home-layout/shelf-preview',
+  requirePermission(Permission.CATALOG_READ),
+  validate({ body: z.object({ sectionId: z.string().regex(HOME_SECTION_ID_PATTERN), shelf: productShelfBody }).strict() }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await homeLayout.previewProductShelf(req.body.sectionId, req.body.shelf));
   }),
 );
 

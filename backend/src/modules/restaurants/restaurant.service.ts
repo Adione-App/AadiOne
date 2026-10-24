@@ -338,24 +338,6 @@ function groupByMenu<T extends { menuId: string | null; menuName: string | null 
 }
 
 /**
- * One real photo per restaurant: the first image of its most popular live
- * menu item. Restaurants have no logo field, so this is the only uploaded
- * imagery there is to show.
- */
-async function coverImages(sellerIds: string[]): Promise<Map<string, string>> {
-  if (sellerIds.length === 0) return new Map();
-  const rows = await prisma.$queryRaw<{ seller_id: string; url: string }[]>`
-    SELECT DISTINCT ON (c.seller_id) c.seller_id, COALESCE(pi.card_url, pi.thumb_url, pi.url) AS url
-    FROM product_images pi
-    JOIN products p ON p.id = pi.product_id
-      AND p.status = 'ACTIVE' AND p.approval_status = 'APPROVED' AND p.deleted_at IS NULL
-    JOIN categories c ON c.id = p.category_id AND c.is_active AND c.deleted_at IS NULL
-    WHERE c.seller_id = ANY(${sellerIds}::uuid[])
-    ORDER BY c.seller_id, p.popularity_score DESC, p.created_at ASC, pi.display_order ASC`;
-  return new Map(rows.map((row) => [row.seller_id, row.url]));
-}
-
-/**
  * Customer: every live restaurant and cafe, each identified as its own
  * seller. With a location, only those that deliver there (each seller's own
  * radius — the rule checkout enforces), nearest first, each with its real
@@ -369,6 +351,10 @@ async function coverImages(sellerIds: string[]): Promise<Map<string, string>> {
  *
  * Filters (GET /restaurants?diet=&type=): `type` = RESTAURANT / CAFE;
  * `diet` VEG = pure-veg restaurants only, NON_VEG = every other one.
+ *
+ * Images: three separate sources — coverImageUrl (the Restaurant Image, the
+ * card), menuImageUrl (the Menu Cover Image, the menu hero) and each menu
+ * item's own photo. None of them stands in for another.
  */
 export async function listRestaurants(
   location: { lat: number; lng: number } | null = null,
@@ -406,7 +392,6 @@ export async function listRestaurants(
     _count: { _all: true },
   });
   const countBy = new Map(counts.map((c) => [c.sellerId, c._count._all]));
-  const covers = await coverImages(sellers.map((s) => s.id));
 
   const delivery = new Map<string, { distanceKm: number; feePaise: number; etaMin: number; etaMax: number }>();
   let visible = sellers;
@@ -431,8 +416,10 @@ export async function listRestaurants(
       return {
         ...dto,
         menuItemCount: countBy.get(seller.id) ?? 0,
-        // Its own cover first; otherwise a real photo from its menu.
-        coverImageUrl: dto.coverImageUrl ?? covers.get(seller.id) ?? null,
+        // Its own Restaurant Image only — never a photo borrowed from its menu,
+        // which made the card, the menu hero and the first menu row the same
+        // picture. No image = the app's placeholder.
+        coverImageUrl: dto.coverImageUrl ?? null,
         distanceKm: trip?.distanceKm ?? null,
         diet: dietOf(seller),
         deliveryFeePaise: trip?.feePaise ?? null,

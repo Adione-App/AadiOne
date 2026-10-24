@@ -5,13 +5,14 @@
  * veg, red = non-veg; restaurantDietOf in the shared contract, never its
  * menu), open status, cuisine tags, its time and a chevron to its menu.
  *
- * Everything shown is real: the photo is the restaurant's own cover (else a
- * photo from its menu); the time is its configured preparation time as
+ * Everything shown is real: the photo is the restaurant's own Restaurant
+ * Image (else, or when it fails to load, a plain placeholder — never a photo
+ * borrowed from its menu: restaurantImages.ts); the time is its configured preparation time as
  * prepTimeRange() shows it everywhere (30 → "25–35 min") and is left out when
  * the restaurant has not set one; no ratings, reviews or fees are drawn.
  */
 
-import { memo } from "react";
+import { memo, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Image } from "expo-image";
 import { ChevronRight, Clock, UtensilsCrossed } from "lucide-react-native";
@@ -19,6 +20,7 @@ import { prepTimeRange, restaurantDietOf, type FoodDiet, type RestaurantSummaryD
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { AppText } from "@/components/ui";
 import { resolveImageUrl } from "@/lib/api";
+import { restaurantListImage } from "@/lib/restaurantImages";
 
 const MAX_TAGS = 3;
 /** Fixed photo size, so every card has the same height whatever its text. */
@@ -56,7 +58,9 @@ function FoodRestaurantCardImpl({
   restaurant: RestaurantSummaryDto;
   onPress: (sellerId: string) => void;
 }) {
-  const image = resolveImageUrl(restaurant.coverImageUrl);
+  const image = resolveImageUrl(restaurantListImage(restaurant));
+  // A photo that fails to load shows the placeholder instead of an empty box.
+  const [failed, setFailed] = useState<string | null>(null);
   const tags = restaurant.cuisine.map((c) => c.trim()).filter(Boolean).slice(0, MAX_TAGS);
   const time = prepTimeRange(restaurant.avgPrepMins);
   // The restaurant's own type, never its menu: its items keep their own marks on the menu.
@@ -70,8 +74,15 @@ function FoodRestaurantCardImpl({
       accessibilityLabel={`${restaurant.name}, ${restaurant.isOpen ? "open" : "closed"}${time ? `, ${time.label}` : ""}. Open menu`}
     >
       <View style={styles.photo}>
-        {image ? (
-          <Image source={{ uri: image }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} cachePolicy="memory-disk" />
+        {image && image !== failed ? (
+          <Image
+            source={{ uri: image }}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            transition={150}
+            cachePolicy="memory-disk"
+            onError={() => setFailed(image)}
+          />
         ) : (
           <View style={styles.photoFallback}>
             <UtensilsCrossed size={30} color={palette.green600} strokeWidth={1.75} />

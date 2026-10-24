@@ -17,7 +17,7 @@
  *                own image, the same as before)
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   CATEGORY_COLUMN_LIMITS,
@@ -67,9 +67,18 @@ export function placementCategories(
   styles: readonly CategoryStyleConfig[],
   options: readonly AdminCategoryOptionDto[],
 ): PlacedCategory[] {
+  return categoriesForLevel(CATEGORY_PLACEMENT_INFO[key].level, placement, styles, options);
+}
+
+/** The same rule for any category list (a placement, or a Home Page Builder category section) by what "automatic" lists. */
+export function categoriesForLevel(
+  level: 'top' | 'sub' | 'any',
+  placement: CategoryPlacementConfig,
+  styles: readonly CategoryStyleConfig[],
+  options: readonly AdminCategoryOptionDto[],
+): PlacedCategory[] {
   const style = new Map(styles.map((entry) => [entry.path, entry]));
   const visible = options.filter((option) => !style.get(option.path)?.hidden);
-  const level = CATEGORY_PLACEMENT_INFO[key].level;
   let picked: AdminCategoryOptionDto[];
   if (placement.mode === 'manual') {
     const byPath = new Map(visible.map((option) => [option.path, option]));
@@ -180,19 +189,64 @@ export function PlacementEditor({
   onChange: (change: (placement: CategoryPlacementConfig) => void) => void;
 }) {
   const info = CATEGORY_PLACEMENT_INFO[placementKey];
-  const placement = layout.categoryPlacements[placementKey];
-  // The Categories tab draws its own tiles: there only which categories, order, count, per-row and rows apply.
-  const styled = placementKey !== 'categories_page';
+  return (
+    <CategoryListEditor
+      title={info.label}
+      hint={info.hint}
+      placement={layout.categoryPlacements[placementKey]}
+      level={info.level}
+      styles={layout.categoryStyles}
+      options={options}
+      canEdit={canEdit}
+      // The Categories tab draws its own tiles: there only which categories, order, count, per-row and rows apply.
+      styled={placementKey !== 'categories_page'}
+      // Home placements can hand-pick top categories AND subcategories; the
+      // Categories tab is organised by main category, so it picks top ones only.
+      pickLevel={placementKey === 'categories_page' ? 'top' : 'any'}
+      onChange={onChange}
+    />
+  );
+}
+
+/**
+ * Any category list's settings, chosen categories (search in English or
+ * Hindi, filter top / sub, add, remove, reorder) and tile preview — a
+ * placement here, or a category section of the Home Page Builder.
+ */
+export function CategoryListEditor<T extends CategoryPlacementConfig>({
+  title,
+  hint,
+  placement,
+  level,
+  styles,
+  options,
+  canEdit,
+  styled = true,
+  pickLevel = 'any',
+  extraFields,
+  onChange,
+}: {
+  title: string;
+  hint: string;
+  placement: T;
+  level: 'top' | 'sub' | 'any';
+  styles: readonly CategoryStyleConfig[];
+  options: AdminCategoryOptionDto[];
+  canEdit: boolean;
+  styled?: boolean;
+  pickLevel?: 'top' | 'any';
+  /** More settings in the same grid (a category section's level and text colour). */
+  extraFields?: ReactNode;
+  onChange: (change: (placement: T) => void) => void;
+}) {
+  const info = { label: title, hint, level };
   const [search, setSearch] = useState('');
-  const shown = placementCategories(placementKey, placement, layout.categoryStyles, options);
+  const shown = categoriesForLevel(level, placement, styles, options);
   const columns = placement.columns ?? 4;
   const visibleCount = Math.min(shown.length, categoryPlacementLimit(placement, columns));
   const byPath = new Map(options.map((option) => [option.path, option]));
-  // Home placements can hand-pick top categories AND subcategories; the
-  // Categories tab is organised by main category, so it picks top ones only.
-  const pickLevel = placementKey === 'categories_page' ? 'top' : 'any';
   const [levelFilter, setLevelFilter] = useState<'all' | 'top' | 'sub'>(info.level === 'sub' ? 'sub' : 'all');
-  const styleOf = new Map(layout.categoryStyles.map((style) => [style.path, style]));
+  const styleOf = new Map(styles.map((style) => [style.path, style]));
   const parentName = (option: AdminCategoryOptionDto) => (option.parentPath ? byPath.get(option.parentPath)?.name ?? option.parentPath : null);
   const pickLabel = (option: AdminCategoryOptionDto) => (option.parentPath ? `${parentName(option)} › ${option.name}` : option.name);
   const term = search.trim().toLowerCase();
@@ -305,6 +359,7 @@ export function PlacementEditor({
             </div>
           </>
         )}
+        {extraFields}
       </fieldset>
 
       {placement.mode === 'manual' && (

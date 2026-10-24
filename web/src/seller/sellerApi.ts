@@ -318,13 +318,23 @@ export function uploadSellerImage(file: File): Promise<string> {
   );
 }
 
-/** The restaurant's own photos: cover = the place (Food list card); menu = the food hero atop its menu page. */
+/** The restaurant's own photos: cover = the Restaurant Image (Food list card); menu = the Menu Cover Image atop its menu page. */
 export type SellerRestaurantImageKind = 'cover' | 'menu';
 
-/** Uploads the file (seller pipeline), then attaches it: PUT /seller/restaurant/images/:kind. */
-export async function setOwnRestaurantImage(kind: SellerRestaurantImageKind, file: File): Promise<void> {
+/** PUT/DELETE /seller/restaurant/images/:kind answer with the restaurant's current images. */
+export interface SellerRestaurantBranding {
+  coverImageUrl: string | null;
+  menuImageUrl: string | null;
+}
+
+/**
+ * Uploads the file (seller pipeline), then attaches it: PUT /seller/restaurant/images/:kind.
+ * Resolves to the URL the server saved for that kind.
+ */
+export async function setOwnRestaurantImage(kind: SellerRestaurantImageKind, file: File): Promise<string | null> {
   const key = await uploadSellerImage(file);
-  await sellerApi.put(`/seller/restaurant/images/${kind}`, { key });
+  const branding = await sellerApi.put<SellerRestaurantBranding>(`/seller/restaurant/images/${kind}`, { key });
+  return (kind === 'cover' ? branding.coverImageUrl : branding.menuImageUrl) ?? null;
 }
 
 /** DELETE /seller/restaurant/images/:kind */

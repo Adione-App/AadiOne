@@ -61,6 +61,8 @@ function Tile({
   // The image: its own size, inside the tile with a margin. "Fill the tile" (cover) is the admin's explicit choice.
   const image = display.imageFit === "cover" ? box : Math.max(36, Math.min(preferredImage, box - IMAGE_MARGIN));
   const radius = display.tileShape === "circle" ? box / 2 : display.tileShape === "square" ? 0 : 14;
+  // The category's own text colour, else its section's (category sections can set one).
+  const textColor = tile.textColor ?? display.textColor ?? null;
   return (
     <Pressable
       onPress={() => onOpenCategory(tile.category.id)}
@@ -82,7 +84,7 @@ function Tile({
           radius={display.imageFit === "cover" ? radius : 10}
         />
       </View>
-      <AppText variant="caption" numberOfLines={2} style={[styles.name, tile.textColor ? { color: TEXT_COLOR[tile.textColor] } : null]}>
+      <AppText variant="caption" numberOfLines={2} style={[styles.name, textColor ? { color: TEXT_COLOR[textColor] } : null]}>
         {tile.label}
       </AppText>
     </Pressable>

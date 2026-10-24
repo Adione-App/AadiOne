@@ -27,12 +27,14 @@ import {
   type CursorPage,
   type HomeFeedDto,
   type ProductDetailDto,
+  type ProductShelfConfig,
   type ProductSummaryDto,
   type VariantDto,
 } from "../../shared";
 import { discountPercent } from "../../shared/money";
 import { resolveItemCodPolicy } from "../../shared/cod";
 import { AppError } from "../../common/errors";
+import { moduleLogger } from "../../common/logger";
 import { prisma } from "../../infra/db/prisma";
 import {
   search as searchProvider,
@@ -45,6 +47,8 @@ import { MARKETPLACE_SELLER_WHERE, type HydratedProduct, type ProductSort } from
 import { HOME_TOP_PLACEMENT, listActiveBanners, listActiveBannersByPlacement } from "../banners/banner.service";
 import { balanceBySubcategory, mapWithConcurrency, orderByPreference, pickRailProducts } from "./home-selection";
 import { hasStockToSell, sellableQty } from "../inventory/stock-rules";
+
+const log = moduleLogger("catalog");
 
 /* -------------------------------------------------------------------------- */
 /* Category tree                                                              */
@@ -816,6 +820,73 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
     rails: rails.filter((rail) => rail.products.length > 0),
     categoryRails,
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Home Page Builder — configured product shelves                             */
+/* -------------------------------------------------------------------------- */
+
+/** One product shelf of a Home layout (a "product_shelf" section). */
+export interface ShelfToResolve {
+  /** The section's stable id — also part of a random shelf's daily seed. */
+  id: string;
+  shelf: ProductShelfConfig;
+}
+
+/** Today's date in India ("2026-10-24") — a random shelf keeps its order for the day. */
+export function shelfDay(now: Date = new Date()): string {
+  return new Date(now.getTime() + 330 * 60_000).toISOString().slice(0, 10);
+}
+
+/** A shelf's product ids, in order: its source, topped up from its categories when it asks to be. */
+async function shelfProductIds({ id, shelf }: ShelfToResolve, day: string): Promise<string[]> {
+  const base = { categoryPaths: shelf.categoryPaths, limit: shelf.count };
+  if (shelf.source !== "manual") {
+    return repository.listShelfProductIds({ ...base, source: shelf.source, seed: `${id}:${day}` });
+  }
+  const picked = await repository.listShelfProductIds({ ...base, source: "manual", productIds: shelf.productIds });
+  if (!shelf.fillFromScope || picked.length >= shelf.count) return picked.slice(0, shelf.count);
+  const fill = await repository.listShelfProductIds({
+    source: "latest",
+    categoryPaths: shelf.categoryPaths,
+    excludeIds: shelf.productIds,
+    limit: shelf.count - picked.length,
+  });
+  return [...picked, ...fill];
+}
+
+/**
+ * The products of each configured shelf, keyed by section id — resolved live
+ * on every call (prices, stock and sellers are never stored in the layout or
+ * cached here, exactly like GET /home). A few shelves query at once, then
+ * every product is hydrated in one batch and dealt back out in each shelf's
+ * order. A product that vanished in between is simply skipped; one shelf
+ * failing never takes the others down (it comes back empty and is logged).
+ */
+export async function resolveProductShelves(
+  shelves: readonly ShelfToResolve[],
+  options: { day?: string } = {},
+): Promise<Record<string, ProductSummaryDto[]>> {
+  if (shelves.length === 0) return {};
+  const day = options.day ?? shelfDay();
+  const [context, idLists] = await Promise.all([
+    mappingContext(),
+    mapWithConcurrency([...shelves], SHELF_QUERY_CONCURRENCY, (entry) =>
+      shelfProductIds(entry, day).catch((error: unknown) => {
+        log.warn({ err: error, shelf: entry.id }, "home shelf not resolved");
+        return [] as string[];
+      }),
+    ),
+  ]);
+  const productById = await hydrateHomeProducts(idLists.flat());
+  const result: Record<string, ProductSummaryDto[]> = {};
+  for (const [index, { id }] of shelves.entries()) {
+    const products = (idLists[index] ?? [])
+      .map((productId) => productById.get(productId))
+      .filter((product): product is HydratedProduct => product !== undefined);
+    result[id] = await Promise.all(products.map((product) => toSummaryDto(product, context)));
+  }
+  return result;
 }
 
 /** How many past products "Previous orders" on Home can show. */

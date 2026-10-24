@@ -11,7 +11,14 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { DEFAULT_HOME_LAYOUT, resolveHomeLayout, type HomeLayoutContent, type HomeLayoutDto } from "@shared";
+import {
+  DEFAULT_HOME_LAYOUT,
+  resolveHomeLayout,
+  type HomeLayoutContent,
+  type HomeLayoutDto,
+  type HomeShelvesDto,
+  type ProductSummaryDto,
+} from "@shared";
 import { api } from "./api";
 
 const FALLBACK_LAYOUT: HomeLayoutContent = resolveHomeLayout(DEFAULT_HOME_LAYOUT);
@@ -28,4 +35,26 @@ export function useHomeLayout(): HomeLayoutContent {
     retry: 1,
   });
   return query.data ?? FALLBACK_LAYOUT;
+}
+
+export const homeShelvesQueryKey = ["content", "home-shelves"] as const;
+
+/**
+ * The products of the published layout's product shelves (Home Page Builder;
+ * GET /content/home-shelves), keyed by section id. Live data — prices and
+ * stock — so it goes stale after a minute; it is kept on disk like the other
+ * public queries, so an offline start or a failed refresh still shows the
+ * last shelves. Null until the first answer (and on an older server without
+ * the endpoint): the shelves are then simply not shown — the rest of Home is
+ * unaffected.
+ */
+export function useHomeShelves(): Readonly<Record<string, readonly ProductSummaryDto[]>> | null {
+  const query = useQuery({
+    queryKey: homeShelvesQueryKey,
+    queryFn: async () => (await api.get<HomeShelvesDto>("/content/home-shelves")).shelves,
+    staleTime: 60_000,
+    gcTime: 24 * 60 * 60_000,
+    retry: 1,
+  });
+  return query.data ?? null;
 }

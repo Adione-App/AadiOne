@@ -149,6 +149,8 @@ export function Input({
   prefix,
   autoCapitalize,
   autoCorrect,
+  onFocus,
+  accessibilityLabel,
 }: {
   value: string;
   onChangeText: (text: string) => void;
@@ -160,6 +162,8 @@ export function Input({
   prefix?: string;
   autoCapitalize?: "none" | "sentences" | "words" | "characters";
   autoCorrect?: boolean;
+  onFocus?: () => void;
+  accessibilityLabel?: string;
 }) {
   return (
     <View style={styles.inputRow}>
@@ -182,6 +186,8 @@ export function Input({
         secureTextEntry={secureTextEntry}
         autoCapitalize={autoCapitalize}
         autoCorrect={autoCorrect}
+        onFocus={onFocus}
+        accessibilityLabel={accessibilityLabel}
         style={styles.input}
       />
     </View>

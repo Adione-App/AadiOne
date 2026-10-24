@@ -19,23 +19,38 @@
  *   - an engine section this file does not know is kept (before the footer),
  *     so a newer engine never loses content; the footer stays last;
  *   - a banner set to open the Food section (actionType FOOD — newer than the
- *     engine's own mapping) opens it, wherever on Home it shows.
+ *     engine's own mapping) opens it, wherever on Home it shows;
+ *   - ADDED sections (Home Page Builder): a product shelf draws the products
+ *     the server resolved for it (GET /content/home-shelves, keyed by section
+ *     id) as a carousel or a grid, with View All only when it fits the
+ *     shelf's own categories; a category section is its own category grid.
+ *     A shelf with no products (none qualify, still loading, or the request
+ *     failed) is left out — never an empty heading.
  *
  * Pure and dependency-free (types only), so it is unit tested with Node's
  * own test runner (tests/homeLayout.test.ts). The layout it receives has
  * already been through the shared `resolveHomeLayout` (complete, clamped).
  */
 
-import type {
-  BannerDto,
-  CategoryDto,
-  CategoryPlacementConfig,
-  CategoryPlacementKey,
-  CategoryStyleConfig,
-  HomeFeedDto,
-  HomeLayoutContent,
-  HomeSectionConfig,
-  HomeSectionKey,
+import {
+  PRODUCT_SHELF_CARD_WIDTH_DP,
+  PRODUCT_SHELF_GAP_DP,
+  PRODUCT_SHELF_MIN_GRID_CARD_DP,
+  homeSectionTitle,
+  productShelfViewAllProblem,
+  type BannerDto,
+  type CategoryDto,
+  type CategoryPlacementConfig,
+  type CategoryPlacementKey,
+  type CategoryStyleConfig,
+  type HomeCategorySectionConfig,
+  type HomeFeedDto,
+  type HomeLayoutContent,
+  type HomeSectionConfig,
+  type HomeSectionKey,
+  type HomeSectionType,
+  type ProductShelfConfig,
+  type ProductSummaryDto,
 } from "@shared";
 import type { HomeAction, HomeSection, PromoSlide } from "./homeEngine";
 
@@ -55,6 +70,19 @@ export interface CategoryGridDisplay {
   tileShape: CategoryPlacementConfig["tileShape"];
   imageFit: CategoryPlacementConfig["imageFit"];
   tileBackground: string;
+  /** The tiles' text colour when a category has none of its own; null/absent = the standard text. */
+  textColor?: "dark" | "light" | null;
+}
+
+/** How a configured product shelf is drawn. */
+export interface ProductShelfDisplay {
+  layout: ProductShelfConfig["layout"];
+  /** Grid: products per row as configured (the screen may use fewer on a narrow phone — productGridColumns). */
+  columns: number;
+  /** Carousel: card width (dp). */
+  cardWidth: number;
+  /** Space between cards (dp). */
+  gap: number;
 }
 
 export type LaidOutSection =
@@ -85,12 +113,24 @@ export type LaidOutSection =
    * — not the engine's de-duplicated preview, which skips products other
    * sections already show. The screen fetches and draws it.
    */
-  | { kind: "latest"; key: "latest-products"; title: string; subtitle: string | null; maxItems: number; frame: SectionFrame };
+  | { kind: "latest"; key: "latest-products"; title: string; subtitle: string | null; maxItems: number; frame: SectionFrame }
+  /** An added product shelf: its products as the server resolved them, already limited to its count. */
+  | {
+      kind: "productShelf";
+      key: string;
+      sectionId: string;
+      title: string;
+      subtitle: string | null;
+      products: ProductSummaryDto[];
+      display: ProductShelfDisplay;
+      viewAll: HomeAction | null;
+      frame: SectionFrame;
+    };
 
 /** Where a section sits on the page: its background and the space around it. */
 export interface SectionFrame {
-  /** The admin section kind it belongs to; null = not configurable (footer, unknown). */
-  group: HomeSectionKey | null;
+  /** The admin section type it belongs to; null = not configurable (footer, unknown). */
+  group: HomeSectionType | null;
   /** A preset or #RRGGBB ("none" = the page's background). */
   background: string;
   spacing: HomeSectionConfig["spacing"];
@@ -223,6 +263,104 @@ function placementTiles(key: CategoryPlacementKey, config: CategoryPlacementConf
   return take(index.tops.map((top) => ({ category: top, parent: null })));
 }
 
+/** A category section's tiles — on its own: what other grids show does not affect it. */
+function categorySectionTiles(config: HomeCategorySectionConfig, index: CategoryIndex): CategoryTile[] {
+  const limit = limitOf(config);
+  const own = new Set<string>();
+  if (config.mode === "manual") {
+    const tiles: CategoryTile[] = [];
+    for (const path of config.paths) {
+      if (tiles.length >= limit) break;
+      const entry = index.byPath.get(path);
+      if (!entry || own.has(entry.category.id)) continue;
+      const tile = tileOf(index, entry.category, entry.parent);
+      if (!tile) continue;
+      tiles.push(tile);
+      own.add(entry.category.id);
+    }
+    return tiles;
+  }
+  if (config.level === "sub") return spreadChildren(index, limit, own);
+  const candidates = [
+    ...index.tops.map((top) => ({ category: top, parent: null as CategoryDto | null })),
+    ...(config.level === "any" ? index.tops.flatMap((top) => (top.children ?? []).map((child) => ({ category: child, parent: top }))) : []),
+  ];
+  const tiles: CategoryTile[] = [];
+  for (const { category, parent } of candidates) {
+    if (tiles.length >= limit) break;
+    const tile = tileOf(index, category, parent);
+    if (tile) tiles.push(tile);
+  }
+  return tiles;
+}
+
+/** Only products a customer can add right now (Home's own rule, as Latest products). */
+const isBuyable = (product: ProductSummaryDto) => product.defaultVariant !== null && product.defaultVariant.inStock;
+
+/** Where a shelf's View All goes — only a destination that fits the shelf (productShelfViewAllProblem) and still exists. */
+function shelfViewAll(shelf: ProductShelfConfig, index: CategoryIndex, title: string): HomeAction | null {
+  if (shelf.viewAll.type === "none" || productShelfViewAllProblem(shelf)) return null;
+  if (shelf.viewAll.type === "latest") return { type: "rail", railKey: "RECENTLY_ADDED", title };
+  if (shelf.viewAll.type === "bestselling") return { type: "rail", railKey: "TOP_PICKS", title };
+  const target = shelf.viewAll.path ? index.byPath.get(shelf.viewAll.path) : undefined;
+  return target ? { type: "category", categoryId: target.category.id } : null;
+}
+
+/** A category's shown name by path (display names applied), for a shelf's default heading. */
+function nameOfPath(index: CategoryIndex, path: string): string | undefined {
+  const entry = index.byPath.get(path);
+  return entry ? tileOf(index, entry.category, entry.parent)?.label ?? entry.category.name : undefined;
+}
+
+function productShelfSection(
+  config: HomeSectionConfig,
+  products: readonly ProductSummaryDto[] | undefined,
+  index: CategoryIndex,
+  frame: SectionFrame,
+): LaidOutSection | null {
+  const shelf = config.shelf;
+  if (!shelf) return null;
+  const seen = new Set<string>();
+  const shown: ProductSummaryDto[] = [];
+  for (const product of products ?? []) {
+    if (shown.length >= shelf.count) break;
+    if (seen.has(product.id) || !isBuyable(product)) continue;
+    seen.add(product.id);
+    shown.push(product);
+  }
+  if (shown.length === 0) return null;
+  const title = homeSectionTitle(config, (path) => nameOfPath(index, path));
+  return {
+    kind: "productShelf",
+    key: `shelf:${config.id}`,
+    sectionId: config.id,
+    title,
+    subtitle: config.subtitle,
+    products: shown,
+    display: {
+      layout: shelf.layout,
+      columns: shelf.columns,
+      cardWidth: PRODUCT_SHELF_CARD_WIDTH_DP[shelf.cardSize],
+      gap: PRODUCT_SHELF_GAP_DP[shelf.gap],
+    },
+    viewAll: shelfViewAll(shelf, index, title),
+    frame,
+  };
+}
+
+/**
+ * A product grid's real columns and card width on this screen: the admin's
+ * columns, fewer when a card would get narrower than the safe minimum (a
+ * 3-per-row grid on a small phone becomes 2 per row) — never wider than the
+ * screen, never a squeezed card.
+ */
+export function productGridColumns(requested: number, innerWidth: number, gap: number): { columns: number; cardWidth: number } {
+  let columns = Math.max(1, Math.floor(requested));
+  const widthFor = (n: number) => Math.floor((innerWidth - gap * (n - 1)) / n);
+  while (columns > 1 && widthFor(columns) < PRODUCT_SHELF_MIN_GRID_CARD_DP) columns -= 1;
+  return { columns, cardWidth: Math.max(0, widthFor(columns)) };
+}
+
 /** Every banner Home received, by id (the engine's slide keys end in the banner id). */
 function homeBanners(feed: HomeFeedDto): Map<string, BannerDto> {
   const all = [
@@ -253,9 +391,11 @@ export interface ApplyHomeLayoutInput {
   feed: HomeFeedDto;
   layout: HomeLayoutContent;
   language?: "en" | "hi";
+  /** GET /content/home-shelves' products per section id; absent / null while loading or after a failure. */
+  shelves?: Readonly<Record<string, readonly ProductSummaryDto[]>> | null;
 }
 
-export function applyHomeLayout({ sections, feed, layout, language = "en" }: ApplyHomeLayoutInput): HomeLayoutResult {
+export function applyHomeLayout({ sections, feed, layout, language = "en", shelves = null }: ApplyHomeLayoutInput): HomeLayoutResult {
   const featuredIds = new Set(
     (feed.featuredCategoryIds ?? []).length > 0 ? feed.featuredCategoryIds! : feed.categoryRails.map((rail) => rail.categoryId),
   );
@@ -292,7 +432,38 @@ export function applyHomeLayout({ sections, feed, layout, language = "en" }: App
   for (const sectionConfig of layout.sections) {
     if (!sectionConfig.visible) continue;
     const frame: SectionFrame = { group: sectionConfig.key, background: sectionConfig.background, spacing: sectionConfig.spacing };
-    const members = byGroup.get(sectionConfig.key) ?? [];
+
+    // Added sections: drawn from their own settings, never from the engine.
+    if (sectionConfig.key === "product_shelf") {
+      const laid = productShelfSection(sectionConfig, shelves?.[sectionConfig.id], index, frame);
+      if (laid) out.push(laid);
+      continue;
+    }
+    if (sectionConfig.key === "category_section") {
+      const config = sectionConfig.categories;
+      const tiles = config ? categorySectionTiles(config, index) : [];
+      if (!config || tiles.length === 0) continue;
+      out.push({
+        kind: "categoryGrid",
+        key: `categories:${sectionConfig.id}`,
+        title: homeSectionTitle(sectionConfig),
+        subtitle: sectionConfig.subtitle,
+        tiles,
+        display: {
+          columns: config.columns,
+          layout: config.layout,
+          tileShape: config.tileShape,
+          imageFit: config.imageFit,
+          tileBackground: config.tileBackground,
+          textColor: config.textColor,
+        },
+        viewAll: config.showViewAll ? { type: "allCategories" } : null,
+        frame,
+      });
+      continue;
+    }
+
+    const members = byGroup.get(sectionConfig.key as HomeSectionKey) ?? [];
 
     if (sectionConfig.key === "recently_added") {
       out.push({

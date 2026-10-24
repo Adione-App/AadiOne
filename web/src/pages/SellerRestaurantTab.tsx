@@ -2,8 +2,8 @@
  * Seller detail — Restaurant tab (RESTAURANT / CAFE sellers only).
  *
  * Editable here (admins with catalogue rights): the restaurant's customer-
- * facing PHOTOS — logo, cover (the Food list card) and menu image (the top of
- * its menu page), each on its own (PUT/DELETE
+ * facing PHOTOS — Restaurant Image (the Food list card), Menu Cover Image (the
+ * top of its menu page) and logo, each on its own (PUT/DELETE
  * /admin/restaurants/:sellerId/images/:kind, through the admin upload + image
  * pipeline) — and its PREPARATION TIME (PUT …/prep-time), which customers see
  * as that time ± 5 min (prepTimeRange). The restaurant can change its cover,
@@ -26,10 +26,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import { ApprovalStatus, Permission, formatPaise, prepTimeRange, roleHasPermission, type AdminSellerDetailDto } from '@shared';
 import { adminSellerKeys, sellerErrorMessage, useAdminRestaurant, type AdminRestaurantSection } from '@/lib/sellers';
 import { useAuth } from '@/lib/auth';
-import { imageSrc } from '@/lib/image';
-import { ACCEPTED_IMAGE_TYPES, validateImage } from '@/lib/upload';
 import { removeRestaurantImage, setRestaurantImage, setRestaurantPrepTime, uploadAdminImage, type RestaurantImageKind } from '@/lib/content';
 import { DetailRow } from '@/components/SellerBadges';
+import { RestaurantImageSlot, type RestaurantImageSlotKind } from '@/components/RestaurantImageSlot';
 import { Button, EmptyState, ErrorBanner, Panel, Pill, Spinner, Td, Th, type Tone } from '@/components/ui';
 
 const APPROVAL_LOOK: Record<string, { label: string; tone: Tone }> = {
@@ -178,16 +177,20 @@ export default function SellerRestaurantTab({ seller }: { seller: AdminSellerDet
 /* Customer-facing photos                                                      */
 /* -------------------------------------------------------------------------- */
 
-const PHOTO_COPY: Record<RestaurantImageKind, { title: string; hint: string }> = {
+const PHOTO_COPY: Record<RestaurantImageKind, { slot: RestaurantImageSlotKind; field: 'coverImageUrl' | 'menuImageUrl' | 'logoUrl'; title: string; hint: string }> = {
   cover: {
-    title: 'Cover photo — Food list',
-    hint: 'The place itself (storefront or interior). Shown on the restaurant card in the Food list. At least 600 px wide; landscape works best.',
+    slot: 'restaurant',
+    field: 'coverImageUrl',
+    title: 'Restaurant Image',
+    hint: 'The restaurant or cafe itself (storefront or interior), on its card in the Food list. At least 600 px wide; landscape works best — the card shows the middle of it.',
   },
   menu: {
-    title: 'Menu image — menu page',
-    hint: 'A food / menu photo shown at the top of the restaurant\'s menu page. Never used on the Food list. At least 600 px wide; landscape works best.',
+    slot: 'menuCover',
+    field: 'menuImageUrl',
+    title: 'Menu Cover Image',
+    hint: "The large photo at the top of the restaurant's menu page. Never used on the Food list. At least 600 px wide; landscape (16:9) works best.",
   },
-  logo: { title: 'Logo', hint: 'Shown in a circle on the menu page. A square image works best.' },
+  logo: { slot: 'logo', field: 'logoUrl', title: 'Logo', hint: 'Shown in a circle on the menu page. A square image works best.' },
 };
 
 function RestaurantPhotos({
@@ -203,16 +206,37 @@ function RestaurantPhotos({
 }) {
   const role = useAuth((state) => state.user?.role);
   const canEdit = role ? roleHasPermission(role, Permission.CATALOG_WRITE) : false;
+  const queryClient = useQueryClient();
+  const urls: Record<RestaurantImageKind, string | null> = { cover: coverImageUrl, menu: menuImageUrl, logo: logoUrl };
+
   return (
     <Panel title="Customer-facing photos">
       <div className="grid gap-4 lg:grid-cols-[1fr_1fr_0.7fr]">
-        <PhotoSlot sellerId={sellerId} kind="cover" url={coverImageUrl} canEdit={canEdit} />
-        <PhotoSlot sellerId={sellerId} kind="menu" url={menuImageUrl} canEdit={canEdit} />
-        <PhotoSlot sellerId={sellerId} kind="logo" url={logoUrl} canEdit={canEdit} />
+        {(['cover', 'menu', 'logo'] as const).map((kind) => {
+          const copy = PHOTO_COPY[kind];
+          return (
+            <RestaurantImageSlot
+              key={kind}
+              kind={copy.slot}
+              title={copy.title}
+              hint={copy.hint}
+              url={urls[kind]}
+              canEdit={canEdit}
+              upload={async (file) => (await setRestaurantImage(sellerId, kind, await uploadAdminImage(file, 'restaurant')))[copy.field] ?? null}
+              remove={() => removeRestaurantImage(sellerId, kind)}
+              reload={async () => {
+                await queryClient.invalidateQueries({ queryKey: adminSellerKeys.restaurant(sellerId) });
+                const fresh = queryClient.getQueryData<{ restaurant: Partial<Record<typeof copy.field, string | null>> }>(adminSellerKeys.restaurant(sellerId));
+                return fresh?.restaurant[copy.field] ?? null;
+              }}
+              errorText={(failure) => sellerErrorMessage(failure, `The ${copy.title} could not be saved. Please try again.`)}
+            />
+          );
+        })}
       </div>
       <p className="mt-3 text-xs text-gray-500">
-        {!coverImageUrl && 'Without a cover photo the Food list shows a photo from the restaurant\'s menu. '}
-        {!menuImageUrl && 'Without a menu image the menu page shows a photo from its menu.'}
+        Each photo is used only in its own place: without a Restaurant Image the Food list card shows a placeholder, and without a Menu Cover
+        Image the menu page does — menu item photos are never used for either.
       </p>
     </Panel>
   );
@@ -269,89 +293,6 @@ function PrepTimeEditor({ sellerId, avgPrepMins }: { sellerId: string; avgPrepMi
         {!valid ? 'A whole number of minutes, 1–240.' : range ? `Customers see “${range.label}”.` : 'Not set — no time is shown to customers.'}
       </p>
       {notice && <p className={`text-xs font-medium ${notice.ok ? 'text-brand-700' : 'text-danger-600'}`}>{notice.text}</p>}
-    </div>
-  );
-}
-
-function PhotoSlot({ sellerId, kind, url, canEdit }: { sellerId: string; kind: RestaurantImageKind; url: string | null; canEdit: boolean }) {
-  const queryClient = useQueryClient();
-  const [busy, setBusy] = useState<string | null>(null);
-  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
-  const copy = PHOTO_COPY[kind];
-
-  async function run(label: string, action: () => Promise<unknown>, done: string) {
-    setNotice(null);
-    setBusy(label);
-    try {
-      await action();
-      await queryClient.invalidateQueries({ queryKey: adminSellerKeys.restaurant(sellerId) });
-      setNotice({ ok: true, text: done });
-    } catch (failure) {
-      setNotice({ ok: false, text: sellerErrorMessage(failure, `The ${copy.title.toLowerCase()} could not be saved. Please try again.`) });
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  function upload(file: File | undefined) {
-    if (!file) return;
-    const invalid = validateImage(file);
-    if (invalid) return setNotice({ ok: false, text: invalid });
-    void run(
-      'Uploading…',
-      async () => setRestaurantImage(sellerId, kind, await uploadAdminImage(file, 'restaurant')),
-      `${copy.title} saved. The app shows it on its next refresh.`,
-    );
-  }
-
-  return (
-    <div className="rounded-xl border border-gray-100 p-3">
-      <p className="text-sm font-semibold text-gray-900">{copy.title}</p>
-      <p className="mb-2 text-xs text-gray-500">{copy.hint}</p>
-      <div
-        className={`flex items-center justify-center overflow-hidden border border-gray-200 bg-gray-50 ${kind === 'logo' ? 'mx-auto h-28 w-28 rounded-full' : 'aspect-[16/7] w-full rounded-xl'}`}
-      >
-        {url ? (
-          <img src={imageSrc(url)} alt={copy.title} className="h-full w-full object-cover" />
-        ) : (
-          <span className="text-xs text-gray-400">No {copy.title.toLowerCase()}</span>
-        )}
-      </div>
-      {canEdit && (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <label className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border border-gray-300 bg-white px-3 py-1.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 ${busy ? 'pointer-events-none opacity-50' : ''}`}>
-            {busy === 'Uploading…' ? busy : url ? 'Replace' : 'Upload'}
-            <input
-              type="file"
-              accept={ACCEPTED_IMAGE_TYPES.join(',')}
-              className="sr-only"
-              disabled={Boolean(busy)}
-              onChange={(event) => {
-                upload(event.target.files?.[0]);
-                event.target.value = '';
-              }}
-            />
-          </label>
-          {url && (
-            <Button
-              variant="ghost"
-              disabled={Boolean(busy)}
-              onClick={() => {
-                if (window.confirm(`Remove the ${copy.title.toLowerCase()}? Customers will no longer see it.`)) {
-                  void run('Removing…', () => removeRestaurantImage(sellerId, kind), `${copy.title} removed.`);
-                }
-              }}
-            >
-              {busy === 'Removing…' ? busy : 'Remove'}
-            </Button>
-          )}
-        </div>
-      )}
-      {notice && (
-        <p role="status" className={`mt-2 text-xs font-medium ${notice.ok ? 'text-brand-700' : 'text-danger-600'}`}>
-          {notice.text}
-        </p>
-      )}
     </div>
   );
 }

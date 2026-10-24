@@ -7,14 +7,21 @@
  * - mobile number + Change
  * - six OTP boxes
  * - resend timer
- * - security notice
  * - Verify & Continue button
+ * - security notice
+ *
+ * Keyboard: the OTP boxes, their error, Resend and Verify & Continue stay
+ * above the keyboard whatever its height (useKeyboardReveal) — the same
+ * treatment as the mobile-number screen, so moving between them never jumps.
  */
 
 import { useEffect, useRef, useState } from "react";
 import {
   ImageBackground,
+  Keyboard,
+  KeyboardAvoidingView,
   Pressable,
+  ScrollView,
   StyleSheet,
   TextInput,
   View,
@@ -29,7 +36,8 @@ import { colors, radius, spacing } from "@shared/theme";
 import { api, ApiRequestError, setAccessToken } from "@/lib/api";
 import { loginCompleted } from "@/lib/authGate";
 import { useAuth } from "@/lib/store";
-import { AppText, Button, Screen } from "@/components/ui";
+import { useKeyboardReveal } from "@/lib/useKeyboardReveal";
+import { AppText, Button } from "@/components/ui";
 import type { AuthScreenProps } from "@/navigation/types";
 import ReferralCodeStep from "./ReferralCodeStep";
 
@@ -44,6 +52,7 @@ export default function OtpVerifyScreen({
   const { mobile } = route.params;
 
   const insets = useSafeAreaInsets();
+  const keyboard = useKeyboardReveal({ topReserve: insets.top + spacing.sm });
 
   const setSession = useAuth((state) => state.setSession);
 
@@ -59,13 +68,16 @@ export default function OtpVerifyScreen({
   // that step finishes, so it never gets a chance to unmount this screen
   // before the referral step has been shown. Stays null for every existing
   // (non-`isNewUser`) login, which never sees this step at all.
-  const [pendingNewUserAuth, setPendingNewUserAuth] = useState<AuthResponse | null>(null);
+  const [pendingNewUserAuth, setPendingNewUserAuth] =
+    useState<AuthResponse | null>(null);
 
   const [secondsLeft, setSecondsLeft] = useState(
     route.params.resendAfterSeconds,
   );
 
   const inputs = useRef<(TextInput | null)[]>([]);
+  // The box the caret is in (autofocus starts at the first one).
+  const [focused, setFocused] = useState<number | null>(0);
 
   /* ---------------------------------------------------------------------- */
   /* Development OTP                                                        */
@@ -153,6 +165,9 @@ export default function OtpVerifyScreen({
         mobile,
         otp: code,
       });
+
+      // Signed in: the keyboard goes before the next step / the modal closes.
+      Keyboard.dismiss();
 
       if (result.user.isNewUser) {
         // Makes the referral-code step's own authenticated `/referrals/apply`
@@ -247,191 +262,248 @@ export default function OtpVerifyScreen({
 
   if (pendingNewUserAuth) {
     return (
-      <Screen style={[styles.screen, { paddingTop: insets.top }]}>
-        <ImageBackground
-          source={enterOtpBackground}
-          style={styles.illustration}
-          resizeMode="cover"
-        />
-        <ReferralCodeStep onDone={finishSignup} />
-      </Screen>
+      <View style={[styles.screen, { paddingTop: insets.top }]}>
+        <KeyboardAvoidingView behavior="padding" style={styles.flex}>
+          <ScrollView
+            contentContainerStyle={{
+              paddingBottom: insets.bottom + spacing.lg,
+            }}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <ImageBackground
+              source={enterOtpBackground}
+              style={styles.illustration}
+              resizeMode="cover"
+            />
+            <ReferralCodeStep onDone={finishSignup} />
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </View>
     );
   }
 
   return (
-    <Screen
-      style={[
-        styles.screen,
-        {
-          paddingTop: insets.top,
-        },
-      ]}
-    >
-      {/* ------------------------------------------------------------------ */}
-      {/* Top illustration                                                   */}
-      {/* ------------------------------------------------------------------ */}
-
-      <ImageBackground
-        source={enterOtpBackground}
-        style={styles.illustration}
-        resizeMode="cover"
-      />
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Main content                                                        */}
-      {/* ------------------------------------------------------------------ */}
-
-      <View
-        style={[
-          styles.content,
-          {
-            paddingBottom: insets.bottom + spacing.lg,
-          },
-        ]}
-      >
-        {/* Back button */}
-        <Pressable
-          onPress={navigation.goBack}
-          style={styles.backButton}
-          hitSlop={12}
-          accessibilityLabel="Go back"
-        >
-          <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
-        </Pressable>
-
-        {/* Heading */}
-        <AppText variant="display" style={styles.heading}>
-          Verify OTP
-        </AppText>
-
-        <AppText
-          variant="body"
-          color={colors.textSecondary}
-          style={styles.subtitle}
-        >
-          Enter the 6-digit code sent to
-        </AppText>
-
-        {/* Mobile number */}
-        <View style={styles.numberRow}>
-          <View style={styles.phoneNumber}>
-            <Ionicons name="call-outline" size={19} color={colors.primary} />
-
-            <AppText variant="bodyStrong" style={styles.number}>
-              {formatIndianMobile(mobile)}
-            </AppText>
-          </View>
-
-          <Pressable onPress={navigation.goBack} hitSlop={10}>
-            <AppText variant="bodyStrong" color={colors.primary}>
-              Change
-            </AppText>
-          </Pressable>
-        </View>
-
-        {/* ---------------------------------------------------------------- */}
-        {/* OTP boxes                                                        */}
-        {/* ---------------------------------------------------------------- */}
-
-        <View style={styles.otpRow}>
-          {digits.map((digit, index) => (
-            <TextInput
-              key={index}
-              ref={(element) => {
-                inputs.current[index] = element;
-              }}
-              value={digit}
-              onChangeText={(value) => handleChange(index, value)}
-              onKeyPress={({ nativeEvent }) =>
-                handleKeyPress(index, nativeEvent.key)
-              }
-              keyboardType="number-pad"
-              maxLength={OTP_LENGTH}
-              autoFocus={index === 0}
-              textContentType="oneTimeCode"
-              autoComplete="sms-otp"
-              selectionColor={colors.primary}
-              style={[
-                styles.otpBox,
-                index === 0 && !digit ? styles.otpBoxFocused : null,
-                digit ? styles.otpBoxFilled : null,
-              ]}
-            />
-          ))}
-        </View>
-
-        {/* Error */}
-        {error && (
-          <AppText variant="caption" color={colors.danger} style={styles.error}>
-            {error}
-          </AppText>
-        )}
-
-        {/* ---------------------------------------------------------------- */}
-        {/* Resend                                                            */}
-        {/* ---------------------------------------------------------------- */}
-
-        <View style={styles.resendContainer}>
-          {secondsLeft > 0 ? (
-            <AppText variant="caption" color={colors.textSecondary}>
-              Resend OTP in{" "}
-              <AppText variant="bodyStrong" color={colors.primary}>
-                00:{String(secondsLeft).padStart(2, "0")}
-              </AppText>
-            </AppText>
-          ) : (
-            <Pressable onPress={resend} disabled={resendBusy} hitSlop={8}>
-              <AppText
-                variant="bodyStrong"
-                color={resendBusy ? colors.textMuted : colors.primary}
-              >
-                {resendBusy ? "Sending…" : "Resend OTP"}
-              </AppText>
-            </Pressable>
-          )}
-        </View>
-
-        {/* ---------------------------------------------------------------- */}
-        {/* Security notice                                                   */}
-        {/* ---------------------------------------------------------------- */}
-
-        <View style={styles.securityNotice}>
-          <View style={styles.securityIcon}>
-            <Ionicons
-              name="shield-checkmark"
-              size={20}
-              color={colors.primary}
-            />
-          </View>
-
-          <View style={styles.securityContent}>
-            <AppText variant="bodyStrong" color={colors.primary}>
-              Do not share OTP with anyone
-            </AppText>
-
-            <AppText
-              variant="caption"
-              color={colors.textSecondary}
-              style={styles.securityText}
+    <View style={styles.screen}>
+      {/* "padding" on both platforms, as on the mobile-number screen: with
+          Android edge-to-edge the window is not resized for the keyboard. */}
+      <KeyboardAvoidingView behavior="padding" style={styles.flex}>
+        <View {...keyboard.frameProps} style={styles.flex}>
+          <ScrollView
+            {...keyboard.scrollProps}
+            contentContainerStyle={[
+              styles.scrollContent,
+              {
+                paddingTop: insets.top,
+                paddingBottom: insets.bottom + spacing.lg,
+              },
+            ]}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            showsVerticalScrollIndicator={false}
+          >
+            <View
+              ref={keyboard.contentRef}
+              collapsable={false}
+              style={styles.scrollContent}
             >
-              For your security, never share your OTP with anyone.
-            </AppText>
-          </View>
+              {/* ------------------------------------------------------------------ */}
+              {/* Top illustration                                                   */}
+              {/* ------------------------------------------------------------------ */}
+
+              <ImageBackground
+                source={enterOtpBackground}
+                style={styles.illustration}
+                resizeMode="cover"
+              />
+
+              {/* ------------------------------------------------------------------ */}
+              {/* Main content                                                        */}
+              {/* ------------------------------------------------------------------ */}
+
+              <View style={styles.content}>
+                {/* Back button */}
+                <Pressable
+                  onPress={navigation.goBack}
+                  style={styles.backButton}
+                  hitSlop={12}
+                  accessibilityRole="button"
+                  accessibilityLabel="Go back"
+                >
+                  <Ionicons
+                    name="arrow-back"
+                    size={24}
+                    color={colors.textPrimary}
+                  />
+                </Pressable>
+
+                {/* Heading */}
+                <AppText variant="display" style={styles.heading}>
+                  Verify OTP
+                </AppText>
+
+                <AppText
+                  variant="body"
+                  color={colors.textSecondary}
+                  style={styles.subtitle}
+                >
+                  Enter the 6-digit code sent to
+                </AppText>
+
+                {/* Mobile number */}
+                <View style={styles.numberRow}>
+                  <View style={styles.phoneNumber}>
+                    <Ionicons
+                      name="call-outline"
+                      size={19}
+                      color={colors.primary}
+                    />
+
+                    <AppText variant="bodyStrong" style={styles.number}>
+                      {formatIndianMobile(mobile)}
+                    </AppText>
+                  </View>
+
+                  <Pressable
+                    onPress={navigation.goBack}
+                    hitSlop={10}
+                    accessibilityRole="button"
+                    accessibilityLabel="Change mobile number"
+                  >
+                    <AppText variant="bodyStrong" color={colors.primary}>
+                      Change
+                    </AppText>
+                  </Pressable>
+                </View>
+
+                {/* Kept above the keyboard: OTP boxes → Verify & Continue. */}
+                <View ref={keyboard.blockRef} collapsable={false}>
+                  {/* ---------------------------------------------------------------- */}
+                  {/* OTP boxes                                                        */}
+                  {/* ---------------------------------------------------------------- */}
+
+                  <View style={styles.otpRow}>
+                    {digits.map((digit, index) => (
+                      <TextInput
+                        key={index}
+                        ref={(element) => {
+                          inputs.current[index] = element;
+                        }}
+                        value={digit}
+                        onChangeText={(value) => handleChange(index, value)}
+                        onKeyPress={({ nativeEvent }) =>
+                          handleKeyPress(index, nativeEvent.key)
+                        }
+                        onFocus={() => {
+                          setFocused(index);
+                          keyboard.reveal();
+                        }}
+                        onBlur={() =>
+                          setFocused((current) =>
+                            current === index ? null : current,
+                          )
+                        }
+                        keyboardType="number-pad"
+                        maxLength={OTP_LENGTH}
+                        autoFocus={index === 0}
+                        textContentType="oneTimeCode"
+                        autoComplete="sms-otp"
+                        selectionColor={colors.primary}
+                        accessibilityLabel={`OTP digit ${index + 1} of ${OTP_LENGTH}`}
+                        style={[
+                          styles.otpBox,
+                          digit ? styles.otpBoxFilled : null,
+                          focused === index ? styles.otpBoxFocused : null,
+                        ]}
+                      />
+                    ))}
+                  </View>
+
+                  {/* Error */}
+                  {error && (
+                    <AppText
+                      variant="caption"
+                      color={colors.danger}
+                      style={styles.error}
+                    >
+                      {error}
+                    </AppText>
+                  )}
+
+                  {/* ---------------------------------------------------------------- */}
+                  {/* Resend                                                            */}
+                  {/* ---------------------------------------------------------------- */}
+
+                  <View style={styles.resendContainer}>
+                    {secondsLeft > 0 ? (
+                      <AppText variant="caption" color={colors.textSecondary}>
+                        Resend OTP in{" "}
+                        <AppText variant="bodyStrong" color={colors.primary}>
+                          00:{String(secondsLeft).padStart(2, "0")}
+                        </AppText>
+                      </AppText>
+                    ) : (
+                      <Pressable
+                        onPress={resend}
+                        disabled={resendBusy}
+                        hitSlop={8}
+                      >
+                        <AppText
+                          variant="bodyStrong"
+                          color={resendBusy ? colors.textMuted : colors.primary}
+                        >
+                          {resendBusy ? "Sending…" : "Resend OTP"}
+                        </AppText>
+                      </Pressable>
+                    )}
+                  </View>
+
+                  {/* ---------------------------------------------------------------- */}
+                  {/* Verify button                                                     */}
+                  {/* ---------------------------------------------------------------- */}
+
+                  <Button
+                    label="Verify & Continue"
+                    onPress={verify}
+                    loading={busy}
+                    disabled={code.length !== OTP_LENGTH || busy}
+                    style={styles.verifyButton}
+                  />
+                </View>
+
+                {/* ---------------------------------------------------------------- */}
+                {/* Security notice                                                   */}
+                {/* ---------------------------------------------------------------- */}
+
+                <View style={styles.securityNotice}>
+                  <View style={styles.securityIcon}>
+                    <Ionicons
+                      name="shield-checkmark"
+                      size={20}
+                      color={colors.primary}
+                    />
+                  </View>
+
+                  <View style={styles.securityContent}>
+                    <AppText variant="bodyStrong" color={colors.primary}>
+                      Do not share OTP with anyone
+                    </AppText>
+
+                    <AppText
+                      variant="caption"
+                      color={colors.textSecondary}
+                      style={styles.securityText}
+                    >
+                      For your security, never share your OTP with anyone.
+                    </AppText>
+                  </View>
+                </View>
+              </View>
+            </View>
+          </ScrollView>
         </View>
-
-        {/* ---------------------------------------------------------------- */}
-        {/* Verify button                                                     */}
-        {/* ---------------------------------------------------------------- */}
-
-        <Button
-          label="Verify & Continue"
-          onPress={verify}
-          loading={busy}
-          disabled={code.length !== OTP_LENGTH || busy}
-          style={styles.verifyButton}
-        />
-      </View>
-    </Screen>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -446,8 +518,16 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
 
+  flex: {
+    flex: 1,
+  },
+
+  scrollContent: {
+    flexGrow: 1,
+  },
+
   /* ---------------------------------------------------------------------- */
-  /* Illustration                                                           */
+  /* Illustration                                                         */
   /* ---------------------------------------------------------------------- */
 
   illustration: {
@@ -557,7 +637,7 @@ const styles = StyleSheet.create({
   securityNotice: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: spacing.xl,
+    marginTop: spacing.lg,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
     borderRadius: radius.lg,
@@ -587,7 +667,7 @@ const styles = StyleSheet.create({
   /* ---------------------------------------------------------------------- */
 
   verifyButton: {
-    marginTop: spacing.lg,
+    marginTop: spacing.base,
     minHeight: 48,
   },
 });

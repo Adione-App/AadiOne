@@ -72,7 +72,7 @@ import { FoodCarousel } from "./sections/FoodCarousel";
 import { LatestProducts } from "./sections/LatestProducts";
 import { HomeHero, heroHeaderColor } from "./sections/HomeHero";
 import { applyHomeLayout, type LaidOutSection } from "./homeLayout";
-import { useHomeLayout } from "@/lib/homeLayoutQuery";
+import { useHomeLayout, useHomeShelves } from "@/lib/homeLayoutQuery";
 import { StoreSection } from "./sections/StoreSection";
 
 const NO_RESULTS: never[] = [];
@@ -541,13 +541,15 @@ export default function HomeScreen({
   // The admin's published layout (Home Page Builder / Category Management):
   // order, visibility and style of the sections the engine built above.
   const homeLayout = useHomeLayout();
+  // Products of the builder's added product shelves (resolved by the server, keyed by section id).
+  const homeShelves = useHomeShelves();
   const language = usePreferences((state) => state.language);
   const laidOut = useMemo(
     () =>
       feed.data
-        ? applyHomeLayout({ sections, feed: feed.data, layout: homeLayout, language })
+        ? applyHomeLayout({ sections, feed: feed.data, layout: homeLayout, language, shelves: homeShelves })
         : { promo: [], sections: NO_RESULTS as LaidOutSection[] },
-    [sections, feed.data, homeLayout, language],
+    [sections, feed.data, homeLayout, language, homeShelves],
   );
   const headerColor = heroHeaderColor(homeLayout.hero);
 
@@ -698,6 +700,16 @@ export default function HomeScreen({
           return (
             <ProductShelf
               section={item}
+              onOpenProduct={handlers.openProduct}
+              onAction={handlers.action}
+            />
+          );
+        case "productShelf":
+          // A Home Page Builder shelf: the same ProductShelf and cards, with its own layout.
+          return (
+            <ProductShelf
+              section={item}
+              display={item.display}
               onOpenProduct={handlers.openProduct}
               onAction={handlers.action}
             />

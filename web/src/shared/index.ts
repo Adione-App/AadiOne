@@ -40,6 +40,7 @@ export * from './app-version';
 export * from './dto';
 export * from './product-import';
 export * from './home-layout';
+export * from './home-builder';
 
 /* business helpers (pure functions) */
 export * from './money';

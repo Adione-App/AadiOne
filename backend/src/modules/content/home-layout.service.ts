@@ -3,8 +3,11 @@
  * document (shared HomeLayoutContent, content_documents table).
  *
  *   draft      saved freely by an admin; never shown to customers
- *   publish    validates the draft (every referenced category still live,
- *              the background image one this server stored), archives the
+ *   publish    validates the draft (homeLayoutProblems — e.g. a shelf's
+ *              "View All" must fit its own categories; every referenced
+ *              category still live; every hand-picked product still
+ *              published; the background image one this server stored),
+ *              archives the
  *              current published revision and makes the draft revision N+1
  *              in ONE transaction; customers see it on their next refresh
  *   restore    copies an earlier revision into the draft (publish to apply)
@@ -14,6 +17,11 @@
  * `resolveHomeLayout`: complete, clamped, never throwing. It is cached in the
  * shared cache for a minute and dropped on publish.
  *
+ * Product shelves (added "product_shelf" sections) store only WHAT to show
+ * — source, categories, chosen product ids, count, presentation — never a
+ * product's price or stock: GET /content/home-shelves resolves them live from
+ * the catalogue (catalog.service resolveProductShelves).
+ *
  * Every write is audited (entityType "ContentDocument").
  */
 
@@ -22,8 +30,13 @@ import {
   CATEGORY_PLACEMENT_KEYS,
   DEFAULT_HOME_LAYOUT,
   ErrorCode,
+  homeLayoutProblems,
+  homeLayoutReferences,
   resolveHomeLayout,
   type AdminCategoryOptionDto,
+  type AdminProductOptionsPage,
+  type HomeShelvesDto,
+  type ProductShelfConfig,
   type AdminHomeLayoutDto,
   type HomeLayoutContent,
   type HomeLayoutDto,
@@ -34,7 +47,8 @@ import { moduleLogger } from '../../common/logger';
 import { prisma } from '../../infra/db/prisma';
 import { cache } from '../../infra/cache';
 import { storageKeyFromUrl } from '../../infra/storage';
-import { MARKETPLACE_SELLER_SQL } from '../catalog/catalog.repository';
+import { MARKETPLACE_SELLER_SQL, findPublishedProductIds, listProductOptions as queryProductOptions } from '../catalog/catalog.repository';
+import { resolveProductShelves } from '../catalog/catalog.service';
 import { assertAdminKey } from '../admin/admin-upload.service';
 import { processUploadedImage } from '../catalog/uploaded-image.service';
 
@@ -68,6 +82,20 @@ export async function getPublishedHomeLayout(): Promise<HomeLayoutDto> {
   const dto = publishedDto(row);
   await cache.set(CACHE_KEY, JSON.stringify(dto), CACHE_SECONDS).catch((error: unknown) => log.warn({ err: error }, 'home layout not cached'));
   return dto;
+}
+
+/**
+ * GET /content/home-shelves — the products of every VISIBLE product shelf of
+ * the published layout, resolved live. The layout itself comes from the
+ * (minute-cached, dropped-on-publish) published copy, so a publish changes
+ * which shelves exist at once.
+ */
+export async function getPublishedHomeShelves(): Promise<HomeShelvesDto> {
+  const published = await getPublishedHomeLayout();
+  const shelves = published.layout.sections
+    .filter((section) => section.visible && section.key === 'product_shelf' && section.shelf)
+    .map((section) => ({ id: section.id, shelf: section.shelf! }));
+  return { revision: published.revision, shelves: await resolveProductShelves(shelves) };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -164,6 +192,71 @@ export async function listCategoryOptions(): Promise<AdminCategoryOptionDto[]> {
   }));
 }
 
+/**
+ * POST /admin/content/home-layout/shelf-preview — what one shelf of the
+ * builder (saved or not) would show customers right now, by exactly the rules
+ * customers get. Nothing is stored.
+ */
+export async function previewProductShelf(sectionId: string, shelf: unknown) {
+  const resolved = resolveHomeLayout({ sections: [{ id: sectionId, key: 'product_shelf', shelf }] }).sections.find((section) => section.id === sectionId);
+  if (!resolved?.shelf) throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Not a product shelf.' });
+  const config: ProductShelfConfig = resolved.shelf;
+  return (await resolveProductShelves([{ id: sectionId, shelf: config }]))[sectionId] ?? [];
+}
+
+const encodeOptionCursor = (name: string, id: string) => Buffer.from(JSON.stringify([name, id])).toString('base64url');
+function decodeOptionCursor(cursor: string | undefined): { name: string; id: string } | undefined {
+  if (!cursor) return undefined;
+  try {
+    const [name, id] = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as [unknown, unknown];
+    if (typeof name === 'string' && typeof id === 'string' && /^[0-9a-f-]{36}$/i.test(id)) return { name, id };
+  } catch {
+    // fall through to the error below
+  }
+  throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'That page of results is no longer valid. Search again.' });
+}
+
+/**
+ * GET /admin/content/product-options — the shelves' product picker: search
+ * (English name, Hindi name or brand), category, seller, or exact ids (to show
+ * a shelf's chosen products), name order, paginated.
+ */
+export async function listProductOptions(query: {
+  q?: string;
+  categoryPath?: string;
+  sellerId?: string;
+  ids?: string[];
+  cursor?: string;
+  limit: number;
+}): Promise<AdminProductOptionsPage> {
+  const rows = await queryProductOptions({
+    search: query.q,
+    categoryPath: query.categoryPath,
+    sellerId: query.sellerId,
+    ids: query.ids,
+    after: decodeOptionCursor(query.cursor),
+    limit: query.limit + 1,
+  });
+  const page = rows.slice(0, query.limit);
+  const last = page[page.length - 1];
+  return {
+    items: page.map((row) => ({
+      id: row.id,
+      name: row.name,
+      imageUrl: row.image_url,
+      categoryPath: row.category_path,
+      categoryLabel: row.parent_name ? `${row.parent_name} › ${row.category_name}` : row.category_name,
+      brandName: row.brand_name,
+      pricePaise: row.price_paise,
+      mrpPaise: row.mrp_paise,
+      variantCount: row.variant_count,
+      sellerCount: row.seller_count,
+      available: row.available,
+    })),
+    nextCursor: rows.length > query.limit && last ? encodeOptionCursor(last.name, last.id) : null,
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Admin — writing                                                             */
 /* -------------------------------------------------------------------------- */
@@ -238,6 +331,34 @@ function assertBackgroundImage(layout: HomeLayoutContent): void {
   }
 }
 
+/** The checks that need no database (shared with the builder, which shows the same messages). */
+function assertNoProblems(layout: HomeLayoutContent): void {
+  const problems = homeLayoutProblems(layout);
+  if (problems.length === 0) return;
+  throw new AppError(ErrorCode.VALIDATION_ERROR, {
+    message: problems.length === 1 ? problems[0]!.message : `${problems[0]!.message} (and ${problems.length - 1} more to fix)`,
+    details: problems.map((problem) => ({ field: problem.field, message: problem.message })),
+  });
+}
+
+/**
+ * Every hand-picked product must still exist as a published product. One
+ * that is merely out of stock is fine — the shelf skips it until it is back.
+ */
+async function assertProductsPublished(layout: HomeLayoutContent): Promise<void> {
+  const ids = [...homeLayoutReferences(layout).productIds];
+  if (ids.length === 0) return;
+  const published = await findPublishedProductIds(ids);
+  const missing = ids.filter((id) => !published.has(id));
+  if (missing.length > 0) {
+    const one = missing.length === 1;
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      message: `${missing.length} hand-picked product${one ? ' is' : 's are'} no longer published (removed or not approved). Remove ${one ? 'it' : 'them'} from the shelf, then publish again.`,
+      details: missing.map((id) => ({ field: 'productIds', message: id })),
+    });
+  }
+}
+
 /** Every category a layout names must still be live — a published layout never lists a vanished category. */
 async function assertCategoriesLive(layout: HomeLayoutContent): Promise<void> {
   const paths = new Set<string>();
@@ -253,6 +374,8 @@ async function assertCategoriesLive(layout: HomeLayoutContent): Promise<void> {
     placement.paths.forEach((path) => paths.add(path));
   }
   layout.categoryStyles.forEach((style) => paths.add(style.path));
+  // Added sections: shelves' categories and View All targets, chosen categories.
+  homeLayoutReferences(layout).categoryPaths.forEach((path) => paths.add(path));
   if (paths.size === 0) return;
   const live = new Set((await listCategoryOptions()).map((option) => option.path));
   const missing = [...paths].filter((path) => !live.has(path));
@@ -275,7 +398,9 @@ export async function publishHomeLayout(basedOnRevision: number, actorUserId: st
   if (!draft) throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'There are no unpublished changes to publish.' });
   const layout = resolveHomeLayout(draft.content);
   assertBackgroundImage(layout);
+  assertNoProblems(layout);
   await assertCategoriesLive(layout);
+  await assertProductsPublished(layout);
 
   await prisma.$transaction(async (tx) => {
     await lockDocument(tx);

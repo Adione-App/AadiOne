@@ -10,13 +10,16 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DEFAULT_HOME_LAYOUT,
   resolveHomeLayout,
   type AdminCategoryOptionDto,
   type AdminHomeLayoutDto,
+  type AdminProductOptionsPage,
   type HomeLayoutContent,
+  type ProductShelfConfig,
+  type ProductSummaryDto,
 } from '@shared';
 import { api } from './api';
 import { uploadAdminImage } from './content';
@@ -24,7 +27,52 @@ import { uploadAdminImage } from './content';
 export const homeLayoutKeys = {
   document: ['admin', 'home-layout'] as const,
   categories: ['admin', 'content', 'category-options'] as const,
+  products: ['admin', 'content', 'product-options'] as const,
+  shelfPreview: ['admin', 'content', 'shelf-preview'] as const,
 };
+
+const productQuery = (params: Record<string, string | undefined>) => {
+  const query = new URLSearchParams();
+  for (const [name, value] of Object.entries(params)) if (value) query.set(name, value);
+  return `/admin/content/product-options?${query.toString()}`;
+};
+
+/** The shelves' product picker: search (English / Hindi name or brand), category, seller — 20 at a time. */
+export function useProductOptions(filters: { q: string; categoryPath: string; sellerId: string }, enabled = true) {
+  return useInfiniteQuery({
+    queryKey: [...homeLayoutKeys.products, 'search', filters],
+    queryFn: ({ pageParam }) =>
+      api.get<AdminProductOptionsPage>(
+        productQuery({ q: filters.q.trim() || undefined, categoryPath: filters.categoryPath || undefined, sellerId: filters.sellerId || undefined, cursor: pageParam ?? undefined, limit: '20' }),
+      ),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor,
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+/** A shelf's chosen products (name, image, price, availability) — by id, whatever the search shows. */
+export function useProductsByIds(ids: readonly string[]) {
+  return useQuery({
+    queryKey: [...homeLayoutKeys.products, 'ids', [...ids].sort().join(',')],
+    queryFn: () => api.get<AdminProductOptionsPage>(productQuery({ ids: ids.join(','), limit: '50' })),
+    enabled: ids.length > 0,
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** What a shelf (saved or not) shows customers right now — by the server's own rules. */
+export function useShelfPreview(sectionId: string, shelf: ProductShelfConfig, enabled = true) {
+  return useQuery({
+    queryKey: [...homeLayoutKeys.shelfPreview, sectionId, JSON.stringify(shelf)],
+    queryFn: () => api.post<ProductSummaryDto[]>('/admin/content/home-layout/shelf-preview', { sectionId, shelf }),
+    enabled,
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
+  });
+}
 
 export function useAdminHomeLayout() {
   return useQuery({ queryKey: homeLayoutKeys.document, queryFn: () => api.get<AdminHomeLayoutDto>('/admin/content/home-layout') });

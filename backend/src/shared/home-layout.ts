@@ -19,6 +19,8 @@
  * without anyone editing the layout first.
  */
 
+import type { ProductSummaryDto } from './dto';
+
 /* -------------------------------------------------------------------------- */
 /* Colours                                                                     */
 /* -------------------------------------------------------------------------- */
@@ -250,8 +252,209 @@ export const HOME_SECTION_INFO: Record<HomeSectionKey, HomeSectionInfo> = {
 
 export const HOME_TEXT_LIMITS = { title: 60, subtitle: 120 } as const;
 
+/* -------------------------------------------------------------------------- */
+/* Repeatable sections — product shelves and category sections                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Sections an admin ADDS (any number, each with its own id and settings), on
+ * top of the built-in ones above that exist exactly once. An app that does
+ * not know a kind skips it (resolveSections), so adding a kind never breaks
+ * an older app — it just does not show that section.
+ */
+export const HOME_REPEATABLE_SECTION_KINDS = ['product_shelf', 'category_section'] as const;
+export type HomeRepeatableSectionKind = (typeof HOME_REPEATABLE_SECTION_KINDS)[number];
+
+/** The registry: every section type the layout accepts. Anything else is refused (admin) or skipped (app). */
+export const HOME_SECTION_TYPES = [...HOME_SECTION_KEYS, ...HOME_REPEATABLE_SECTION_KINDS] as const;
+export type HomeSectionType = (typeof HOME_SECTION_TYPES)[number];
+
+export const isBuiltInSectionKey = (value: unknown): value is HomeSectionKey => HOME_SECTION_KEYS.includes(value as HomeSectionKey);
+export const isRepeatableSectionKind = (value: unknown): value is HomeRepeatableSectionKind =>
+  HOME_REPEATABLE_SECTION_KINDS.includes(value as HomeRepeatableSectionKind);
+
+export const HOME_REPEATABLE_SECTION_INFO: Record<HomeRepeatableSectionKind, HomeSectionInfo> = {
+  product_shelf: {
+    label: 'Product shelf',
+    hint: 'Products from the categories you choose — random (changes daily), latest, best-selling, or picked by hand — as a scrolling row or a grid.',
+    titleEditable: true,
+    countLimits: null,
+    categoryPlacement: null,
+    bannerPlacement: null,
+  },
+  category_section: {
+    label: 'Category section',
+    hint: 'A grid or row of categories and/or subcategories you choose (or picked automatically), with its own style.',
+    titleEditable: true,
+    countLimits: null,
+    categoryPlacement: null,
+    bannerPlacement: null,
+  },
+};
+
+/** Label, hint and editable parts of any section type. */
+export function homeSectionInfo(key: HomeSectionType): HomeSectionInfo {
+  return isRepeatableSectionKind(key) ? HOME_REPEATABLE_SECTION_INFO[key] : HOME_SECTION_INFO[key];
+}
+
+/** At most this many added sections on one Home page. */
+export const HOME_CUSTOM_SECTION_MAX = 30;
+/**
+ * A section's stable id: built-in sections use their key; an added section
+ * gets a generated one ("shelf-k3v9q2"). Never an index or a title, so
+ * reordering, renaming and duplicating keep every section's identity.
+ */
+export const HOME_SECTION_ID_PATTERN = /^[a-z][a-z0-9_-]{2,39}$/;
+/** A product id (UUID). */
+export const PRODUCT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Where a shelf's products come from. */
+export const PRODUCT_SHELF_SOURCES = ['random', 'latest', 'bestselling', 'manual'] as const;
+export type ProductShelfSource = (typeof PRODUCT_SHELF_SOURCES)[number];
+
+export const PRODUCT_SHELF_SOURCE_INFO: Record<ProductShelfSource, { label: string; hint: string }> = {
+  random: {
+    label: 'Random',
+    hint: 'A random mix from the chosen categories. It stays the same all day (no reshuffling on every visit) and changes the next day.',
+  },
+  latest: { label: 'Latest', hint: 'The newest products from the chosen categories, newest first.' },
+  bestselling: {
+    label: 'Best-selling',
+    hint: 'Ranked by quantity actually delivered to customers (the same measure as "Top picks"); products without sales follow in a fixed order.',
+  },
+  manual: { label: 'Picked by hand', hint: 'The products you choose, in your order. Optionally topped up with the latest products from the chosen categories.' },
+};
+
+export const PRODUCT_SHELF_COUNT_LIMITS = { min: 1, max: 30 } as const;
+export const PRODUCT_SHELF_COUNT_PRESETS = [4, 6, 8, 10, 15, 20] as const;
+/** Categories one shelf may draw from. */
+export const PRODUCT_SHELF_SCOPE_MAX = 10;
+/** Products one shelf may list by hand. */
+export const PRODUCT_SHELF_PICK_MAX = 40;
+
+export const PRODUCT_SHELF_LAYOUTS = ['carousel', 'grid'] as const;
+export type ProductShelfLayout = (typeof PRODUCT_SHELF_LAYOUTS)[number];
+export const PRODUCT_SHELF_COLUMNS = [2, 3] as const;
+export type ProductShelfColumns = (typeof PRODUCT_SHELF_COLUMNS)[number];
+export const PRODUCT_SHELF_CARD_SIZES = ['compact', 'regular', 'large'] as const;
+export type ProductShelfCardSize = (typeof PRODUCT_SHELF_CARD_SIZES)[number];
+/** A carousel card's width (dp) per size — "regular" is the width Home has always used. */
+export const PRODUCT_SHELF_CARD_WIDTH_DP: Record<ProductShelfCardSize, number> = { compact: 116, regular: 132, large: 152 };
+export const PRODUCT_SHELF_GAPS = ['tight', 'normal', 'wide'] as const;
+export type ProductShelfGap = (typeof PRODUCT_SHELF_GAPS)[number];
+export const PRODUCT_SHELF_GAP_DP: Record<ProductShelfGap, number> = { tight: 6, normal: 8, wide: 12 };
+/** A grid card never gets narrower than this; a 3-column grid on a narrow phone becomes 2 columns. */
+export const PRODUCT_SHELF_MIN_GRID_CARD_DP = 104;
+
+/**
+ * Where a shelf's "View All" goes:
+ *   none         no View All
+ *   category     that category's listing — it must contain the whole shelf
+ *   latest       the newest-products listing (latest shelves of the whole catalogue)
+ *   bestselling  the "Top picks" listing (best-selling shelves of the whole catalogue)
+ */
+export const PRODUCT_SHELF_VIEW_ALL_TYPES = ['none', 'category', 'latest', 'bestselling'] as const;
+export type ProductShelfViewAllType = (typeof PRODUCT_SHELF_VIEW_ALL_TYPES)[number];
+
+export interface ProductShelfConfig {
+  source: ProductShelfSource;
+  /** Category paths the products come from ("grocery", "grocery/rice"); empty = the whole catalogue. */
+  categoryPaths: string[];
+  /** source "manual": the chosen product ids, in order. */
+  productIds: string[];
+  /** source "manual": fill the rest of `count` with the latest products from `categoryPaths`. */
+  fillFromScope: boolean;
+  /** At most this many products (fewer when fewer qualify; never padded). */
+  count: number;
+  layout: ProductShelfLayout;
+  /** Grid only: products per row. */
+  columns: ProductShelfColumns;
+  /** Carousel only: card width. */
+  cardSize: ProductShelfCardSize;
+  gap: ProductShelfGap;
+  viewAll: { type: ProductShelfViewAllType; /** type "category": its path. */ path: string | null };
+}
+
+export const DEFAULT_PRODUCT_SHELF: ProductShelfConfig = {
+  source: 'latest',
+  categoryPaths: [],
+  productIds: [],
+  fillFromScope: false,
+  count: 10,
+  layout: 'carousel',
+  columns: 2,
+  cardSize: 'regular',
+  gap: 'normal',
+  viewAll: { type: 'none', path: null },
+};
+
+/** A category section: a placement of its own (same settings as Category Management's), plus what "automatic" picks. */
+export interface HomeCategorySectionConfig extends CategoryPlacementConfig {
+  /** Automatic mode: top categories, subcategories (taking turns between parents) or both. */
+  level: 'top' | 'sub' | 'any';
+  /** The tiles' text colour (a category's own colour wins); null = the standard dark text. */
+  textColor: 'dark' | 'light' | null;
+}
+
+export const DEFAULT_CATEGORY_SECTION: HomeCategorySectionConfig = {
+  mode: 'manual',
+  paths: [],
+  maxItems: 8,
+  columns: 4,
+  rows: null,
+  layout: 'grid',
+  showViewAll: false,
+  tileShape: 'rounded',
+  imageFit: 'contain',
+  tileBackground: 'green',
+  level: 'top',
+  textColor: null,
+};
+
+/**
+ * Why a shelf's View All cannot be used, or null when it can. The SAME rule
+ * refuses publishing (server), explains itself in the builder and hides the
+ * button in the app, so customers are never sent to an unrelated listing.
+ */
+export function productShelfViewAllProblem(shelf: ProductShelfConfig): string | null {
+  const { viewAll, categoryPaths, source } = shelf;
+  if (viewAll.type === 'none') return null;
+  if (viewAll.type === 'category') {
+    const path = viewAll.path;
+    if (!path || !CATEGORY_PATH_PATTERN.test(path)) return 'Choose the category "View All" opens.';
+    if (categoryPaths.length === 0) return '"View All" can open a category only when the shelf takes its products from categories.';
+    const inside = categoryPaths.every((scope) => scope === path || scope.startsWith(`${path}/`));
+    return inside ? null : '"View All" must open the shelf\'s own category (or the main category that contains all of its categories).';
+  }
+  const wanted = viewAll.type === 'latest' ? 'latest' : 'bestselling';
+  if (source !== wanted || categoryPaths.length > 0) {
+    return `"View All — ${viewAll.type === 'latest' ? 'latest products' : 'best-selling products'}" fits only a ${wanted === 'latest' ? 'Latest' : 'Best-selling'} shelf of the whole catalogue (no categories chosen).`;
+  }
+  return null;
+}
+
+/** The View All destinations that fit a shelf, best first — what the builder offers. */
+export function productShelfViewAllOptions(shelf: ProductShelfConfig): ProductShelfConfig['viewAll'][] {
+  const options: ProductShelfConfig['viewAll'][] = [];
+  const paths = shelf.categoryPaths;
+  if (paths.length > 0) {
+    // The shelf's own category, or the main category containing all of them.
+    const tops = new Set(paths.map((path) => path.split('/')[0]!));
+    if (paths.length === 1) options.push({ type: 'category', path: paths[0]! });
+    if (tops.size === 1) {
+      const top = [...tops][0]!;
+      if (!options.some((option) => option.path === top)) options.push({ type: 'category', path: top });
+    }
+  } else if (shelf.source === 'latest') options.push({ type: 'latest', path: null });
+  else if (shelf.source === 'bestselling') options.push({ type: 'bestselling', path: null });
+  return options;
+}
+
 export interface HomeSectionConfig {
-  key: HomeSectionKey;
+  /** Stable identity: the key for a built-in section, a generated id for an added one. */
+  id: string;
+  /** The section's type (HOME_SECTION_TYPES). */
+  key: HomeSectionType;
   visible: boolean;
   /** Replaces the section's own heading (titleEditable sections only); null = the default heading. */
   title: string | null;
@@ -262,6 +465,10 @@ export interface HomeSectionConfig {
   spacing: HomeSpacing;
   /** How many items it shows (sections with countLimits only); null = its default. */
   maxItems: number | null;
+  /** product_shelf only: its products and presentation; null for every other type. */
+  shelf: ProductShelfConfig | null;
+  /** category_section only: its categories and presentation; null for every other type. */
+  categories: HomeCategorySectionConfig | null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -398,13 +605,15 @@ export interface AdminHomeLayoutDto {
   history: HomeLayoutRevisionDto[];
 }
 
-export const DEFAULT_HOME_SECTION: Omit<HomeSectionConfig, 'key'> = {
+export const DEFAULT_HOME_SECTION: Omit<HomeSectionConfig, 'key' | 'id'> = {
   visible: true,
   title: null,
   subtitle: null,
   background: 'none',
   spacing: 'normal',
   maxItems: null,
+  shelf: null,
+  categories: null,
 };
 
 /** The layout before an admin publishes anything: today's Home, with the warm top background. */
@@ -424,7 +633,7 @@ export const DEFAULT_HOME_LAYOUT: HomeLayoutContent = {
     promo: { visible: true },
     cards: { visible: true, maxItems: 3, height: 128, radius: 'lg', gap: 'normal' },
   },
-  sections: HOME_SECTION_KEYS.map((key) => ({ key, ...DEFAULT_HOME_SECTION })),
+  sections: HOME_SECTION_KEYS.map((key) => ({ id: key, key, ...DEFAULT_HOME_SECTION })),
   categoryPlacements: Object.fromEntries(
     CATEGORY_PLACEMENT_KEYS.map((key) => [key, { ...CATEGORY_PLACEMENT_INFO[key].defaults, paths: [] }]),
   ) as unknown as Record<CategoryPlacementKey, CategoryPlacementConfig>,
@@ -489,9 +698,61 @@ function resolveHero(raw: unknown): HomeHeroConfig {
   };
 }
 
-function resolveSection(raw: Loose, key: HomeSectionKey): HomeSectionConfig {
-  const info = HOME_SECTION_INFO[key];
+/** A list of distinct strings matching `pattern`, at most `max` (anything else is dropped). */
+function stringList(raw: unknown, pattern: RegExp, max: number, normalise: (value: string) => string = (value) => value): string[] {
+  const list: string[] = [];
+  for (const entry of Array.isArray(raw) ? raw : []) {
+    if (typeof entry !== 'string' || !pattern.test(entry)) continue;
+    const value = normalise(entry);
+    if (!list.includes(value)) list.push(value);
+    if (list.length >= max) break;
+  }
+  return list;
+}
+
+function resolveShelf(raw: unknown): ProductShelfConfig {
+  const value = obj(raw);
+  const base = DEFAULT_PRODUCT_SHELF;
+  const viewAll = obj(value['viewAll']);
+  const viewAllType = pick(viewAll['type'], PRODUCT_SHELF_VIEW_ALL_TYPES, base.viewAll.type);
+  const viewAllPath = typeof viewAll['path'] === 'string' && CATEGORY_PATH_PATTERN.test(viewAll['path']) ? viewAll['path'] : null;
   return {
+    source: pick(value['source'], PRODUCT_SHELF_SOURCES, base.source),
+    categoryPaths: stringList(value['categoryPaths'], CATEGORY_PATH_PATTERN, PRODUCT_SHELF_SCOPE_MAX),
+    productIds: stringList(value['productIds'], PRODUCT_ID_PATTERN, PRODUCT_SHELF_PICK_MAX, (id) => id.toLowerCase()),
+    fillFromScope: bool(value['fillFromScope'], base.fillFromScope),
+    count: clampInt(value['count'], PRODUCT_SHELF_COUNT_LIMITS.min, PRODUCT_SHELF_COUNT_LIMITS.max, base.count),
+    layout: pick(value['layout'], PRODUCT_SHELF_LAYOUTS, base.layout),
+    columns: value['columns'] === 3 ? 3 : 2,
+    cardSize: pick(value['cardSize'], PRODUCT_SHELF_CARD_SIZES, base.cardSize),
+    gap: pick(value['gap'], PRODUCT_SHELF_GAPS, base.gap),
+    viewAll: viewAllType === 'category' ? { type: 'category', path: viewAllPath } : { type: viewAllType, path: null },
+  };
+}
+
+function resolveCategorySection(raw: unknown): HomeCategorySectionConfig {
+  const value = obj(raw);
+  const base = DEFAULT_CATEGORY_SECTION;
+  return {
+    mode: pick(value['mode'], ['auto', 'manual'] as const, base.mode),
+    paths: stringList(value['paths'], CATEGORY_PATH_PATTERN, CATEGORY_COUNT_LIMITS.max),
+    maxItems: clampInt(value['maxItems'], CATEGORY_COUNT_LIMITS.min, CATEGORY_COUNT_LIMITS.max, base.maxItems),
+    columns: value['columns'] === null ? null : optionalInt(value['columns'], CATEGORY_COLUMN_LIMITS.min, CATEGORY_COLUMN_LIMITS.max) ?? base.columns,
+    rows: optionalInt(value['rows'], CATEGORY_ROW_LIMITS.min, CATEGORY_ROW_LIMITS.max),
+    layout: pick(value['layout'], ['grid', 'row'] as const, base.layout),
+    showViewAll: bool(value['showViewAll'], base.showViewAll),
+    tileShape: pick(value['tileShape'], CATEGORY_TILE_SHAPES, base.tileShape),
+    imageFit: pick(value['imageFit'], ['cover', 'contain'] as const, base.imageFit),
+    tileBackground: color(value['tileBackground'], base.tileBackground),
+    level: pick(value['level'], ['top', 'sub', 'any'] as const, base.level),
+    textColor: value['textColor'] === 'dark' || value['textColor'] === 'light' ? value['textColor'] : null,
+  };
+}
+
+function resolveSection(raw: Loose, key: HomeSectionType, id: string): HomeSectionConfig {
+  const info = homeSectionInfo(key);
+  return {
+    id,
     key,
     visible: bool(raw['visible'], DEFAULT_HOME_SECTION.visible),
     title: info.titleEditable ? text(raw['title'], HOME_TEXT_LIMITS.title) : null,
@@ -499,26 +760,43 @@ function resolveSection(raw: Loose, key: HomeSectionKey): HomeSectionConfig {
     background: color(raw['background'], DEFAULT_HOME_SECTION.background),
     spacing: pick(raw['spacing'], HOME_SPACING, DEFAULT_HOME_SECTION.spacing),
     maxItems: info.countLimits ? optionalInt(raw['maxItems'], info.countLimits.min, info.countLimits.max) : null,
+    shelf: key === 'product_shelf' ? resolveShelf(raw['shelf']) : null,
+    categories: key === 'category_section' ? resolveCategorySection(raw['categories']) : null,
   };
 }
 
-/** Listed sections first (known kinds, each once), then any missing ones at their default position. */
+/**
+ * Listed sections first, in their order: built-in ones once each (id = key),
+ * added ones with a valid id not used before (at most HOME_CUSTOM_SECTION_MAX);
+ * an unknown type or a broken entry is skipped. Then any missing built-in
+ * section at its default position.
+ */
 function resolveSections(raw: unknown): HomeSectionConfig[] {
   const listed: HomeSectionConfig[] = [];
-  const seen = new Set<HomeSectionKey>();
+  const seen = new Set<string>();
+  let added = 0;
   for (const entry of Array.isArray(raw) ? raw : []) {
     const value = obj(entry);
     const key = value['key'];
-    if (!HOME_SECTION_KEYS.includes(key as HomeSectionKey) || seen.has(key as HomeSectionKey)) continue;
-    seen.add(key as HomeSectionKey);
-    listed.push(resolveSection(value, key as HomeSectionKey));
+    if (isBuiltInSectionKey(key)) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+      listed.push(resolveSection(value, key, key));
+    } else if (isRepeatableSectionKind(key)) {
+      const id = value['id'];
+      if (typeof id !== 'string' || !HOME_SECTION_ID_PATTERN.test(id) || isBuiltInSectionKey(id) || seen.has(id)) continue;
+      if (added >= HOME_CUSTOM_SECTION_MAX) continue;
+      seen.add(id);
+      added += 1;
+      listed.push(resolveSection(value, key, id));
+    }
   }
   // A missing section goes right after the nearest section before it in the default order.
   for (const [index, key] of HOME_SECTION_KEYS.entries()) {
     if (seen.has(key)) continue;
     const before = HOME_SECTION_KEYS.slice(0, index).reverse().find((candidate) => seen.has(candidate));
-    const at = before ? listed.findIndex((section) => section.key === before) + 1 : 0;
-    listed.splice(at, 0, { key, ...DEFAULT_HOME_SECTION });
+    const at = before ? listed.findIndex((section) => section.id === before) + 1 : 0;
+    listed.splice(at, 0, { id: key, key, ...DEFAULT_HOME_SECTION });
     seen.add(key);
   }
   return listed;
@@ -603,6 +881,42 @@ export interface AdminCategoryOptionDto {
   sellerCount: number;
   /** Live, approved products under it (for a top category, including its subcategories). */
   productCount: number;
+}
+
+/**
+ * GET /content/home-shelves — the products of every product shelf of the
+ * PUBLISHED layout, resolved live (current prices, stock and sellers; never
+ * stored in the layout). Keyed by section id; a shelf with nothing to show
+ * right now is an empty list, and the app leaves it out.
+ */
+export interface HomeShelvesDto {
+  /** The published revision these shelves belong to (0 = the defaults). */
+  revision: number;
+  shelves: Record<string, ProductSummaryDto[]>;
+}
+
+/** GET /admin/content/product-options — one product in the builder's product picker. */
+export interface AdminProductOptionDto {
+  id: string;
+  name: string;
+  imageUrl: string | null;
+  /** "grocery/rice" and how it reads: "Grocery › Rice". */
+  categoryPath: string;
+  categoryLabel: string;
+  brandName: string | null;
+  /** Lowest price / its MRP among the live listings; null when none is listed right now. */
+  pricePaise: number | null;
+  mrpPaise: number | null;
+  variantCount: number;
+  sellerCount: number;
+  /** Customers can buy it right now (approved, listed by a live seller, in stock). */
+  available: boolean;
+}
+
+export interface AdminProductOptionsPage {
+  items: AdminProductOptionDto[];
+  /** Pass back as `cursor` for the next page; null = no more. */
+  nextCursor: string | null;
 }
 
 /** The visible categories of a placement: `maxItems`, further limited to `rows` × columns when both are set. */

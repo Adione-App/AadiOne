@@ -1,13 +1,14 @@
 /**
  * A restaurant / cafe card — every field is the seller's real data from
- * GET /restaurants. A seller without any menu photo gets a lettered tile,
- * never a stock food picture pretending to be theirs.
+ * GET /restaurants. The photo is its own Restaurant Image; without one (or
+ * when it fails to load) it gets a lettered tile — never a stock food picture
+ * or a photo borrowed from its menu (restaurantImages.ts).
  *
  * `compact` is the fixed-width card of Home's horizontal food rail; the
  * default is the full-width card of the Food tab.
  */
 
-import { memo } from "react";
+import { memo, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Image } from "expo-image";
 import { Clock, MapPin } from "lucide-react-native";
@@ -16,6 +17,7 @@ import { formatDistance } from "@shared/distance";
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { AppText } from "@/components/ui";
 import { resolveImageUrl } from "@/lib/api";
+import { restaurantListImage } from "@/lib/restaurantImages";
 
 export const RESTAURANT_CARD_WIDTH = 220;
 
@@ -32,7 +34,8 @@ function RestaurantCardImpl({
   compact?: boolean;
   onPress: (sellerId: string) => void;
 }) {
-  const cover = resolveImageUrl(restaurant.coverImageUrl);
+  const cover = resolveImageUrl(restaurantListImage(restaurant));
+  const [failed, setFailed] = useState<string | null>(null);
   const cuisine = restaurant.cuisine.filter((entry) => entry.trim().length > 0).join(", ");
 
   return (
@@ -43,8 +46,15 @@ function RestaurantCardImpl({
       accessibilityLabel={`Open ${restaurant.name}${restaurant.isOpen ? "" : ", closed now"}`}
     >
       <View style={[styles.media, compact ? styles.mediaCompact : styles.mediaWide]}>
-        {cover ? (
-          <Image source={{ uri: cover }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} cachePolicy="memory-disk" />
+        {cover && cover !== failed ? (
+          <Image
+            source={{ uri: cover }}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            transition={150}
+            cachePolicy="memory-disk"
+            onError={() => setFailed(cover)}
+          />
         ) : (
           <View style={styles.lettered}>
             <AppText style={styles.letter}>{restaurant.name.trim().charAt(0).toUpperCase()}</AppText>

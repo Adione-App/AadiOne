@@ -231,6 +231,8 @@ export function Button({
   disabled,
   type = 'button',
   className = '',
+  title,
+  'aria-label': ariaLabel,
 }: {
   children: ReactNode;
   onClick?: () => void;
@@ -238,6 +240,10 @@ export function Button({
   disabled?: boolean;
   type?: 'button' | 'submit';
   className?: string;
+  /** Tooltip. */
+  title?: string;
+  /** For an icon-only button: what a screen reader says. */
+  'aria-label'?: string;
 }) {
   const styles = {
     primary: 'bg-brand-500 text-white hover:bg-brand-600 shadow-sm',
@@ -252,6 +258,8 @@ export function Button({
       type={type}
       onClick={onClick}
       disabled={disabled}
+      title={title}
+      aria-label={ariaLabel}
       // min-h-11: the panel lives on a counter tablet and is used with a
       // thumb, so touch targets stay comfortably above 44px.
       className={`inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${styles} ${className}`}

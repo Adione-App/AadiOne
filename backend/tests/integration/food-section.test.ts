@@ -445,6 +445,51 @@ describe('restaurant cover and menu images, and preparation time', () => {
     expect(profile.menuImageUrl).toBeNull();
   });
 
+  it('keeps the Restaurant Image, the Menu Cover Image and each item photo separate — none stands in for another', async () => {
+    const sellerId = await kitchen('Ha Hokam Food', 'RESTAURANT', { items: [{ name: 'Burger', diet: 'VEG' }], ownerMobile: '9400000952' });
+    const seller = (await loginAs('9400000952')).accessToken;
+    const product = await prisma.product.findFirstOrThrow({ where: { submittedBySellerId: sellerId } });
+    const itemPhoto = 'https://cdn.example/products/s-x/2026-10-18/burger.webp';
+    await prisma.productImage.create({ data: { productId: product.id, url: itemPhoto, thumbUrl: itemPhoto, cardUrl: itemPhoto } });
+
+    // No restaurant images yet: the card and the menu hero get none — never the item's photo.
+    expect((await list())[0]!.coverImageUrl).toBeNull();
+    const before = expectSuccess<RestaurantMenuDto>((await api().get(`/api/v1/restaurants/${sellerId}`).expect(200)).body).data;
+    expect(before.restaurant).toMatchObject({ coverImageUrl: null, menuImageUrl: null });
+    expect(before.sections[0]!.items[0]!.imageUrl).toBe(itemPhoto);
+
+    const cover = expectSuccess<{ coverImageUrl: string }>(
+      (await as(seller).put('/seller/restaurant/images/cover', { key: await sellerUpload(seller, await jpeg(1600, 900)) }).expect(200)).body,
+    ).data.coverImageUrl;
+    const menuCover = expectSuccess<{ menuImageUrl: string }>(
+      (await as(seller).put('/seller/restaurant/images/menu', { key: await sellerUpload(seller, await jpeg(1600, 900, '#c62828')) }).expect(200)).body,
+    ).data.menuImageUrl;
+
+    // Each surface gets its own; the item photo and its product are untouched.
+    expect((await list())[0]!.coverImageUrl).toBe(cover);
+    const after = expectSuccess<RestaurantMenuDto>((await api().get(`/api/v1/restaurants/${sellerId}`).expect(200)).body).data;
+    expect(after.restaurant).toMatchObject({ coverImageUrl: cover, menuImageUrl: menuCover });
+    expect(after.sections[0]!.items[0]!.imageUrl).toBe(itemPhoto);
+    expect(await prisma.productImage.findMany({ where: { productId: product.id }, select: { url: true } })).toEqual([{ url: itemPhoto }]);
+    // The Seller Panel reads them back from its own profile.
+    expect(
+      expectSuccess<{ restaurantProfile: { coverImageUrl: string | null; menuImageUrl: string | null } }>((await as(seller).get('/seller/onboarding').expect(200)).body).data
+        .restaurantProfile,
+    ).toMatchObject({ coverImageUrl: cover, menuImageUrl: menuCover });
+  });
+
+  it('a restaurant that has not filled in its profile yet can still set its photos', async () => {
+    const sellerId = await kitchen('Ha Hokam Food', 'RESTAURANT', { ownerMobile: '9400000952' });
+    await prisma.restaurantProfile.delete({ where: { sellerId } });
+    const seller = (await loginAs('9400000952')).accessToken;
+    expect(expectSuccess<{ menuImageUrl: string | null }>((await as(seller).get('/seller/restaurant/branding').expect(200)).body).data.menuImageUrl).toBeNull();
+
+    const menuCover = expectSuccess<{ menuImageUrl: string }>(
+      (await as(seller).put('/seller/restaurant/images/menu', { key: await sellerUpload(seller, await jpeg(1600, 900)) }).expect(200)).body,
+    ).data.menuImageUrl;
+    expect(await prisma.restaurantProfile.findUniqueOrThrow({ where: { sellerId } })).toMatchObject({ menuImageUrl: menuCover, coverImageUrl: null, cuisine: [] });
+  });
+
   it("keeps each restaurant to its own images and its own uploads", async () => {
     await kitchen('Ha Hokam Food', 'RESTAURANT', { ownerMobile: '9400000952' });
     const other = await kitchen('Other Cafe', 'CAFE', { ownerMobile: '9400000953' });

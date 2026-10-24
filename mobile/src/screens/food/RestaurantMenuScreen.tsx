@@ -24,6 +24,7 @@ import { QuantityStepper } from "@/components/ProductCard";
 import { AppText, EmptyState, ErrorState, NoticeStrip, Screen } from "@/components/ui";
 import { resolveImageUrl } from "@/lib/api";
 import { useRestaurantMenu } from "@/lib/queries";
+import { menuItemImage, restaurantMenuCoverImage } from "@/lib/restaurantImages";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { useCartActions, type CartItemSnapshot } from "@/lib/useCartActions";
 import { Bone, useShimmer } from "@/screens/home/sections/HomeSkeleton";
@@ -78,7 +79,9 @@ const MenuItemRow = memo(function MenuItemRow({
   onIncrement: Cart["increment"];
   onDecrement: Cart["decrement"];
 }) {
-  const image = resolveImageUrl(item.imageUrl);
+  // Its own photo only; a missing or failed one shows the placeholder icon.
+  const image = resolveImageUrl(menuItemImage(item));
+  const [failed, setFailed] = useState<string | null>(null);
   const discounted = item.mrpPaise > item.pricePaise;
 
   return (
@@ -113,8 +116,15 @@ const MenuItemRow = memo(function MenuItemRow({
 
       <View style={styles.itemSide}>
         <View style={[styles.itemImageBox, !item.inStock && styles.itemImageSoldOut]}>
-          {image ? (
-            <Image source={{ uri: image }} style={styles.itemImage} contentFit="cover" transition={150} cachePolicy="memory-disk" />
+          {image && image !== failed ? (
+            <Image
+              source={{ uri: image }}
+              style={styles.itemImage}
+              contentFit="cover"
+              transition={150}
+              cachePolicy="memory-disk"
+              onError={() => setFailed(image)}
+            />
           ) : (
             <UtensilsCrossed size={30} color={palette.green600} strokeWidth={1.5} />
           )}
@@ -180,6 +190,8 @@ function RestaurantHero({
   const { width } = useWindowDimensions();
   const heroHeight = Math.round(Math.min(HERO_MAX, Math.max(HERO_MIN, width * 0.56)));
   const logo = resolveImageUrl(restaurant.logoUrl ?? null);
+  // A Menu Cover Image that fails to load shows the placeholder, not an empty band.
+  const [failed, setFailed] = useState<string | null>(null);
   const time = prepTimeRange(restaurant.avgPrepMins);
   const cuisine = restaurant.cuisine.filter((entry) => entry.trim()).join(", ");
   const address = [restaurant.addressLine, restaurant.city].filter(Boolean).join(", ");
@@ -188,8 +200,16 @@ function RestaurantHero({
   return (
     <View>
       <View style={[styles.cover, { height: heroHeight + topInset }]}>
-        {coverUrl ? (
-          <Image source={{ uri: coverUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} cachePolicy="memory-disk" />
+        {coverUrl && coverUrl !== failed ? (
+          <Image
+            source={{ uri: coverUrl }}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            transition={150}
+            cachePolicy="memory-disk"
+            accessibilityLabel={`${restaurant.name} menu cover`}
+            onError={() => setFailed(coverUrl)}
+          />
         ) : (
           <View style={styles.coverFallback}>
             <UtensilsCrossed size={48} color={palette.green300} strokeWidth={1.25} />
@@ -381,14 +401,10 @@ export default function RestaurantMenuScreen({
   // A tab gone after a refresh falls back to the first one still shown.
   const activeKey = (active && tabs.some((tab) => tab.key === active) ? active : null) ?? tabs[0]?.key ?? null;
 
-  const coverUrl = useMemo(() => {
-    // Its own menu image — never the cover, which is the Food list card's.
-    const own = resolveImageUrl(menu.data?.restaurant.menuImageUrl ?? null);
-    if (own) return own;
-    // No menu image set: a real photo from its own menu, else the plain placeholder.
-    const photo = allSections.flatMap((section) => section.items).find((item) => item.imageUrl)?.imageUrl ?? null;
-    return resolveImageUrl(photo);
-  }, [menu.data, allSections]);
+  // The hero is its own Menu Cover Image only: never the Restaurant Image (the
+  // Food list card's) and never a menu item's photo (that item's row already
+  // shows it). Without one, the hero shows its placeholder.
+  const coverUrl = resolveImageUrl(menu.data ? restaurantMenuCoverImage(menu.data.restaurant) : null);
 
   const toggle = useCallback((key: string) => {
     setCollapsed((current) => {

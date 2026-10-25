@@ -45,6 +45,7 @@ interface ConfigEntry {
  */
 const DISPLAY_LABELS: Partial<Record<ConfigKey, string>> = {
   MAX_SERVICE_RADIUS_KM: "Maximum Service Radius",
+  SERVICEABLE_PINCODES: "Approved Delivery PIN Codes",
   ROAD_DISTANCE_FACTOR: "Road Distance Factor",
 
   STORE_TIMEZONE: "Marketplace Timezone",
@@ -357,6 +358,7 @@ const GROUPS: {
     title: "Delivery",
     keys: [
       "MAX_SERVICE_RADIUS_KM",
+      "SERVICEABLE_PINCODES",
       "ROAD_DISTANCE_FACTOR",
       "DELIVERY_FEE_SLABS",
       "FREE_DELIVERY_THRESHOLD_PAISE",

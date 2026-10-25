@@ -10,21 +10,26 @@
  * left as it was, neither column is sent — so it is never rewritten. Landmark
  * is no longer collected; an existing one is never sent, so it is kept.
  *
- * WHERE THE POINT COMES FROM — two ways, both checked against the typed
- * village / district / state / PIN (@shared/location checkPointAgainstAddress):
- *   - "Use my current location": one fresh GPS fix, for when the customer is
- *     AT the address. Its geocoded place fills only EMPTY fields; when it
- *     names a different PIN, district or state than what was typed, the
- *     customer must confirm (an address for somewhere else must not get the
- *     phone's position).
- *   - "Find this address": the full typed address is forward-geocoded
- *     (@/lib/deviceLocation findAddressCandidates). Results naming another
- *     PIN / district / state are rejected; the rest are offered for the
- *     customer to choose — never the first one silently. Such a point is the
- *     centre of the area the geocoder matched: saved as GEOCODED, with no
- *     accuracy, and shown as approximate.
- * Nothing else is ever used: not the app's current location, not a city
- * centre, not (0, 0); a failure sets nothing.
+ * WHERE THE POINT COMES FROM — a manually typed address is NOT proof of a
+ * location. Its point comes only from "Confirm this address": the full typed
+ * address (house / street, locality, village, district, state, PIN) is
+ * forward-geocoded (@/lib/deviceLocation findAddressCandidates) and a result
+ * is accepted only when its OWN place names the typed village with no
+ * different PIN, district or state (@shared/location classifyGeocodeCandidate).
+ * A neighbouring village or the tehsil town (Railmagra 313329 for Kuraj
+ * 313328), a PIN-area centre or a spot the map cannot name is refused, with
+ * the reason shown. Accepted points are the centre of the village the
+ * geocoder matched: saved as GEOCODED, with no accuracy, shown as approximate.
+ *
+ * There is no "use my current location" or map control on this form: the
+ * phone's position must never become the point of an address typed for
+ * somewhere else. A customer who is AT the address uses the separate live
+ * GPS flow (Select Location → "Use my current location" → Delivery details,
+ * with "Also save this address"), whose point is the phone's own fix.
+ * Nothing else is ever used: not the app's current location, not a city or
+ * PIN centre, not (0, 0); when the address cannot be confirmed nothing is
+ * saved and the customer is asked to check it — the server is never told a
+ * point it would then call deliverable or not.
  *
  * A point belongs to the PLACE it was confirmed for. Changing the village /
  * district / state / PIN afterwards (also when editing) invalidates it until
@@ -34,7 +39,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -42,21 +47,19 @@ import type { AddressDto, LiveLocationInput } from '@shared';
 import { normalizeIndianMobile } from '@shared/phone';
 import { ADDRESS_FIELD_LABEL, isValidPincode, missingAddressFields } from '@shared/address';
 import {
-  DETECT_MESSAGE,
-  checkPointAgainstAddress,
+  GEOCODE_REJECTION_TEXT,
   describeAccuracy,
   describeFoundPlace,
   placeChanged,
   type AddressPlaceFields,
-  type DetectStatus,
   type GeocodeCandidate,
   type LocationSource,
 } from '@shared/location';
 import { colors, radius, spacing } from '@shared/theme';
 import { api } from '@/lib/api';
 import { houseAndStreet } from '@/lib/addressDisplay';
-import { detectDeviceLocation, findAddressCandidates, mapPreviewUrl, suggestAddressFor } from '@/lib/deviceLocation';
-import { HOME_STATE, isHomeState, liveLocationLabel, liveState, stateFromGeocoder } from '@/lib/liveLocation';
+import { findAddressCandidates } from '@/lib/deviceLocation';
+import { HOME_STATE, isHomeState, liveLocationLabel, liveState } from '@/lib/liveLocation';
 import { useAuth, useLocation } from '@/lib/store';
 import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, Button, Input, NoticeStrip, Screen } from '@/components/ui';
@@ -141,12 +144,8 @@ export default function AddressFormScreen({
   const [point, setPoint] = useState<Point | null>(null);
   /** The village / district / state / PIN the point was confirmed for. */
   const [pointPlace, setPointPlace] = useState<AddressPlaceFields | null>(null);
-  /** Set when the point's place differs from the typed one: the customer must confirm. */
-  const [confirmPoint, setConfirmPoint] = useState<string | null>(null);
   const [finding, setFinding] = useState(false);
   const [found, setFound] = useState<{ usable: GeocodeCandidate[]; rejected: GeocodeCandidate[]; message: string | null } | null>(null);
-  const [locating, setLocating] = useState(false);
-  const [locationError, setLocationError] = useState<{ status: Exclude<DetectStatus, 'OK'>; message: string } | null>(null);
   const [locationNote, setLocationNote] = useState<{ ok: boolean; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [seeded, setSeeded] = useState(false);
@@ -231,17 +230,21 @@ export default function AddressFormScreen({
   async function findThisAddress(): Promise<void> {
     setFinding(true);
     setFound(null);
-    setLocationError(null);
     setLocationNote(null);
     try {
       const result = await findAddressCandidates({ street: fields.houseStreet, area: fields.area, ...typedPlace });
+      // Nothing confirmed = nothing set: the customer checks the address (or,
+      // at the address, uses the separate live-location flow) — never a guess.
+      const atAddress = 'If you are at this address now, go back and use “Use my current location” on the delivery location screen instead.';
       const message =
         result.status === 'FAILED'
-          ? 'The map service could not be reached. Check your connection and try again — or, if you are at this address, use your current location.'
+          ? `We could not reach the map service, so this address is not confirmed yet. Check your connection and try again. ${atAddress}`
           : result.usable.length === 0
             ? result.rejected.length > 0
-              ? `The map found only ${result.rejected.map((r) => describeFoundPlace(r.place)).join('; ')} — not the village / PIN you entered. Check the address, or use your current location if you are there.`
-              : 'This address could not be found on the map. Check the village, district and PIN — or, if you are at this address, use your current location.'
+              ? `We could not confirm ${fields.city.trim() || 'this village'} ${fields.pincode} on the map — it only found ${result.rejected
+                  .map((r) => `${describeFoundPlace(r.place)} (${r.reason in GEOCODE_REJECTION_TEXT ? GEOCODE_REJECTION_TEXT[r.reason as keyof typeof GEOCODE_REJECTION_TEXT] : 'not a match'})`)
+                  .join('; ')}. Please check the village, district and PIN. ${atAddress}`
+              : `We could not find this address on the map. Please check the village, district and PIN. ${atAddress}`
             : null;
       setFound({ usable: result.usable, rejected: result.rejected, message });
     } finally {
@@ -253,7 +256,6 @@ export default function AddressFormScreen({
   function useFoundLocation(candidate: GeocodeCandidate): void {
     setPoint({ latitude: candidate.latitude, longitude: candidate.longitude, source: 'GEOCODED', accuracyM: null, fresh: true });
     setPointPlace(typedPlace);
-    setConfirmPoint(null);
     setFound(null);
     setLocationNote({
       ok: true,
@@ -261,94 +263,13 @@ export default function AddressFormScreen({
     });
   }
 
-  /**
-   * ADD mode only (a new address has no point yet): one fresh fix at the
-   * address; its reverse-geocoded text fills only the empty fields. Edit and
-   * live modes keep the point they were opened with.
-   */
-  async function useCurrentLocation(): Promise<void> {
-    setLocating(true);
-    setLocationError(null);
-    setLocationNote(null);
-    try {
-      const result = await detectDeviceLocation();
-      if (result.status !== 'OK') {
-        // No fallback point: whatever was set before stays, nothing is invented.
-        setLocationError({ status: result.status, message: DETECT_MESSAGE[result.status] });
-        return;
-      }
-      setPoint({ latitude: result.latitude, longitude: result.longitude, source: 'GPS', accuracyM: result.accuracyM, fresh: true });
-      setFound(null);
-      setConfirmPoint(null);
-
-      const suggested = await suggestAddressFor(result.latitude, result.longitude);
-      // Where the phone says this point is, when that is not Rajasthan.
-      const gpsState = stateFromGeocoder(suggested?.state);
-      const outsideHomeState = gpsState !== null && !isHomeState(gpsState);
-      const fill: Partial<Fields> = {};
-      if (suggested) {
-        const offered: Fields = {
-          houseStreet: houseAndStreet(suggested),
-          area: suggested.area ?? '',
-          city: suggested.city ?? '',
-          district: suggested.district ?? '',
-          pincode: suggested.pincode ?? '',
-        };
-        for (const key of Object.keys(offered) as (keyof Fields)[]) {
-          if (offered[key] && !fields[key].trim()) fill[key] = offered[key];
-        }
-        // Re-checked against the latest state: anything typed meanwhile wins.
-        setFields((current) => {
-          const next = { ...current };
-          for (const key of Object.keys(fill) as (keyof Fields)[]) {
-            if (!current[key].trim()) next[key] = fill[key]!;
-          }
-          return next;
-        });
-      }
-      const filled = Object.keys(fill);
-
-      // Is the phone actually AT the typed address? Compared on what was
-      // typed (plus anything just filled): a different PIN / district / state
-      // must be confirmed — an address for another village must not quietly
-      // get the phone's position. A different village name alone is only
-      // noted (geocoders name areas coarsely).
-      const merged = { ...fields, ...fill };
-      const place: AddressPlaceFields = { city: merged.city, district: merged.district, state, pincode: merged.pincode };
-      setPointPlace(place);
-      const check = checkPointAgainstAddress(place, suggested);
-      if (check.verdict === 'MISMATCH') {
-        setConfirmPoint(
-          `Your phone places you in ${describeFoundPlace(suggested)} — not the address entered above. If this address is somewhere else, use “Find this address” instead. Only confirm if you are at this address now.`,
-        );
-      }
-      const notes = [
-        check.verdict === 'CONFLICT'
-          ? `The map names this spot ${suggested?.city ?? 'differently'} — make sure you are at the address entered above.`
-          : null,
-        // The server refuses it too; say it here first.
-        outsideHomeState
-          ? `Your phone places you in ${gpsState}. Aadione currently delivers only in Rajasthan, so this location cannot be saved.`
-          : null,
-        filled.length > 0 ? 'Empty fields were filled from your location — please check them.' : null,
-        result.quality === 'POOR' ? 'Your phone could only find an approximate location. For exact delivery, try again outdoors.' : null,
-      ].filter(Boolean);
-      setLocationNote(
-        notes.length > 0 ? { ok: result.quality !== 'POOR' && !outsideHomeState, message: notes.join(' ') } : null,
-      );
-    } finally {
-      setLocating(false);
-    }
-  }
-
   const houseStreet = fields.houseStreet.trim().replace(/\s+/g, ' ');
   const houseStreetChanged = houseStreet !== originalHouseStreet;
 
   const save = useMutation({
     mutationFn: async () => {
-      if (!point) throw new Error('Set where this address is: find it on the map, or use your current location while you are there.');
-      if (pointStale) throw new Error('You changed the village, district or PIN — confirm where the address is again before saving.');
-      if (confirmPoint) throw new Error('Confirm that you are at this address, or find the address on the map instead.');
+      if (!point) throw new Error('Confirm this address first (“Confirm this address”), so we know where it is.');
+      if (pointStale) throw new Error('You changed the village, district or PIN — confirm the address again before saving.');
       if (houseStreetChanged && houseStreet.length > HOUSE_STREET_MAX) {
         throw new Error(`Keep House No. + Street / Road under ${HOUSE_STREET_MAX} characters.`);
       }
@@ -477,7 +398,6 @@ export default function AddressFormScreen({
     missing.length === 0 &&
     point !== null &&
     !pointStale &&
-    !confirmPoint &&
     !stateBlock;
 
   /** Live mode (not saving): locality, district and PIN may be left empty. */
@@ -494,11 +414,11 @@ export default function AddressFormScreen({
   const canFind = fields.city.trim().length >= 2 && fields.district.trim().length >= 2 && isValidPincode(fields.pincode);
 
   const pointStatus = !point
-    ? { ok: false, text: 'Location not set yet — find the address on the map, or use your current location while you are there.' }
+    ? { ok: false, text: 'Not confirmed yet — a typed address is not a location. Confirm it to check delivery.' }
     : pointStale
-      ? { ok: false, text: 'The village, district or PIN changed — confirm the location again.' }
+      ? { ok: false, text: 'The village, district or PIN changed — confirm the address again.' }
       : point.source === 'GEOCODED'
-        ? { ok: true, text: 'Approximate location found from the address (not an exact doorstep point).' }
+        ? { ok: true, text: 'Confirmed from the address — the centre of the village, not your exact door.' }
         : point.source === 'GPS' && point.fresh
           ? { ok: true, text: `Current location captured — ${describeAccuracy(point.accuracyM).toLowerCase()}.` }
           : { ok: true, text: 'Saved location.' };
@@ -633,31 +553,16 @@ export default function AddressFormScreen({
                 {pointStatus.text}
               </AppText>
             </View>
-            {point && !pointStale && (
-              <Pressable onPress={() => void Linking.openURL(mapPreviewUrl(point.latitude, point.longitude))} hitSlop={8} style={{ marginTop: spacing.xs }}>
-                <AppText variant="caption" color={colors.primary}>
-                  View this location on the map
-                </AppText>
-              </Pressable>
-            )}
-            {confirmPoint && (
-              <View style={{ marginTop: spacing.sm, gap: spacing.xs }}>
-                <AppText variant="caption" color={colors.danger}>
-                  {confirmPoint}
-                </AppText>
-                <Button label="I am at this address now — use this location" variant="secondary" onPress={() => setConfirmPoint(null)} />
-              </View>
-            )}
             <Button
-              label={finding ? 'Finding the address…' : 'Find this address on the map'}
+              label={finding ? 'Confirming the address…' : 'Confirm this address'}
               onPress={() => void findThisAddress()}
               loading={finding}
-              disabled={!canFind || finding || locating}
+              disabled={!canFind || finding}
               style={{ marginTop: spacing.sm }}
             />
             {!canFind && (
               <AppText variant="caption" color={colors.textSecondary} style={{ marginTop: spacing.xs }}>
-                Enter the village / town, district and PIN to find the address.
+                Enter the village / town, district and PIN to confirm the address.
               </AppText>
             )}
             {found && (
@@ -675,48 +580,16 @@ export default function AddressFormScreen({
                 {found.usable.map((candidate) => (
                   <View key={`${candidate.latitude},${candidate.longitude}`} style={styles.candidate}>
                     <AppText variant="bodyStrong">{describeFoundPlace(candidate.place)}</AppText>
-                    <AppText variant="caption" color={candidate.check.verdict === 'MATCH' ? colors.primary : colors.textSecondary}>
-                      {candidate.check.verdict === 'MATCH'
-                        ? 'Matches the village / PIN you entered. Approximate — the centre of this area.'
-                        : candidate.check.verdict === 'CONFLICT'
-                          ? `The map names this place ${candidate.place?.city ?? 'differently'} — use it only if this is your village.`
-                          : 'The map could not confirm the village or PIN — check it on the map first.'}
+                    <AppText variant="caption" color={colors.primary}>
+                      {candidate.reason === 'VILLAGE_AND_PIN'
+                        ? 'Matches the village and PIN you entered — the centre of the village.'
+                        : 'Matches the village you entered — the centre of the village.'}
                     </AppText>
                     <View style={styles.candidateActions}>
-                      <Pressable onPress={() => void Linking.openURL(mapPreviewUrl(candidate.latitude, candidate.longitude))} hitSlop={8}>
-                        <AppText variant="caption" color={colors.primary}>
-                          View on map
-                        </AppText>
-                      </Pressable>
-                      <Button label="Use this location" variant="secondary" onPress={() => useFoundLocation(candidate)} />
+                      <Button label="This is my village" variant="secondary" onPress={() => useFoundLocation(candidate)} />
                     </View>
                   </View>
                 ))}
-              </View>
-            )}
-            <Button
-              label={locating ? 'Getting your location…' : locationError ? 'Try again' : 'Use my current location'}
-              variant="ghost"
-              onPress={() => void useCurrentLocation()}
-              loading={locating}
-              disabled={finding}
-              style={{ marginTop: spacing.sm }}
-            />
-            <AppText variant="caption" color={colors.textSecondary}>
-              Only use your current location when you are at this address.
-            </AppText>
-            {locationError && (
-              <View style={{ marginTop: spacing.sm }}>
-                <AppText variant="caption" color={colors.danger}>
-                  {locationError.message}
-                </AppText>
-                {locationError.status === 'PERMISSION_DENIED' && (
-                  <Pressable onPress={() => void Linking.openSettings()} hitSlop={8} style={{ marginTop: spacing.xs }}>
-                    <AppText variant="bodyStrong" color={colors.primary}>
-                      Open settings
-                    </AppText>
-                  </Pressable>
-                )}
               </View>
             )}
             {locationNote && (
@@ -727,12 +600,12 @@ export default function AddressFormScreen({
           </View>
           )}
 
-          {!complete && (missing.length > 0 || !point || pointStale || !!confirmPoint) && (
+          {!complete && (missing.length > 0 || !point || pointStale) && (
             <AppText variant="caption" color={colors.textSecondary}>
               Still needed:{' '}
               {[
                 ...missing.map((key) => ADDRESS_FIELD_LABEL[key]),
-                ...(!point || pointStale ? ['Location of this address'] : confirmPoint ? ['Confirm the location'] : []),
+                ...(!point || pointStale ? ['Confirm this address'] : []),
               ].join(', ')}
             </AppText>
           )}

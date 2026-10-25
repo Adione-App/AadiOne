@@ -232,6 +232,8 @@ const NON_NEGATIVE_NUMBER_KEYS: readonly (keyof ConfigValues)[] = [
   ConfigKey.REFERRAL_MIN_ORDER_PAISE,
 ];
 
+const MAX_SERVICEABLE_PINCODES = 2000;
+
 /** HOME_CATEGORY_ORDER holds top-level category paths — one slug, no "/". */
 const CATEGORY_PATH_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_HOME_CATEGORY_ORDER = 50;
@@ -270,6 +272,16 @@ function validateValue(key: keyof ConfigValues, value: unknown): void {
         fail('each slab needs a whole, non-negative feePaise');
       }
     }
+  }
+
+  if (key === ConfigKey.SERVICEABLE_PINCODES) {
+    if (!Array.isArray(value)) fail('must be a list of 6-digit PIN codes');
+    const pins = value as unknown[];
+    if (pins.length > MAX_SERVICEABLE_PINCODES) fail(`can list at most ${MAX_SERVICEABLE_PINCODES} PIN codes`);
+    for (const pin of pins) {
+      if (typeof pin !== 'string' || !/^[1-9][0-9]{5}$/.test(pin)) fail('each entry must be a 6-digit PIN code such as "313328"');
+    }
+    if (new Set(pins).size !== pins.length) fail('a PIN code can be listed only once');
   }
 
   if (key === ConfigKey.HOME_CATEGORY_ORDER) {

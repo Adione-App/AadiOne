@@ -109,13 +109,15 @@ describe('sortGeocodeCandidates — never "take the first result"', () => {
     expect(rejected).toHaveLength(3);
   });
 
-  it('best first; results within 100 m of a better one are merged; a vaguer one stays for the person to choose', () => {
-    const { usable } = sortGeocodeCandidates(RAILMAGRA, [
-      { latitude: 25.0291, longitude: 74.1097, place: place({ state: 'Rajasthan' }) }, // UNVERIFIED, 15 m from the match
-      { latitude: 25.029, longitude: 74.1096, place: place({ city: 'Railmagra', pincode: '313329' }) }, // MATCH
-      { latitude: 25.04, longitude: 74.12, place: place({ city: 'Chokri', state: 'Rajasthan' }) }, // CONFLICT, 1.6 km away
+  it('only results naming the typed village are usable, village + PIN first; a different village or an unnamed spot is refused with its reason', () => {
+    const { usable, rejected } = sortGeocodeCandidates(RAILMAGRA, [
+      { latitude: 25.0291, longitude: 74.1097, place: place({ state: 'Rajasthan' }) }, // unnamed, 15 m from the match
+      { latitude: 25.029, longitude: 74.1096, place: place({ city: 'Railmagra', pincode: '313329' }) }, // village + PIN
+      { latitude: 25.04, longitude: 74.12, place: place({ city: 'Chokri', state: 'Rajasthan' }) }, // another village, 1.6 km away
+      { latitude: 25.0295, longitude: 74.1099, place: place({ city: 'Railmagra' }) }, // the same village, 60 m away: merged
     ]);
-    expect(usable.map((u) => u.check.verdict)).toEqual(['MATCH', 'CONFLICT']);
+    expect(usable.map((u) => u.reason)).toEqual(['VILLAGE_AND_PIN']);
+    expect(rejected.map((r) => r.reason).sort()).toEqual(['DIFFERENT_VILLAGE', 'UNNAMED']);
   });
 });
 

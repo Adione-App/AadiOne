@@ -349,35 +349,118 @@ export interface GeocodeCandidateInput {
   place: AddressSuggestion | null;
 }
 
+/**
+ * Why a forward-geocoded result was accepted or refused:
+ *   VILLAGE_AND_PIN   its own place names the typed village AND PIN
+ *   VILLAGE           names the typed village; the PIN is not stated (nothing contradicts it)
+ *   DIFFERENT_PLACE   a different PIN, district or state — another place
+ *   DIFFERENT_VILLAGE a different village / town (e.g. Railmagra for Kuraj)
+ *   PIN_AREA_ONLY     only the PIN agrees: the centre of a PIN area, which can
+ *                     be kilometres from the village — never an address
+ *   UNNAMED           the map cannot name the village of this point
+ *   INVALID_POINT     missing, (0, 0), swapped or outside India
+ */
+export type GeocodeCandidateReason =
+  | 'VILLAGE_AND_PIN'
+  | 'VILLAGE'
+  | 'DIFFERENT_PLACE'
+  | 'DIFFERENT_VILLAGE'
+  | 'PIN_AREA_ONLY'
+  | 'UNNAMED'
+  | 'INVALID_POINT';
+
 export interface GeocodeCandidate extends GeocodeCandidateInput {
   check: PointPlaceCheck;
+  reason: GeocodeCandidateReason;
 }
+
+/** What to tell the person about a refused result. */
+export const GEOCODE_REJECTION_TEXT: Record<Exclude<GeocodeCandidateReason, 'VILLAGE_AND_PIN' | 'VILLAGE'>, string> = {
+  DIFFERENT_PLACE: 'a different PIN code, district or state',
+  DIFFERENT_VILLAGE: 'a different village or town',
+  PIN_AREA_ONLY: 'only the PIN code area, not the village',
+  UNNAMED: 'a spot the map could not name',
+  INVALID_POINT: 'an invalid location',
+};
+
+/**
+ * One forward-geocoded result against the typed address. ACCEPTED only when
+ * the result's OWN place (reverse-geocoded) names the typed village / town
+ * and nothing — PIN, district, state — contradicts the address. Everything
+ * else is refused:
+ *   - a neighbouring village or the tehsil town (the geocoder fell back from
+ *     "Kuraj 313328" to "Railmagra 313329" — ~5–6 km apart, and coarse
+ *     fallbacks can be much further), even if district and state agree;
+ *   - a PIN match alone: a PIN area is not an address and says nothing exact
+ *     about the distance to a store;
+ *   - a result the map cannot name, or an invalid point.
+ * This is deliberately stricter than checkPointAgainstAddress's verdict for a
+ * GPS fix (where a different village name is only noted): a geocoder result
+ * is a guess about where the TEXT is; a GPS fix is where the phone IS.
+ */
+export function classifyGeocodeCandidate(entered: AddressPlaceFields, candidate: GeocodeCandidateInput): GeocodeCandidate {
+  const check = checkPointAgainstAddress(entered, candidate.place);
+  const { fields } = check;
+  const reason: GeocodeCandidateReason =
+    coordinateProblem(candidate.latitude, candidate.longitude, { requireIndia: true }) !== null
+      ? 'INVALID_POINT'
+      : check.verdict === 'MISMATCH'
+        ? 'DIFFERENT_PLACE'
+        : fields.city === 'MISMATCH'
+          ? 'DIFFERENT_VILLAGE'
+          : fields.city === 'MATCH'
+            ? fields.pincode === 'MATCH'
+              ? 'VILLAGE_AND_PIN'
+              : 'VILLAGE'
+            : fields.pincode === 'MATCH'
+              ? 'PIN_AREA_ONLY'
+              : 'UNNAMED';
+  return { ...candidate, check, reason };
+}
+
+export const isAcceptedGeocodeCandidate = (candidate: GeocodeCandidate): boolean =>
+  candidate.reason === 'VILLAGE_AND_PIN' || candidate.reason === 'VILLAGE';
 
 /**
  * Forward-geocoder results for a typed address, sorted out — never "take the
  * first one":
- *   usable    agree with the address (MATCH / UNVERIFIED / CONFLICT — the
- *             last needs the person's confirmation), best first; results
- *             within 100 m of a better one are merged;
- *   rejected  a different PIN / district / state, or invalid coordinates —
- *             shown to explain what was found, never selectable.
- * With several usable results the person chooses; with none, nothing is saved.
+ *   usable    results whose own place is the typed village (classifyGeocodeCandidate),
+ *             village + PIN first; results within 100 m of a better one are merged;
+ *   rejected  everything else, each with its reason — shown to explain what
+ *             was found, never selectable.
+ * With several usable results the person chooses; with none, nothing is
+ * saved and the person is asked to check the address (no fallback point).
  */
 export function sortGeocodeCandidates(
   entered: AddressPlaceFields,
   results: readonly GeocodeCandidateInput[],
 ): { usable: GeocodeCandidate[]; rejected: GeocodeCandidate[] } {
-  const rank = { MATCH: 0, UNVERIFIED: 1, CONFLICT: 2, MISMATCH: 3 } as const;
-  const checked = results.map((result) => ({ ...result, check: checkPointAgainstAddress(entered, result.place) }));
-  const rejected = checked.filter(
-    (c) => c.check.verdict === 'MISMATCH' || coordinateProblem(c.latitude, c.longitude, { requireIndia: true }) !== null,
-  );
+  const classified = results.map((result) => classifyGeocodeCandidate(entered, result));
+  const rejected = classified.filter((candidate) => !isAcceptedGeocodeCandidate(candidate));
   const usable: GeocodeCandidate[] = [];
-  for (const candidate of checked
-    .filter((c) => !rejected.includes(c))
-    .sort((a, b) => rank[a.check.verdict] - rank[b.check.verdict])) {
+  for (const candidate of classified
+    .filter(isAcceptedGeocodeCandidate)
+    .sort((a, b) => Number(b.reason === 'VILLAGE_AND_PIN') - Number(a.reason === 'VILLAGE_AND_PIN'))) {
     if (usable.some((u) => distanceKmExact(u.latitude, u.longitude, candidate.latitude, candidate.longitude) < 0.1)) continue;
     usable.push(candidate);
   }
   return { usable, rejected };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Approved PIN codes                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The admin's approved PIN list (config SERVICEABLE_PINCODES). An empty list
+ * means no PIN restriction — the delivery radius alone decides, as before.
+ *
+ * A PIN can only RULE OUT delivery: a PIN on the list never makes an address
+ * deliverable by itself (a PIN area spans many kilometres) — the address's
+ * verified point and each store's radius still decide.
+ */
+export function pincodeAllowed(pincode: string | null | undefined, approved: readonly string[]): boolean {
+  if (approved.length === 0) return true;
+  const pin = normalizePincode(pincode);
+  return pin !== null && approved.includes(pin);
 }

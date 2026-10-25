@@ -25,6 +25,7 @@ import { AppUpdateMode, type AppUpdatePolicy } from "./app-version";
 export const ConfigKey = {
   /* serviceability */
   MAX_SERVICE_RADIUS_KM: "MAX_SERVICE_RADIUS_KM",
+  SERVICEABLE_PINCODES: "SERVICEABLE_PINCODES",
   ROAD_DISTANCE_FACTOR: "ROAD_DISTANCE_FACTOR",
 
   /* store */
@@ -102,6 +103,12 @@ export interface DeliveryFeeSlab {
 
 export interface ConfigValues {
   MAX_SERVICE_RADIUS_KM: number;
+  /**
+   * Approved delivery PIN codes (6 digits). Empty = no PIN restriction. A PIN
+   * not on a non-empty list rules delivery out; a PIN on it never rules it in
+   * — the verified point and each store's radius still decide (location.ts pincodeAllowed).
+   */
+  SERVICEABLE_PINCODES: string[];
   ROAD_DISTANCE_FACTOR: number;
 
   STORE_TIMEZONE: string;
@@ -170,6 +177,8 @@ export interface ConfigValues {
  */
 export const CONFIG_DEFAULTS: ConfigValues = {
   MAX_SERVICE_RADIUS_KM: 12,
+  // No list until an admin provides one: the radius alone decides.
+  SERVICEABLE_PINCODES: [],
 
   ROAD_DISTANCE_FACTOR: 1.3,
 
@@ -284,6 +293,9 @@ export type PublicConfig = Pick<
 export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
   MAX_SERVICE_RADIUS_KM:
     "Maximum straight-line delivery distance from the store, in km.",
+
+  SERVICEABLE_PINCODES:
+    "Approved delivery PIN codes. Empty = no PIN restriction. An address whose PIN is not listed is not delivered to; a listed PIN still needs the address to be within a store's radius.",
 
   ROAD_DISTANCE_FACTOR:
     "Multiplier converting straight-line distance to road distance, used for ETA and delivery fee (typically 1.2–1.4).",

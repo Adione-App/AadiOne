@@ -8,7 +8,7 @@
 
 import type { Address } from '@prisma/client';
 import { ConfigKey, ErrorCode, type AddressDto } from '../../shared';
-import { LOCATION_SOURCES, placeChanged, type LocationSource } from '../../shared/location';
+import { LOCATION_SOURCES, pincodeAllowed, placeChanged, type LocationSource } from '../../shared/location';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import * as configService from '../configuration/configuration.service';
@@ -99,12 +99,18 @@ async function evaluateServiceability(
   latitude: number,
   longitude: number,
   state: string,
+  pincode: string,
 ): Promise<{ isServiceable: boolean; distanceKm: number }> {
-  const result = await sellerService.getServiceability(latitude, longitude);
+  const [result, approvedPins] = await Promise.all([
+    sellerService.getServiceability(latitude, longitude),
+    configService.get(ConfigKey.SERVICEABLE_PINCODES),
+  ]);
   // getServiceability already refuses a point outside Rajasthan; the state
   // TEXT counts too, so an older out-of-state address never shows as deliverable.
   const inState = serviceStateProblem({ state, latitude, longitude }) === null;
-  return { isServiceable: result.serviceable && inState, distanceKm: result.distanceKm };
+  // The approved PIN list can only rule an address out — never in.
+  const pinOk = pincodeAllowed(pincode, approvedPins);
+  return { isServiceable: result.serviceable && inState && pinOk, distanceKm: result.distanceKm };
 }
 
 export async function createAddress(
@@ -126,7 +132,7 @@ export async function createAddress(
   assertServiceState(input, 'destination');
   const state = normalizeServiceState(input.state) ?? input.state;
 
-  const serviceability = await evaluateServiceability(input.latitude, input.longitude, state);
+  const serviceability = await evaluateServiceability(input.latitude, input.longitude, state, input.pincode);
 
   // An out-of-area address is SAVED rather than rejected: the customer may be
   // adding their parents' address for later, and refusing to store it teaches
@@ -224,9 +230,10 @@ export async function updateAddress(
 
   // Recompute whenever the pin moved — an edited address that keeps a stale
   // "serviceable" flag is how an undeliverable order gets accepted.
+  const pincode = input.pincode ?? existing.pincode;
   const serviceability =
-    pinMoved || state !== existing.state
-      ? await evaluateServiceability(latitude, longitude, state)
+    pinMoved || state !== existing.state || pincode !== existing.pincode
+      ? await evaluateServiceability(latitude, longitude, state, pincode)
       : { isServiceable: existing.isServiceable, distanceKm: existing.distanceKm ?? 0 };
 
   const address = await runInTransaction(async (tx) => {
@@ -320,7 +327,7 @@ export async function setDefaultAddress(
 export async function refreshServiceability(userId: string): Promise<void> {
   const addresses = await prisma.address.findMany({ where: { userId, deletedAt: null } });
   for (const address of addresses) {
-    const result = await evaluateServiceability(address.latitude, address.longitude, address.state);
+    const result = await evaluateServiceability(address.latitude, address.longitude, address.state, address.pincode);
     await prisma.address.update({
       where: { id: address.id },
       data: { isServiceable: result.isServiceable, distanceKm: result.distanceKm },

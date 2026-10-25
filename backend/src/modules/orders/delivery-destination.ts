@@ -17,7 +17,9 @@
  */
 
 import { z } from 'zod';
-import { DeliveryMode, ErrorCode, type LiveLocationInput } from '../../shared';
+import { ConfigKey, DeliveryMode, ErrorCode, type LiveLocationInput } from '../../shared';
+import { pincodeAllowed } from '../../shared/location';
+import * as configService from '../configuration/configuration.service';
 import { COORDINATE_PROBLEM_MESSAGE, coordinateProblem } from '../../shared/distance';
 import { isValidPincode, normalizeIndianMobile } from '../../shared/phone';
 import { AppError } from '../../common/errors';
@@ -130,6 +132,16 @@ export interface DeliveryDestination {
 export async function resolveDestination(userId: string, input: DestinationInput): Promise<DeliveryDestination> {
   const destination = await readDestination(userId, input);
   assertServiceState(destination, 'destination');
+  // The admin's approved PIN list (empty = none). It only rules a PIN out; a
+  // live GPS point without a PIN is decided by its distance alone.
+  if (destination.pincode) {
+    const approved = await configService.get(ConfigKey.SERVICEABLE_PINCODES);
+    if (!pincodeAllowed(destination.pincode, approved)) {
+      throw new AppError(ErrorCode.OUT_OF_SERVICE_AREA, {
+        message: `Sorry, we do not deliver to PIN code ${destination.pincode} yet.`,
+      });
+    }
+  }
   return destination;
 }
 

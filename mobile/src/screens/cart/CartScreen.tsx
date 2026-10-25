@@ -46,6 +46,7 @@ import {
 
 import {
   ErrorCode,
+  PAYMENT_SWITCH_ERROR_CODES,
   PaymentMethod,
   type AddressDto,
   type BillDto,
@@ -68,6 +69,8 @@ import { FIX_ACCURACY } from "@shared/location";
 import type { LiveFixParams } from "@/navigation/types";
 
 import { api, ApiRequestError, resolveImageUrl } from "@/lib/api";
+import { showCartNotice } from "@/lib/cartNotice";
+import { checkoutPaymentState } from "@/lib/paymentOptions";
 import {
   clearCartAfterOrder,
   keys,
@@ -505,6 +508,16 @@ export default function CartScreen({
             // server-side, the retry safely returns that same order instead
             // of risking a second one.
             setCheckoutError(err.message);
+          } else if (PAYMENT_SWITCH_ERROR_CODES.includes(err.code as ErrorCode)) {
+            // The admin switched this payment method off (Configuration →
+            // Payments) after the quote was shown. Nothing was ordered: show
+            // the server's message, reload the quote so the buttons reflect
+            // it, and use a fresh idempotency key so a later attempt (once a
+            // method is available) is a new request, not a replay of this
+            // refusal.
+            showCartNotice(err.message);
+            setIdempotencyKey(Crypto.randomUUID());
+            void quote.refetch();
           } else if (
             err.code === ErrorCode.PRICE_CHANGED ||
             err.code === ErrorCode.ITEM_OUT_OF_STOCK ||
@@ -704,8 +717,12 @@ export default function CartScreen({
     !actions.busy &&
     destinationBody !== null &&
     Boolean(quote.data);
-  const canPlaceOrderCod = canPlaceOrderBase && quote.data?.codAllowed === true;
-  const canPlaceOrderOnline = canPlaceOrderBase;
+  // The admin's payment switches and this order's COD eligibility, from the
+  // quote (lib/paymentOptions.ts): an unavailable method stays visible,
+  // faded, and explains itself on tap — it can never place an order.
+  const payment = checkoutPaymentState(quote.data);
+  const canPlaceOrderCod = canPlaceOrderBase && payment.cod.available;
+  const canPlaceOrderOnline = canPlaceOrderBase && payment.online.available;
 
   /* ==============================================================
    * PRODUCT ITEM
@@ -992,6 +1009,16 @@ export default function CartScreen({
           </AppText>
         )}
 
+        {canCheckout && payment.banner && (
+          <AppText
+            variant="caption"
+            color={colors.warning}
+            style={styles.checkoutBlockedText}
+          >
+            {payment.banner}
+          </AppText>
+        )}
+
         <View style={styles.paymentBarRow}>
           <View style={styles.paymentBarTotal}>
             <AppText
@@ -1019,6 +1046,7 @@ export default function CartScreen({
               onPress={handleCodPress}
               disabled={!canPlaceOrderCod}
               loading={placing === PaymentMethod.COD}
+              unavailableMessage={payment.cod.available ? null : payment.cod.message}
             />
             <PaymentBarButton
               icon="phone-portrait-outline"
@@ -1028,6 +1056,7 @@ export default function CartScreen({
               onPress={handlePayOnlinePress}
               disabled={!canPlaceOrderOnline}
               loading={placing === PaymentMethod.ONLINE}
+              unavailableMessage={payment.online.available ? null : payment.online.message}
             />
           </View>
         </View>
@@ -1352,6 +1381,7 @@ function PaymentBarButton({
   onPress,
   disabled,
   loading,
+  unavailableMessage,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   title: string;
@@ -1360,29 +1390,38 @@ function PaymentBarButton({
   onPress: () => void;
   disabled?: boolean;
   loading?: boolean;
+  /**
+   * Set when this method cannot be used right now (switched off by the
+   * admin, or not allowed for this order): the button is drawn faded and
+   * neutral — never like an active choice — and a tap only explains why.
+   */
+  unavailableMessage?: string | null;
 }) {
-  const isFilled = variant === "filled";
+  const unavailable = Boolean(unavailableMessage) && !loading;
+  const isFilled = variant === "filled" && !unavailable;
   const isDisabled = disabled || loading;
-  const fg = isFilled ? colors.onPrimary : colors.primary;
+  const fg = unavailable ? colors.textMuted : isFilled ? colors.onPrimary : colors.primary;
 
   return (
     <Pressable
-      onPress={onPress}
-      disabled={isDisabled}
+      // An unavailable method stays tappable — to explain itself, never to order.
+      onPress={unavailable ? () => showCartNotice(unavailableMessage!) : onPress}
+      disabled={unavailable ? false : isDisabled}
       style={[
         styles.payBarButton,
-        isFilled ? styles.payBarButtonFilled : styles.payBarButtonOutline,
-        isDisabled && styles.payBarButtonDisabled,
+        unavailable ? styles.payBarButtonUnavailable : isFilled ? styles.payBarButtonFilled : styles.payBarButtonOutline,
+        !unavailable && isDisabled && styles.payBarButtonDisabled,
       ]}
       accessibilityRole="button"
-      accessibilityLabel={`${title}, ${subtitle}`}
-      accessibilityState={{ disabled: isDisabled }}
+      accessibilityLabel={unavailable ? `${title}, ${subtitle}, unavailable` : `${title}, ${subtitle}`}
+      accessibilityHint={unavailable ? unavailableMessage! : undefined}
+      accessibilityState={{ disabled: unavailable || isDisabled }}
     >
       {loading ? (
         <ActivityIndicator size="small" color={fg} />
       ) : (
         <>
-          <Ionicons name={icon} size={20} color={fg} />
+          <Ionicons name={unavailable ? "lock-closed-outline" : icon} size={20} color={fg} />
           <View style={styles.payBarButtonTextColumn}>
             <AppText
               variant="bodyStrong"
@@ -1394,7 +1433,7 @@ function PaymentBarButton({
             </AppText>
             <AppText
               variant="caption"
-              color={isFilled ? "rgba(255,255,255,0.85)" : colors.textSecondary}
+              color={unavailable ? colors.textMuted : isFilled ? "rgba(255,255,255,0.85)" : colors.textSecondary}
               numberOfLines={1}
               style={styles.payBarButtonSubtitle}
             >
@@ -2841,6 +2880,14 @@ const styles = StyleSheet.create({
 
   payBarButtonDisabled: {
     opacity: 0.5,
+  },
+
+  // Switched off / not allowed: neutral and faded, so it never reads as the active choice.
+  payBarButtonUnavailable: {
+    backgroundColor: colors.surfaceMuted,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    opacity: 0.7,
   },
 
   payBarButtonTextColumn: {

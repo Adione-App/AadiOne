@@ -56,6 +56,8 @@ const DISPLAY_LABELS: Partial<Record<ConfigKey, string>> = {
   FREE_DELIVERY_THRESHOLD_PAISE: "Free Delivery Threshold",
   PLATFORM_FEE_PAISE: "Platform Fee",
 
+  PAYMENT_ONLINE_ENABLED: "Online Payment",
+  PAYMENT_COD_ENABLED: "Cash on Delivery (COD)",
   DEFAULT_COD_POLICY: "Default COD Policy",
   COD_MAX_ORDER_VALUE_PAISE: "Maximum COD Order Value",
   COD_FIRST_ORDER_MAX_PAISE: "First Order Maximum COD Value",
@@ -130,6 +132,12 @@ const DISPLAY_DESCRIPTIONS: Partial<Record<ConfigKey, string>> = {
 
   STORE_GSTIN:
     "GST registration number. When set, order receipts show a tax invoice breakdown.",
+
+  PAYMENT_ONLINE_ENABLED:
+    "Accept online payment (UPI / card / wallet) for new orders. When disabled, the app shows it as unavailable and the server refuses new online orders and payments. Payments already in progress still complete.",
+
+  PAYMENT_COD_ENABLED:
+    "Accept Cash on Delivery for new orders. When disabled, the app shows it as unavailable and the server refuses new COD orders. Existing orders are not affected.",
 
   DEFAULT_COD_POLICY:
     "COD policy used when no product, category or store rule applies.",
@@ -343,7 +351,7 @@ const GROUPS: {
   },
   {
     title: "Payments",
-    keys: ["PAYMENT_HOLD_MINUTES", "DEFAULT_COD_POLICY", "COD_MAX_ORDER_VALUE_PAISE", "COD_FIRST_ORDER_MAX_PAISE", "ADIONE_UPI_ID"],
+    keys: ["PAYMENT_ONLINE_ENABLED", "PAYMENT_COD_ENABLED", "PAYMENT_HOLD_MINUTES", "DEFAULT_COD_POLICY", "COD_MAX_ORDER_VALUE_PAISE", "COD_FIRST_ORDER_MAX_PAISE", "ADIONE_UPI_ID"],
   },
   {
     title: "Delivery",
@@ -442,6 +450,10 @@ export default function ConfigPage() {
 
     onError: (err: Error) => {
       setError(err.message);
+      // Show the value the server still has, not the one that failed to save.
+      void queryClient.invalidateQueries({
+        queryKey: ["config"],
+      });
     },
   });
 
@@ -605,6 +617,13 @@ export default function ConfigPage() {
       {grouped.map((group) => (
         <Card key={group.title}>
           <h2 id={`cfg-${group.title.toLowerCase().replace(/\s+/g, "-")}`} className="mb-3 scroll-mt-24 font-semibold">{group.title}</h2>
+          {group.title === "Payments" &&
+            entries.find((entry) => entry.key === "PAYMENT_ONLINE_ENABLED")?.value === false &&
+            entries.find((entry) => entry.key === "PAYMENT_COD_ENABLED")?.value === false && (
+              <p role="alert" className="mb-3 rounded-xl bg-danger-50 px-3.5 py-2.5 text-sm font-medium text-danger-700">
+                Online Payment and Cash on Delivery are both disabled — customers cannot place any order until one is enabled.
+              </p>
+            )}
           {group.title === "Delivery" && (
             <p className="mb-3 rounded-xl bg-info-50 px-3.5 py-2.5 text-sm text-gray-700">
               The delivery radius is measured from each seller&apos;s own location, which the seller sets in the Seller Panel
@@ -649,9 +668,13 @@ export default function ConfigPage() {
                   <div className="flex items-center gap-2">
                     {typeof entry.value === "boolean" ? (
                       <select
+                        // Re-mounts when the saved value changes, so the control always shows the server's value.
+                        key={`${entry.key}:${String(entry.value)}`}
                         defaultValue={String(entry.value)}
                         onChange={(event) => commit(entry, event.target.value)}
-                        className="min-h-11 w-full rounded-lg border border-gray-300 px-3 text-sm"
+                        disabled={save.isPending && save.variables?.key === entry.key}
+                        aria-label={getDisplayLabel(entry)}
+                        className="min-h-11 w-full rounded-lg border border-gray-300 px-3 text-sm disabled:opacity-60"
                       >
                         <option value="true">Enabled</option>
 

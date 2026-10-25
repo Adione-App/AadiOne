@@ -29,6 +29,7 @@ import {
   RefundStatus,
   SellerOrderStatus,
   canTransition,
+  paymentMethodBlock,
   type CreatePaymentResponse,
   type VerifyPaymentResponse,
 } from "../../shared";
@@ -260,6 +261,8 @@ export async function createPayment(
   let providerOrderId = existing?.providerOrderId ?? null;
 
   if (!providerOrderId) {
+    // A new payment intent: refused while Online Payment is off.
+    await assertNewOnlinePaymentAllowed();
     const intent = await provider.createIntent({
       orderId: order.id,
       orderNumber: order.orderNumber,
@@ -464,6 +467,23 @@ export async function withPaymentInitLock<T>(orderId: string, fn: () => Promise<
   }
 }
 
+/**
+ * Starting a NEW online payment (a new gateway order / payment intent) needs
+ * Online Payment switched on (Admin → Configuration → Payments). Everything
+ * about a payment that already exists — reopening its still-valid checkout,
+ * verifying it, webhooks, refreshing, reconciliation, refunds — is never
+ * gated, so switching the method off cannot strand or double-charge a
+ * customer who has already started paying.
+ */
+async function assertNewOnlinePaymentAllowed(): Promise<void> {
+  const config = await configService.getMany([ConfigKey.PAYMENT_ONLINE_ENABLED, ConfigKey.PAYMENT_COD_ENABLED]);
+  const block = paymentMethodBlock(PaymentMethod.ONLINE, {
+    onlinePaymentEnabled: config.PAYMENT_ONLINE_ENABLED,
+    codEnabled: config.PAYMENT_COD_ENABLED,
+  });
+  if (block) throw new AppError(block.code, { message: block.message });
+}
+
 async function createCheckoutSession(
   order: Order & { user: User },
 ): Promise<CreatePaymentResult> {
@@ -515,6 +535,9 @@ async function createCheckoutSession(
       });
       throw new AppError(ErrorCode.PAYMENT_ALREADY_CAPTURED);
     }
+    // Replacing it starts a new payment: refused while Online Payment is off
+    // (the expired checkout is left as it is).
+    await assertNewOnlinePaymentAllowed();
     await prisma.payment.updateMany({
       where: { id: open.id, status: { in: [PaymentStatus.CREATED, PaymentStatus.PENDING] } },
       data: {
@@ -524,6 +547,9 @@ async function createCheckoutSession(
       },
     });
   }
+
+  // No reusable checkout: opening one is a new payment.
+  await assertNewOnlinePaymentAllowed();
 
   const plan = planCheckoutExpiry({
     now,

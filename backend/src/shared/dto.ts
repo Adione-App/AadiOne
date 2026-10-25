@@ -1716,7 +1716,15 @@ export interface CheckoutQuoteResponse {
   codAllowed: boolean;
   /** Names the item blocking COD, so the UI can explain rather than hide. */
   codBlockedReason: string | null;
+  /** The methods a new order can use right now (global switches and this order's COD eligibility). */
   availablePaymentMethods: PaymentMethod[];
+  /**
+   * The admin's global switches (Configuration → Payments) at quote time —
+   * the app fades a method that is off and explains it on tap. Absent from
+   * older servers (= both on).
+   */
+  onlinePaymentEnabled?: boolean;
+  codEnabled?: boolean;
   etaMinutes: number;
   etaMinMinutes: number;
   etaMaxMinutes: number;

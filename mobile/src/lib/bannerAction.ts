@@ -9,9 +9,10 @@
 
 import { Linking } from "react-native";
 import * as Clipboard from "expo-clipboard";
-import { BANNER_RAIL_TARGETS, type BannerDto } from "@shared";
+import type { BannerDto } from "@shared";
 import { navigationRef } from "@/navigation/navigationRef";
 import { showCartNotice } from "@/lib/cartNotice";
+import { bannerRoute } from "@/lib/bannerRoute";
 
 type BannerAction = Pick<BannerDto, "actionType" | "actionValue">;
 
@@ -34,46 +35,22 @@ export function bannerIsTappable(banner: BannerAction): boolean {
 }
 
 export function openBannerAction(banner: BannerAction): void {
-  if (banner.actionType === "FOOD") {
-    if (!navigationRef.isReady()) return;
-    (navigationRef.navigate as (name: string, params?: object) => void)("Food", { screen: "FoodHome" });
-    return;
-  }
+  if (!bannerIsTappable(banner)) return;
   const value = banner.actionValue;
-  if (!value || !bannerIsTappable(banner)) return;
 
-  if (banner.actionType === "URL") {
+  if (banner.actionType === "URL" && value) {
     void Linking.openURL(value).catch(() => undefined);
     return;
   }
-  if (banner.actionType === "COUPON") {
+  if (banner.actionType === "COUPON" && value) {
     void Clipboard.setStringAsync(value);
     showCartNotice(`Code ${value} copied — apply it at checkout.`);
     return;
   }
 
-  if (!navigationRef.isReady()) return;
+  // A screen of the app: which tab and screen is decided in lib/bannerRoute.ts.
+  const route = bannerRoute(banner);
+  if (!route || !navigationRef.isReady()) return;
   // The tab navigator is untyped (see navigationRef.ts) — same cast as navigateToCart.
-  const go = navigationRef.navigate as (name: string, params?: object) => void;
-  switch (banner.actionType) {
-    case "CATEGORY":
-      go("Categories", { screen: "CategoriesHome", params: { categoryId: value } });
-      break;
-    case "PRODUCT":
-      go("Home", { screen: "ProductDetail", params: { productId: value } });
-      break;
-    case "STORE":
-      go("Home", { screen: "Store", params: { sellerId: value } });
-      break;
-    case "RESTAURANT":
-      go("Food", { screen: "RestaurantMenu", params: { sellerId: value } });
-      break;
-    case "RAIL": {
-      const rail = BANNER_RAIL_TARGETS.find((entry) => entry.key === value);
-      if (rail) go("Home", { screen: "RailProducts", params: { key: rail.key, title: rail.label } });
-      break;
-    }
-    default:
-      break;
-  }
+  (navigationRef.navigate as (name: string, params?: object) => void)(route.name, route.params);
 }

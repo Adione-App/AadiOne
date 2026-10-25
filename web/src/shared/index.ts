@@ -48,6 +48,7 @@ export * from './distance';
 export * from './phone';
 export * from './datetime';
 export * from './cod';
+export * from './payment-availability';
 export * from './text';
 
 /* design tokens */

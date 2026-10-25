@@ -41,6 +41,7 @@ import {
   type OrderTimelineEntryDto,
   type SellerOrderSummaryDto,
   optionValuesOf,
+  paymentMethodBlock,
 } from "../../shared";
 import {
   resolveItemCodPolicy,
@@ -256,6 +257,8 @@ export async function getCheckoutQuote(
         ConfigKey.DEFAULT_COD_POLICY,
         ConfigKey.COD_MAX_ORDER_VALUE_PAISE,
         ConfigKey.COD_FIRST_ORDER_MAX_PAISE,
+        ConfigKey.PAYMENT_ONLINE_ENABLED,
+        ConfigKey.PAYMENT_COD_ENABLED,
       ]),
       prisma.order.count({ where: { userId, status: OrderStatus.DELIVERED } }),
       prisma.user.findUniqueOrThrow({ where: { id: userId } }),
@@ -308,17 +311,28 @@ export async function getCheckoutQuote(
     customerCodBlocked: user.codBlocked,
   });
 
+  // The admin's global switches (Configuration → Payments). COD switched off
+  // also reads as "COD not allowed" with the reason, so an older app that
+  // only knows `codAllowed` fades it too; Online switched off is refused by
+  // the server whatever the app shows (placeOrder / createPayment).
+  const switches = { onlinePaymentEnabled: config.PAYMENT_ONLINE_ENABLED, codEnabled: config.PAYMENT_COD_ENABLED };
+  const codSwitchBlock = paymentMethodBlock(PaymentMethod.COD, switches);
+  const codAllowed = codResult.allowed && !codSwitchBlock;
+
   return {
     bill,
     changes: cartDto.changes,
     serviceability,
-    codAllowed: codResult.allowed,
-    codBlockedReason: codResult.reason,
+    codAllowed,
+    codBlockedReason: codSwitchBlock?.message ?? codResult.reason,
     // COD is listed but disabled with a reason rather than hidden — a missing
     // option is confusing, an explained one is not (PRD §4.3).
-    availablePaymentMethods: codResult.allowed
-      ? [PaymentMethod.ONLINE, PaymentMethod.COD]
-      : [PaymentMethod.ONLINE],
+    availablePaymentMethods: [
+      ...(switches.onlinePaymentEnabled ? [PaymentMethod.ONLINE] : []),
+      ...(codAllowed ? [PaymentMethod.COD] : []),
+    ],
+    onlinePaymentEnabled: switches.onlinePaymentEnabled,
+    codEnabled: switches.codEnabled,
     etaMinutes: serviceability.etaMinutes,
     etaMinMinutes: serviceability.etaMinMinutes,
     etaMaxMinutes: serviceability.etaMaxMinutes,
@@ -518,9 +532,25 @@ async function notifyOrderPlaced(created: {
   }
 }
 
+/**
+ * The admin's global payment switches allow `method` for a NEW order right
+ * now — or the stable error (ONLINE_PAYMENT_DISABLED / COD_DISABLED /
+ * PAYMENTS_UNAVAILABLE). Read from the configuration (dropped from the cache
+ * on every change), never from the client.
+ */
+export async function assertPaymentMethodOpen(method: PaymentMethod): Promise<void> {
+  const config = await configService.getMany([ConfigKey.PAYMENT_ONLINE_ENABLED, ConfigKey.PAYMENT_COD_ENABLED]);
+  const block = paymentMethodBlock(method, { onlinePaymentEnabled: config.PAYMENT_ONLINE_ENABLED, codEnabled: config.PAYMENT_COD_ENABLED });
+  if (block) throw new AppError(block.code, { message: block.message });
+}
+
 export async function placeOrder(
   input: PlaceOrderInput,
 ): Promise<PlaceOrderResult> {
+  // A switched-off payment method is refused before anything else — no
+  // stock is locked, no order or payment row is written.
+  await assertPaymentMethodOpen(input.paymentMethod);
+
   // Cheap checks first, outside the transaction, so an out-of-area address
   // or a closed seller never takes inventory locks: EVERY seller in the cart
   // must deliver here (priced on the farthest) and be open right now — a
@@ -793,6 +823,12 @@ export async function placeOrder(
           ],
         });
       }
+
+      /* --- global payment switches, again ------------------------------- */
+      // Re-checked right before the order is written: an admin switching the
+      // method off while this checkout was running is honoured, and the
+      // transaction rolls back with nothing written.
+      await assertPaymentMethodOpen(input.paymentMethod);
 
       /* --- COD eligibility --------------------------------------------- */
       if (input.paymentMethod === PaymentMethod.COD) {

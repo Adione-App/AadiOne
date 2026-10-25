@@ -39,6 +39,10 @@ export const ConfigKey = {
   FREE_DELIVERY_THRESHOLD_PAISE: "FREE_DELIVERY_THRESHOLD_PAISE",
   PLATFORM_FEE_PAISE: "PLATFORM_FEE_PAISE",
 
+  /* payment methods (global switches — payment-availability.ts) */
+  PAYMENT_ONLINE_ENABLED: "PAYMENT_ONLINE_ENABLED",
+  PAYMENT_COD_ENABLED: "PAYMENT_COD_ENABLED",
+
   /* cash on delivery */
   DEFAULT_COD_POLICY: "DEFAULT_COD_POLICY",
   COD_MAX_ORDER_VALUE_PAISE: "COD_MAX_ORDER_VALUE_PAISE",
@@ -110,6 +114,11 @@ export interface ConfigValues {
   FREE_DELIVERY_THRESHOLD_PAISE: number;
   PLATFORM_FEE_PAISE: number;
 
+  /** New orders / payments may use Online Payment. Off: no new online order or payment; in-flight payments still complete. */
+  PAYMENT_ONLINE_ENABLED: boolean;
+  /** New orders may use Cash on Delivery. */
+  PAYMENT_COD_ENABLED: boolean;
+
   DEFAULT_COD_POLICY: CodPolicy;
   COD_MAX_ORDER_VALUE_PAISE: number;
   COD_FIRST_ORDER_MAX_PAISE: number;
@@ -179,6 +188,10 @@ export const CONFIG_DEFAULTS: ConfigValues = {
 
   FREE_DELIVERY_THRESHOLD_PAISE: 29900,
   PLATFORM_FEE_PAISE: 500,
+
+  // Both on: an installation that never sets them keeps today's behaviour.
+  PAYMENT_ONLINE_ENABLED: true,
+  PAYMENT_COD_ENABLED: true,
 
   DEFAULT_COD_POLICY: CodPolicy.ALLOW,
   COD_MAX_ORDER_VALUE_PAISE: 300000,
@@ -258,6 +271,8 @@ export const PUBLIC_CONFIG_KEYS: readonly ConfigKey[] = [
   ConfigKey.SUPPORT_EMAIL,
   ConfigKey.DELIVERY_PROMISE_TEXT,
   ConfigKey.STORE_TIMEZONE,
+  ConfigKey.PAYMENT_ONLINE_ENABLED,
+  ConfigKey.PAYMENT_COD_ENABLED,
 ];
 
 export type PublicConfig = Pick<
@@ -293,6 +308,12 @@ export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
 
   PLATFORM_FEE_PAISE:
     "Flat platform fee added to every order, in paise. Set 0 to hide the line.",
+
+  PAYMENT_ONLINE_ENABLED:
+    "Accept Online Payment for new orders. Off: the app shows it as unavailable and the server refuses new online orders and payments; payments already in progress still complete.",
+
+  PAYMENT_COD_ENABLED:
+    "Accept Cash on Delivery for new orders. Off: the app shows it as unavailable and the server refuses new COD orders; existing orders are not affected.",
 
   DEFAULT_COD_POLICY:
     "COD policy used when no product, category or store rule applies.",

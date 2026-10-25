@@ -248,7 +248,7 @@ export default function HomeBuilderPage() {
                     ))}
                   </select>
                 </Field>
-                <Field label={`Card height: ${hero.cards.height} dp`}>
+                <Field label={`Card height: ${hero.cards.height} dp`} hint="For cards set to “Fill the card”. Cards that show their whole image take that image’s shape, so it fills the card with no empty space.">
                   <input
                     type="range"
                     min={HOME_CARD_HEIGHT_LIMITS.min}
@@ -631,6 +631,11 @@ function HomePreview({ layout, banners, categories }: { layout: HomeLayoutConten
   const pad = HOME_SPACING_DP[hero.padding];
   const gap = HOME_CARD_GAP_DP[hero.cards.gap];
   const cardWidth = cards.length ? (PHONE_WIDTH - 32 - gap * (cards.length - 1)) / cards.length : 0;
+  // As the app (cardLayout.ts featureCardSize): whole-image cards take their images' shape.
+  const wholeImages = cards.length > 0 && cards.every((card) => (card.layout?.fit ?? 'contain') === 'contain' && card.imageWidth > 0 && card.imageHeight > 0);
+  const cardHeight = wholeImages
+    ? Math.min(HOME_CARD_HEIGHT_LIMITS.max, Math.max(HOME_CARD_HEIGHT_LIMITS.min, Math.round(Math.max(...cards.map((card) => cardWidth / (card.imageWidth / card.imageHeight))))))
+    : hero.cards.height;
 
   return (
     <div className="mx-auto overflow-hidden rounded-[28px] border-8 border-gray-900 bg-white shadow-xl" style={{ width: PHONE_WIDTH + 16 }}>
@@ -656,7 +661,7 @@ function HomePreview({ layout, banners, categories }: { layout: HomeLayoutConten
                 <div
                   key={card.id}
                   className="relative overflow-hidden"
-                  style={{ width: cardWidth, height: hero.cards.height, borderRadius: CARD_RADIUS[hero.cards.radius], background: contentColor(card.layout?.background ?? 'white', '#FFFFFF') }}
+                  style={{ width: cardWidth, height: cardHeight, borderRadius: CARD_RADIUS[hero.cards.radius], background: contentColor(card.layout?.background ?? 'none', 'transparent') }}
                 >
                   <img src={imageSrc(card.imageUrl)} alt="" className={`absolute inset-0 h-full w-full ${card.layout?.fit === 'contain' ? 'object-contain' : 'object-cover'}`} />
                   <div className={`absolute inset-x-0 top-0 p-1.5 ${card.layout?.textTone === 'light' ? 'text-white' : 'text-gray-900'}`}>

@@ -35,6 +35,7 @@ vi.mock('../../src/infra/payment', async (importOriginal) => {
 
 import {
   ActorType,
+  ConfigKey,
   ErrorCode,
   NotificationType,
   OrderStatus,
@@ -436,6 +437,50 @@ describe('payment initiation lock — one checkout per order at a time', () => {
     expect(res.status).toBe(409);
     expect(expectError(res.body).code).toBe(ErrorCode.PAYMENT_ALREADY_CAPTURED);
     expect(createOrderCalls()).toBe(1);
+  });
+});
+
+describe('Online Payment switched off (Admin → Configuration → Payments)', () => {
+  const switchOff = () => configService.set({ key: ConfigKey.PAYMENT_ONLINE_ENABLED, value: false });
+
+  it('a checkout opened before the switch reopens unchanged, and Cashfree verification still confirms the order', async () => {
+    const order = await placeOnlineOrder();
+    const first = await openCheckout(order);
+    await switchOff();
+    const again = await openCheckout(order);
+    expect(again.providerOrderId).toBe(first.providerOrderId);
+    expect(cashfree.orders.size).toBe(1);
+    cashfree.attempt(first.providerOrderId, 'SUCCESS');
+    expect((await refreshed(order)).status).toBe(OrderStatus.PROCESSING);
+  });
+
+  it('a signed success webhook still settles a payment started before the switch', async () => {
+    const order = await placeOnlineOrder();
+    const checkout = await openCheckout(order);
+    await switchOff();
+    const paid = cashfree.attempt(checkout.providerOrderId, 'SUCCESS');
+    expect((await deliver(cashfree.paymentWebhook('PAYMENT_SUCCESS_WEBHOOK', checkout.providerOrderId, paid))).status).toBe(200);
+    expect((await dbOrder(order)).status).toBe(OrderStatus.PROCESSING);
+  });
+
+  it('no new Cashfree order is opened: neither a first checkout nor a replacement for an expired one', async () => {
+    const order = await placeOnlineOrder();
+    await switchOff();
+    const refused = await api().post('/api/v1/payments/create').set('Authorization', bearer(order.token)).set('Idempotency-Key', randomUUID()).send({ orderId: order.orderId });
+    expect(refused.status).toBe(409);
+    expect(expectError(refused.body).code).toBe(ErrorCode.ONLINE_PAYMENT_DISABLED);
+    expect(cashfree.orders.size).toBe(0);
+    expect(await prisma.payment.count({ where: { orderId: order.orderId } })).toBe(0);
+
+    // Back on, a checkout opens; it ages; with the switch off again it is not replaced (and stays as it was).
+    await configService.set({ key: ConfigKey.PAYMENT_ONLINE_ENABLED, value: true });
+    const checkout = await openCheckout(order);
+    await ageStoredSession(checkout);
+    await switchOff();
+    const replace = await api().post('/api/v1/payments/create').set('Authorization', bearer(order.token)).set('Idempotency-Key', randomUUID()).send({ orderId: order.orderId });
+    expect(expectError(replace.body).code).toBe(ErrorCode.ONLINE_PAYMENT_DISABLED);
+    expect(cashfree.orders.size).toBe(1);
+    expect((await prisma.payment.findUniqueOrThrow({ where: { id: checkout.paymentId } })).status).toBe('CREATED');
   });
 });
 

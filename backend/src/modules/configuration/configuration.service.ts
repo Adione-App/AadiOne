@@ -305,6 +305,8 @@ function validateValue(key: keyof ConfigValues, value: unknown): void {
   if (
     key === ConfigKey.ALLOW_ORDERS_WHEN_CLOSED ||
     key === ConfigKey.DELIVERY_OTP_REQUIRED_FOR_COD ||
+    key === ConfigKey.PAYMENT_ONLINE_ENABLED ||
+    key === ConfigKey.PAYMENT_COD_ENABLED ||
     String(key).startsWith('FEATURE_')
   ) {
     if (typeof value !== 'boolean') fail('must be true or false');

@@ -15,6 +15,7 @@ import { spacing } from "@shared/theme";
 import CategoryIcon from "@/components/CategoryIcon";
 import { AppText } from "@/components/ui";
 import type { CategoryGridDisplay, CategoryTile } from "../homeLayout";
+import { categoryTileSize } from "../cardLayout";
 import { SectionHeader, SectionPanel } from "./SectionShell";
 
 const GRID_INSET = spacing.xs;
@@ -126,13 +127,15 @@ function CategoryGridImpl({
   const innerWidth = screenWidth - GRID_INSET * 2;
   const columns = columnsFor(display, innerWidth);
   const cell = Math.floor(innerWidth / columns);
+  // The tile fills its cell less one constant gap (no growing gaps on wider phones), the image in proportion.
+  const size = categoryTileSize({ cell, designBox: BOX_BY_COLUMNS[columns] ?? 88, designImage: IMAGE_BY_COLUMNS[columns] ?? 72, imageFit: display.imageFit });
 
   return (
     <SectionPanel>
       <SectionHeader title={title} subtitle={subtitle} onViewAll={onViewAll} />
       <View style={styles.grid}>
         {tiles.map((tile) => (
-          <Tile key={tile.category.id} tile={tile} display={display} width={cell} box={BOX_BY_COLUMNS[columns] ?? 88} image={IMAGE_BY_COLUMNS[columns] ?? 72} onOpenCategory={onOpenCategory} />
+          <Tile key={tile.category.id} tile={tile} display={display} width={cell} box={size.box} image={size.image} onOpenCategory={onOpenCategory} />
         ))}
       </View>
     </SectionPanel>

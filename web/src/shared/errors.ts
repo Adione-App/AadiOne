@@ -72,6 +72,12 @@ export const ErrorCode = {
   PRICE_CHANGED: 'PRICE_CHANGED',
   MIN_ORDER_NOT_MET: 'MIN_ORDER_NOT_MET',
   COD_NOT_ALLOWED: 'COD_NOT_ALLOWED',
+  /** Admin switched Online Payment off (Configuration → Payments): no new online order or payment. */
+  ONLINE_PAYMENT_DISABLED: 'ONLINE_PAYMENT_DISABLED',
+  /** Admin switched Cash on Delivery off: no new COD order. */
+  COD_DISABLED: 'COD_DISABLED',
+  /** Both switched off: no order can be placed right now. */
+  PAYMENTS_UNAVAILABLE: 'PAYMENTS_UNAVAILABLE',
   COUPON_INVALID: 'COUPON_INVALID',
   COUPON_EXPIRED: 'COUPON_EXPIRED',
   COUPON_LIMIT_REACHED: 'COUPON_LIMIT_REACHED',
@@ -153,6 +159,9 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   PRICE_CHANGED: 422,
   MIN_ORDER_NOT_MET: 422,
   COD_NOT_ALLOWED: 422,
+  ONLINE_PAYMENT_DISABLED: 409,
+  COD_DISABLED: 409,
+  PAYMENTS_UNAVAILABLE: 409,
   COUPON_INVALID: 422,
   COUPON_EXPIRED: 422,
   COUPON_LIMIT_REACHED: 422,
@@ -235,6 +244,9 @@ export const ERROR_DEFAULT_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   PRICE_CHANGED: 'Some prices have changed. Please review your order.',
   MIN_ORDER_NOT_MET: 'Please add a little more to reach the minimum order value.',
   COD_NOT_ALLOWED: 'Cash on Delivery is not available for this order.',
+  ONLINE_PAYMENT_DISABLED: 'Online payment is currently unavailable. Please select Cash on Delivery to continue.',
+  COD_DISABLED: 'Cash on Delivery is currently unavailable. Please select Online Payment to continue.',
+  PAYMENTS_UNAVAILABLE: 'Payments are temporarily unavailable. Please try again later.',
   COUPON_INVALID: 'This coupon code is not valid.',
   COUPON_EXPIRED: 'This coupon has expired.',
   COUPON_LIMIT_REACHED: 'This coupon can no longer be used.',

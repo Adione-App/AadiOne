@@ -307,6 +307,15 @@ const envSchema = z
      * "false" is the rollback switch: uploads are attached exactly as sent. */
     IMAGE_OPTIMIZE: booleanish.default("true"),
 
+    /** Frame a new product photo's CARD image (thumbUrl/cardUrl) to the
+     * product when it is a packshot with lots of plain background
+     * (image-optimizer.ts, cardFrame). Off by default: app versions that show
+     * cards with `cover` in a fixed box crop such tight images, so turn it on
+     * only once every supported app shows cards with `contain`. Off = card
+     * images exactly as before (a plain resize). The full image is never
+     * framed either way; the `--card-frames` backfill does not read this. */
+    IMAGE_CARD_FRAMING: booleanish.default("false"),
+
     /** Seller bulk import (modules/product-import): product rows per file and
      * the image ZIP size. Optional — the defaults are the tested limits. */
     PRODUCT_IMPORT_MAX_ROWS: z.coerce.number().int().min(1).max(20_000).default(5000),

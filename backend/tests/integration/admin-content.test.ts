@@ -373,6 +373,46 @@ describe('the shared pipeline is unchanged for sellers', () => {
     await as(seller.token).post('/admin/uploads/presign', { fileName: 'a.jpg', contentType: 'image/jpeg', purpose: 'category' }).expect(403);
   });
 
+  it('frames a new product card image only when IMAGE_CARD_FRAMING is on', async () => {
+    const admin = await loginAdmin();
+    const seller = await seedSeller('9400000719');
+    const branch = await groceryBranch(seller, admin);
+    const product = await prisma.product.findFirstOrThrow({ where: { categoryId: branch.subId } });
+    // A small packshot: a 280px product in the middle of 600px of white.
+    const packshot = () =>
+      sharp({ create: { width: 600, height: 600, channels: 3, background: '#ffffff' } })
+        .composite([{ input: { create: { width: 280, height: 280, channels: 3, background: '#c62828' } }, left: 160, top: 160 }])
+        .jpeg({ quality: 90 })
+        .toBuffer();
+    const attach = async () => {
+      const key = await upload(seller.token, 'seller', await packshot());
+      const view = expectSuccess<{ images: { url: string; thumbUrl: string | null }[] }>(
+        (await as(seller.token).post(`/seller/products/${product.id}/images`, { key }).expect(201)).body,
+      ).data;
+      return view.images[view.images.length - 1]!;
+    };
+
+    const previous = env.IMAGE_CARD_FRAMING;
+    try {
+      // Off (the default): as before 906c34c — a small image is its own card.
+      env.IMAGE_CARD_FRAMING = false;
+      const plain = await attach();
+      expect(plain.thumbUrl).toBe(plain.url);
+      expect((await expectWebp(plain.url)).width).toBe(600);
+
+      // On: a separate card image cut to the product plus a margin.
+      env.IMAGE_CARD_FRAMING = true;
+      const framed = await attach();
+      expect(framed.thumbUrl).not.toBe(framed.url);
+      expect((await expectWebp(framed.url)).width).toBe(600);
+      const card = await expectWebp(framed.thumbUrl!);
+      expect(card.width).toBeGreaterThan(280);
+      expect(card.width).toBeLessThan(360);
+    } finally {
+      env.IMAGE_CARD_FRAMING = previous;
+    }
+  });
+
   it('admin content never lands in private (seller document) storage', () => {
     const privateRoot = path.resolve(process.cwd(), 'storage-private');
     if (existsSync(privateRoot)) expect(readdirSync(privateRoot)).not.toContain('admin');

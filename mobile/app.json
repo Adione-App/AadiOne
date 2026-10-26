@@ -3,7 +3,7 @@
     "name": "Aadione",
     "slug": "adione",
     "owner": "aadione-app",
-    "version": "1.0.9",
+    "version": "1.1.0",
     "orientation": "portrait",
     "scheme": "adione",
     "userInterfaceStyle": "light",
@@ -14,7 +14,7 @@
     "android": {
       "package": "in.adione.app",
       "googleServicesFile": "./android/app/google-services.json",
-      "versionCode": 10,
+      "versionCode": 11,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon-foreground.png",
         "backgroundColor": "#FFFFFF"
@@ -30,10 +30,11 @@
     },
     "ios": {
       "bundleIdentifier": "in.adione.app",
-      "buildNumber": "4",
+      "buildNumber": "5",
       "supportsTablet": false,
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "Aadione uses your location to check whether we deliver to your area and to estimate your delivery time."
+        "NSLocationWhenInUseUsageDescription": "Aadione uses your location to check whether we deliver to your area and to estimate your delivery time.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "plugins": [
@@ -77,4 +78,3 @@
     }
   }
 }
-

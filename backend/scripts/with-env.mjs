@@ -10,10 +10,19 @@
  * PowerShell, cmd, and bash without any shell-specific env-var prefix.
  *
  * Usage:
- *   node scripts/with-env.mjs [--no-payments] <envFile> <command> [args...]
+ *   node scripts/with-env.mjs [--no-payments] [--transaction-pooler] <envFile> <command> [args...]
  *
  * --no-payments: for maintenance scripts that never take or refund money —
  * the command runs with no payment settings at all (see below).
+ *
+ * --transaction-pooler: for maintenance scripts run against production while
+ * the API is live. The env file's Supabase SESSION pooler (port 5432) allows
+ * only 15 clients and the running API fills it (EMAXCONNSESSION); this sends
+ * the command through the TRANSACTION pooler instead (port 6543,
+ * pgbouncer=true, one connection). Only a `*.pooler.supabase.com:5432` URL is
+ * accepted. src/config/env.ts re-reads ENV_FILE with override, so the changed
+ * URL is handed over as a private temporary copy of the env file, deleted when
+ * the command ends.
  *
  * Example (what `db:migrate:v2` runs under the hood):
  *   node scripts/with-env.mjs .env.v2 prisma migrate dev
@@ -25,7 +34,8 @@
 
 import { config } from "dotenv";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,14 +51,16 @@ const backendRoot = path.resolve(
 // without needing live keys, and src/infra/payment refuses to start a
 // provider in such a process.
 const cliArgs = process.argv.slice(2);
-const noPayments = cliArgs[0] === "--no-payments";
-if (noPayments) cliArgs.shift();
+const flags = new Set();
+while (cliArgs[0] === "--no-payments" || cliArgs[0] === "--transaction-pooler") flags.add(cliArgs.shift());
+const noPayments = flags.has("--no-payments");
+const transactionPooler = flags.has("--transaction-pooler");
 
 const [envFileArg, command, ...commandArgs] = cliArgs;
 
 if (!envFileArg || !command) {
   console.error(
-    "Usage: node scripts/with-env.mjs <envFile> <command> [args...]",
+    "Usage: node scripts/with-env.mjs [--no-payments] [--transaction-pooler] <envFile> <command> [args...]",
   );
   process.exit(1);
 }
@@ -86,6 +98,39 @@ if (!process.env["DATABASE_URL"] || !process.env["DATABASE_URL"].trim()) {
 // know it must load ONLY this file — never falling back to backend/.env.
 process.env["ENV_FILE"] = envFileArg;
 
+let tempEnvDir = null;
+if (transactionPooler) {
+  let url;
+  try {
+    url = new URL(process.env["DATABASE_URL"]);
+  } catch {
+    console.error(`\n[with-env] --transaction-pooler: DATABASE_URL in "${envFileArg}" is not a valid URL.\n`);
+    process.exit(1);
+  }
+  if (!url.hostname.endsWith(".pooler.supabase.com") || url.port !== "5432") {
+    console.error(
+      `\n[with-env] --transaction-pooler expects a Supabase session-pooler URL (*.pooler.supabase.com:5432); ` +
+        `"${envFileArg}" has ${url.hostname}:${url.port || "(default)"}.\n`,
+    );
+    process.exit(1);
+  }
+  url.port = "6543";
+  url.searchParams.set("pgbouncer", "true");
+  url.searchParams.set("connection_limit", "1");
+  process.env["DATABASE_URL"] = url.toString();
+
+  // The same file with only DATABASE_URL replaced, readable by this user only.
+  tempEnvDir = mkdtempSync(path.join(os.tmpdir(), "adione-env-"));
+  const tempEnvFile = path.join(tempEnvDir, path.basename(envFilePath));
+  const lines = readFileSync(envFilePath, "utf8")
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*(export\s+)?DATABASE_URL\s*=/.test(line));
+  lines.push(`DATABASE_URL="${process.env["DATABASE_URL"]}"`);
+  writeFileSync(tempEnvFile, lines.join("\n"), { mode: 0o600 });
+  process.env["ENV_FILE"] = tempEnvFile;
+  console.error(`[with-env] --transaction-pooler: ${url.hostname}:6543 (pgbouncer, 1 connection)`);
+}
+
 // src/config/env.ts re-reads ENV_FILE itself, so the payment settings are
 // withheld THERE, after that load (withholdPaymentSettings).
 if (noPayments) {
@@ -93,14 +138,19 @@ if (noPayments) {
   console.error("[with-env] --no-payments: payment settings are withheld from this command");
 }
 
-const child = spawnSync(command, commandArgs, {
-  cwd: backendRoot,
-  stdio: "inherit",
-  // Required on Windows to resolve .cmd shims (npx/prisma installed via
-  // npm); harmless on POSIX shells.
-  shell: process.platform === "win32",
-  env: process.env,
-});
+let child;
+try {
+  child = spawnSync(command, commandArgs, {
+    cwd: backendRoot,
+    stdio: "inherit",
+    // Required on Windows to resolve .cmd shims (npx/prisma installed via
+    // npm); harmless on POSIX shells.
+    shell: process.platform === "win32",
+    env: process.env,
+  });
+} finally {
+  if (tempEnvDir) rmSync(tempEnvDir, { recursive: true, force: true });
+}
 
 if (child.error) {
   console.error(`\n[with-env] Failed to start "${command}": ${child.error.message}\n`);

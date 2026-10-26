@@ -18,6 +18,10 @@
  *                                                    uses the new file, the new file reads back
  *                                                    as a valid WebP, and no row anywhere
  *                                                    (order items included) still references it.
+ *   npm run images:optimize:v2 -- --card-frames [--apply] [--ids a,b,c]
+ *                                                    product card images framed to the product
+ *                                                    (see runCardFrames); dry run without --apply,
+ *                                                    `--ids` limits it to those product_images rows.
  *
  * Add `--limit N` to process only the first N files. `npm run images:optimize`
  * (no :v2) uses backend/.env — check what that points at first.
@@ -35,7 +39,7 @@ import sharp from 'sharp';
 import { env } from '../src/config/env';
 import { prisma } from '../src/infra/db/prisma';
 import { MAX_IMAGE_BYTES, storage, storageKeyFromUrl } from '../src/infra/storage';
-import { IMAGE_PROFILES, needsCardThumbnail, optimizeImage, type ImageProfile } from '../src/infra/storage/image-optimizer';
+import { cardFrame, IMAGE_PROFILES, needsCardThumbnail, optimizeImage, type ImageProfile } from '../src/infra/storage/image-optimizer';
 import { isStorageKeyReferenced } from '../src/modules/catalog/uploaded-image.service';
 
 type Kind = 'product' | 'category';
@@ -306,6 +310,186 @@ async function run(apply: boolean): Promise<void> {
   }
 }
 
+/**
+ * storage.get with two retries: under a burst of reads Supabase's S3 endpoint
+ * answers some existing objects with 400, which the adapter reports as "not
+ * found" (seen in the 2026-10-26 production dry run: 40 of 346, all readable
+ * moments later).
+ */
+async function readWithRetry(key: string, maxBytes: number): Promise<Buffer | null> {
+  for (const delayMs of [0, 1000, 3000]) {
+    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    const body = await storage.get(key, maxBytes).catch(() => null);
+    if (body) return body;
+  }
+  return null;
+}
+
+/** A framed card file this script wrote: `<name>-card-<first 12 hex of its sha256>.webp`. */
+const FRAMED_CARD = /-card-[0-9a-f]{12}\.webp$/;
+
+/**
+ * `--card-frames`: product photos uploaded before card framing get the framed
+ * card image new uploads already get (cardFrame in image-optimizer.ts), cut
+ * from the stored full image.
+ *
+ *   - Dry run (no --apply): reads rows and files only; writes nothing.
+ *   - --apply: per photo, writes a NEW `<name>-card-<hash>.webp` (named by its
+ *     content, so an existing file — cached for a year — is never overwritten
+ *     with different bytes), reads it back, checks its public URL, and only
+ *     then moves `thumbUrl`/`cardUrl` to it, if the row is unchanged. The full
+ *     image (`url`) and the previous card file are never touched.
+ *   - The manifest is saved after every change, so a run that stops halfway
+ *     can still be rolled back (`--rollback <manifest>`).
+ *   - Idempotent: a row already on a framed card is skipped, and so is one
+ *     whose current card is already tight (e.g. framed at upload).
+ */
+async function runCardFrames(apply: boolean): Promise<void> {
+  const limit = Number(option('--limit') ?? Infinity);
+  const only = option('--ids')?.split(',').map((id) => id.trim()).filter(Boolean);
+  const images = await prisma.productImage.findMany({
+    where: only ? { id: { in: only } } : undefined,
+    select: { id: true, url: true, thumbUrl: true, cardUrl: true, product: { select: { name: true } } },
+    orderBy: { createdAt: 'asc' },
+  });
+  console.log(`${apply ? 'APPLY' : 'DRY RUN'} card frames — storage=${env.STORAGE_PROVIDER} base=${env.STORAGE_PUBLIC_BASE_URL}`);
+  console.log(`${images.length} product image rows${only ? ` (--ids: ${only.length} requested)` : ''}\n`);
+
+  const byKey = new Map<string, typeof images>();
+  const foreign: string[] = [];
+  for (const row of images) {
+    const key = storageKeyFromUrl(row.url);
+    if (!key) foreign.push(`product_images:${row.id} ${row.url}`);
+    else byKey.set(key, [...(byKey.get(key) ?? []), row]);
+  }
+
+  const manifest: Manifest = {
+    createdAt: new Date().toISOString(),
+    storageProvider: env.STORAGE_PROVIDER,
+    publicBaseUrl: env.STORAGE_PUBLIC_BASE_URL,
+    entries: [],
+  };
+  const manifestFile = path.join(MANIFEST_DIR, `card-frames-${manifest.createdAt.replace(/[:.]/g, '-')}.json`);
+  const saveManifest = () => {
+    mkdirSync(MANIFEST_DIR, { recursive: true });
+    writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+  };
+  if (apply) saveManifest();
+
+  const skipped = { alreadyFramed: 0, notPlain: 0, cardAlreadyTight: 0, mixedCards: 0 };
+  const missing: string[] = [];
+  const failed: string[] = [];
+  let checked = 0;
+  let framed = 0;
+
+  for (const [key, rows] of byKey) {
+    if (checked >= limit) break;
+    const first = rows[0]!;
+    const label = `${first.product.name} — ${key}`;
+    if (rows.every((row) => row.thumbUrl !== null && FRAMED_CARD.test(row.thumbUrl))) {
+      skipped.alreadyFramed += 1;
+      continue;
+    }
+    checked += 1;
+    try {
+      const source = await readWithRetry(key, Number.MAX_SAFE_INTEGER);
+      if (!source) {
+        missing.push(label);
+        continue;
+      }
+      const frame = await cardFrame(source);
+      if (!frame) {
+        skipped.notPlain += 1;
+        console.log(`KEEP (not a plain packshot, or already tight) ${label}`);
+        continue;
+      }
+
+      // Rows sharing one photo but showing different cards: leave them to a person.
+      const currentCards = [...new Set(rows.map((row) => row.thumbUrl ?? row.url))];
+      if (currentCards.length > 1) {
+        skipped.mixedCards += 1;
+        console.log(`SKIP (rows show different card images) ${label}`);
+        continue;
+      }
+      // What the card shows today. Already tight (a card framed at upload,
+      // after this code was deployed): a second framed copy would only be a
+      // duplicate.
+      const currentCard = currentCards[0]!;
+      if (currentCard !== first.url) {
+        const cardKey = storageKeyFromUrl(currentCard);
+        const cardBytes = cardKey ? await readWithRetry(cardKey, MAX_IMAGE_BYTES) : null;
+        if (cardBytes && !(await cardFrame(cardBytes))) {
+          skipped.cardAlreadyTight += 1;
+          console.log(`KEEP (current card already tight) ${label}`);
+          continue;
+        }
+      }
+
+      const card = await optimizeImage(source, IMAGE_PROFILES.productThumb, frame);
+      const hash = createHash('sha256').update(card.data).digest('hex').slice(0, 12);
+      const newKey = `${key.replace(/\.[A-Za-z0-9]+$/, '')}-card-${hash}.webp`;
+      const newUrl = storage.publicUrl(newKey);
+      framed += 1;
+      console.log(
+        `FRAME ${label}\n    card: ${currentCard}\n      -> ${newUrl}  ` +
+          `(${card.width}x${card.height}, ${kb(card.data.byteLength)}, row${rows.length === 1 ? '' : 's'} ${rows.map((row) => row.id).join(',')})`,
+      );
+
+      if (!apply) continue;
+      // Same name = same bytes, so writing it again (a rerun after a failure) changes nothing.
+      await storage.put(newKey, card.data, card.contentType);
+      await verifyWebp(newKey, card);
+      for (const row of rows) {
+        // Only if the row was not changed by someone else meanwhile.
+        const updated = await prisma.productImage.updateMany({
+          where: { id: row.id, url: row.url, thumbUrl: row.thumbUrl, cardUrl: row.cardUrl },
+          data: { thumbUrl: newUrl, cardUrl: newUrl },
+        });
+        if (updated.count === 1) {
+          manifest.entries.push({
+            table: 'product_images',
+            id: row.id,
+            oldUrl: row.url,
+            oldThumbUrl: row.thumbUrl,
+            oldCardUrl: row.cardUrl,
+            newUrl: row.url,
+            newThumbUrl: newUrl,
+          });
+          saveManifest();
+        } else {
+          console.log(`    row ${row.id} changed meanwhile — left alone`);
+        }
+      }
+    } catch (error) {
+      // A failed write or check leaves the rows on their current card (they
+      // only move once the new file is verified); carry on with the next.
+      failed.push(`${label}: ${(error as Error).message}`);
+    }
+  }
+
+  console.log('\n=== Summary ===');
+  console.log(`photos checked:                ${checked}${Number.isFinite(limit) ? ` (limit ${limit})` : ''}`);
+  console.log(`framed card images:            ${framed}`);
+  console.log(`skipped, already framed:       ${skipped.alreadyFramed}`);
+  console.log(`skipped, not a plain packshot or already tight: ${skipped.notPlain}`);
+  console.log(`skipped, current card tight:   ${skipped.cardAlreadyTight}`);
+  console.log(`skipped, mixed card images:    ${skipped.mixedCards}`);
+  console.log(`not ours (skipped):            ${foreign.length}`);
+  foreign.slice(0, 10).forEach((line) => console.log(`    ${line}`));
+  console.log(`missing or unreadable:         ${missing.length} (left as they are; a re-run retries them)`);
+  missing.slice(0, 10).forEach((line) => console.log(`    ${line}`));
+  console.log(`failed:                        ${failed.length}`);
+  failed.slice(0, 20).forEach((line) => console.log(`    ${line}`));
+
+  if (apply) {
+    saveManifest();
+    console.log(`\n${manifest.entries.length} row(s) repointed. Full images and previous card files kept. Manifest: ${manifestFile}`);
+    console.log(`Roll back with:        npm run images:optimize:v2 -- --rollback "${manifestFile}"`);
+  } else {
+    console.log('\nDry run — nothing was written. Re-run with --card-frames --apply to frame them.');
+  }
+}
+
 function readManifest(file: string): Manifest {
   const manifest = JSON.parse(readFileSync(file, 'utf8')) as Manifest;
   if (manifest.publicBaseUrl !== env.STORAGE_PUBLIC_BASE_URL || manifest.storageProvider !== env.STORAGE_PROVIDER) {
@@ -321,7 +505,8 @@ async function rollback(file: string): Promise<void> {
     const result =
       entry.table === 'product_images'
         ? await prisma.productImage.updateMany({
-            where: { id: entry.id, url: entry.newUrl },
+            // Only rows still exactly as that run left them.
+            where: { id: entry.id, url: entry.newUrl, thumbUrl: entry.newThumbUrl },
             data: { url: entry.oldUrl, thumbUrl: entry.oldThumbUrl, cardUrl: entry.oldCardUrl },
           })
         : await prisma.category.updateMany({ where: { id: entry.id, imageUrl: entry.newUrl }, data: { imageUrl: entry.oldUrl } });
@@ -374,6 +559,7 @@ async function main(): Promise<void> {
   const deleteFile = option('--delete-originals');
   if (rollbackFile) await rollback(rollbackFile);
   else if (deleteFile) await deleteOriginals(deleteFile);
+  else if (flag('--card-frames')) await runCardFrames(flag('--apply'));
   else await run(flag('--apply'));
 }
 

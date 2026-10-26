@@ -1,7 +1,7 @@
-import sharp from 'sharp';
+import sharp, { type Color } from 'sharp';
 import { describe, expect, it } from 'vitest';
 
-import { IMAGE_PROFILES, MAX_INPUT_PIXELS, needsCardThumbnail, optimizeImage } from '../../src/infra/storage/image-optimizer';
+import { cardFrame, IMAGE_PROFILES, MAX_INPUT_PIXELS, needsCardThumbnail, optimizeImage } from '../../src/infra/storage/image-optimizer';
 
 /** A noisy photo-like image — flat colours would compress to nothing and prove little. */
 async function photo(width: number, height: number): Promise<sharp.Sharp> {
@@ -122,5 +122,134 @@ describe('optimizeImage', () => {
       .jpeg({ quality: 10 })
       .toBuffer();
     await expect(optimizeImage(bomb, IMAGE_PROFILES.product)).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+});
+
+/** A `size`×`size` product (the noisy photo) at (left, top) on a plain canvas. */
+async function packshot(
+  canvas: { width: number; height: number; background: Color; channels?: 3 | 4 },
+  product: { left: number; top: number; size: number },
+): Promise<Buffer> {
+  const item = await (await photo(product.size, product.size)).png().toBuffer();
+  return sharp({ create: { width: canvas.width, height: canvas.height, channels: canvas.channels ?? 3, background: canvas.background } })
+    .composite([{ input: item, left: product.left, top: product.top }])
+    .png()
+    .toBuffer();
+}
+
+describe('cardFrame', () => {
+  it('frames a product sitting in lots of white space, with an even margin', async () => {
+    const input = await packshot({ width: 800, height: 800, background: '#ffffff' }, { left: 300, top: 300, size: 200 });
+    const frame = await cardFrame(input);
+
+    expect(frame).not.toBeNull();
+    // The product (300–500) plus an ~8% margin, on every side.
+    expect(frame!.left * 800).toBeGreaterThan(270);
+    expect(frame!.left * 800).toBeLessThan(300);
+    expect((frame!.left + frame!.width) * 800).toBeGreaterThan(500);
+    expect((frame!.left + frame!.width) * 800).toBeLessThan(530);
+    expect(frame!.height).toBeCloseTo(frame!.width, 1);
+
+    const card = await optimizeImage(input, IMAGE_PROFILES.productThumb, frame);
+    expect(card.width).toBeGreaterThan(200);
+    expect(card.width).toBeLessThan(250);
+  });
+
+  it('keeps a coloured background colour (crops it, never removes it)', async () => {
+    const cream = { r: 242, g: 234, b: 225 };
+    const input = await packshot({ width: 600, height: 700, background: cream }, { left: 150, top: 200, size: 300 });
+    const frame = await cardFrame(input);
+    expect(frame).not.toBeNull();
+
+    const card = await optimizeImage(input, IMAGE_PROFILES.productThumb, frame);
+    const corner = await sharp(card.data).extract({ left: 1, top: 1, width: 1, height: 1 }).raw().toBuffer();
+    expect(Math.abs((corner[0] ?? 0) - cream.r)).toBeLessThan(6);
+    expect(Math.abs((corner[1] ?? 0) - cream.g)).toBeLessThan(6);
+    expect(Math.abs((corner[2] ?? 0) - cream.b)).toBeLessThan(6);
+  });
+
+  it('frames a transparent packshot and keeps its transparency', async () => {
+    const input = await packshot(
+      { width: 700, height: 700, background: { r: 0, g: 0, b: 0, alpha: 0 }, channels: 4 },
+      { left: 100, top: 250, size: 250 },
+    );
+    const frame = await cardFrame(input);
+    expect(frame).not.toBeNull();
+
+    const card = await optimizeImage(input, IMAGE_PROFILES.productThumb, frame);
+    expect((await sharp(card.data).metadata()).hasAlpha).toBe(true);
+  });
+
+  it('keeps the white parts of a transparent product inside the frame', async () => {
+    // A white "cap" (60px tall) above a coloured body, on transparency: over
+    // white the cap vanishes, so it must be found over black as well.
+    const cap = await sharp({ create: { width: 120, height: 60, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } } }).png().toBuffer();
+    const body = await (await photo(120, 200)).png().toBuffer();
+    const input = await sharp({ create: { width: 700, height: 700, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+      .composite([
+        { input: cap, left: 290, top: 200 },
+        { input: body, left: 290, top: 260 },
+      ])
+      .png()
+      .toBuffer();
+    const frame = await cardFrame(input);
+    expect(frame).not.toBeNull();
+    expect(frame!.top * 700).toBeLessThan(200);
+  });
+
+  it('keeps a faint package outline on white inside the frame', async () => {
+    // A light-grey pack (outline 18 levels below white) with a small print in its middle.
+    const pack = await sharp({ create: { width: 300, height: 400, channels: 3, background: { r: 237, g: 237, b: 237 } } })
+      .composite([{ input: await (await photo(80, 80)).png().toBuffer(), left: 110, top: 160 }])
+      .png()
+      .toBuffer();
+    const input = await sharp({ create: { width: 800, height: 800, channels: 3, background: '#ffffff' } })
+      .composite([{ input: pack, left: 250, top: 200 }])
+      .jpeg({ quality: 90 })
+      .toBuffer();
+    const frame = await cardFrame(input);
+    expect(frame).not.toBeNull();
+    expect(frame!.left * 800).toBeLessThan(250);
+    expect(frame!.top * 800).toBeLessThan(200);
+    expect((frame!.left + frame!.width) * 800).toBeGreaterThan(550);
+    expect((frame!.top + frame!.height) * 800).toBeGreaterThan(600);
+  });
+
+  it('leaves photos without a plain background alone (lifestyle shots)', async () => {
+    const input = await (await photo(800, 800)).jpeg().toBuffer();
+    expect(await cardFrame(input)).toBeNull();
+  });
+
+  it('leaves an already tightly framed packshot alone', async () => {
+    const input = await packshot({ width: 500, height: 500, background: '#ffffff' }, { left: 15, top: 15, size: 470 });
+    expect(await cardFrame(input)).toBeNull();
+  });
+
+  it('never frames a small photo down to a blurry crop', async () => {
+    const input = await packshot({ width: 300, height: 300, background: '#ffffff' }, { left: 120, top: 120, size: 60 });
+    expect(await cardFrame(input)).toBeNull();
+  });
+
+  it('frames the upright image of an EXIF-rotated photo', async () => {
+    // Stored 800x400 with the product on the left; orientation 6 makes it 400x800, product at the top.
+    const stored = await sharp(await packshot({ width: 800, height: 400, background: '#ffffff' }, { left: 50, top: 100, size: 200 }))
+      .jpeg()
+      .withMetadata({ orientation: 6 })
+      .toBuffer();
+    const frame = await cardFrame(stored);
+    expect(frame).not.toBeNull();
+    expect(frame!.top + frame!.height).toBeLessThan(0.5);
+
+    const card = await optimizeImage(stored, IMAGE_PROFILES.productThumb, frame);
+    expect(Math.abs(card.width - card.height)).toBeLessThan(12);
+  });
+
+  it('never keeps the uncropped original bytes when framing', async () => {
+    const input = await sharp(await packshot({ width: 480, height: 480, background: '#ffffff' }, { left: 110, top: 110, size: 260 }))
+      .webp({ quality: 40 })
+      .toBuffer();
+    const card = await optimizeImage(input, IMAGE_PROFILES.productThumb, await cardFrame(input));
+    expect(card.keptOriginal).toBe(false);
+    expect(card.width).toBeLessThan(480);
   });
 });

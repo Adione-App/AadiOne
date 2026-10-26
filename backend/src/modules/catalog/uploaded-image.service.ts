@@ -8,7 +8,9 @@
  *   raw upload  products/s-<tag>/<date>/<uuid>.jpg
  *     -> decode + validate -> resize -> WebP          (image-optimizer.ts)
  *     -> products/s-<tag>/<date>/<uuid>.webp           the stored image (`url`)
- *     -> products/s-<tag>/<date>/<uuid>-thumb.webp     product cards (`thumbUrl`/`cardUrl`)
+ *     -> products/s-<tag>/<date>/<uuid>-thumb.webp     product cards (`thumbUrl`/`cardUrl`):
+ *                                                      smaller, and framed to the product when
+ *                                                      it sits in lots of plain background
  *     -> raw upload deleted
  *
  * One image, one file (plus the card thumbnail for products) — the same
@@ -24,7 +26,7 @@ import { moduleLogger } from '../../common/logger';
 import { env } from '../../config/env';
 import { prisma } from '../../infra/db/prisma';
 import { MAX_IMAGE_BYTES, storage, storageKeyFromUrl } from '../../infra/storage';
-import { IMAGE_PROFILES, needsCardThumbnail, optimizeImage } from '../../infra/storage/image-optimizer';
+import { cardFrame, IMAGE_PROFILES, needsCardThumbnail, optimizeImage } from '../../infra/storage/image-optimizer';
 import { ErrorCode } from '../../shared';
 
 const log = moduleLogger('uploaded-image');
@@ -231,10 +233,13 @@ async function storeOptimized(
     await storage.put(imageKey, image.data, image.contentType);
   }
 
-  const needsThumb = kind === 'product' && needsCardThumbnail(image.width, image.height);
+  // A packshot with lots of plain background gets its own card image framed
+  // to the product (image-optimizer.ts, cardFrame) even when it is small.
+  const frame = kind === 'product' ? await cardFrame(source) : null;
+  const needsThumb = kind === 'product' && (frame !== null || needsCardThumbnail(image.width, image.height));
   let thumbBytes: number | null = null;
   if (needsThumb) {
-    const thumb = await optimizeImage(source, IMAGE_PROFILES.productThumb);
+    const thumb = await optimizeImage(source, IMAGE_PROFILES.productThumb, frame);
     await storage.put(thumbKey, thumb.data, thumb.contentType);
     thumbBytes = thumb.data.byteLength;
   }

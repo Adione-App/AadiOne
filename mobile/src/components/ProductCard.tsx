@@ -252,6 +252,11 @@ const BUTTON_OVERHANG = 16;
  * — on top of `BUTTON_OVERHANG`, not instead of it. */
 const IMAGE_TEXT_GAP = spacing.sm;
 
+/** Image box width : height — see `imageBox`. ProductCardSkeleton mirrors both. */
+export const IMAGE_BOX_ASPECT = 4 / 5;
+/** The image box's height on any card wide enough to reach it (≥120dp box). */
+export const IMAGE_BOX_MAX_HEIGHT = 150;
+
 
 const MORPH_ENTER_DURATION = 140;
 const MORPH_EXIT_DURATION = 120;
@@ -345,11 +350,13 @@ function ProductCardImpl({
             border there anymore). Everything below stays open/borderless. */}
         <View style={styles.media}>
           <View ref={imageBoxRef} style={styles.imageBox}>
+            {/* Gives the box its height — see `imageBoxSizer`. */}
+            <View style={styles.imageBoxSizer} />
             {imageUrl ? (
               <Image
                 source={{ uri: imageUrl }}
                 style={[styles.image, outOfStock && styles.imageFaded]}
-                contentFit="cover"
+                contentFit="contain"
                 transition={150}
                 cachePolicy="memory-disk"
               />
@@ -629,16 +636,30 @@ const styles = StyleSheet.create({
     ...shadow.sm,
   },
 
+  // The same card renders at very different widths (≈106–150dp: Home
+  // carousels, 2-column Categories, 3-column View All grids). A fixed 150dp
+  // height made narrow cards tall slivers that `cover` cropped hard at the
+  // sides. The box now follows the card's width (4:5 portrait), capped at
+  // the old 150dp so wide cards (Categories, Home carousels) keep their
+  // height; the image is `contain`ed in it, so nothing is ever cut off.
   imageBox: {
     width: "100%",
 
-    height: 150,
+    maxHeight: IMAGE_BOX_MAX_HEIGHT,
 
-    alignItems: "center",
-
-    justifyContent: "center",
+    overflow: "hidden",
 
     position: "relative",
+  },
+
+  // Sets `imageBox`'s height to width / IMAGE_BOX_ASPECT; the box's
+  // `maxHeight` then caps it. The ratio can't sit on `imageBox` itself:
+  // Yoga feeds a max-clamped height back through `aspectRatio` into the
+  // width, which would shrink the box sideways instead of capping it.
+  imageBoxSizer: {
+    width: "100%",
+
+    aspectRatio: IMAGE_BOX_ASPECT,
   },
 
   
@@ -743,9 +764,15 @@ const styles = StyleSheet.create({
   },
 
   image: {
-    width: "100%",
+    position: "absolute",
 
-    height: "100%",
+    top: 0,
+
+    right: 0,
+
+    bottom: 0,
+
+    left: 0,
   },
 
   imageFaded: {
@@ -753,9 +780,15 @@ const styles = StyleSheet.create({
   },
 
   imagePlaceholder: {
-    width: "100%",
+    position: "absolute",
 
-    height: "100%",
+    top: 0,
+
+    right: 0,
+
+    bottom: 0,
+
+    left: 0,
 
     backgroundColor: colors.skeleton,
 

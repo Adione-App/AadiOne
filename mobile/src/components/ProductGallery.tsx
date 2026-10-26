@@ -8,16 +8,20 @@
  * dots and no swipe affordance, because a pager showing a single page invites
  * a swipe that does nothing.
  *
- * Sizing: the image region is (nearly) full width and its height follows the
- * product photo's own shape — measured from the first image once it loads —
- * so a photo fills the region instead of floating in a fixed box. Photos are
- * always drawn with `contain`: never cropped, never stretched. The height is
- * kept between MIN_RATIO × width (wide photos stay prominent) and
- * MAX_HEIGHT_FRACTION of the screen (title and price stay in view), and every
- * slide of a multi-photo product shares it, so swiping never jumps the page.
+ * Sizing: one square viewport, (nearly) full width, the same for every
+ * product and every photo on a given device — capped at MAX_HEIGHT_FRACTION of
+ * the screen so the title and price stay in view. Photos are always drawn with
+ * `contain`: whole, centred, never cropped or stretched, their own background
+ * kept. The viewport used to take the FIRST photo's shape once it had loaded,
+ * so the page jumped as it arrived, its height changed from product to
+ * product, and the other photos of a product were boxed to the first one's
+ * shape (a landscape first photo left the square ones with side bands).
+ *
+ * Several photos: the counter and dots sit in their own row below the
+ * viewport, clear of the photo — never over it.
  */
 
-import { forwardRef, useCallback, useRef, useState } from "react";
+import { forwardRef, useCallback, useState } from "react";
 import {
   ScrollView,
   StyleSheet,
@@ -33,11 +37,7 @@ import { resolveImageUrl } from "@/lib/api";
 
 /** Space between the photo and the screen edges. */
 const SIDE_INSET = spacing.sm;
-/** Height ÷ width used until the first photo has loaded — 3:4 portrait, the catalogue's most common shape. */
-const DEFAULT_RATIO = 4 / 3;
-/** The region is never shorter than this × its width. */
-const MIN_RATIO = 0.75;
-/** …and never taller than this share of the screen height. */
+/** The square viewport is never taller than this share of the screen height. */
 const MAX_HEIGHT_FRACTION = 0.6;
 
 /**
@@ -59,9 +59,6 @@ const ProductGallery = forwardRef<
 >(function ProductGallery({ images, fallbackUrl, productName }, ref) {
   const { width, height: screenHeight } = useWindowDimensions();
   const [index, setIndex] = useState(0);
-  const scroller = useRef<ScrollView>(null);
-  /** The first photo's height ÷ width, once known (per photo id); it sizes the whole gallery. */
-  const [measured, setMeasured] = useState<{ id: string; ratio: number } | null>(null);
   /** Photos that failed to load (missing / invalid file) — shown as the placeholder. */
   const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
 
@@ -74,25 +71,9 @@ const ProductGallery = forwardRef<
         ? [{ id: "fallback", url: fallbackUrl, altText: null }]
         : [];
 
-  const firstId = sources[0]?.id;
-  const ratio = measured && measured.id === firstId ? measured.ratio : null;
   const photoWidth = width - SIDE_INSET * 2;
-  const height = Math.round(
-    Math.min(
-      Math.max(photoWidth * (ratio ?? DEFAULT_RATIO), width * MIN_RATIO),
-      screenHeight * MAX_HEIGHT_FRACTION,
-    ),
-  );
+  const height = Math.round(Math.min(photoWidth, screenHeight * MAX_HEIGHT_FRACTION));
 
-  const onPhotoLoad = useCallback(
-    (id: string, sourceWidth: number, sourceHeight: number) => {
-      // Only the first photo decides the shape, and only once, so the page
-      // never jumps while swiping between differently shaped photos.
-      if (id !== firstId || sourceWidth <= 0 || sourceHeight <= 0) return;
-      setMeasured((current) => (current?.id === id ? current : { id, ratio: sourceHeight / sourceWidth }));
-    },
-    [firstId],
-  );
   const onPhotoError = useCallback((id: string) => {
     setFailed((current) => new Set(current).add(id));
   }, []);
@@ -110,7 +91,6 @@ const ProductGallery = forwardRef<
         transition={150}
         cachePolicy="memory-disk"
         accessibilityLabel={image.altText ?? productName}
-        onLoad={(event) => onPhotoLoad(image.id, event.source.width, event.source.height)}
         onError={() => onPhotoError(image.id)}
       />
     );
@@ -148,7 +128,6 @@ const ProductGallery = forwardRef<
           below it. */}
       <View ref={ref} style={{ height }}>
         <ScrollView
-          ref={scroller}
           horizontal
           pagingEnabled
           showsHorizontalScrollIndicator={false}
@@ -162,24 +141,26 @@ const ProductGallery = forwardRef<
         </ScrollView>
       </View>
 
-      {/* Counter as well as dots: beyond about five images the dots stop being
-          countable at a glance, but the fraction still reads. */}
-      <View style={styles.counter}>
-        <AppText variant="caption" color={colors.textSecondary}>
-          {index + 1}/{sources.length}
-        </AppText>
-      </View>
-
-      <View style={styles.dots}>
-        {sources.map((image, position) => (
-          <View
-            key={image.id}
-            style={[
-              styles.dot,
-              position === index ? styles.dotActive : undefined,
-            ]}
-          />
-        ))}
+      {/* Its own row below the photo. Counter as well as dots: beyond about
+          five images the dots stop being countable at a glance, but the
+          fraction still reads. */}
+      <View style={styles.pagination}>
+        <View style={styles.dots}>
+          {sources.map((image, position) => (
+            <View
+              key={image.id}
+              style={[
+                styles.dot,
+                position === index ? styles.dotActive : undefined,
+              ]}
+            />
+          ))}
+        </View>
+        <View style={styles.counter}>
+          <AppText variant="caption" color={colors.textSecondary}>
+            {index + 1}/{sources.length}
+          </AppText>
+        </View>
       </View>
     </View>
   );
@@ -191,20 +172,26 @@ const styles = StyleSheet.create({
   box: { alignItems: "center", justifyContent: "center", paddingHorizontal: SIDE_INSET },
   image: { width: "100%", height: "100%", borderRadius: radius.lg },
   missing: { backgroundColor: colors.skeleton },
+  // Dots centred under the photo, the counter at the row's right end.
+  pagination: {
+    height: 22,
+    marginTop: spacing.sm,
+    marginBottom: spacing.xs,
+    justifyContent: "center",
+  },
+  dots: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 6,
+  },
   counter: {
     position: "absolute",
-    top: spacing.sm,
     right: spacing.base,
     backgroundColor: colors.surfaceMuted,
     paddingHorizontal: spacing.sm,
     paddingVertical: 2,
     borderRadius: radius.pill,
-  },
-  dots: {
-    flexDirection: "row",
-    justifyContent: "center",
-    gap: 6,
-    paddingBottom: spacing.sm,
   },
   dot: {
     width: 6,

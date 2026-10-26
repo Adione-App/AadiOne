@@ -43,6 +43,7 @@ import ReanimatedAnimated, {
   type SharedValue,
 } from "react-native-reanimated";
 import { colors, radius, shadow, spacing } from "@shared/theme";
+import { IMAGE_BOX_ASPECT, IMAGE_BOX_MAX_HEIGHT } from "./ProductCard";
 
 /**
  * Explicit skeleton colors, deliberately NOT `colors.skeleton` (grey100,
@@ -172,12 +173,16 @@ export function ProductCardSkeleton({
   return (
     <ReanimatedAnimated.View style={styles.card} entering={makeCardEntering(index)}>
       {/* `mediaWrap`/`media`/`imageBox` + the floating add-button bone below
-          mirror ProductCard.tsx's own structure and exact pixel sizes
-          (media padding, 92px image box, the 34x34 button straddling the
-          image's bottom-right corner) piece for piece. */}
+          mirror ProductCard.tsx's own structure and sizes piece for piece
+          (media padding, the width-following image box capped at 150dp, the
+          34x34 button straddling the image's bottom-right corner), so real
+          cards replace these without the grid jumping. */}
       <View style={styles.mediaWrap}>
         <View style={styles.media}>
-          <Bone progress={progress} style={styles.imageBox} />
+          <View style={styles.imageBox}>
+            <View style={styles.imageBoxSizer} />
+            <Bone progress={progress} style={styles.imageBone} />
+          </View>
         </View>
 
         <View style={styles.floatingActionWrap}>
@@ -278,13 +283,26 @@ const styles = StyleSheet.create({
     borderColor: colors.divider,
     borderRadius: radius.md,
     backgroundColor: colors.surface,
-    padding: spacing.sm,
+    padding: spacing.xs,
     overflow: "hidden",
     ...shadow.sm,
   },
+  // Mirrors ProductCard's `imageBox` + `imageBoxSizer`.
   imageBox: {
     width: "100%",
-    height: 92,
+    maxHeight: IMAGE_BOX_MAX_HEIGHT,
+    overflow: "hidden",
+  },
+  imageBoxSizer: {
+    width: "100%",
+    aspectRatio: IMAGE_BOX_ASPECT,
+  },
+  imageBone: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
   },
   // Mirrors ProductCard's `floatingActionWrap` — same straddle-the-corner
   // position (`right`/`bottom` offsets) as the real Add button, so this

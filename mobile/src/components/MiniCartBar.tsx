@@ -591,7 +591,9 @@ function MiniCartPill({
               <Image
                 source={{ uri: slotAUri }}
                 style={styles.image}
-                contentFit="cover"
+                // Whole product, like the Cart screen: a card image framed tight to
+                // a wide or tall product would lose its ends to `cover`.
+                contentFit="contain"
                 cachePolicy="memory-disk"
                 onLoad={() => markReady(slots[0].token)}
                 onError={() => markReady(slots[0].token)}
@@ -618,7 +620,7 @@ function MiniCartPill({
               <Image
                 source={{ uri: slotBUri }}
                 style={styles.image}
-                contentFit="cover"
+                contentFit="contain"
                 cachePolicy="memory-disk"
                 onLoad={() => markReady(slots[1].token)}
                 onError={() => markReady(slots[1].token)}

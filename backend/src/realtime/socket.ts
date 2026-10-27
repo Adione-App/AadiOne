@@ -156,6 +156,16 @@ export function emitSellerOrderStatus(sellerId: string, event: SellerOrderStatus
   io?.to(rooms.admin()).emit('seller_order.status_changed', event);
 }
 
+/**
+ * A store's availability changed (its switch, hours, a date closure, admin
+ * activation) — or, with `sellerId` null, app-wide ordering. Every connected
+ * app refetches what depends on it (Home, the cart, an open product). Carries
+ * no personal data, so it goes to every socket.
+ */
+export function emitStoreAvailabilityChanged(sellerId: string | null): void {
+  io?.emit('store.availability_changed', { sellerId });
+}
+
 export function shutdownRealtime(): void {
   io?.close();
   io = null;

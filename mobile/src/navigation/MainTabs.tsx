@@ -34,7 +34,7 @@ import { getFocusedRouteNameFromRoute } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { colors, layout, spacing } from "@shared/theme";
-import { useCartActions } from "@/lib/useCartActions";
+import { cartUnitCount, useCartActions } from "@/lib/useCartActions";
 import { tabBarHiddenByScroll, useMiniCartScreen } from "@/lib/tabBarVisibility";
 import MiniCartOverlay from "@/components/MiniCartBar";
 
@@ -183,7 +183,7 @@ function CartTabIcon({
 }) {
   // Subscribes HERE, not in MainTabs: a cart change re-renders this icon
   // only, never the whole tab navigator (which it used to on every tap).
-  const count = useCartActions().cart?.bill.itemCount ?? 0;
+  const count = cartUnitCount(useCartActions().cart);
   const pulse = usePulse(count);
 
   return (

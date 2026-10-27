@@ -37,8 +37,10 @@ import * as configService from "../configuration/configuration.service";
 import * as pricingService from "../pricing/pricing.service";
 import { moduleLogger } from "../../common/logger";
 import { unorderableMessage, unorderableReason } from "./orderability";
+import { cartLineEligibility, isGone } from "./eligibility";
 import { trackedAvailableQty } from "../inventory/stock-rules";
 import * as sellerService from "../sellers/seller.service";
+import { orderingState, statusOf, storeStatuses, type StoreStatus } from "../sellers/store-availability";
 
 const log = moduleLogger("cart");
 
@@ -105,22 +107,29 @@ type LoadedCart = Awaited<ReturnType<typeof getOrCreateCart>>;
 /* -------------------------------------------------------------------------- */
 
 interface RevalidationOutcome {
+  /** Every remaining line, available or not. */
   items: CartItemDto[];
   changes: CartChangeDto[];
+  /** AVAILABLE lines only — what the bill, COD and an order are computed from. */
   priceable: pricingService.PriceableItem[];
   codPolicies: { productName: string; resolvedPolicy: CodPolicy }[];
+  /** `sellerListingId` of every available line. */
+  availableListingIds: string[];
+  /** Each line's seller's current status. */
+  statuses: ReadonlyMap<string, StoreStatus>;
 }
 
 async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
-  const config = await configService.getMany([
-    ConfigKey.DEFAULT_COD_POLICY,
-    ConfigKey.DEFAULT_MAX_QTY_PER_ORDER,
+  const [config, statuses] = await Promise.all([
+    configService.getMany([ConfigKey.DEFAULT_COD_POLICY, ConfigKey.DEFAULT_MAX_QTY_PER_ORDER]),
+    storeStatuses(cart.items.map((item) => item.sellerListing.seller)),
   ]);
 
   const items: CartItemDto[] = [];
   const changes: CartChangeDto[] = [];
   const priceable: pricingService.PriceableItem[] = [];
   const codPolicies: { productName: string; resolvedPolicy: CodPolicy }[] = [];
+  const availableListingIds: string[] = [];
 
   const removeIds: string[] = [];
   const quantityFixes: { id: string; qty: number }[] = [];
@@ -132,42 +141,41 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
     const seller = offer.seller;
     const productName = `${product.name} ${variant.variantName}`.trim();
 
-    // --- gone entirely (product withdrawn, or seller not trading) ---------
-    const unorderable = unorderableReason({ seller, product, variant });
-
-    if (unorderable) {
+    // --- gone for good (deleted) — the only line ever taken out ------------
+    if (isGone({ seller, product, variant })) {
       removeIds.push(item.id);
       changes.push({
         type: "ITEM_REMOVED_UNAVAILABLE",
         variantId: variant.id,
         productName,
-        message: `${unorderableMessage(unorderable, productName, seller.name)} It was removed from your cart.`,
+        message: `${productName} is no longer sold and was removed from your cart.`,
       });
       continue;
     }
 
     // Tracked: stock left. Made-to-order food: no stock count — its only
     // limit is the per-order one (inventory/stock-rules.ts).
-    const availableQty =
-      trackedAvailableQty(offer) ?? (offer.maxQtyPerOrder || config.DEFAULT_MAX_QTY_PER_ORDER);
-    const inStock = offer.isAvailable && availableQty > 0;
+    const trackedQty = trackedAvailableQty(offer);
+    const availableQty = trackedQty ?? (offer.maxQtyPerOrder || config.DEFAULT_MAX_QTY_PER_ORDER);
+    // Not orderable right now (store closed, product off sale, no stock): the
+    // line STAYS, marked, outside the bill — it counts again by itself when
+    // that changes. Nothing is removed for a temporary state.
+    const eligibility = cartLineEligibility({
+      seller,
+      product,
+      variant,
+      listing: offer,
+      availableQty: trackedQty,
+      store: statusOf(statuses, seller.id),
+      displayName: productName,
+    });
 
-    if (!inStock) {
-      removeIds.push(item.id);
-      changes.push({
-        type: "ITEM_REMOVED_OUT_OF_STOCK",
-        variantId: variant.id,
-        productName,
-        message: `${productName} is out of stock and was removed from your cart.`,
-      });
-      continue;
-    }
-
-    // --- quantity ----------------------------------------------------------
+    // --- quantity (available lines only: an unavailable line keeps what the
+    // customer chose and is checked again when it comes back) -------------
     const maxQty = offer.maxQtyPerOrder || config.DEFAULT_MAX_QTY_PER_ORDER;
     let qty = item.qty;
 
-    if (offer.tracksStock && qty > availableQty) {
+    if (eligibility.orderable && offer.tracksStock && qty > availableQty) {
       changes.push({
         type: "QTY_REDUCED_STOCK",
         variantId: variant.id,
@@ -179,7 +187,7 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
       qty = availableQty;
     }
 
-    if (qty > maxQty) {
+    if (eligibility.orderable && qty > maxQty) {
       changes.push({
         type: "QTY_REDUCED_LIMIT",
         variantId: variant.id,
@@ -210,7 +218,6 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
       },
       config.DEFAULT_COD_POLICY,
     );
-    codPolicies.push({ productName, resolvedPolicy });
 
     const image =
       variant.imageUrl ??
@@ -237,12 +244,19 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
         0,
         (offer.mrpPaise - offer.pricePaise) * qty,
       ),
-      inStock: true,
+      inStock: offer.isAvailable && availableQty > 0,
       availableQty,
       maxQtyPerOrder: maxQty,
       allowCod: resolvedPolicy === CodPolicy.ALLOW,
+      available: eligibility.orderable,
+      unavailableReason: eligibility.reason,
+      storeClosedReason: eligibility.storeClosedReason,
+      unavailableMessage: eligibility.message,
     });
 
+    if (!eligibility.orderable) continue;
+    codPolicies.push({ productName, resolvedPolicy });
+    availableListingIds.push(offer.id);
     priceable.push({
       variantId: variant.id,
       qty,
@@ -271,30 +285,30 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
     );
   }
 
-  return { items, changes, priceable, codPolicies };
+  return { items, changes, priceable, codPolicies, availableListingIds, statuses };
 }
 
 function groupBySeller(
   items: CartItemDto[],
-  closedMessageBySeller: ReadonlyMap<string, string>,
+  statuses: ReadonlyMap<string, StoreStatus>,
 ): CartSellerGroupDto[] {
   const groups = new Map<string, CartSellerGroupDto>();
   for (const item of items) {
     let group = groups.get(item.sellerId);
     if (!group) {
-      const closedMessage = closedMessageBySeller.get(item.sellerId) ?? null;
+      const status = statusOf(statuses, item.sellerId);
       group = {
         sellerId: item.sellerId,
         sellerName: item.sellerName,
         items: [],
         subtotalPaise: 0,
-        isOpen: closedMessage === null,
-        closedMessage,
+        isOpen: status.acceptingOrders,
+        closedMessage: status.message,
       };
       groups.set(item.sellerId, group);
     }
     group.items.push(item);
-    group.subtotalPaise += item.lineTotalPaise;
+    if (item.available) group.subtotalPaise += item.lineTotalPaise;
   }
   return [...groups.values()];
 }
@@ -305,38 +319,28 @@ function groupBySeller(
 
 export interface CartContext {
   cartId: string;
+  /** Available lines only. */
   priceable: pricingService.PriceableItem[];
   codPolicies: { productName: string; resolvedPolicy: CodPolicy }[];
+  availableListingIds: string[];
   couponCode: string | null;
 }
 
 /**
  * Builds the full cart payload. Always revalidates — there is no "fast path"
  * that skips it, because a stale cart is exactly what produces a surprise at
- * checkout.
+ * checkout. Store status is read live on every call, so a cart kept overnight
+ * is checked against today's stores, never yesterday's answer.
  */
 export async function getCart(
   userId: string,
   options: { distanceKm?: number | null } = {},
 ): Promise<{ dto: CartDto; context: CartContext }> {
   const cart = await getOrCreateCart(userId);
-  const { items, changes, priceable, codPolicies } = await revalidate(cart);
-
-  // A seller that is only temporarily closed (own switch OFF, closure, out of
-  // hours) keeps its lines — the basket must survive the night — but checkout
-  // is blocked until it reopens. Sellers that stopped trading altogether were
-  // already removed by `revalidate`.
-  const closedMessageBySeller = new Map<string, string>();
-  const remainingSellerIds = new Set(items.map((item) => item.sellerId));
-  for (const line of cart.items) {
-    const seller = line.sellerListing.seller;
-    if (!remainingSellerIds.has(seller.id) || closedMessageBySeller.has(seller.id)) continue;
-    const availability = await sellerService.evaluateSellerAvailability(seller);
-    if (!availability.acceptingOrders) {
-      closedMessageBySeller.set(seller.id, sellerService.sellerClosedMessage(seller.name, availability));
-    }
-    remainingSellerIds.delete(seller.id);
-  }
+  const [{ items, changes, priceable, codPolicies, availableListingIds, statuses }, ordering] = await Promise.all([
+    revalidate(cart),
+    orderingState(),
+  ]);
 
   let couponCode = cart.couponCode;
   let coupon: pricingService.ResolvedCoupon | null = null;
@@ -361,6 +365,8 @@ export async function getCart(
     }
   }
 
+  // The bill (and the minimum order) covers the AVAILABLE lines only — what
+  // an order placed now would contain.
   const { bill } = await pricingService.computeBill({
     items: priceable,
     distanceKm: options.distanceKm ?? null,
@@ -375,30 +381,54 @@ export async function getCart(
     minOrderValuePaise - bill.itemsSubtotalPaise,
   );
 
+  const availableItemCount = items.filter((item) => item.available).length;
+  const unavailableItemCount = items.length - availableItemCount;
+  const minimumMessage = `Add ₹${Math.ceil(shortfallPaise / 100)} more to place an order.`;
+
+  // Checkout of the available lines (current apps).
+  let availableCheckoutBlockedReason: string | null = null;
+  if (items.length === 0) availableCheckoutBlockedReason = "Your cart is empty.";
+  else if (!ordering.enabled) availableCheckoutBlockedReason = ordering.message;
+  else if (availableItemCount === 0) {
+    availableCheckoutBlockedReason =
+      "None of the items in your cart can be ordered right now. Remove them, or order when the store reopens.";
+  } else if (shortfallPaise > 0) availableCheckoutBlockedReason = minimumMessage;
+
+  // Whole-cart checkout (older apps): every line must be orderable.
   let checkoutBlockedReason: string | null = null;
   if (items.length === 0) checkoutBlockedReason = "Your cart is empty.";
-  else if (closedMessageBySeller.size > 0) {
-    checkoutBlockedReason = [...closedMessageBySeller.values()].join(" ");
-  } else if (shortfallPaise > 0) {
-    checkoutBlockedReason = `Add ₹${Math.ceil(shortfallPaise / 100)} more to place an order.`;
-  }
+  else if (!ordering.enabled) checkoutBlockedReason = ordering.message;
+  else if (unavailableItemCount > 0) {
+    checkoutBlockedReason = [
+      ...new Set(items.filter((item) => !item.available).map((item) => item.unavailableMessage ?? "")),
+    ]
+      .filter(Boolean)
+      .join(" ");
+  } else if (shortfallPaise > 0) checkoutBlockedReason = minimumMessage;
 
   return {
     dto: {
       id: cart.id,
       items,
-      sellerGroups: groupBySeller(items, closedMessageBySeller),
+      sellerGroups: groupBySeller(items, statuses),
       bill,
       changes,
       checkoutEnabled: checkoutBlockedReason === null,
       checkoutBlockedReason,
       minOrderValuePaise,
       shortfallPaise,
+      availableCheckoutEnabled: availableCheckoutBlockedReason === null,
+      availableCheckoutBlockedReason,
+      availableItemCount,
+      unavailableItemCount,
+      orderingEnabled: ordering.enabled,
+      orderingPausedMessage: ordering.message,
     },
     context: {
       cartId: cart.id,
       priceable,
       codPolicies,
+      availableListingIds,
       couponCode,
     },
   };
@@ -487,7 +517,14 @@ export async function updateItemQty(
       id: cartItemId,
       cart: { userId, status: "ACTIVE" },
     },
-    include: { sellerListing: true },
+    include: {
+      sellerListing: {
+        include: {
+          seller: { include: { hours: { orderBy: { dayOfWeek: "asc" } } } },
+          variant: { include: { product: true } },
+        },
+      },
+    },
   });
 
   // Ownership is checked HERE, in the service — the route guard only proves
@@ -503,6 +540,29 @@ export async function updateItemQty(
   }
 
   const offer = item.sellerListing;
+
+  // More of it is ADDING to the cart: the same gates as `addItem` (store
+  // taking orders, product sellable). Fewer is always allowed, so a closed
+  // store's line can still be reduced or removed.
+  if (qty > item.qty) {
+    const unorderable = unorderableReason({
+      seller: offer.seller,
+      product: offer.variant.product,
+      variant: offer.variant,
+    });
+    if (unorderable) {
+      throw new AppError(ErrorCode.PRODUCT_UNAVAILABLE, {
+        message: unorderableMessage(unorderable, offer.variant.product.name, offer.seller.name),
+        internalMessage: `listing ${offer.id} not orderable: ${unorderable}`,
+      });
+    }
+    await sellerService.assertSellerAcceptingOrders(offer.seller);
+    if (!offer.isAvailable) {
+      throw new AppError(ErrorCode.ITEM_OUT_OF_STOCK, {
+        message: `${offer.variant.product.name} is out of stock.`,
+      });
+    }
+  }
 
   const availableQty = trackedAvailableQty(offer);
   if (availableQty !== null && qty > availableQty) {
@@ -597,6 +657,64 @@ export async function removeCoupon(
  * throws, rolling back its order and stock reservation. Unconditional, both
  * orders were created from one cart.
  */
+/**
+ * Puts lines back into the customer's active cart — an unpaid order that was
+ * cancelled before any payment (orders/unpaid-order-guard.ts). A line already
+ * there gets the quantity added; the next read revalidates everything (a
+ * closed store's lines show as unavailable, quantities are capped).
+ */
+export async function restoreLines(
+  userId: string,
+  lines: readonly { sellerListingId: string; qty: number }[],
+): Promise<void> {
+  if (lines.length === 0) return;
+  const cart = await getOrCreateCart(userId);
+  for (const line of lines) {
+    await prisma.cartItem.upsert({
+      where: { cartId_sellerListingId: { cartId: cart.id, sellerListingId: line.sellerListingId } },
+      create: { cartId: cart.id, sellerListingId: line.sellerListingId, qty: line.qty },
+      update: { qty: { increment: line.qty } },
+    });
+  }
+}
+
+/**
+ * After an order: takes its lines out of the cart, inside the order's
+ * transaction. Every line ordered: the cart is converted (markConverted).
+ * Some lines left (unavailable ones the customer kept): the cart stays
+ * ACTIVE with only those, and its coupon — spent on this order — is cleared.
+ *
+ * Concurrency, as markConverted: the cart row is claimed with a conditional
+ * update (a second checkout of the same lines waits for the first to commit),
+ * and every ordered line must still be there to delete — if another checkout
+ * took them meanwhile, this throws and rolls the second order back.
+ */
+export async function consumeOrderedLines(
+  cartId: string,
+  orderedListingIds: readonly string[],
+  client: DbClient = prisma,
+): Promise<void> {
+  const claimed = await client.cart.updateMany({
+    where: { id: cartId, status: "ACTIVE" },
+    data: { couponCode: null },
+  });
+  if (claimed.count === 0) {
+    throw new AppError(ErrorCode.ORDER_IN_PROGRESS, {
+      internalMessage: `cart ${cartId} was already converted by a concurrent checkout`,
+    });
+  }
+  const deleted = await client.cartItem.deleteMany({
+    where: { cartId, sellerListingId: { in: [...orderedListingIds] } },
+  });
+  if (deleted.count !== orderedListingIds.length) {
+    throw new AppError(ErrorCode.ORDER_IN_PROGRESS, {
+      internalMessage: `cart ${cartId}: ${deleted.count} of ${orderedListingIds.length} ordered lines left — a concurrent checkout took them`,
+    });
+  }
+  const left = await client.cartItem.count({ where: { cartId } });
+  if (left === 0) await markConverted(cartId, client);
+}
+
 export async function markConverted(
   cartId: string,
   client: DbClient = prisma,

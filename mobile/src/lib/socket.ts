@@ -49,6 +49,20 @@ export function connectSocket(accessToken: string): void {
     // would otherwise break the connection before it starts.
     extraHeaders: { 'ngrok-skip-browser-warning': 'true' },
   });
+  // A store opened/closed or ordering was paused (server: emitStoreAvailabilityChanged).
+  socket.on('store.availability_changed', () => availabilityListener?.());
+  // Back after a drop: events may have been missed meanwhile — ask again.
+  socket.io.on('reconnect', () => availabilityListener?.());
+}
+
+let availabilityListener: (() => void) | null = null;
+
+/**
+ * App.tsx wires this to lib/storeAvailability.ts — a callback rather than an
+ * import, which would close a module cycle (queries -> store -> socket).
+ */
+export function onStoreAvailabilityChanged(listener: (() => void) | null): void {
+  availabilityListener = listener;
 }
 
 export function disconnectSocket(): void {

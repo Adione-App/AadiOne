@@ -296,6 +296,11 @@ function ProductCardImpl({
   const variant = product.defaultVariant;
 
   const outOfStock = !variant?.inStock;
+  // The listing's store is not taking orders (closed, outside hours, admin):
+  // still browsable, never addable. Absent (older server) = open.
+  const storeClosed = variant?.sellerAcceptingOrders === false;
+  // Either way there is no Add / + on this card.
+  const notAddable = outOfStock || storeClosed;
 
   const imageUrl = resolveImageUrl(product.thumbUrl);
 
@@ -328,12 +333,12 @@ function ProductCardImpl({
 
   const morphStyle = useAnimatedStyle(() => {
 
-    if (outOfStock) return {};
+    if (notAddable) return {};
     return {
       width:
         COMPACT_WIDTH + (STEPPER_EXPANDED_WIDTH - COMPACT_WIDTH) * morph.value,
     };
-  }, [outOfStock]);
+  }, [notAddable]);
 
   return (
   
@@ -402,22 +407,25 @@ function ProductCardImpl({
         <ReanimatedAnimated.View
           style={[
             styles.floatingActionWrap,
-            !outOfStock && styles.floatingActionMask,
+            !notAddable && styles.floatingActionMask,
             morphStyle,
           ]}
           pointerEvents="box-none"
         >
           <ActionBarTransition
-            mode={outOfStock ? "outOfStock" : qtyInCart > 0 ? "stepper" : "add"}
+            mode={notAddable ? "outOfStock" : qtyInCart > 0 ? "stepper" : "add"}
           >
-            {outOfStock ? (
-              <View style={styles.floatingOutOfStock}>
+            {notAddable ? (
+              <View
+                style={styles.floatingOutOfStock}
+                accessibilityLabel={storeClosed ? variant?.sellerClosedMessage ?? "Store closed" : "Sold out"}
+              >
                 <AppText
                   variant="caption"
-                  color={colors.textSecondary}
+                  color={storeClosed ? colors.danger : colors.textSecondary}
                   style={styles.floatingOutOfStockText}
                 >
-                  Sold Out
+                  {storeClosed ? "Store closed" : "Sold Out"}
                 </AppText>
               </View>
             ) : qtyInCart > 0 ? (

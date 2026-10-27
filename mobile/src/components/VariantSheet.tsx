@@ -312,6 +312,9 @@ function SheetContent({
           />
         ) : !chosen.inStock ? (
           <Button label="Sold out" onPress={() => undefined} disabled style={styles.action} />
+        ) : chosen.sellerAcceptingOrders === false ? (
+          // Its store is not taking orders right now: nothing can be added.
+          <Button label="Store closed" onPress={() => undefined} disabled style={styles.action} />
         ) : qty > 0 ? (
           <QuantityStepper
             qty={qty}

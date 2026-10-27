@@ -13,7 +13,7 @@
  * snapshot). See order-state.service.ts for how the two levels transition.
  */
 
-import type { Category, Prisma } from "@prisma/client";
+import { Prisma, type Category } from "@prisma/client";
 import {
   ActorType,
   CodPolicy,
@@ -56,6 +56,9 @@ import { moduleLogger } from "../../common/logger";
 import * as configService from "../configuration/configuration.service";
 import * as sellerService from "../sellers/seller.service";
 import { unorderableMessage, unorderableReason } from "../cart/orderability";
+import { cartLineEligibility } from "../cart/eligibility";
+import { trackedAvailableQty } from "../inventory/stock-rules";
+import { assertOrderingEnabled, statusOf, storeStatuses, type StoreStatus } from "../sellers/store-availability";
 import { resolveDestination, type DestinationInput } from "./delivery-destination";
 import { allocateProportionally } from "./coupon-allocation";
 import * as pricingService from "../pricing/pricing.service";
@@ -198,18 +201,40 @@ async function buildCheckoutContext(
     throw new AppError(ErrorCode.CART_EMPTY);
   }
 
+  // The quote prices what an order placed now would contain: the AVAILABLE
+  // lines (the same rule as the cart — cart/eligibility.ts). Unavailable
+  // lines are neither billed nor asked to deliver here.
+  const statuses = await storeStatuses(cart.items.map((item) => item.sellerListing.seller));
+  const lines = cart.items.filter(
+    (item) =>
+      cartLineEligibility({
+        seller: item.sellerListing.seller,
+        product: item.sellerListing.variant.product,
+        variant: item.sellerListing.variant,
+        listing: item.sellerListing,
+        availableQty: trackedAvailableQty(item.sellerListing),
+        store: statusOf(statuses, item.sellerListing.seller.id),
+        displayName: item.sellerListing.variant.product.name,
+      }).orderable,
+  );
+  if (lines.length === 0) {
+    throw new AppError(ErrorCode.CART_EMPTY, {
+      message: "None of the items in your cart can be ordered right now.",
+    });
+  }
+
   // Recomputed here rather than read from the cached flag on the address row
   // — from the sellers (with hours) already loaded with the cart.
   const delivery = await sellerService.assertLoadedSellersServe(
     address.latitude,
     address.longitude,
-    cart.items.map((item) => item.sellerListing.seller),
+    lines.map((item) => item.sellerListing.seller),
   );
 
   return {
     distanceKm: delivery.check.distanceKm,
     delivery,
-    items: cart.items.map((item) => {
+    items: lines.map((item) => {
       const offer = item.sellerListing;
       const variant = offer.variant;
       return {
@@ -482,6 +507,79 @@ async function assertCartSellersOpen(
 }
 
 /**
+ * The cart lines an order is placed for.
+ *
+ *   - `expectedItems` absent (older apps): the whole cart, as always — every
+ *     line is then checked as before, so one unavailable line refuses it.
+ *   - present: EXACTLY those lines (partial checkout). A confirmed line no
+ *     longer in the cart, or an ORDERABLE line the customer did not confirm
+ *     (a store reopened, a line added on another device), is CART_CHANGED:
+ *     the customer reviews the cart again rather than getting an order they
+ *     did not see. Confirmed lines that are not orderable are refused later
+ *     with their own reason (store closed, out of stock, …) — never dropped.
+ */
+function selectOrderLines(
+  lines: CartLine[],
+  expectedItems: PlaceOrderInput["expectedItems"],
+  statuses: ReadonlyMap<string, StoreStatus>,
+): CartLine[] {
+  if (!expectedItems) return lines;
+  const confirmed = new Set(expectedItems.map((entry) => entry.sellerListingId));
+  const selected = lines.filter((line) => confirmed.has(line.sellerListingId));
+  if (selected.length !== confirmed.size) {
+    throw new AppError(ErrorCode.CART_CHANGED, {
+      internalMessage: "a confirmed line is no longer in the cart",
+    });
+  }
+  for (const line of lines) {
+    if (confirmed.has(line.sellerListingId)) continue;
+    const offer = line.sellerListing;
+    const eligibility = cartLineEligibility({
+      seller: offer.seller,
+      product: offer.variant.product,
+      variant: offer.variant,
+      listing: offer,
+      availableQty: trackedAvailableQty(offer),
+      store: statusOf(statuses, offer.seller.id),
+      displayName: offer.variant.product.name,
+    });
+    if (eligibility.orderable) {
+      throw new AppError(ErrorCode.CART_CHANGED, {
+        message: `${offer.variant.product.name} can be ordered again. Please review your cart and try again.`,
+        internalMessage: `orderable line ${offer.id} was not confirmed`,
+      });
+    }
+  }
+  if (selected.length === 0) throw new AppError(ErrorCode.CART_EMPTY);
+  return selected;
+}
+
+/**
+ * Inside the order transaction: locks the order's seller rows FOR SHARE (a
+ * concurrent "close store" / admin deactivation waits for this order to
+ * commit) and evaluates THE availability rule again from those rows, now.
+ */
+async function assertSellersStillOpen(tx: Prisma.TransactionClient, lines: CartLine[]): Promise<void> {
+  const sellerIds = [...new Set(lines.map((line) => line.sellerListing.sellerId))].sort();
+  if (sellerIds.length === 0) return;
+  await tx.$queryRaw`SELECT id FROM sellers WHERE id IN (${Prisma.join(sellerIds.map((id) => Prisma.sql`${id}::uuid`))}) FOR SHARE`;
+  const sellers = await tx.seller.findMany({
+    where: { id: { in: sellerIds } },
+    include: { hours: { orderBy: { dayOfWeek: "asc" } } },
+  });
+  const statuses = await storeStatuses(sellers);
+  for (const sellerId of sellerIds) {
+    const seller = sellers.find((entry) => entry.id === sellerId);
+    const status = statusOf(statuses, sellerId);
+    if (seller && seller.onboardingStatus === "APPROVED" && status.acceptingOrders) continue;
+    throw new AppError(ErrorCode.SELLER_CLOSED, {
+      message: `${status.message ?? `${seller?.name ?? "A store in your cart"} is not taking orders right now.`} Please review your cart.`,
+      internalMessage: `seller ${sellerId} closed before the order was written: ${status.closedReason ?? "not approved"}`,
+    });
+  }
+}
+
+/**
  * Order-placed notifications. Each one is its own small write (and push
  * delivery is already fire-and-forget inside `notify`), so they go out
  * together; a failure is logged, never thrown — the order is already placed
@@ -550,6 +648,8 @@ export async function placeOrder(
   // A switched-off payment method is refused before anything else — no
   // stock is locked, no order or payment row is written.
   await assertPaymentMethodOpen(input.paymentMethod);
+  // The app-wide ordering switch, likewise before anything is read or locked.
+  await assertOrderingEnabled();
 
   // Cheap checks first, outside the transaction, so an out-of-area address
   // or a closed seller never takes inventory locks: EVERY seller in the cart
@@ -587,10 +687,19 @@ export async function placeOrder(
     categories.map((category) => [category.id, category]),
   );
 
+  // WHAT is ordered: exactly the lines the customer confirmed — every one of
+  // them orderable — and nothing they did not see. Unavailable lines they
+  // kept stay in the cart. (An older app confirms the whole cart.)
+  const preloadedLines = selectOrderLines(
+    preloaded.items,
+    input.expectedItems,
+    await storeStatuses(preloaded.items.map((line) => line.sellerListing.seller)),
+  );
+
   const delivery = await sellerService.assertLoadedSellersServe(
     address.latitude,
     address.longitude,
-    preloaded.items.map((line) => line.sellerListing.seller),
+    preloadedLines.map((line) => line.sellerListing.seller),
   );
   const serviceability = delivery.check;
   const servingSellerIds = new Set(delivery.sellers.map((seller) => seller.id));
@@ -602,8 +711,8 @@ export async function placeOrder(
       itemCount: 1,
       sellerId: delivery.farthest.id,
     }),
-    resolveCommissionRates(groupBySeller(preloaded.items), prisma),
-    assertCartSellersOpen(preloaded.items, address, servingSellerIds),
+    resolveCommissionRates(groupBySeller(preloadedLines), prisma),
+    assertCartSellersOpen(preloadedLines, address, servingSellerIds),
   ]);
 
   let deliveryOtp: string | null = null;
@@ -629,7 +738,8 @@ export async function placeOrder(
       if (!current || current.items.length === 0)
         throw new AppError(ErrorCode.CART_EMPTY);
 
-      let cart: CartForOrder = { ...preloaded, couponCode: current.couponCode };
+      // `cart.items` = the lines being ordered (see selectOrderLines).
+      let cart: CartForOrder = { ...preloaded, items: preloadedLines, couponCode: current.couponCode };
       let commissionRates: number[] | null = preloadedCommissionRates;
       if (
         current.id !== preloaded.id ||
@@ -638,11 +748,25 @@ export async function placeOrder(
         const fresh = await loadCartForOrder(tx, input.userId);
         if (!fresh || fresh.items.length === 0)
           throw new AppError(ErrorCode.CART_EMPTY);
-        await assertCartSellersOpen(fresh.items, address, servingSellerIds);
-        cart = fresh;
+        const freshLines = selectOrderLines(
+          fresh.items,
+          input.expectedItems,
+          await storeStatuses(fresh.items.map((line) => line.sellerListing.seller)),
+        );
+        await assertCartSellersOpen(freshLines, address, servingSellerIds);
+        cart = { ...fresh, items: freshLines };
         commissionRates = null;
       }
 
+      /* --- sellers: locked, then checked again -------------------------- */
+      // The checks above ran before this transaction. A seller switching its
+      // store off (or an admin deactivating it) while this order is written
+      // now waits for it: the seller rows are locked FOR SHARE and THE rule is
+      // evaluated again under that lock, at this moment (hours included) — so
+      // an order is never written for a store that closed in between. The
+      // app-wide switch is read again here too.
+      await assertOrderingEnabled();
+      await assertSellersStillOpen(tx, cart.items);
       /* --- group by seller (#3) ----------------------------------------- */
       const itemsBySeller = groupBySeller(cart.items);
 
@@ -1153,7 +1277,13 @@ export async function placeOrder(
         });
       }
 
-      await cartService.markConverted(cart.id, tx);
+      // Only the ordered lines leave the cart; unavailable ones kept by the
+      // customer stay (the cart is converted when nothing is left).
+      await cartService.consumeOrderedLines(
+        cart.id,
+        cart.items.map((line) => line.sellerListingId),
+        tx,
+      );
 
       return order;
     },

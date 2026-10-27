@@ -57,6 +57,8 @@ const DISPLAY_LABELS: Partial<Record<ConfigKey, string>> = {
   FREE_DELIVERY_THRESHOLD_PAISE: "Free Delivery Threshold",
   PLATFORM_FEE_PAISE: "Platform Fee",
 
+  ORDERING_ENABLED: "Ordering Open (app-wide)",
+  ORDERING_PAUSED_MESSAGE: "Ordering Paused Message",
   PAYMENT_ONLINE_ENABLED: "Online Payment",
   PAYMENT_COD_ENABLED: "Cash on Delivery (COD)",
   DEFAULT_COD_POLICY: "Default COD Policy",
@@ -133,6 +135,12 @@ const DISPLAY_DESCRIPTIONS: Partial<Record<ConfigKey, string>> = {
 
   STORE_GSTIN:
     "GST registration number. When set, order receipts show a tax invoice breakdown.",
+
+  ORDERING_ENABLED:
+    "Customers can place orders. When disabled, the app keeps browsing and the cart working, shows ordering as paused on Home and Cart, and the server refuses every new order and payment start (COD and online). Each store's own Open/Closed state is not changed.",
+
+  ORDERING_PAUSED_MESSAGE:
+    "Shown on the app's Home and Cart while ordering is paused (at most 200 characters). Leave empty for the standard message.",
 
   PAYMENT_ONLINE_ENABLED:
     "Accept online payment (UPI / card / wallet) for new orders. When disabled, the app shows it as unavailable and the server refuses new online orders and payments. Payments already in progress still complete.",
@@ -348,7 +356,7 @@ const GROUPS: {
 }[] = [
   {
     title: "Orders",
-    keys: ["MIN_ORDER_VALUE_PAISE", "PLATFORM_FEE_PAISE", "CANCELLATION_ALLOWED_UNTIL", "ALLOW_ORDERS_WHEN_CLOSED", "MAX_ADDRESSES_PER_USER"],
+    keys: ["ORDERING_ENABLED", "ORDERING_PAUSED_MESSAGE", "MIN_ORDER_VALUE_PAISE", "PLATFORM_FEE_PAISE", "CANCELLATION_ALLOWED_UNTIL", "ALLOW_ORDERS_WHEN_CLOSED", "MAX_ADDRESSES_PER_USER"],
   },
   {
     title: "Payments",
@@ -619,6 +627,11 @@ export default function ConfigPage() {
       {grouped.map((group) => (
         <Card key={group.title}>
           <h2 id={`cfg-${group.title.toLowerCase().replace(/\s+/g, "-")}`} className="mb-3 scroll-mt-24 font-semibold">{group.title}</h2>
+          {group.title === "Orders" && entries.find((entry) => entry.key === "ORDERING_ENABLED")?.value === false && (
+            <p role="alert" className="mb-3 rounded-xl bg-danger-50 px-3.5 py-2.5 text-sm font-medium text-danger-700">
+              Ordering is paused app-wide — customers can browse and fill their carts, but cannot place any order until it is enabled again.
+            </p>
+          )}
           {group.title === "Payments" &&
             entries.find((entry) => entry.key === "PAYMENT_ONLINE_ENABLED")?.value === false &&
             entries.find((entry) => entry.key === "PAYMENT_COD_ENABLED")?.value === false && (

@@ -43,6 +43,7 @@ import { colors, radius, spacing } from "@shared/theme";
 
 import { keys, useOrder } from "@/lib/queries";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
+import { useSystemBack } from "@/lib/useSystemBack";
 
 import { useOrderSocket } from "@/lib/socket";
 
@@ -143,6 +144,13 @@ export default function OrderTrackingScreen({
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
   const queryClient = useQueryClient();
+
+  // Android system back goes where the header arrow goes — from the Cart
+  // tab that is Home (after placing an order), not back to the cart.
+  useSystemBack(() => {
+    onBack();
+    return true;
+  });
 
   /*
   |--------------------------------------------------------------------------

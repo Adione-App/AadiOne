@@ -467,7 +467,12 @@ export function CartStack() {
           UPI PAYMENT
       --------------------------------------------------------------- */}
 
-      <CartNav.Screen name="UpiPayment">
+      <CartNav.Screen
+        name="UpiPayment"
+        // iOS: no swipe-back past the payment — the header arrow (and
+        // Android's system back, see UpiPaymentScreen) asks first.
+        options={{ gestureEnabled: false }}
+      >
         {({ navigation, route }) => (
           <RequireAccount reason="checkout" title="Payment">
             <UpiPaymentScreen

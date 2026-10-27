@@ -308,6 +308,10 @@ function validateValue(key: keyof ConfigValues, value: unknown): void {
     }
   }
 
+  if (key === ConfigKey.ORDERING_PAUSED_MESSAGE) {
+    if (typeof value !== 'string' || value.length > 200) fail('must be text of at most 200 characters');
+  }
+
   if (key === ConfigKey.STORE_TIMEZONE) {
     if (typeof value !== 'string' || !isValidTimeZone(value)) {
       fail('must be a valid IANA timezone, e.g. Asia/Kolkata');
@@ -316,6 +320,7 @@ function validateValue(key: keyof ConfigValues, value: unknown): void {
 
   if (
     key === ConfigKey.ALLOW_ORDERS_WHEN_CLOSED ||
+    key === ConfigKey.ORDERING_ENABLED ||
     key === ConfigKey.DELIVERY_OTP_REQUIRED_FOR_COD ||
     key === ConfigKey.PAYMENT_ONLINE_ENABLED ||
     key === ConfigKey.PAYMENT_COD_ENABLED ||

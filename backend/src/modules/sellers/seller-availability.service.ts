@@ -17,6 +17,7 @@ import { getZonedParts } from '../../shared/datetime';
 import * as sellerRepository from './seller.repository';
 import * as sellerService from './seller.service';
 import { saveWeeklyHours } from './admin-seller.service';
+import { emitStoreAvailabilityChanged } from '../../realtime/socket';
 
 async function loadSeller(sellerId: string) {
   const seller = await sellerRepository.findSellerById(sellerId);
@@ -82,12 +83,14 @@ export async function setAcceptingOrders(sellerId: string, isAcceptingOrders: bo
         },
       }),
     ]);
+    emitStoreAvailabilityChanged(sellerId);
   }
   return getAvailability(sellerId);
 }
 
 export async function updateHours(sellerId: string, hours: SellerHoursDto[], actorUserId: string) {
   await saveWeeklyHours(sellerId, { hours }, actorUserId);
+  emitStoreAvailabilityChanged(sellerId);
   return getAvailability(sellerId);
 }
 
@@ -112,6 +115,7 @@ export async function addClosure(sellerId: string, input: { date: string; reason
   await prisma.auditLog.create({
     data: { actorUserId, action: 'seller.add_closure', entityType: 'SellerClosure', entityId: closure.id, after: { sellerId, date: input.date } },
   });
+  emitStoreAvailabilityChanged(sellerId);
   return getAvailability(sellerId);
 }
 
@@ -124,6 +128,7 @@ export async function removeClosure(sellerId: string, closureId: string, actorUs
   await prisma.auditLog.create({
     data: { actorUserId, action: 'seller.remove_closure', entityType: 'SellerClosure', entityId: closureId, before: { sellerId, date: closure.closedOn.toISOString().slice(0, 10) } },
   });
+  emitStoreAvailabilityChanged(sellerId);
   return getAvailability(sellerId);
 }
 

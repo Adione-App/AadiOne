@@ -102,6 +102,14 @@ export interface SellerAvailability {
 export async function evaluateSellerAvailability(
   seller: SellerWithHours,
   now: Date = new Date(),
+  options: {
+    /**
+     * Date closures already loaded for a batch of sellers, as
+     * `closureKey(sellerId, localDate)` — saves one query per seller
+     * (store-availability.ts). Absent: this seller's closure is queried.
+     */
+    closures?: ReadonlySet<string>;
+  } = {},
 ): Promise<SellerAvailability> {
   const base = {
     isActive: seller.isActive,
@@ -138,7 +146,10 @@ export async function evaluateSellerAvailability(
   });
 
   const localMidnightUtc = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
-  if (await repository.hasClosureOn(seller.id, localMidnightUtc)) {
+  const closedToday = options.closures
+    ? options.closures.has(closureKey(seller.id, localMidnightUtc))
+    : await repository.hasClosureOn(seller.id, localMidnightUtc);
+  if (closedToday) {
     return scheduleClosed('CLOSURE', { nextOpenText: describeNextOpening(seller, parts.weekday) });
   }
 
@@ -162,6 +173,11 @@ export async function evaluateSellerAvailability(
         ? `Opens today at ${formatTime12h(today.opensAt)}`
         : describeNextOpening(seller, parts.weekday),
   });
+}
+
+/** Key of a SellerClosure in a pre-loaded set: the seller and its local date (UTC midnight). */
+export function closureKey(sellerId: string, closedOn: Date): string {
+  return `${sellerId}|${closedOn.toISOString().slice(0, 10)}`;
 }
 
 /** Customer-facing sentence for a seller that cannot take an order now. */

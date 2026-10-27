@@ -69,6 +69,10 @@ export const ErrorCode = {
 
   /* cart / checkout ----------------------------------------------------- */
   CART_EMPTY: 'CART_EMPTY',
+  /** The items the customer confirmed are no longer exactly what can be ordered — review the cart. */
+  CART_CHANGED: 'CART_CHANGED',
+  /** App-wide ordering switch (ORDERING_ENABLED) is off. */
+  ORDERING_PAUSED: 'ORDERING_PAUSED',
   PRICE_CHANGED: 'PRICE_CHANGED',
   MIN_ORDER_NOT_MET: 'MIN_ORDER_NOT_MET',
   COD_NOT_ALLOWED: 'COD_NOT_ALLOWED',
@@ -156,6 +160,8 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   QTY_LIMIT_EXCEEDED: 422,
 
   CART_EMPTY: 422,
+  CART_CHANGED: 409,
+  ORDERING_PAUSED: 409,
   PRICE_CHANGED: 422,
   MIN_ORDER_NOT_MET: 422,
   COD_NOT_ALLOWED: 422,
@@ -241,6 +247,8 @@ export const ERROR_DEFAULT_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   QTY_LIMIT_EXCEEDED: 'You have reached the maximum quantity for this item.',
 
   CART_EMPTY: 'Your cart is empty.',
+  CART_CHANGED: 'Some items in your cart changed. Please review your cart and try again.',
+  ORDERING_PAUSED: 'Ordering is paused right now. You can keep browsing and adding items to your cart.',
   PRICE_CHANGED: 'Some prices have changed. Please review your order.',
   MIN_ORDER_NOT_MET: 'Please add a little more to reach the minimum order value.',
   COD_NOT_ALLOWED: 'Cash on Delivery is not available for this order.',

@@ -400,7 +400,10 @@ describe('order-time re-validation', () => {
 });
 
 describe('cart revalidation', () => {
-  it('removes an out-of-stock item and says so, instead of silently dropping it', async () => {
+  // Since partial checkout: an out-of-stock line is no longer removed — it
+  // stays in the cart, marked, outside the bill, and counts again once
+  // restocked (store-checkout-eligibility.test.ts covers the rest).
+  it('keeps an out-of-stock item, marked unavailable and outside the bill', async () => {
     const { session, storeId } = await setup();
     const product = await seedProduct(storeId, { name: 'Tata Salt', stockQty: 5 });
     await addToCart(session.accessToken, product.storeVariantId, 2);
@@ -416,15 +419,28 @@ describe('cart revalidation', () => {
       .expect(200);
 
     const cart = expectSuccess<{
-      items: unknown[];
+      items: { available: boolean; unavailableReason: string | null; unavailableMessage: string | null; qty: number }[];
       changes: { type: string; message: string }[];
       checkoutEnabled: boolean;
+      availableCheckoutEnabled: boolean;
+      bill: { itemsSubtotalPaise: number };
     }>(res.body).data;
 
-    expect(cart.items).toHaveLength(0);
-    expect(cart.changes[0]!.type).toBe('ITEM_REMOVED_OUT_OF_STOCK');
-    expect(cart.changes[0]!.message).toContain('Tata Salt');
+    expect(cart.items).toHaveLength(1);
+    expect(cart.items[0]!.available).toBe(false);
+    expect(cart.items[0]!.unavailableReason).toBe('OUT_OF_STOCK');
+    expect(cart.items[0]!.unavailableMessage).toContain('Tata Salt');
+    expect(cart.items[0]!.qty).toBe(2);
+    expect(cart.bill.itemsSubtotalPaise).toBe(0);
     expect(cart.checkoutEnabled).toBe(false);
+    expect(cart.availableCheckoutEnabled).toBe(false);
+
+    // Restocked: the line counts again by itself.
+    await prisma.sellerListing.update({ where: { id: product.storeVariantId }, data: { stockQty: 5 } });
+    const restocked = expectSuccess<{ items: { available: boolean }[]; checkoutEnabled: boolean }>(
+      (await api().get('/api/v1/cart').set('Authorization', bearer(session.accessToken)).expect(200)).body,
+    ).data;
+    expect(restocked.items[0]!.available).toBe(true);
   });
 
   it('reduces quantity to what is left, with a notice', async () => {

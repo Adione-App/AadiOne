@@ -14,6 +14,7 @@ import type { AddressDto, PublicConfig } from "@shared";
 import { formatIndianMobile } from "@shared/phone";
 import { landmarkPhrase } from "@shared/address";
 import { addressDetailLines, distinctLandmark } from "@/lib/addressDisplay";
+import { useSystemBack } from "@/lib/useSystemBack";
 import { isHomeState } from "@/lib/liveLocation";
 import { colors, radius, shadow, spacing } from "@shared/theme";
 import { api } from "@/lib/api";
@@ -35,6 +36,15 @@ export default function AddressesScreen({
 
   // Only one card's menu open at a time — opening another closes the last.
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  // Android system back closes an open menu first, then leaves as usual.
+  useSystemBack(
+    openMenuId
+      ? () => {
+          setOpenMenuId(null);
+          return true;
+        }
+      : null,
+  );
 
   const addresses = useQuery({
     queryKey: ["addresses"],

@@ -25,6 +25,7 @@ import type {
   OrderSummaryDto,
   ProductDetailDto,
   ProductSummaryDto,
+  PublicConfig,
   ReferralSummaryDto,
   RestaurantListQuery,
   RestaurantMenuDto,
@@ -90,6 +91,20 @@ export const keys = {
   notificationFeed: (userId: string) => ["notifications", userId, "feed"] as const,
   notificationUnread: (userId: string) => ["notifications", userId, "unread"] as const,
 };
+
+/**
+ * The public configuration — here for the app-wide ordering switch
+ * (ORDERING_ENABLED) Home shows. Fresher than the 5 minutes other screens
+ * accept, and refreshed on app resume and on the realtime availability event
+ * (lib/storeAvailability.ts). Same key as those screens: one cached copy.
+ */
+export function usePublicConfig() {
+  return useQuery({
+    queryKey: ["public-config"],
+    queryFn: () => api.get<PublicConfig>("/config/public"),
+    staleTime: 60_000,
+  });
+}
 
 export function useHomeFeed() {
   return useQuery({
@@ -531,7 +546,10 @@ export function clearCartAfterOrder(queryClient: QueryClient): void {
     old
       ? {
           ...old,
-          items: [],
+          // The order took every line that could be ordered; unavailable
+          // lines (a closed store's, out of stock) stay in the server's cart
+          // — keep them on screen too. A whole-cart order leaves none.
+          items: old.items.filter((item) => item.available === false),
           bill: {
             ...old.bill,
             itemCount: 0,

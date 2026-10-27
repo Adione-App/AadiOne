@@ -47,6 +47,19 @@ const LISTED_JOINS = Prisma.sql`
 
 const PUBLIC_PRODUCT_SQL = Prisma.sql`p.status = 'ACTIVE' AND p.deleted_at IS NULL AND p.approval_status = 'APPROVED'`;
 
+/**
+ * Home and recommendations only: keep listings of these sellers — the ones
+ * taking orders right now (store-availability.ts acceptingSellerIds).
+ * Null/undefined: every live seller — category pages, search and store pages
+ * keep showing closed stores' products (browsable, not addable). An empty
+ * list matches nothing (no store open), never everything.
+ */
+function onlySellersSql(sellerIds: readonly string[] | null | undefined): Prisma.Sql {
+  if (sellerIds === null || sellerIds === undefined) return Prisma.empty;
+  if (sellerIds.length === 0) return Prisma.sql`AND FALSE`;
+  return Prisma.sql`AND sl.seller_id IN (${Prisma.join(sellerIds.map((id) => Prisma.sql`${id}::uuid`))})`;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Categories                                                                 */
 /* -------------------------------------------------------------------------- */
@@ -194,6 +207,8 @@ export interface ListProductIdsInput {
   sellerId?: string | null;
   /** Only these products — still subject to every visibility rule above. */
   productIds?: readonly string[] | null;
+  /** Only listings of these sellers (see onlySellersSql); combined with the stock filter on the same listing. */
+  onlySellerIds?: readonly string[] | null;
   inStockOnly?: boolean;
   sort: ProductSort;
   limit: number;
@@ -270,6 +285,7 @@ export async function listProductIds(
       ${brandFilter}
       ${sellerFilter}
       ${productFilter}
+      ${onlySellersSql(input.onlySellerIds)}
       ${stockFilter}
     GROUP BY p.id, p.popularity_score, p.created_at
     ${cursorFilter}
@@ -289,6 +305,7 @@ export async function listProductIds(
 export async function listCategoryShelfCandidates(
   topPath: string,
   limit: number,
+  onlySellerIds: readonly string[] | null = null,
   client: DbClient = prisma,
 ): Promise<{ id: string; path: string }[]> {
   return client.$queryRaw<{ id: string; path: string }[]>`
@@ -299,6 +316,7 @@ export async function listCategoryShelfCandidates(
       AND (c.path = ${topPath} OR c.path LIKE ${`${topPath}/%`})
       AND sl.is_available
       AND ${hasStockToSellSql('sl')}
+      ${onlySellersSql(onlySellerIds)}
     GROUP BY p.id, c.path, p.popularity_score, p.created_at
     ORDER BY p.popularity_score DESC, p.created_at DESC, p.id DESC
     LIMIT ${limit}`;
@@ -339,6 +357,7 @@ export async function listRailProductIds(
     | "OFFERS"
     | "TOP_PICKS",
   limit: number,
+  onlySellerIds: readonly string[] | null = null,
   client: DbClient = prisma,
 ): Promise<string[]> {
   /*
@@ -457,6 +476,7 @@ export async function listRailProductIds(
 
       AND sl.is_available
       AND ${hasStockToSellSql('sl')}
+      ${onlySellersSql(onlySellerIds)}
 
       ${filter}
 
@@ -489,6 +509,8 @@ export interface ShelfProductQuery {
   excludeIds?: readonly string[];
   /** random: today's seed — the same seed gives the same order. */
   seed?: string;
+  /** Only listings of these sellers (see onlySellersSql). */
+  onlySellerIds?: readonly string[] | null;
   limit: number;
 }
 
@@ -548,6 +570,7 @@ export async function listShelfProductIds(query: ShelfProductQuery, client: DbCl
     WHERE ${PUBLIC_PRODUCT_SQL}
       AND sl.is_available
       AND ${hasStockToSellSql("sl")}
+      ${onlySellersSql(query.onlySellerIds)}
       ${scope}
       ${only}
       ${exclude}
@@ -721,6 +744,7 @@ export async function listRelatedProductIds(
   categoryPath: string,
   excludeProductId: string,
   limit: number,
+  onlySellerIds: readonly string[] | null = null,
   client: DbClient = prisma,
 ): Promise<string[]> {
   const rows = await client.$queryRaw<{ id: string }[]>`
@@ -732,6 +756,7 @@ export async function listRelatedProductIds(
       AND ${PUBLIC_PRODUCT_SQL}
       AND sl.is_available
       AND ${hasStockToSellSql('sl')}
+      ${onlySellersSql(onlySellerIds)}
     GROUP BY p.id, p.popularity_score
     ORDER BY p.popularity_score DESC, p.id ASC
     LIMIT ${limit}`;

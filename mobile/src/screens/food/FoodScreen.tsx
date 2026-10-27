@@ -35,6 +35,7 @@ import { resolveImageUrl } from "@/lib/api";
 import { useBanners, useRestaurants } from "@/lib/queries";
 import { useLocation } from "@/lib/store";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
+import { useSystemBack } from "@/lib/useSystemBack";
 import { Bone, useShimmer } from "@/screens/home/sections/HomeSkeleton";
 
 /** Room for MiniCartBar, which rests above the tab bar on this screen. */
@@ -129,6 +130,16 @@ export default function FoodScreen({
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
   const location = useLocation((state) => state.location);
+
+  // Android system back goes where the header arrow goes (Home's feed).
+  useSystemBack(
+    onBack
+      ? () => {
+          onBack();
+          return true;
+        }
+      : null,
+  );
   const near = useMemo(
     () =>
       location

@@ -27,6 +27,7 @@ import * as service from "./admin-order.service";
 import * as sellerOrderService from "../orders/seller-order.service";
 import * as settlementService from "../sellers/seller-settlement.service";
 import * as orderFinancials from "../orders/order-financials.service";
+import { emitStoreAvailabilityChanged } from "../../realtime/socket";
 import { ActorType, SellerOrderStatus, SettlementStatus } from "../../shared";
 
 const uuid = z.string().uuid();
@@ -535,12 +536,15 @@ adminOrderRouter.patch(
     const { key, value } = req.body as { key: ConfigKey; value: never };
     // The service validates the VALUE per key — a malformed fee slab or a
     // negative radius would otherwise silently corrupt every price.
-    ok(res, {
-      value: await configService.set({
-        key,
-        value,
-        actorUserId: requireUser(req).id,
-      }),
+    const saved = await configService.set({
+      key,
+      value,
+      actorUserId: requireUser(req).id,
     });
+    // App-wide ordering paused/resumed: apps refresh Home and the cart.
+    if (key === ConfigKey.ORDERING_ENABLED || key === ConfigKey.ORDERING_PAUSED_MESSAGE) {
+      emitStoreAvailabilityChanged(null);
+    }
+    ok(res, { value: saved });
   }),
 );

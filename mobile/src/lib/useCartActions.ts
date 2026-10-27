@@ -243,6 +243,13 @@ export async function hydrateCartFromDisk(): Promise<void> {
       sellerListingId: entry.snapshot.sellerListingId ?? "",
       sellerId: entry.snapshot.sellerId ?? "",
       sellerName: entry.snapshot.sellerName ?? "",
+      // Yesterday's answer is never today's: until the server has checked
+      // the stores again the line is "checking" (not available, no reason) —
+      // never assumed orderable.
+      available: false,
+      unavailableReason: null,
+      storeClosedReason: null,
+      unavailableMessage: null,
     }));
 
     const itemsSubtotalPaise = items.reduce(
@@ -279,6 +286,12 @@ export async function hydrateCartFromDisk(): Promise<void> {
       checkoutBlockedReason: "Loading your cart…",
       minOrderValuePaise: 0,
       shortfallPaise: 0,
+      availableCheckoutEnabled: false,
+      availableCheckoutBlockedReason: "Loading your cart…",
+      availableItemCount: 0,
+      unavailableItemCount: 0,
+      orderingEnabled: true,
+      orderingPausedMessage: null,
     };
   } catch {
     // Corrupt/unreadable snapshot — proceed with nothing restored, same as
@@ -445,6 +458,16 @@ export function useCartError(): string | null {
  * `queries.ts`'s own epoch check (`clearCartAfterOrder` bumps it) and gets
  * dropped before it can write anything back to the cache either way.
  */
+/**
+ * How many units sit in the cart — every line, available or not. The badge,
+ * the Mini Cart and the Cart header show this (a cart holding only a closed
+ * store's items still needs a visit); `bill.itemCount` is what an order
+ * would contain.
+ */
+export function cartUnitCount(cart: Pick<CartDto, "items"> | null | undefined): number {
+  return cart ? cart.items.reduce((sum, item) => sum + item.qty, 0) : 0;
+}
+
 export function resetPendingCartAfterOrder(): void {
   usePendingCartStore.setState({ pendingQty: {}, pendingSnapshots: {} });
 }
@@ -647,9 +670,14 @@ export function useCartActions() {
           (item.mrpPaise - item.unitPricePaise) * qty,
         );
 
-        itemsSubtotalPaise += lineTotalPaise;
-        itemDiscountPaise += lineDiscountPaise;
-        itemCount += qty;
+        // The bill covers the lines that can be ordered now, like the
+        // server's (an unavailable line stays listed, outside the bill).
+        // A line from an older server (no `available`) counts.
+        if (item.available !== false) {
+          itemsSubtotalPaise += lineTotalPaise;
+          itemDiscountPaise += lineDiscountPaise;
+          itemCount += qty;
+        }
 
         return { ...item, qty, lineTotalPaise, lineDiscountPaise };
       })
@@ -691,6 +719,12 @@ export function useCartActions() {
         sellerListingId: snapshot.sellerListingId ?? "",
         sellerId: snapshot.sellerId ?? "",
         sellerName: snapshot.sellerName ?? "",
+        // Only an open store's product can be added (the card refuses
+        // otherwise), and the server confirms within the same request.
+        available: true,
+        unavailableReason: null,
+        storeClosedReason: null,
+        unavailableMessage: null,
       });
     }
 

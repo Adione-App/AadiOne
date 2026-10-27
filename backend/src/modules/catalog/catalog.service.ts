@@ -47,6 +47,7 @@ import { MARKETPLACE_SELLER_WHERE, type HydratedProduct, type ProductSort } from
 import { HOME_TOP_PLACEMENT, listActiveBanners, listActiveBannersByPlacement } from "../banners/banner.service";
 import { balanceBySubcategory, mapWithConcurrency, orderByPreference, pickRailProducts } from "./home-selection";
 import { hasStockToSell, sellableQty } from "../inventory/stock-rules";
+import { acceptingSellerIds, allStoreStatuses, statusOf, type StoreStatus } from "../sellers/store-availability";
 
 const log = moduleLogger("catalog");
 
@@ -265,26 +266,36 @@ export async function listSubcategories(
 interface MappingContext {
   defaultCodPolicy: CodPolicy;
   defaultMaxQty: number;
+  /** Every seller's current status (store-availability.ts), read live per request. */
+  storeStatuses: ReadonlyMap<string, StoreStatus>;
 }
 
-async function mappingContext(): Promise<MappingContext> {
-  const config = await configService.getMany([
-    ConfigKey.DEFAULT_COD_POLICY,
-    ConfigKey.DEFAULT_MAX_QTY_PER_ORDER,
+/** `statuses`: pass the ones a caller already loaded (Home filters by them too). */
+async function mappingContext(statuses?: ReadonlyMap<string, StoreStatus>): Promise<MappingContext> {
+  const [config, storeStatuses] = await Promise.all([
+    configService.getMany([ConfigKey.DEFAULT_COD_POLICY, ConfigKey.DEFAULT_MAX_QTY_PER_ORDER]),
+    statuses ?? allStoreStatuses(),
   ]);
   return {
     defaultCodPolicy: config.DEFAULT_COD_POLICY,
     defaultMaxQty: config.DEFAULT_MAX_QTY_PER_ORDER,
+    storeStatuses,
   };
 }
 
 type Offer = HydratedProduct["variants"][number]["sellerListings"][number];
 
-/** In stock first, then the lowest price, then the oldest listing (stable). */
-function bestOffer(offers: Offer[]): Offer | undefined {
+/**
+ * A seller taking orders right now first (a card never advertises a closed
+ * store's price when an open one sells it too), then in stock, then the
+ * lowest price, then the oldest listing (stable).
+ */
+function bestOffer(offers: Offer[], context: MappingContext): Offer | undefined {
+  const open = (offer: Offer) => statusOf(context.storeStatuses, offer.seller.id).acceptingOrders;
   const inStock = (offer: Offer) => offer.isAvailable && hasStockToSell(offer);
   return [...offers].sort(
     (a, b) =>
+      Number(open(b)) - Number(open(a)) ||
       Number(inStock(b)) - Number(inStock(a)) ||
       a.pricePaise - b.pricePaise ||
       a.createdAt.getTime() - b.createdAt.getTime(),
@@ -297,7 +308,7 @@ function toVariantDto(
   productAllowCod: CodPolicy,
   context: MappingContext,
 ): VariantDto | null {
-  const offer = bestOffer(variant.sellerListings);
+  const offer = bestOffer(variant.sellerListings, context);
   // No marketplace seller lists this variant at all — it is not a sellable
   // thing, so it is omitted rather than shown as unavailable.
   if (!offer) return null;
@@ -337,6 +348,15 @@ function toVariantDto(
     availableQty,
     maxQtyPerOrder: offer.maxQtyPerOrder || context.defaultMaxQty,
     allowCod,
+    ...sellerStatusFields(statusOf(context.storeStatuses, offer.seller.id)),
+  };
+}
+
+function sellerStatusFields(status: StoreStatus): Pick<VariantDto, "sellerAcceptingOrders" | "sellerClosedReason" | "sellerClosedMessage"> {
+  return {
+    sellerAcceptingOrders: status.acceptingOrders,
+    sellerClosedReason: status.closedReason,
+    sellerClosedMessage: status.message,
   };
 }
 
@@ -366,10 +386,12 @@ async function toSummaryDto(
     categoryId: product.categoryId,
     imageUrl: primaryImage?.url ?? null,
     thumbUrl: primaryImage?.thumbUrl ?? primaryImage?.url ?? null,
-    // The card shows the default variant; in-stock variants win over
-    // out-of-stock ones so a card never advertises an unavailable size when a
-    // available one exists.
+    // The card shows the default variant; one a customer can order now (in
+    // stock, from a store taking orders) wins, so a card never advertises an
+    // unavailable size or a closed store when an orderable one exists.
     defaultVariant:
+      variants.find((variant) => variant.isDefault && variant.inStock && variant.sellerAcceptingOrders) ??
+      variants.find((variant) => variant.inStock && variant.sellerAcceptingOrders) ??
       variants.find((variant) => variant.isDefault && variant.inStock) ??
       variants.find((variant) => variant.inStock) ??
       variants[0] ??
@@ -538,8 +560,11 @@ export async function getRelatedProducts(
   const product = await repository.findProductById(productId);
   if (!product) return [];
 
-  const ids = await repository.listRelatedProductIds(product.category.path, productId, limit);
-  return mapProducts(await repository.hydrateProducts(ids));
+  // Recommendations only offer what can be bought now: open stores' products.
+  const statuses = await allStoreStatuses();
+  const ids = await repository.listRelatedProductIds(product.category.path, productId, limit, acceptingSellerIds(statuses));
+  const context = await mappingContext(statuses);
+  return Promise.all((await repository.hydrateProducts(ids)).map((product) => toSummaryDto(product, context)));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -705,13 +730,19 @@ async function hydrateHomeProducts(ids: readonly string[]): Promise<Map<string, 
  * stock, prices and seller availability are read live on every call.
  */
 export async function getHomeFeed(): Promise<HomeFeedDto> {
+  // Home's product rails and shelves only show stores taking orders right
+  // now: a closed store's products drop out and each list refills from its
+  // own ranked candidates (the filter is in the candidate queries, so
+  // ranking, de-duplication and sizes work exactly as before).
+  const statuses = await allStoreStatuses();
+  const openSellerIds = acceptingSellerIds(statuses);
   const [context, groups, preferredOrder, topBanners, sectionBannerMap, railCandidates, categoryById] = await Promise.all([
-    mappingContext(),
+    mappingContext(statuses),
     marketplaceCategoryGroups(),
     configService.get(ConfigKey.HOME_CATEGORY_ORDER),
     listActiveBanners(HOME_TOP_PLACEMENT),
     listActiveBannersByPlacement([...HOME_SECTION_PLACEMENTS, HOME_BANNER_PLACEMENTS.CATEGORY]),
-    Promise.all(RAILS.map((rail) => repository.listRailProductIds(rail.key, RAIL_CANDIDATE_LIMIT))),
+    Promise.all(RAILS.map((rail) => repository.listRailProductIds(rail.key, RAIL_CANDIDATE_LIMIT, openSellerIds))),
     getCategoryMap(),
   ]);
 
@@ -750,7 +781,7 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
    */
   const shelfIds = await mapWithConcurrency(topLevel, SHELF_QUERY_CONCURRENCY, async ({ group }) =>
     balanceBySubcategory(
-      await repository.listCategoryShelfCandidates(group.path, CATEGORY_SHELF_CANDIDATES),
+      await repository.listCategoryShelfCandidates(group.path, CATEGORY_SHELF_CANDIDATES, openSellerIds),
       group.path,
       CATEGORY_RAIL_SIZE,
     ),
@@ -839,8 +870,12 @@ export function shelfDay(now: Date = new Date()): string {
 }
 
 /** A shelf's product ids, in order: its source, topped up from its categories when it asks to be. */
-async function shelfProductIds({ id, shelf }: ShelfToResolve, day: string): Promise<string[]> {
-  const base = { categoryPaths: shelf.categoryPaths, limit: shelf.count };
+async function shelfProductIds(
+  { id, shelf }: ShelfToResolve,
+  day: string,
+  onlySellerIds: readonly string[],
+): Promise<string[]> {
+  const base = { categoryPaths: shelf.categoryPaths, limit: shelf.count, onlySellerIds };
   if (shelf.source !== "manual") {
     return repository.listShelfProductIds({ ...base, source: shelf.source, seed: `${id}:${day}` });
   }
@@ -850,6 +885,7 @@ async function shelfProductIds({ id, shelf }: ShelfToResolve, day: string): Prom
     source: "latest",
     categoryPaths: shelf.categoryPaths,
     excludeIds: shelf.productIds,
+    onlySellerIds,
     limit: shelf.count - picked.length,
   });
   return [...picked, ...fill];
@@ -869,10 +905,13 @@ export async function resolveProductShelves(
 ): Promise<Record<string, ProductSummaryDto[]>> {
   if (shelves.length === 0) return {};
   const day = options.day ?? shelfDay();
+  // Like GET /home: only stores taking orders right now (see getHomeFeed).
+  const statuses = await allStoreStatuses();
+  const openSellerIds = acceptingSellerIds(statuses);
   const [context, idLists] = await Promise.all([
-    mappingContext(),
+    mappingContext(statuses),
     mapWithConcurrency([...shelves], SHELF_QUERY_CONCURRENCY, (entry) =>
-      shelfProductIds(entry, day).catch((error: unknown) => {
+      shelfProductIds(entry, day, openSellerIds).catch((error: unknown) => {
         log.warn({ err: error, shelf: entry.id }, "home shelf not resolved");
         return [] as string[];
       }),
@@ -902,11 +941,14 @@ export async function listPreviouslyOrderedProducts(userId: string): Promise<Pro
   const orderedIds = await repository.listOrderedProductIds(userId, PREVIOUSLY_ORDERED_LIMIT * 2);
   if (orderedIds.length === 0) return [];
 
+  // Only what can be reordered now: in stock at a store taking orders.
+  const statuses = await allStoreStatuses();
   const eligible = new Set(
     (
       await repository.listProductIds({
         productIds: orderedIds,
         inStockOnly: true,
+        onlySellerIds: acceptingSellerIds(statuses),
         sort: "POPULAR",
         limit: orderedIds.length,
       })
@@ -915,7 +957,7 @@ export async function listPreviouslyOrderedProducts(userId: string): Promise<Pro
   const ids = orderedIds.filter((id) => eligible.has(id)).slice(0, PREVIOUSLY_ORDERED_LIMIT);
   if (ids.length === 0) return [];
 
-  const context = await mappingContext();
+  const context = await mappingContext(statuses);
   const products = await repository.hydrateProducts(ids);
   return Promise.all(products.map((product) => toSummaryDto(product, context)));
 }
@@ -930,10 +972,12 @@ export async function listRailProducts(
   key: (typeof RAILS)[number]["key"],
   limit: number,
 ): Promise<{ title: string; products: HomeFeedDto["rails"][number]["products"] }> {
-  const context = await mappingContext();
+  const statuses = await allStoreStatuses();
+  const context = await mappingContext(statuses);
   const rail = RAILS.find((entry) => entry.key === key)!;
 
-  const ids = await repository.listRailProductIds(key, limit);
+  // The same open-stores-only ranking as the Home preview of this rail.
+  const ids = await repository.listRailProductIds(key, limit, acceptingSellerIds(statuses));
   const products = await repository.hydrateProducts(ids);
 
   return {

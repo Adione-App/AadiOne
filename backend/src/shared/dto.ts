@@ -784,7 +784,25 @@ export interface VariantDto {
   availableQty: number;
   maxQtyPerOrder: number;
   allowCod: boolean;
+  /**
+   * This listing's seller can take an order right now (its own switch, admin
+   * status, date closures and hours — store-availability.ts). False: the
+   * product stays browsable but nothing may add it to the cart; show
+   * `sellerClosedMessage`. Of several sellers, an open one is always preferred.
+   */
+  sellerAcceptingOrders: boolean;
+  sellerClosedReason: StoreClosedReason | null;
+  sellerClosedMessage: string | null;
 }
+
+/** Why a store cannot take an order right now (seller.service.ts's availability rule). */
+export type StoreClosedReason =
+  | "SELLER_DELETED"
+  | "SELLER_INACTIVE"
+  | "MANUALLY_CLOSED"
+  | "CLOSURE"
+  | "CLOSED_TODAY"
+  | "OUTSIDE_HOURS";
 
 export interface ProductSummaryDto {
   id: string;
@@ -1542,7 +1560,20 @@ export interface CartItemDto {
   availableQty: number;
   maxQtyPerOrder: number;
   allowCod: boolean;
+  /**
+   * The line can be ordered right now (store taking orders, product on sale,
+   * in stock). False: it stays in the cart, is left out of the bill and of
+   * any order, and shows `unavailableMessage`; it counts again by itself once
+   * the store reopens / the product is back. Absent (older server) = true.
+   */
+  available: boolean;
+  unavailableReason: CartLineUnavailableReason | null;
+  /** Set when `unavailableReason` is STORE_CLOSED. */
+  storeClosedReason: StoreClosedReason | null;
+  unavailableMessage: string | null;
 }
+
+export type CartLineUnavailableReason = 'STORE_CLOSED' | 'PRODUCT_UNAVAILABLE' | 'OUT_OF_STOCK';
 
 /**
  * One seller's slice of a mixed cart — a convenience grouping so the app can
@@ -1553,9 +1584,10 @@ export interface CartSellerGroupDto {
   sellerId: string;
   sellerName: string;
   items: CartItemDto[];
+  /** Of this seller's AVAILABLE lines only (what an order would include). */
   subtotalPaise: number;
-  /** False while the seller is closed (switch OFF, closure, outside hours):
-   * its lines stay in the cart, but checkout is blocked until it reopens. */
+  /** False while the seller is not taking orders (admin, switch OFF, closure,
+   * outside hours): its lines stay in the cart, marked unavailable. */
   isOpen: boolean;
   /** Customer-facing reason when `isOpen` is false. */
   closedMessage: string | null;
@@ -1604,11 +1636,28 @@ export interface CartDto {
   sellerGroups: CartSellerGroupDto[];
   bill: BillDto;
   changes: CartChangeDto[];
-  /** False with a reason when the cart cannot proceed to checkout. */
+  /**
+   * Whole-cart checkout, as older apps use it: false with a reason when ANY
+   * line is unavailable, ordering is paused or the minimum is not met.
+   */
   checkoutEnabled: boolean;
   checkoutBlockedReason: string | null;
+  /** Against the AVAILABLE lines' subtotal (what `bill` is computed from). */
   minOrderValuePaise: number;
   shortfallPaise: number;
+  /**
+   * Checkout of the available lines only (partial checkout): true when at
+   * least one line can be ordered, ordering is on and the minimum is met by
+   * them. The order then contains exactly those lines (send them as
+   * `PlaceOrderRequest.expectedItems`); unavailable lines stay in the cart.
+   */
+  availableCheckoutEnabled: boolean;
+  availableCheckoutBlockedReason: string | null;
+  availableItemCount: number;
+  unavailableItemCount: number;
+  /** App-wide ordering switch (ORDERING_ENABLED). */
+  orderingEnabled: boolean;
+  orderingPausedMessage: string | null;
 }
 
 export interface AddCartItemRequest {

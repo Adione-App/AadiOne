@@ -33,6 +33,10 @@ export const ConfigKey = {
   FREE_DELIVERY_THRESHOLD_PAISE: "FREE_DELIVERY_THRESHOLD_PAISE",
   PLATFORM_FEE_PAISE: "PLATFORM_FEE_PAISE",
 
+  /* app-wide ordering switch (store-availability.ts) */
+  ORDERING_ENABLED: "ORDERING_ENABLED",
+  ORDERING_PAUSED_MESSAGE: "ORDERING_PAUSED_MESSAGE",
+
   /* payment methods (global switches — payment-availability.ts) */
   PAYMENT_ONLINE_ENABLED: "PAYMENT_ONLINE_ENABLED",
   PAYMENT_COD_ENABLED: "PAYMENT_COD_ENABLED",
@@ -114,6 +118,15 @@ export interface ConfigValues {
   FREE_DELIVERY_THRESHOLD_PAISE: number;
   PLATFORM_FEE_PAISE: number;
 
+  /**
+   * App-wide: customers may place orders. Off: browsing and adding to the
+   * cart still work, but no order (COD or online) and no new payment start;
+   * every store's own open/closed state is unchanged.
+   */
+  ORDERING_ENABLED: boolean;
+  /** Shown on Home and Cart while ORDERING_ENABLED is off; empty = the standard sentence. */
+  ORDERING_PAUSED_MESSAGE: string;
+
   /** New orders / payments may use Online Payment. Off: no new online order or payment; in-flight payments still complete. */
   PAYMENT_ONLINE_ENABLED: boolean;
   /** New orders may use Cash on Delivery. */
@@ -190,6 +203,10 @@ export const CONFIG_DEFAULTS: ConfigValues = {
 
   FREE_DELIVERY_THRESHOLD_PAISE: 29900,
   PLATFORM_FEE_PAISE: 500,
+
+  // On: an installation that never sets it keeps today's behaviour.
+  ORDERING_ENABLED: true,
+  ORDERING_PAUSED_MESSAGE: "",
 
   // Both on: an installation that never sets them keeps today's behaviour.
   PAYMENT_ONLINE_ENABLED: true,
@@ -273,6 +290,8 @@ export const PUBLIC_CONFIG_KEYS: readonly ConfigKey[] = [
   ConfigKey.SUPPORT_EMAIL,
   ConfigKey.DELIVERY_PROMISE_TEXT,
   ConfigKey.STORE_TIMEZONE,
+  ConfigKey.ORDERING_ENABLED,
+  ConfigKey.ORDERING_PAUSED_MESSAGE,
   ConfigKey.PAYMENT_ONLINE_ENABLED,
   ConfigKey.PAYMENT_COD_ENABLED,
 ];
@@ -313,6 +332,12 @@ export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
 
   PLATFORM_FEE_PAISE:
     "Flat platform fee added to every order, in paise. Set 0 to hide the line.",
+
+  ORDERING_ENABLED:
+    "Customers can place orders. Off: the app keeps browsing and the cart working but shows ordering as paused on Home and Cart, and the server refuses every new order and payment start (COD and online). Stores' own open/closed state is not changed.",
+
+  ORDERING_PAUSED_MESSAGE:
+    "Message shown on Home and Cart while ordering is paused. Empty = \"Ordering is paused right now. You can keep browsing and adding items to your cart.\"",
 
   PAYMENT_ONLINE_ENABLED:
     "Accept Online Payment for new orders. Off: the app shows it as unavailable and the server refuses new online orders and payments; payments already in progress still complete.",

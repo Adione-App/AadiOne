@@ -33,6 +33,7 @@ import { colors, radius, spacing } from "@shared/theme";
 
 import {
   useHomeFeed,
+  usePublicConfig,
   useNotificationUnreadCount,
   useOffers,
   useOrders,
@@ -235,6 +236,9 @@ export default function HomeScreen({
     useNotificationUnreadCount({ poll: isFocused }).data ?? 0;
 
   const feed = useHomeFeed();
+  // App-wide ordering switch (admin): paused = browse and fill the cart, no orders.
+  const publicConfig = usePublicConfig().data;
+  const orderingPaused = publicConfig?.ORDERING_ENABLED === false;
   // Only the shared cart error — Home does NOT subscribe to the cart
   // itself: each ProductShelf does, so a quantity tap re-renders the shelves,
   // not this whole screen.
@@ -1030,6 +1034,17 @@ export default function HomeScreen({
                 SERVICEABILITY / CART NOTICES
             ==================================================== */}
 
+            {orderingPaused && (
+              <View style={styles.noticeContainer}>
+                <NoticeStrip
+                  message={
+                    publicConfig?.ORDERING_PAUSED_MESSAGE?.trim() ||
+                    "Ordering is paused right now. You can keep browsing and adding items to your cart."
+                  }
+                />
+              </View>
+            )}
+
             {cartError && (
               <View style={styles.noticeContainer}>
                 <NoticeStrip message={cartError} />
@@ -1062,7 +1077,7 @@ export default function HomeScreen({
 
             {serviceability?.sellerOpen === false && (
               <View style={styles.noticeContainer}>
-                <NoticeStrip message="The store is closed right now. You can still add items and order when we open." />
+                <NoticeStrip message="Every store near you is closed right now. You can keep browsing — ordering opens when a store opens." />
               </View>
             )}
 

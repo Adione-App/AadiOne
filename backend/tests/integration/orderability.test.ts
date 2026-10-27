@@ -81,7 +81,10 @@ describe('orderability', () => {
     expect(expectError(res.body).code).toBe(ErrorCode.PRODUCT_UNAVAILABLE);
   });
 
-  it('a line whose seller stops trading after it was added is removed on read and refused at checkout', async () => {
+  // Since partial checkout: the line is KEPT (marked, outside the bill) so it
+  // can be ordered again if the admin reactivates the seller — never ordered
+  // meanwhile. A deactivated store is a closed store (SELLER_CLOSED).
+  it('a line whose seller stops trading after it was added is kept, marked, and refused at checkout', async () => {
     const sellerId = await seedSeller(ApprovalStatus.APPROVED);
     const listing = await listingFor(sellerId);
     const cust = await customer();
@@ -90,14 +93,16 @@ describe('orderability', () => {
     await prisma.seller.update({ where: { id: sellerId }, data: { isActive: false } });
     const order = await placeOrder(cust.token, cust.addressId);
     expect(order.status).toBe(409);
-    expect(expectError(order.body).code).toBe(ErrorCode.PRODUCT_UNAVAILABLE);
+    expect(expectError(order.body).code).toBe(ErrorCode.SELLER_CLOSED);
     expect(await prisma.order.count()).toBe(0);
 
-    const cart = expectSuccess<{ items: unknown[]; changes: { type: string }[] }>(
+    const cart = expectSuccess<{ items: { available: boolean; storeClosedReason: string | null }[]; changes: { type: string }[] }>(
       (await api().get('/api/v1/cart').set('Authorization', bearer(cust.token)).expect(200)).body,
     ).data;
-    expect(cart.items).toHaveLength(0);
-    expect(cart.changes.map((c) => c.type)).toEqual(['ITEM_REMOVED_UNAVAILABLE']);
+    expect(cart.items).toHaveLength(1);
+    expect(cart.items[0]!.available).toBe(false);
+    expect(cart.items[0]!.storeClosedReason).toBe('SELLER_INACTIVE');
+    expect(cart.changes).toEqual([]);
   });
 
   it('a deleted seller, an unavailable listing and an unapproved product cannot be ordered', async () => {

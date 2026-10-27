@@ -27,6 +27,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { onSessionExpired } from "@/lib/api";
 import { retryInterruptedRestore, useAuth, useLocation } from "@/lib/store";
+import { onStoreAvailabilityChanged } from "@/lib/socket";
+import { revalidateStoreAvailability, setAvailabilityQueryClient } from "@/lib/storeAvailability";
 import { loginClosed } from "@/lib/authGate";
 import { isPrivateQueryKey } from "@/lib/guestAccess";
 import { forgetPrivateQueries } from "@/lib/queries";
@@ -92,6 +94,11 @@ const queryClient = new QueryClient({
  * decide when it silently refetches, persistence only decides what the very
  * first paint looks like.
  */
+// Store availability (lib/storeAvailability.ts): app resume and the
+// realtime event make the app ask the server again.
+setAvailabilityQueryClient(queryClient);
+onStoreAvailabilityChanged(revalidateStoreAvailability);
+
 const asyncStoragePersister = createAsyncStoragePersister({
   storage: AsyncStorage,
   key: "adione.rq-cache",
@@ -304,6 +311,9 @@ export default function App() {
       void useAppUpdate.getState().refresh();
       // A saved session the launch could not verify (offline) gets another go.
       retryInterruptedRestore();
+      // Stores may have opened or closed while the app was away (a cart kept
+      // overnight): ask the server again for whatever is on screen.
+      revalidateStoreAvailability();
     });
     return () => subscription.remove();
   }, []);

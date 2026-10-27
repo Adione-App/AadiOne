@@ -26,6 +26,7 @@
 
 import type { Prisma } from '@prisma/client';
 import { PARTNER_ACCOUNT } from '../auth/account-type';
+import { emitStoreAvailabilityChanged } from '../../realtime/socket';
 import {
   UserRole,
   UserStatus,
@@ -538,6 +539,7 @@ export async function setSellerStatus(
         },
       });
     });
+    emitStoreAvailabilityChanged(sellerId);
   }
 
   return getSellerDetail(sellerId);

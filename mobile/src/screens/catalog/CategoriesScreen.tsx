@@ -19,7 +19,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, X } from 'lucide-react-native';
 import {
   ActivityIndicator,
-  BackHandler,
   FlatList,
   Pressable,
   ScrollView,
@@ -45,6 +44,7 @@ import { buildCategoryTree, searchCategories } from './categorySections';
 import { PromoSlot } from '@/components/PromoBanner';
 import { usePreferences } from '@/lib/store';
 import { useHomeLayout } from '@/lib/homeLayoutQuery';
+import { useSystemBack } from '@/lib/useSystemBack';
 import { arrangeCategoriesPage } from '../home/homeLayout';
 
 /* =====================================================================
@@ -135,15 +135,17 @@ export default function CategoriesScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialCategoryId, categories.data]);
 
-  // Android hardware back returns to the showcase instead of leaving the tab.
-  useEffect(() => {
-    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (drill.level === 'root') return false;
-      goBack();
-      return true;
-    });
-    return () => subscription.remove();
-  }, [drill]);
+  // Android system back (button or edge swipe) steps back inside the
+  // categories, like the header arrow — only while this screen is the one
+  // on screen (see useSystemBack for why that matters).
+  useSystemBack(
+    drill.level === 'root'
+      ? null
+      : () => {
+          goBack();
+          return true;
+        },
+  );
 
   const activeCategoryId =
     drill.level === 'category'

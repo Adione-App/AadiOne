@@ -36,6 +36,7 @@ import {
 } from "@/lib/cashfree";
 import type { CashfreeCheckout as CheckoutSession, CreatePaymentResult, PaymentRefreshResult } from "@/lib/payments";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
+import { useSystemBack } from "@/lib/useSystemBack";
 import { AppText, Button, Card, NoticeStrip, Screen } from "@/components/ui";
 
 type Phase =
@@ -309,6 +310,12 @@ export default function CashfreeCheckout({
       setCancelling(false);
     }
   }
+
+  // Android system back asks first, exactly like the header arrow.
+  useSystemBack(() => {
+    confirmLeave();
+    return true;
+  });
 
   const busy = phase === "paying" || phase === "verifying";
   const directApps = supportsDirectUpiApps();

@@ -103,6 +103,10 @@ export default function ProductDetailScreen({
   const detail = product.data;
   // The product (not just one size) cannot be bought right now.
   const outOfStock = inStockVariants.length === 0;
+  // The store selling the size on screen is not taking orders: the page
+  // stays browsable, but nothing can be added. Absent (older server) = open.
+  const shownVariant = chosen ?? variant;
+  const storeClosed = shownVariant?.sellerAcceptingOrders === false;
   const optionWord =
     (detail.optionGroups ?? []).length === 1 ? detail.optionGroups[0]!.name.toLowerCase() : (detail.optionGroups ?? []).length > 1 ? 'option' : 'size';
   // Same "small square thumbnail drops into the cart" flourish the card's
@@ -191,6 +195,28 @@ export default function ProductDetailScreen({
           <AppText variant="caption" color={colors.textSecondary}>
             MRP incl. of all taxes
           </AppText>
+
+          {/* The store's current status — always shown, so a closed store is
+              never a surprise at the Add button. */}
+          {shownVariant && (
+            <View
+              style={[styles.storeStatus, storeClosed ? styles.storeStatusClosed : styles.storeStatusOpen]}
+              accessibilityLabel={
+                storeClosed
+                  ? `Store closed. ${shownVariant.sellerClosedMessage ?? ""}`
+                  : `Sold by ${shownVariant.sellerName}, open now`
+              }
+            >
+              <AppText variant="bodyStrong" color={storeClosed ? colors.danger : colors.primary}>
+                {storeClosed ? "Store closed — unavailable right now" : `Sold by ${shownVariant.sellerName} · Open now`}
+              </AppText>
+              {storeClosed && shownVariant.sellerClosedMessage && (
+                <AppText variant="caption" color={colors.textSecondary} style={{ marginTop: 2 }}>
+                  {shownVariant.sellerClosedMessage}
+                </AppText>
+              )}
+            </View>
+          )}
 
           {detail.variants.length > 1 && (
             <View style={{ marginTop: spacing.lg }}>
@@ -407,14 +433,14 @@ export default function ProductDetailScreen({
           <View style={styles.footerActionBox}>
             <ActionBarTransition
               mode={
-                outOfStock || !chosen
+                outOfStock || !chosen || storeClosed
                   ? "outOfStock"
                   : qtyInCart > 0
                     ? "stepper"
                     : "add"
               }
             >
-              {chosen && !outOfStock ? (
+              {chosen && !outOfStock && !storeClosed ? (
                 qtyInCart > 0 ? (
                   <QuantityStepper
                     qty={qtyInCart}
@@ -447,7 +473,11 @@ export default function ProductDetailScreen({
               ) : (
                 <View style={styles.footerUnavailable}>
                   <AppText variant="bodyStrong" color={colors.textSecondary}>
-                    {!outOfStock && needsChoice && !chosen ? `Select a ${optionWord}` : "Currently unavailable"}
+                    {storeClosed
+                      ? "Store closed"
+                      : !outOfStock && needsChoice && !chosen
+                        ? `Select a ${optionWord}`
+                        : "Currently unavailable"}
                   </AppText>
                 </View>
               )}
@@ -541,6 +571,15 @@ const styles = StyleSheet.create({
   // rectangular shape never resizes between the two states.
   footerActionBox: { width: 150 },
   footerAddButton: { width: "100%" },
+  storeStatus: {
+    marginTop: spacing.md,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+  },
+  storeStatusOpen: { borderColor: colors.divider, backgroundColor: colors.primarySurface },
+  storeStatusClosed: { borderColor: colors.danger, backgroundColor: colors.surface },
   // Overrides Button's/QuantityStepper's own default PILL corners — see
   // ProductCard.tsx's identical `floatingStepperShape` for the card's own
   // version of this same rectangular look.

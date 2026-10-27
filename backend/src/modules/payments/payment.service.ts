@@ -61,6 +61,7 @@ import {
   confirmPaymentAndPlace,
   transitionOrder,
 } from "../orders/order-state.service";
+import { assertUnpaidOrderStillOrderable } from "../orders/unpaid-order-guard";
 
 const log = moduleLogger("payments");
 
@@ -240,10 +241,19 @@ export async function createPayment(
   if (provider.fetchOrder) {
     // Checked again UNDER the lock: while this request waited, the order may
     // have been paid, cancelled or expired, and its hold may have changed.
-    return withPaymentInitLock(order.id, async () =>
-      createCheckoutSession(await loadPayableOrder(userId, orderId)),
-    );
+    return withPaymentInitLock(order.id, async () => {
+      const payable = await loadPayableOrder(userId, orderId);
+      // Its stores and app-wide ordering, before the FIRST attempt only
+      // (unpaid-order-guard.ts): a closed store cancels the unpaid order and
+      // puts its lines back in the cart instead of asking for money.
+      await assertUnpaidOrderStillOrderable(payable);
+      return createCheckoutSession(payable);
+    });
   }
+
+  // Direct UPI: the same check. (No lock here, as before: a concurrent call
+  // that finds the order already cancelled neither cancels nor restores.)
+  await assertUnpaidOrderStillOrderable(order);
 
   // Reuse an existing intent when the customer reopens the payment sheet —
   // creating a second provider order per tap would clutter reconciliation.

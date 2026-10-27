@@ -77,7 +77,9 @@ import {
   useCartMutations,
   useMyCoupons,
 } from "@/lib/queries";
+import { isCheckingLine, isOrderableLine, orderedLines, partialOrderNotice, unavailableLabel } from "@/lib/cartAvailability";
 import {
+  cartUnitCount,
   useCartActions,
   resetPendingCartAfterOrder,
   sellerListingIdOf,
@@ -288,7 +290,11 @@ export default function CartScreen({
   useFocusEffect(
     useCallback(() => {
       setCheckoutError(null);
-    }, []),
+      // The Cart tab stays mounted, so opening it again would show the
+      // last answer: ask the server again — a store may have opened or
+      // closed since (the current lines stay on screen meanwhile).
+      void refetch();
+    }, [refetch]),
   );
 
   /**
@@ -385,17 +391,25 @@ export default function CartScreen({
     () =>
       (actions.confirmedCart?.items ?? [])
         .map(
-          (item) => `${sellerListingIdOf(item) ?? item.variantId}:${item.qty}`,
+          // Availability is part of the key: the quote prices the lines that
+          // can be ordered now, so a store closing/reopening re-quotes.
+          (item) =>
+            `${sellerListingIdOf(item) ?? item.variantId}:${item.qty}:${item.available === false ? "u" : "a"}`,
         )
         .join(","),
     [actions.confirmedCart],
+  );
+  const hasOrderableLine = (actions.confirmedCart?.items ?? []).some(
+    (item) => item.available !== false,
   );
 
   const quote = useQuery({
     queryKey: ["checkout-quote", destinationKey, confirmedCartKey],
     queryFn: () =>
       api.post<CheckoutQuoteResponse>("/checkout/quote", destinationBody),
-    enabled: destinationBody !== null && confirmedCartKey !== "",
+    // Nothing to quote while no line can be ordered (the cart says why).
+    enabled:
+      destinationBody !== null && confirmedCartKey !== "" && hasOrderableLine,
     // A quantity change re-keys this query. Without this the previous quote
     // vanished until the new one arrived, so BOTH pay buttons went disabled
     // for a full quote round trip after every tap. The previous quote stays
@@ -466,12 +480,13 @@ export default function CartScreen({
             // match". Built from the same optimistic `cart` the screen is
             // currently displaying, so it always matches what the customer
             // actually sees. V2 keys these by seller listing, not variant.
-            expectedItems: cart.items.flatMap((item) => {
-              const sellerListingId = sellerListingIdOf(item);
-              return sellerListingId
-                ? [{ sellerListingId, unitPricePaise: item.unitPricePaise }]
-                : [];
-            }),
+            //
+            // It is also WHAT is ordered: exactly these lines — the ones that
+            // can be ordered now. Unavailable lines (a closed store, no
+            // stock) are left out here and stay in the cart.
+            expectedItems: orderedLines(
+              cart.items.map((item) => ({ ...item, sellerListingId: sellerListingIdOf(item) })),
+            ),
           },
           idempotencyKey,
         );
@@ -518,6 +533,20 @@ export default function CartScreen({
             showCartNotice(err.message);
             setIdempotencyKey(Crypto.randomUUID());
             void quote.refetch();
+          } else if (
+            err.code === ErrorCode.SELLER_CLOSED ||
+            err.code === ErrorCode.CART_CHANGED ||
+            err.code === ErrorCode.CART_EMPTY ||
+            err.code === ErrorCode.ORDERING_PAUSED
+          ) {
+            // A store closed (or reopened), the cart changed elsewhere, or
+            // ordering was paused while the customer was on this screen.
+            // Nothing was ordered: show the CURRENT cart (its lines are now
+            // marked) and the server's reason; a fresh key makes the next
+            // attempt a new request, not a replay of this refusal.
+            await Promise.all([refetch(), quote.refetch()]);
+            setIdempotencyKey(Crypto.randomUUID());
+            setCheckoutError(err.message);
           } else if (
             err.code === ErrorCode.PRICE_CHANGED ||
             err.code === ErrorCode.ITEM_OUT_OF_STOCK ||
@@ -612,7 +641,8 @@ export default function CartScreen({
    * ============================================================== */
 
   const displayItems = cart.items;
-  const displayItemCount = cart.bill.itemCount;
+  // Every line in the cart, available or not (the bill counts what is ordered).
+  const displayItemCount = cartUnitCount(cart);
 
   /* ==============================================================
    * EMPTY CART
@@ -702,7 +732,15 @@ export default function CartScreen({
   const outOfArea = deliversToHomeLocation
     ? serviceability !== null && !serviceability.serviceable
     : !selectedAddress!.isServiceable;
-  const canCheckout = cart.checkoutEnabled && !outOfArea;
+  // Checkout of the AVAILABLE lines (partial checkout). An older server
+  // without these fields answers for the whole cart.
+  const checkoutEnabled = cart.availableCheckoutEnabled ?? cart.checkoutEnabled;
+  const checkoutBlockedReason =
+    cart.availableCheckoutEnabled === undefined
+      ? cart.checkoutBlockedReason
+      : cart.availableCheckoutBlockedReason;
+  const canCheckout = checkoutEnabled && !outOfArea;
+  const partialNotice = partialOrderNotice(cart.items);
 
   const displayBill = bill ?? cart.bill;
 
@@ -735,10 +773,23 @@ export default function CartScreen({
     // `item` comes from the optimistic cart, so `item.qty` already IS the
     // pending quantity — no separate `qtyFor` lookup needed.
     const qty = item.qty;
+    // Unavailable: kept in the cart, greyed, with the reason and a working
+    // Remove. No reason yet = still being checked (e.g. a cart restored from
+    // the phone before the server answered) — neutral, never "available".
+    const unavailable = !isOrderableLine(item);
+    const checking = isCheckingLine(item);
+    const unavailableText = unavailableLabel(item) ?? "";
 
     return (
-      <View style={styles.productCard}>
-        <View style={styles.productImageBox}>
+      <View
+        style={[styles.productCard, unavailable && !checking && styles.productCardUnavailable]}
+        accessibilityLabel={
+          unavailable && !checking
+            ? `${item.productName}, ${unavailableText.toLowerCase()}. ${item.unavailableMessage ?? ""}`
+            : undefined
+        }
+      >
+        <View style={[styles.productImageBox, unavailable && styles.unavailableDim]}>
           {imageUrl ? (
             <Image
               source={{ uri: imageUrl }}
@@ -756,7 +807,7 @@ export default function CartScreen({
           <AppText
             variant="bodyStrong"
             numberOfLines={2}
-            style={styles.productName}
+            style={[styles.productName, unavailable && styles.unavailableDim]}
           >
             {item.productName}
           </AppText>
@@ -789,6 +840,21 @@ export default function CartScreen({
               </AppText>
             )}
           </View>
+
+          {unavailable && (
+            <AppText
+              variant="caption"
+              color={checking ? colors.textSecondary : colors.danger}
+              style={styles.unavailableLabel}
+            >
+              {unavailableText}
+            </AppText>
+          )}
+          {unavailable && !checking && item.unavailableMessage && (
+            <AppText variant="caption" color={colors.textSecondary} numberOfLines={3}>
+              {item.unavailableMessage}
+            </AppText>
+          )}
         </View>
 
         <View style={styles.productActions}>
@@ -800,21 +866,31 @@ export default function CartScreen({
             }}
             disabled={itemBusy}
             hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={`Remove ${item.productName} from cart`}
           >
             <TrashIcon color={colors.textPrimary} />
           </Pressable>
 
-          <QuantityStepper
-            qty={qty}
-            max={quantityLimitOf(item).max}
-            busy={itemBusy}
-            onIncrement={() => void actions.increment(item.variantId)}
-            onDecrement={() => {
-              if (qty <= 1)
-                LayoutAnimation.configureNext(CART_ROW_REMOVE_ANIMATION);
-              void actions.decrement(item.variantId);
-            }}
-          />
+          {unavailable ? (
+            // Nothing can be added to an unavailable line; Remove (above)
+            // always works.
+            <AppText variant="bodyStrong" color={colors.textSecondary} style={styles.unavailableQty}>
+              Qty {qty}
+            </AppText>
+          ) : (
+            <QuantityStepper
+              qty={qty}
+              max={quantityLimitOf(item).max}
+              busy={itemBusy}
+              onIncrement={() => void actions.increment(item.variantId)}
+              onDecrement={() => {
+                if (qty <= 1)
+                  LayoutAnimation.configureNext(CART_ROW_REMOVE_ANIMATION);
+                void actions.decrement(item.variantId);
+              }}
+            />
+          )}
         </View>
       </View>
     );
@@ -876,6 +952,23 @@ export default function CartScreen({
         ItemSeparatorComponent={() => <View style={styles.productSeparator} />}
         ListHeaderComponent={
           <View>
+            {cart.orderingEnabled === false && (
+              <View style={styles.noticeContainer}>
+                <NoticeStrip
+                  message={
+                    cart.orderingPausedMessage ??
+                    "Ordering is paused right now. You can keep browsing and adding items to your cart."
+                  }
+                />
+              </View>
+            )}
+
+            {cart.orderingEnabled !== false && partialNotice && (
+              <View style={styles.noticeContainer}>
+                <NoticeStrip tone="info" message={partialNotice} />
+              </View>
+            )}
+
             {cart.changes.map((change, index) => (
               <View
                 key={`${change.type}-${index}`}
@@ -999,13 +1092,13 @@ export default function CartScreen({
         />
         <View style={styles.bottomDivider} />
 
-        {!canCheckout && cart.checkoutBlockedReason && (
+        {!canCheckout && checkoutBlockedReason && (
           <AppText
             variant="caption"
             color={colors.warning}
             style={styles.checkoutBlockedText}
           >
-            {cart.checkoutBlockedReason}
+            {checkoutBlockedReason}
           </AppText>
         )}
 
@@ -2245,6 +2338,25 @@ const styles = StyleSheet.create({
   /* ============================================================
    * PRODUCT CARD
    * ============================================================ */
+
+  // An unavailable line: a red edge marks it; the dimmed image and name keep
+  // it readable (opacity, not blur), and Remove stays fully usable.
+  productCardUnavailable: {
+    borderColor: colors.danger,
+  },
+
+  unavailableDim: {
+    opacity: 0.45,
+  },
+
+  unavailableLabel: {
+    fontWeight: "800",
+    marginTop: spacing.xs,
+  },
+
+  unavailableQty: {
+    marginTop: spacing.sm,
+  },
 
   productCard: {
     flexDirection: "row",

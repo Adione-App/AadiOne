@@ -20,6 +20,7 @@ import { colors, radius, spacing } from "@shared/theme";
 import { api, ApiRequestError } from "@/lib/api";
 import type { CreatePaymentResult } from "@/lib/payments";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
+import { useSystemBack } from "@/lib/useSystemBack";
 import CashfreeCheckout from "./CashfreeCheckout";
 
 import {
@@ -254,6 +255,18 @@ export default function UpiPaymentScreen({
       setCancelling(false);
     }
   }
+
+  // Android system back asks first, exactly like the header arrow — it used
+  // to leave the screen silently (order left pending, nothing cancelled).
+  // Cashfree mode handles it in CashfreeCheckout.
+  useSystemBack(
+    intent.data?.cashfree
+      ? null
+      : () => {
+          confirmLeave();
+          return true;
+        },
+  );
 
   if (intent.isLoading) {
     return <Loading label="Preparing payment…" />;

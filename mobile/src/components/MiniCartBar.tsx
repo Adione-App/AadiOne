@@ -57,7 +57,7 @@ import type { CartItemDto } from "@shared";
 import { colors, layout, radius, shadow, spacing } from "@shared/theme";
 
 import { resolveImageUrl } from "@/lib/api";
-import { useCartActions } from "@/lib/useCartActions";
+import { cartUnitCount, useCartActions } from "@/lib/useCartActions";
 
 import { ADD_DURATION, useFlyToCartStore } from "@/lib/flyToCart";
 
@@ -714,7 +714,9 @@ export default function MiniCartOverlay() {
 
   const items = cart.cart?.items ?? [];
 
-  const itemCount = cart.cart?.bill.itemCount ?? 0;
+  // Every line, available or not: a cart holding only a closed store's
+  // items still needs a visit (bill.itemCount counts what can be ordered).
+  const itemCount = cartUnitCount(cart.cart);
 
   return (
     <ReanimatedAnimated.View

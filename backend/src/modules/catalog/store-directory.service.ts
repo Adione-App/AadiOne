@@ -62,7 +62,7 @@ export async function listStores(location: CustomerLocation | null): Promise<Sto
 
   if (!location) {
     const stores = await Promise.all(stocked.map((seller) => toStoreDto(seller, stats.get(seller.id)!, null)));
-    return stores.sort((a, b) => b.productCount - a.productCount || a.name.localeCompare(b.name));
+    return openFirst(stores.sort((a, b) => b.productCount - a.productCount || a.name.localeCompare(b.name)));
   }
 
   const checked = await Promise.all(
@@ -72,12 +72,22 @@ export async function listStores(location: CustomerLocation | null): Promise<Sto
     })),
   );
 
-  return Promise.all(
-    checked
-      .filter((entry) => entry.check.serviceable)
-      .sort((a, b) => a.check.distanceKm - b.check.distanceKm)
-      .map((entry) => toStoreDto(entry.seller, stats.get(entry.seller.id)!, entry.check.distanceKm)),
+  return openFirst(
+    await Promise.all(
+      checked
+        .filter((entry) => entry.check.serviceable)
+        .sort((a, b) => a.check.distanceKm - b.check.distanceKm)
+        .map((entry) => toStoreDto(entry.seller, stats.get(entry.seller.id)!, entry.check.distanceKm)),
+    ),
   );
+}
+
+/**
+ * Closed stores stay listed (customers may browse them; the card says when it
+ * opens) but after every open one — each group keeps its own order (stable sort).
+ */
+function openFirst(stores: StoreSummaryDto[]): StoreSummaryDto[] {
+  return stores.sort((a, b) => Number(b.isOpen) - Number(a.isOpen));
 }
 
 /** One store; a seller that is not a live, stocked marketplace store is NOT_FOUND. */

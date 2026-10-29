@@ -7,6 +7,8 @@
  *               area).
  *   probe       a second point (e.g. a customer address being checked); with
  *               `onProbeChange` a click on the map sets it instead of the pin.
+ *   fitRadius   zoom out to show the whole radius circle (and the probe),
+ *               instead of the street-level view around the pin.
  *
  * Coordinates handed back are rounded to 6 decimals (~0.1 m). Without a tile
  * provider (VITE_MAP_TILE_URL=off) nothing is rendered, and the latitude /
@@ -46,6 +48,7 @@ export default function LocationMap({
   pin,
   onPinChange,
   radiusKm = null,
+  fitRadius = false,
   probe = null,
   onProbeChange,
   height = 320,
@@ -54,6 +57,7 @@ export default function LocationMap({
   pin: MapPoint | null;
   onPinChange?: (point: MapPoint) => void;
   radiusKm?: number | null;
+  fitRadius?: boolean;
   probe?: MapPoint | null;
   onProbeChange?: (point: MapPoint) => void;
   height?: number;
@@ -135,8 +139,13 @@ export default function LocationMap({
         fillOpacity: 0.06,
         interactive: false,
       }).addTo(instance);
+      if (fitRadius) {
+        const bounds = circle.current.getBounds();
+        if (probeLat !== null && probeLng !== null) bounds.extend([probeLat, probeLng]);
+        instance.fitBounds(bounds, { padding: [12, 12] });
+      }
     }
-  }, [pinLat, pinLng, radiusKm]);
+  }, [pinLat, pinLng, radiusKm, fitRadius]);
 
   // The probe point, kept in view together with the pin.
   useEffect(() => {
@@ -150,8 +159,9 @@ export default function LocationMap({
     const at: L.LatLngTuple = [probeLat, probeLng];
     if (!probeMarker.current) probeMarker.current = L.marker(at, { icon: probeIcon, title: 'Delivery point', keyboard: false }).addTo(instance);
     else probeMarker.current.setLatLng(at);
-    if (pinLat !== null && pinLng !== null) instance.fitBounds(L.latLngBounds([at, [pinLat, pinLng]]).pad(0.25), { maxZoom: 16 });
-  }, [probeLat, probeLng, pinLat, pinLng]);
+    if (fitRadius && circle.current) instance.fitBounds(circle.current.getBounds().extend(at), { padding: [12, 12] });
+    else if (pinLat !== null && pinLng !== null) instance.fitBounds(L.latLngBounds([at, [pinLat, pinLng]]).pad(0.25), { maxZoom: 16 });
+  }, [probeLat, probeLng, pinLat, pinLng, fitRadius]);
 
   if (!MAP_TILES) {
     return (

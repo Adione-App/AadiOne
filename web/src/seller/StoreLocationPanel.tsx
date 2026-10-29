@@ -375,7 +375,7 @@ function LocationForm({
         )}
         {source.deviceLocation && (
           <div>
-            <button type="button" onClick={() => void useCurrentPosition()} disabled={locating} className="text-sm font-semibold text-brand-600 hover:text-brand-700 disabled:opacity-60">
+            <button type="button" onClick={() => void useCurrentPosition()} disabled={locating} className="text-left text-sm font-semibold text-brand-600 hover:text-brand-700 disabled:opacity-60">
               {locating ? 'Reading your location…' : (source.deviceLocationLabel ?? 'Use my current location (stand in the shop)')}
             </button>
           </div>

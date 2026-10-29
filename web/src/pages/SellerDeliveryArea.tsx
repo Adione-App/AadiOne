@@ -115,7 +115,7 @@ function DeliveryAreaBody({ sellerId, data }: { sellerId: string; data: NonNulla
               <input type="radio" name={`radius-${sellerId}`} checked={mode === 'default'} onChange={() => setMode('default')} />
               <span>
                 Use the app-wide radius — {data.defaultRadiusKm} km (
-                <Link to="/config" className="font-semibold text-brand-600 hover:underline">
+                <Link to="/settings" className="font-semibold text-brand-600 hover:underline">
                   Configuration → Delivery
                 </Link>
                 )
@@ -124,18 +124,21 @@ function DeliveryAreaBody({ sellerId, data }: { sellerId: string; data: NonNulla
             <label className="flex flex-wrap items-center gap-2">
               <input type="radio" name={`radius-${sellerId}`} checked={mode === 'custom'} onChange={() => setMode('custom')} />
               <span>This store only:</span>
-              <input
-                type="number"
-                min={0.1}
-                max={data.radiusLimitKm}
-                step={0.1}
-                value={km}
-                onFocus={() => setMode('custom')}
-                onChange={(event) => setKm(event.target.value)}
-                className={`${inputClass} w-28`}
-                aria-label="Store delivery radius in kilometres"
-                placeholder="e.g. 10"
-              />
+              {/* inputClass is full-width; the box keeps "km" beside it. */}
+              <div className="w-28">
+                <input
+                  type="number"
+                  min={0.1}
+                  max={data.radiusLimitKm}
+                  step={0.1}
+                  value={km}
+                  onFocus={() => setMode('custom')}
+                  onChange={(event) => setKm(event.target.value)}
+                  className={inputClass}
+                  aria-label="Store delivery radius in kilometres"
+                  placeholder="e.g. 10"
+                />
+              </div>
               <span>km</span>
             </label>
           </fieldset>
@@ -184,6 +187,7 @@ function DeliveryAreaBody({ sellerId, data }: { sellerId: string; data: NonNulla
             <LocationMap
               pin={store}
               radiusKm={data.effectiveRadiusKm}
+              fitRadius
               probe={probe}
               onProbeChange={runCheck}
               height={300}

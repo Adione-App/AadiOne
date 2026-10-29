@@ -110,7 +110,7 @@ export default function SellerAvailabilityTab({ seller }: { seller: AdminSellerD
         <div role="alert" className="rounded-lg border border-warn-500 bg-warn-50 px-3 py-2 text-sm text-gray-800">
           <span className="font-semibold">Ordering is paused app-wide.</span> No store takes new orders, whatever its status below, until it is
           reopened in{' '}
-          <Link to="/config" className="font-semibold text-brand-600 hover:underline">
+          <Link to="/settings" className="font-semibold text-brand-600 hover:underline">
             Configuration → Orders
           </Link>
           .

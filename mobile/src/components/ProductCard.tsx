@@ -7,6 +7,7 @@ import {
   View,
   type StyleProp,
   type TextStyle,
+  type ViewInstance,
   type ViewStyle,
 } from "react-native";
 import ReanimatedAnimated, {
@@ -305,7 +306,7 @@ function ProductCardImpl({
   const imageUrl = resolveImageUrl(product.thumbUrl);
 
  
-  const imageBoxRef = useRef<View>(null);
+  const imageBoxRef = useRef<ViewInstance>(null);
 
   const openDetails = () => onPress(product.id);
   // Several sizes / options: the card never picks one — it opens the variant

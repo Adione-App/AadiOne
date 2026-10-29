@@ -26,7 +26,9 @@ const SERVICE_STATE = 'Rajasthan';
 import { COORDINATE_PROBLEM_MESSAGE, coordinateProblem } from '@shared/distance';
 import { DETECT_MESSAGE, describeAccuracy, type DetectResult } from '@shared/location';
 import { Button, ErrorBanner, Field, Panel, inputClass } from '@/components/ui';
+import LocationMap from '@/components/LocationMap';
 import { detectBrowserLocation } from '@/lib/browserLocation';
+import { REVERSE_GEOCODE_URL, suggestAddress, type SuggestedAddress } from '@/lib/mapConfig';
 import { sellerApi, sellerErrorMessage } from './sellerApi';
 import { sellerKeys } from './sellerQueries';
 
@@ -44,6 +46,8 @@ export interface SellerLocation {
   latitude: number;
   longitude: number;
   timezone: string;
+  /** Admin read only: the latest audited change of the point / address. */
+  lastChange?: { at: string; byName: string | null; byRole: string | null } | null;
 }
 
 const LOCATION_KEY = [...sellerKeys.all, 'location'] as const;
@@ -65,10 +69,19 @@ export interface StoreLocationSource {
   save: (body: Record<string, unknown>) => Promise<SellerLocation>;
   errorMessage: (error: unknown) => string;
   /**
-   * "Use my current location" — only for someone standing IN the shop. An
-   * admin's browser location is not the shop, so the admin source turns it off.
+   * "Use my current location" — only for someone standing IN the shop. Never
+   * applied silently: a reading is shown with its accuracy and used only on
+   * "Use this point".
    */
   deviceLocation: boolean;
+  /** The button's wording (the admin's says it is only for someone at the storefront). */
+  deviceLocationLabel?: string;
+  /** Admin: the store's display name is edited with its address. */
+  nameEditable?: boolean;
+  /** Admin: a map with a movable pin, and address suggestions when a provider is configured. */
+  map?: boolean;
+  /** Admin: the delivery radius drawn around the pin. */
+  radiusKm?: number | null;
 }
 
 const SELLER_SOURCE: StoreLocationSource = {
@@ -127,6 +140,8 @@ export default function StoreLocationPanel({
           onCancel={() => setEditing(false)}
           onSaved={(saved) => {
             queryClient.setQueryData(source.queryKey, saved);
+            // The admin read adds who changed it last — read it again.
+            void queryClient.invalidateQueries({ queryKey: source.queryKey });
             void queryClient.invalidateQueries({ queryKey: sellerKeys.onboarding });
             void queryClient.invalidateQueries({ queryKey: sellerKeys.lifecycle });
             setEditing(false);
@@ -150,6 +165,7 @@ export default function StoreLocationPanel({
               </>
             )}
           </address>
+          {source.nameEditable && <p className="font-semibold text-gray-900">{data.name}</p>}
           {!data.district && <p className="text-xs text-warn-600">District not added yet — edit the location to add it.</p>}
           <p className="text-gray-600">
             Map point {data.latitude.toFixed(5)}, {data.longitude.toFixed(5)} ·{' '}
@@ -160,6 +176,14 @@ export default function StoreLocationPanel({
           <p className="text-xs text-gray-500">
             Whether you deliver to a customer, the delivery fee and the delivery time are all measured from this point (straight-line distance).
           </p>
+          {data.lastChange && (
+            <p className="text-xs text-gray-500">
+              Last changed {new Date(data.lastChange.at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
+              {data.lastChange.byName ? ` by ${data.lastChange.byName}` : ''}
+              {data.lastChange.byRole ? ` (${data.lastChange.byRole.replace(/_/g, ' ').toLowerCase()})` : ''}.
+            </p>
+          )}
+          {source.map && <LocationMap pin={{ latitude: data.latitude, longitude: data.longitude }} radiusKm={source.radiusKm ?? null} height={240} label="Store location on the map" />}
         </div>
       )}
     </Panel>
@@ -178,6 +202,7 @@ function LocationForm({
   onSaved: (saved: SellerLocation) => void;
 }) {
   const blank = initial.latitude === 0 && initial.longitude === 0;
+  const [name, setName] = useState(initial.name);
   const [lat, setLat] = useState(blank ? '' : String(initial.latitude));
   const [lng, setLng] = useState(blank ? '' : String(initial.longitude));
   const [addressLine, setAddressLine] = useState(initial.addressLine);
@@ -193,8 +218,11 @@ function LocationForm({
   const [locating, setLocating] = useState(false);
   /** A fresh browser fix waiting for the seller to confirm it. */
   const [detected, setDetected] = useState<Extract<DetectResult, { status: 'OK' }> | null>(null);
+  /** An address suggested for the pin, waiting for the admin to apply or discard it. */
+  const [suggestion, setSuggestion] = useState<SuggestedAddress | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
 
-  useEffect(() => setError(null), [lat, lng, addressLine, locality, city, district, state, pincode, landmark]);
+  useEffect(() => setError(null), [name, lat, lng, addressLine, locality, city, district, state, pincode, landmark]);
 
   const save = useMutation({
     mutationFn: source.save,
@@ -212,6 +240,30 @@ function LocationForm({
     setDetected(result);
   }
 
+  async function suggestFromPoint(): Promise<void> {
+    setSuggesting(true);
+    setSuggestion(null);
+    setError(null);
+    try {
+      setSuggestion(await suggestAddress(Number(lat), Number(lng)));
+    } catch (err) {
+      setError(`${err instanceof Error ? err.message : 'The address lookup failed.'} Enter the address yourself.`);
+    } finally {
+      setSuggesting(false);
+    }
+  }
+
+  /** Fills only the fields the provider returned; the rest stay as typed. */
+  function applySuggestion(s: SuggestedAddress): void {
+    if (s.addressLine) setAddressLine(s.addressLine);
+    if (s.locality) setLocality(s.locality);
+    if (s.city) setCity(s.city);
+    if (s.district) setDistrict(s.district);
+    if (s.state) setState(s.state);
+    if (s.pincode) setPincode(s.pincode);
+    setSuggestion(null);
+  }
+
   const latitude = Number(lat);
   const longitude = Number(lng);
   const pointProblem = lat.trim() && lng.trim() ? coordinateProblem(latitude, longitude, { requireIndia: true }) : 'MISSING';
@@ -220,6 +272,7 @@ function LocationForm({
   const states = state && state !== SERVICE_STATE ? [state, SERVICE_STATE] : [SERVICE_STATE];
 
   function submit(): void {
+    if (source.nameEditable && name.trim().length < 2) return setError('Enter the store name (at least 2 characters).');
     if (addressLine.trim().length < 2) return setError('Enter the shop / building and street.');
     if (city.trim().length < 2) return setError('Enter the village, city or town.');
     if (district.trim().length < 2) return setError('Enter the district.');
@@ -231,6 +284,7 @@ function LocationForm({
       );
     }
     save.mutate({
+      ...(source.nameEditable ? { name: name.trim() } : {}),
       latitude,
       longitude,
       addressLine: addressLine.trim(),
@@ -246,6 +300,11 @@ function LocationForm({
   return (
     <div className="space-y-3">
       <ErrorBanner message={error} />
+      {source.nameEditable && (
+        <Field label="Store name" required hint="Shown to customers and on every order of this store, past ones included. The seller code never changes.">
+          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} className={inputClass} />
+        </Field>
+      )}
       <Field label="Shop / building and street" required>
         <input value={addressLine} onChange={(e) => setAddressLine(e.target.value)} maxLength={300} className={inputClass} placeholder="e.g. Shop 4, Station Road" />
       </Field>
@@ -293,16 +352,65 @@ function LocationForm({
           </Field>
         </div>
         {lat.trim() && lng.trim() && pointProblem && pointProblem !== 'MISSING' && <p className="text-xs text-danger-600">{COORDINATE_PROBLEM_MESSAGE[pointProblem]}</p>}
+        {source.map && (
+          <div className="space-y-1">
+            <LocationMap
+              pin={pointProblem ? null : { latitude, longitude }}
+              onPinChange={(point) => {
+                setLat(String(point.latitude));
+                setLng(String(point.longitude));
+              }}
+              radiusKm={source.radiusKm ?? null}
+              label="Store location — click or drag the pin to the storefront"
+            />
+            <p className="text-xs text-gray-500">
+              Click the map or drag the pin onto the shop's entrance; zoom in to place it exactly. The latitude and longitude above follow the pin.
+            </p>
+          </div>
+        )}
         {!pointProblem && (
           <a href={mapLink(latitude, longitude)} target="_blank" rel="noreferrer" className="text-sm font-semibold text-brand-600 hover:underline">
-            Check this point on the map
+            Check this point on Google Maps
           </a>
         )}
         {source.deviceLocation && (
           <div>
             <button type="button" onClick={() => void useCurrentPosition()} disabled={locating} className="text-sm font-semibold text-brand-600 hover:text-brand-700 disabled:opacity-60">
-              {locating ? 'Reading your location…' : 'Use my current location (stand in the shop)'}
+              {locating ? 'Reading your location…' : (source.deviceLocationLabel ?? 'Use my current location (stand in the shop)')}
             </button>
+          </div>
+        )}
+        {source.map &&
+          (REVERSE_GEOCODE_URL ? (
+            <div>
+              <button
+                type="button"
+                onClick={() => void suggestFromPoint()}
+                disabled={suggesting || pointProblem !== null}
+                className="text-sm font-semibold text-brand-600 hover:text-brand-700 disabled:opacity-60"
+              >
+                {suggesting ? 'Looking up the address…' : 'Suggest the address for this point'}
+              </button>
+            </div>
+          ) : (
+            <p className="text-xs text-gray-400">Address suggestions are off — no reverse-geocoding provider is configured (VITE_REVERSE_GEOCODE_URL).</p>
+          ))}
+        {suggestion && (
+          <div role="status" className="rounded-lg bg-brand-50 px-3 py-2 text-sm text-brand-700">
+            <p className="font-semibold">Suggested address — check it before applying:</p>
+            <p className="mt-0.5">{suggestion.displayName ?? 'No description returned.'}</p>
+            <p className="mt-1 text-xs">
+              {[suggestion.addressLine, suggestion.locality, suggestion.city, suggestion.district, suggestion.state, suggestion.pincode].filter(Boolean).join(' · ') ||
+                'No usable address fields.'}
+            </p>
+            <div className="mt-1 flex flex-wrap gap-3">
+              <button type="button" className="font-semibold underline" onClick={() => applySuggestion(suggestion)}>
+                Fill these fields
+              </button>
+              <button type="button" className="underline" onClick={() => setSuggestion(null)}>
+                Discard
+              </button>
+            </div>
           </div>
         )}
         {detected && (

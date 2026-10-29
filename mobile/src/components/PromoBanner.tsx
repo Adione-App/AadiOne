@@ -17,7 +17,7 @@
  */
 
 import { memo, useEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, View, useWindowDimensions, type StyleProp, type ViewStyle } from "react-native";
+import { Pressable, ScrollView, StyleSheet, View, useWindowDimensions, type ScrollViewInstance, type StyleProp, type ViewStyle } from "react-native";
 import { Image, type ImageContentPosition } from "expo-image";
 import {
   BANNER_SIDE_MARGIN,
@@ -173,7 +173,7 @@ function Carousel({ items, screenWidth, onDecorativeCta }: { items: { banner: Ba
   const frameWidth = bannerFrameSize(first.layout, screenWidth, imageAspect(first.banner)).width;
   const step = frameWidth + GAP;
   const [active, setActive] = useState(0);
-  const scroller = useRef<ScrollView>(null);
+  const scroller = useRef<ScrollViewInstance>(null);
   const userTouching = useRef(false);
 
   useEffect(() => {

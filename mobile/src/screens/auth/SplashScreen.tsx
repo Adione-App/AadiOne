@@ -16,7 +16,6 @@
 
 import {
   Image,
-  ImageBackground,
   StyleSheet,
   View,
   useWindowDimensions,
@@ -30,6 +29,7 @@ import { colors, radius, spacing } from "@shared/theme";
 
 import { api } from "@/lib/api";
 import { AppText, Button, Screen } from "@/components/ui";
+import { BackgroundImage } from "@/components/BackgroundImage";
 
 import adioneBagLogo from "../../../assets/adione-bag-logo.png";
 import adioneLogo from "../../../assets/adione-logo.png";
@@ -140,7 +140,7 @@ export default function SplashScreen({
           The button is positioned above this background.
       ============================================================= */}
 
-      <ImageBackground
+      <BackgroundImage
         source={adioneBackground}
         resizeMode="contain"
         style={[
@@ -154,7 +154,7 @@ export default function SplashScreen({
       >
         {/* Makes the original illustration softer/lighter */}
         <View style={styles.backgroundLightOverlay} />
-      </ImageBackground>
+      </BackgroundImage>
 
       {/* =============================================================
           MAIN CONTENT

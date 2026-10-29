@@ -90,7 +90,8 @@ export function LifecyclePill({ status, isActive = true }: { status: SellerLifec
 export const CLOSED_REASON_LABEL: Record<SellerClosedReason, string> = {
   SELLER_DELETED: 'Deleted',
   SELLER_INACTIVE: 'Switched off by admin',
-  MANUALLY_CLOSED: 'Closed by seller',
+  // The seller's own switch — which an admin can also set.
+  MANUALLY_CLOSED: 'Accepting Orders switched off',
   CLOSURE: 'Holiday closure today',
   CLOSED_TODAY: 'Closed today',
   OUTSIDE_HOURS: 'Outside opening hours',

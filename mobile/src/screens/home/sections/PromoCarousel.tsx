@@ -9,7 +9,7 @@
  */
 
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from "react-native";
+import { Pressable, ScrollView, StyleSheet, View, useWindowDimensions, type ScrollViewInstance } from "react-native";
 import { Image } from "expo-image";
 import { contentColor } from "@shared";
 import { colors, radius, spacing } from "@shared/theme";
@@ -96,7 +96,7 @@ function PromoCarouselImpl({
   const slideHeight = fixedHeight ?? Math.round(slideWidth / ratio);
 
   const [active, setActive] = useState(0);
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollViewInstance>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const startAutoplay = useCallback(() => {

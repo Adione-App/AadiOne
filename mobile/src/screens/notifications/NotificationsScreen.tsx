@@ -154,7 +154,7 @@ export default function NotificationsScreen({
                 Could not load more. Tap to retry.
               </AppText>
             </Pressable>
-          ) : null
+          ) : undefined
         }
       />
     );

@@ -12,7 +12,7 @@
  */
 
 import { useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, View, type ViewInstance } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 import type { ProductSummaryDto, VariantDto } from "@shared";
@@ -63,7 +63,7 @@ export default function ProductDetailScreen({
   // The exact element `flyToCart` measures on Add/+ below — see
   // ProductGallery's own comment for exactly what this points at (whichever
   // slide is currently visible).
-  const galleryRef = useRef<View>(null);
+  const galleryRef = useRef<ViewInstance>(null);
 
   const related = useQuery({
     queryKey: ["related", productId],

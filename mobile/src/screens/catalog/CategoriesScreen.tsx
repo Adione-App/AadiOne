@@ -28,6 +28,7 @@ import {
   useWindowDimensions,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ScrollViewInstance,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { CategoryDto, ProductSummaryDto } from '@shared';
@@ -464,7 +465,7 @@ function MainCategoryListing({
         if (listing.hasNextPage && !listing.isFetchingNextPage) void listing.fetchNextPage();
       }}
       onEndReachedThreshold={0.6}
-      ListFooterComponent={listing.isFetchingNextPage ? <ActivityIndicator color={colors.primary} style={{ margin: spacing.base }} /> : null}
+      ListFooterComponent={listing.isFetchingNextPage ? <ActivityIndicator color={colors.primary} style={{ margin: spacing.base }} /> : undefined}
       contentContainerStyle={{ padding: spacing.xs, paddingBottom: tabBarClearance + spacing.xxl }}
       showsVerticalScrollIndicator={false}
       initialNumToRender={8}
@@ -545,7 +546,7 @@ function CategoryLanding({
   const results = useMemo(() => searchCategories(tree, query), [tree, query]);
   const searching = query.trim().length > 0;
 
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollViewInstance>(null);
   /** Each section's y inside the scroll content (from onLayout). */
   const sectionY = useRef(new Map<string, number>());
   const [activeRootId, setActiveRootId] = useState<string | null>(null);

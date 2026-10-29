@@ -16,17 +16,17 @@
  */
 
 import { useCallback, useEffect, useRef } from "react";
-import { Keyboard, type NativeScrollEvent, type NativeSyntheticEvent, type ScrollView, type View } from "react-native";
+import { Keyboard, type NativeScrollEvent, type NativeSyntheticEvent, type ScrollViewInstance, type ViewInstance } from "react-native";
 import { revealScrollTarget } from "./keyboardReveal";
 
 export function useKeyboardReveal({ topReserve, bottomGap = 16 }: { topReserve: number; bottomGap?: number }) {
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollViewInstance>(null);
   /** A plain View filling the same area as the ScrollView — measured on screen. */
-  const frameRef = useRef<View>(null);
+  const frameRef = useRef<ViewInstance>(null);
   /** The ScrollView's single content child — the block is measured against it. */
-  const contentRef = useRef<View>(null);
+  const contentRef = useRef<ViewInstance>(null);
   /** The block to keep visible. */
-  const blockRef = useRef<View>(null);
+  const blockRef = useRef<ViewInstance>(null);
   const scrollY = useRef(0);
   /** The keyboard's top edge in screen coordinates while it is open, else null. */
   const keyboardTop = useRef<number | null>(null);

@@ -20,6 +20,7 @@
 import { ConfigKey, ErrorCode, type ServiceabilityResult } from '../../shared';
 import {
   checkServiceability as checkServiceabilityPure,
+  coordinateProblem,
   estimateDeliveryTime,
   isValidCoordinates,
   resolveDeliveryFeePaise,
@@ -314,6 +315,14 @@ export async function assertServiceable(
   seller: SellerWithHours,
 ): Promise<ServiceabilityCheckResult> {
   const result = await checkServiceability(latitude, longitude, seller);
+  // A store with no usable map point (never set, or (0, 0)) is thousands of
+  // km from everyone — say so, instead of quoting that distance.
+  if (coordinateProblem(seller.latitude, seller.longitude) !== null) {
+    throw new AppError(ErrorCode.OUT_OF_SERVICE_AREA, {
+      message: `Sorry, ${seller.name} is not delivering yet — its store location has not been set.`,
+      internalMessage: `seller ${seller.id}: no store point (${seller.latitude}, ${seller.longitude})`,
+    });
+  }
   if (!result.serviceable) {
     throw new AppError(ErrorCode.OUT_OF_SERVICE_AREA, {
       message: `Sorry, ${seller.name} does not deliver to this location yet. It delivers up to ${result.maxRadiusKm} km from its store.`,

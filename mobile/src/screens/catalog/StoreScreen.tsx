@@ -139,7 +139,7 @@ export default function StoreScreen({
           }
           ListEmptyComponent={<EmptyState title="Nothing here yet" hint="This store hasn't listed any products right now." />}
           ListFooterComponent={
-            products.isFetchingNextPage ? <ActivityIndicator color={colors.primary} style={{ margin: spacing.base }} /> : null
+            products.isFetchingNextPage ? <ActivityIndicator color={colors.primary} style={{ margin: spacing.base }} /> : undefined
           }
           onEndReached={loadMore}
           onEndReachedThreshold={0.6}

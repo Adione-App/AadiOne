@@ -29,6 +29,7 @@ import {
   useWindowDimensions,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ViewInstance,
 } from "react-native";
 import { Image } from "expo-image";
 import { colors, radius, spacing } from "@shared/theme";
@@ -50,7 +51,7 @@ const MAX_HEIGHT_FRACTION = 0.6;
  * own on-screen image into the mini-cart (see flyToCart.tsx).
  */
 const ProductGallery = forwardRef<
-  View,
+  ViewInstance,
   {
     images: { id: string; url: string; altText: string | null }[];
     fallbackUrl: string | null;

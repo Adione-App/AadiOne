@@ -7,7 +7,9 @@
  *
  * `Seller.isActive` (admin deactivation) is deliberately NOT writable here.
  * Seller-panel callers always pass their own `req.sellerId`; another seller's
- * closure is reported exactly like a missing one (NOT_FOUND).
+ * closure is reported exactly like a missing one (NOT_FOUND). Admin (with
+ * SELLER_MANAGE) reaches the same functions for any seller through
+ * `/admin/sellers/:sellerId/...`; the audit row names whoever acted.
  */
 
 import { ErrorCode, type SellerHoursDto } from '../../shared';
@@ -88,8 +90,9 @@ export async function setAcceptingOrders(sellerId: string, isAcceptingOrders: bo
   return getAvailability(sellerId);
 }
 
-export async function updateHours(sellerId: string, hours: SellerHoursDto[], actorUserId: string) {
-  await saveWeeklyHours(sellerId, { hours }, actorUserId);
+/** `timezone` is the admin route's only (the seller's schema has none). */
+export async function updateHours(sellerId: string, hours: SellerHoursDto[], actorUserId: string, timezone?: string) {
+  await saveWeeklyHours(sellerId, { hours, ...(timezone !== undefined ? { timezone } : {}) }, actorUserId);
   emitStoreAvailabilityChanged(sellerId);
   return getAvailability(sellerId);
 }

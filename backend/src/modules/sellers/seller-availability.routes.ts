@@ -1,7 +1,8 @@
 /**
  * Seller availability — the seller's own Store Open/Closed switch, weekly
  * hours and date closures (`/seller/...`, own seller only), plus admin's
- * read-only view of every seller's effective availability.
+ * view of every seller's effective availability and (SELLER_MANAGE) the same
+ * controls for any seller, through the same service and the same rule.
  *
  * The seller body schema accepts `isAcceptingOrders` only: a seller can never
  * change `Seller.isActive` (admin deactivation) through here.
@@ -20,6 +21,11 @@ import * as locationService from './admin-seller.service';
 
 const uuid = z.string().uuid();
 const time = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use 24-hour HH:mm.');
+
+const closureSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD.'),
+  reason: z.string().trim().max(200).nullable().optional(),
+});
 
 const hoursSchema = z.object({
   hours: z
@@ -83,12 +89,7 @@ sellerAvailabilityRouter.put(
 sellerAvailabilityRouter.post(
   '/closures',
   requirePermission(Permission.SELLER_PROFILE_MANAGE),
-  validate({
-    body: z.object({
-      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD.'),
-      reason: z.string().trim().max(200).nullable().optional(),
-    }),
-  }),
+  validate({ body: closureSchema }),
   asyncHandler(async (req: Request, res: Response) => {
     ok(res, await service.addClosure(requireSellerId(req), req.body, requireUser(req).id));
   }),
@@ -142,7 +143,15 @@ sellerAvailabilityRouter.patch(
   }),
 );
 
-/* admin (read-only) ------------------------------------------------------------ */
+/* admin -------------------------------------------------------------------------- */
+
+/*
+ * Reads need SELLER_ONBOARDING_REVIEW; every write needs SELLER_MANAGE. The
+ * writes are the seller's own (same service, same validation, same audit
+ * actions with the admin as actor, same realtime event): there is one
+ * availability rule and one place each input is stored. Admin deactivation
+ * (`isActive`) stays on PATCH /admin/sellers/:id/status.
+ */
 
 export const adminAvailabilityRouter: Router = Router();
 
@@ -160,5 +169,47 @@ adminAvailabilityRouter.get(
   validate({ params: z.object({ sellerId: uuid }) }),
   asyncHandler(async (req: Request, res: Response) => {
     ok(res, await service.getAvailability(req.params['sellerId'] as string));
+  }),
+);
+
+const sellerParams = z.object({ sellerId: uuid });
+
+/** The seller's Accepting Orders switch, set by admin (e.g. a shop that phoned in). */
+adminAvailabilityRouter.patch(
+  '/sellers/:sellerId/availability',
+  requirePermission(Permission.SELLER_MANAGE),
+  validate({ params: sellerParams, body: z.object({ isAcceptingOrders: z.boolean() }).strict() }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { isAcceptingOrders } = req.body as { isAcceptingOrders: boolean };
+    ok(res, await service.setAcceptingOrders(req.params['sellerId'] as string, isAcceptingOrders, requireUser(req).id));
+  }),
+);
+
+/** Weekly hours, and optionally the IANA timezone they are read in (admin only). */
+adminAvailabilityRouter.put(
+  '/sellers/:sellerId/hours',
+  requirePermission(Permission.SELLER_MANAGE),
+  validate({ params: sellerParams, body: hoursSchema.extend({ timezone: z.string().trim().min(1).max(60).optional() }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { hours, timezone } = req.body as z.infer<typeof hoursSchema> & { timezone?: string };
+    ok(res, await service.updateHours(req.params['sellerId'] as string, hours, requireUser(req).id, timezone));
+  }),
+);
+
+adminAvailabilityRouter.post(
+  '/sellers/:sellerId/closures',
+  requirePermission(Permission.SELLER_MANAGE),
+  validate({ params: sellerParams, body: closureSchema }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await service.addClosure(req.params['sellerId'] as string, req.body, requireUser(req).id));
+  }),
+);
+
+adminAvailabilityRouter.delete(
+  '/sellers/:sellerId/closures/:id',
+  requirePermission(Permission.SELLER_MANAGE),
+  validate({ params: z.object({ sellerId: uuid, id: uuid }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await service.removeClosure(req.params['sellerId'] as string, req.params['id'] as string, requireUser(req).id));
   }),
 );

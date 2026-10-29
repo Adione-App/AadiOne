@@ -24,6 +24,7 @@ import * as lifecycleService from './seller-lifecycle.service';
 import * as settlementService from './seller-settlement.service';
 import * as orderFinancials from '../orders/order-financials.service';
 import * as storeLocationService from './admin-seller.service';
+import * as deliveryAreaService from './delivery-area.service';
 import { locationSchema } from './seller-availability.routes';
 import * as sellerLoginService from './seller-login.service';
 import { sendDocumentFile } from './document-response';
@@ -572,27 +573,78 @@ adminSellerRouter.get(
 );
 
 /**
- * GET / PATCH /admin/sellers/:sellerId/location — the store's delivery point,
- * for an admin to correct (e.g. a pin set from a desktop browser, or one
- * copied across shops). Same validation and the same audited update as the
- * seller's own Store Location (coordinates validated, Rajasthan only,
- * `seller.update_location` audit row with before / after and the admin).
+ * GET / PATCH /admin/sellers/:sellerId/location — the store's name, address
+ * and delivery point, for an admin to correct (e.g. a pin set from a desktop
+ * browser, or one copied across shops). Same validation and the same audited
+ * update as the seller's own Store Location (coordinates validated, Rajasthan
+ * only, `seller.update_location` audit row with before / after and the
+ * admin), plus the display name, which only admin may change. The code, the
+ * KYC business name and past orders' records are never touched.
  */
 adminSellerRouter.get(
   '/sellers/:sellerId/location',
   requirePermission(Permission.SELLER_MANAGE),
   validate({ params: z.object({ sellerId: uuid }) }),
   asyncHandler(async (req: Request, res: Response) => {
-    ok(res, await storeLocationService.getSellerLocation(req.params['sellerId'] as string));
+    ok(res, await storeLocationService.getAdminSellerLocation(req.params['sellerId'] as string));
   }),
 );
+
+const adminLocationSchema = locationSchema.extend({
+  name: z.string().trim().min(2, 'Enter the store name (at least 2 characters).').max(120).optional(),
+});
 
 adminSellerRouter.patch(
   '/sellers/:sellerId/location',
   requirePermission(Permission.SELLER_MANAGE),
-  validate({ params: z.object({ sellerId: uuid }), body: locationSchema }),
+  validate({ params: z.object({ sellerId: uuid }), body: adminLocationSchema }),
   asyncHandler(async (req: Request, res: Response) => {
     ok(res, await storeLocationService.updateSellerLocation(req.params['sellerId'] as string, req.body, requireUser(req).id));
+  }),
+);
+
+/**
+ * GET / PATCH /admin/sellers/:sellerId/delivery-area — the radius this store
+ * delivers within (its own, or null = the app-wide MAX_SERVICE_RADIUS_KM) and
+ * its map point. GET .../delivery-check?lat=&lng= answers "would an order
+ * from this store reach that point?" with checkout's own rule, straight-line
+ * distance and the estimated road distance. See delivery-area.service.ts.
+ */
+adminSellerRouter.get(
+  '/sellers/:sellerId/delivery-area',
+  requirePermission(Permission.SELLER_MANAGE),
+  validate({ params: z.object({ sellerId: uuid }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await deliveryAreaService.getDeliveryArea(req.params['sellerId'] as string));
+  }),
+);
+
+adminSellerRouter.patch(
+  '/sellers/:sellerId/delivery-area',
+  requirePermission(Permission.SELLER_MANAGE),
+  validate({
+    params: z.object({ sellerId: uuid }),
+    // Range checked by the service (one limit for this and the app-wide value).
+    body: z.object({ maxServiceRadiusKm: z.number().finite().nullable() }).strict(),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { maxServiceRadiusKm } = req.body as { maxServiceRadiusKm: number | null };
+    ok(res, await deliveryAreaService.setDeliveryRadius(req.params['sellerId'] as string, maxServiceRadiusKm, requireUser(req).id));
+  }),
+);
+
+const deliveryCheckQuery = z.object({
+  lat: z.coerce.number().finite(),
+  lng: z.coerce.number().finite(),
+});
+
+adminSellerRouter.get(
+  '/sellers/:sellerId/delivery-check',
+  requirePermission(Permission.SELLER_MANAGE),
+  validate({ params: z.object({ sellerId: uuid }), query: deliveryCheckQuery }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { lat, lng } = validatedQuery<z.infer<typeof deliveryCheckQuery>>(req);
+    ok(res, await deliveryAreaService.checkDeliveryPoint(req.params['sellerId'] as string, lat, lng));
   }),
 );
 

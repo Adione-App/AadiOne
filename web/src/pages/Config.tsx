@@ -44,7 +44,7 @@ interface ConfigEntry {
  * etc.
  */
 const DISPLAY_LABELS: Partial<Record<ConfigKey, string>> = {
-  MAX_SERVICE_RADIUS_KM: "Maximum Service Radius",
+  MAX_SERVICE_RADIUS_KM: "Default Delivery Radius (km)",
   SERVICEABLE_PINCODES: "Approved Delivery PIN Codes",
   ROAD_DISTANCE_FACTOR: "Road Distance Factor",
 
@@ -123,7 +123,7 @@ const DISPLAY_DESCRIPTIONS: Partial<Record<ConfigKey, string>> = {
     "Maximum COD value for a customer's first order, in rupees.",
 
   MAX_SERVICE_RADIUS_KM:
-    "Maximum straight-line delivery distance from the store, in km.",
+    "App-wide default delivery radius in kilometres (above 0, at most 50): straight-line distance from each store's own map point — not the road route. A store can have its own radius on its seller page (Overview → Delivery area).",
 
   ROAD_DISTANCE_FACTOR:
     "Multiplier converting straight-line distance to road distance, used for ETA and delivery fee.",
@@ -632,6 +632,14 @@ export default function ConfigPage() {
               Ordering is paused app-wide — customers can browse and fill their carts, but cannot place any order until it is enabled again.
             </p>
           )}
+          {group.title === "Orders" && (
+            <p className="mb-3 rounded-xl bg-info-50 px-3.5 py-2.5 text-sm text-gray-700">
+              <span className="font-semibold">Ordering Open</span> pauses or reopens ordering for the whole app. Each store is controlled on its seller page
+              (Sellers → a seller): <span className="font-semibold">Activate / Deactivate</span> (admin), its{" "}
+              <span className="font-semibold">Accepting Orders</span> switch (seller or admin), closures and weekly hours (Availability tab). A store&apos;s open hours never
+              override a pause here or an admin deactivation.
+            </p>
+          )}
           {group.title === "Payments" &&
             entries.find((entry) => entry.key === "PAYMENT_ONLINE_ENABLED")?.value === false &&
             entries.find((entry) => entry.key === "PAYMENT_COD_ENABLED")?.value === false && (
@@ -641,8 +649,9 @@ export default function ConfigPage() {
             )}
           {group.title === "Delivery" && (
             <p className="mb-3 rounded-xl bg-info-50 px-3.5 py-2.5 text-sm text-gray-700">
-              The delivery radius is measured from each seller&apos;s own location, which the seller sets in the Seller Panel
-              (Profile → Store location). Checkout needs every seller in the cart to deliver to the address.
+              The delivery radius is measured in a straight line from each seller&apos;s own map point, which the seller sets in the Seller Panel
+              (Profile → Store location) and an admin can correct on the seller&apos;s page (Overview → Store location, Delivery area — with a map and a
+              distance check). Checkout needs every seller in the order to deliver to the address.
             </p>
           )}
           {group.note && (

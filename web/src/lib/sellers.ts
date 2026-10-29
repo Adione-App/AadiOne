@@ -137,9 +137,41 @@ export interface AdminSellerAvailability {
   acceptingOrdersNow: boolean;
   closedReason: SellerClosedReason | null;
   nextOpenText: string | null;
+  /** Today's window as the server evaluated it ("HH:MM"), when one applies. */
+  todayOpensAt: string | null;
+  todayClosesAt: string | null;
   hoursConfigured: boolean;
   hours: SellerHoursDto[];
   upcomingClosures: { id: string; date: string; reason: string | null }[];
+}
+
+/** GET / PATCH /admin/sellers/:id/delivery-area (delivery-area.service.ts). */
+export interface AdminSellerDeliveryArea {
+  sellerId: string;
+  sellerName: string;
+  latitude: number;
+  longitude: number;
+  storeLocationSet: boolean;
+  /** This store's own radius; null = the app-wide default. */
+  maxServiceRadiusKm: number | null;
+  defaultRadiusKm: number;
+  effectiveRadiusKm: number;
+  radiusLimitKm: number;
+  roadDistanceFactor: number;
+}
+
+/** GET /admin/sellers/:id/delivery-check?lat=&lng= — checkout's own rule for one point. */
+export interface AdminDeliveryPointCheck {
+  store: { latitude: number; longitude: number };
+  destination: { latitude: number; longitude: number };
+  distanceKm: number;
+  effectiveRadiusKm: number;
+  deliverable: boolean;
+  insideRadius: boolean;
+  insideServiceState: boolean;
+  estimatedRoadDistanceKm: number;
+  deliveryFeePaise: number;
+  reason: string | null;
 }
 
 /**
@@ -321,8 +353,23 @@ export const sellersApi = {
   reviewVerification: (sellerId: string, body: AdminReviewSellerVerificationRequest) =>
     api.patch<AdminSellerDetailDto>(`/admin/sellers/${sellerId}/verification/review`, body),
 
-  /** Read-only effective availability (admin route — never /seller/availability). */
+  /** Effective availability (admin route — never /seller/availability). */
   availability: (sellerId: string) => api.get<AdminSellerAvailability>(`/admin/sellers/${sellerId}/availability`),
+  /** The seller's Accepting Orders switch, the weekly hours (+ timezone) and closures — SELLER_MANAGE. */
+  setAcceptingOrders: (sellerId: string, isAcceptingOrders: boolean) =>
+    api.patch<AdminSellerAvailability>(`/admin/sellers/${sellerId}/availability`, { isAcceptingOrders }),
+  saveHours: (sellerId: string, hours: SellerHoursDto[], timezone?: string) =>
+    api.put<AdminSellerAvailability>(`/admin/sellers/${sellerId}/hours`, { hours, ...(timezone ? { timezone } : {}) }),
+  addClosure: (sellerId: string, input: { date: string; reason: string | null }) =>
+    api.post<AdminSellerAvailability>(`/admin/sellers/${sellerId}/closures`, input),
+  removeClosure: (sellerId: string, closureId: string) =>
+    api.delete<AdminSellerAvailability>(`/admin/sellers/${sellerId}/closures/${closureId}`),
+  /** Delivery radius and the straight-line delivery check — SELLER_MANAGE. */
+  deliveryArea: (sellerId: string) => api.get<AdminSellerDeliveryArea>(`/admin/sellers/${sellerId}/delivery-area`),
+  setDeliveryRadius: (sellerId: string, maxServiceRadiusKm: number | null) =>
+    api.patch<AdminSellerDeliveryArea>(`/admin/sellers/${sellerId}/delivery-area`, { maxServiceRadiusKm }),
+  deliveryCheck: (sellerId: string, latitude: number, longitude: number) =>
+    api.get<AdminDeliveryPointCheck>(`/admin/sellers/${sellerId}/delivery-check?lat=${latitude}&lng=${longitude}`),
   /** Read-only restaurant profile + full menu. RESTAURANT sellers only (404 otherwise). */
   restaurant: (sellerId: string) => api.get<AdminRestaurantDetail>(`/admin/restaurants/${sellerId}`),
 
@@ -380,6 +427,7 @@ export const adminSellerKeys = {
   /** Its own branch (not under `detail`): writes refresh it explicitly. */
   onboardingSummary: (sellerId: string) => [ADMIN_SELLERS_ROOT, 'onboarding', 'summary', sellerId] as const,
   availability: (sellerId: string) => [ADMIN_SELLERS_ROOT, 'availability', sellerId] as const,
+  deliveryArea: (sellerId: string) => [ADMIN_SELLERS_ROOT, 'delivery-area', sellerId] as const,
   restaurant: (sellerId: string) => [ADMIN_SELLERS_ROOT, 'restaurant', sellerId] as const,
   commission: (sellerId: string) => [ADMIN_SELLERS_ROOT, 'commission', sellerId] as const,
   commissionHistory: (sellerId: string) => [ADMIN_SELLERS_ROOT, 'commission-history', sellerId] as const,
@@ -477,7 +525,17 @@ export function useSetSellerStatus() {
   });
 }
 
-/** Read-only availability for the Availability tab. */
+/** The seller's delivery radius and map point (SELLER_MANAGE). */
+export function useAdminSellerDeliveryArea(sellerId: string, enabled = true) {
+  return useQuery({
+    queryKey: adminSellerKeys.deliveryArea(sellerId),
+    queryFn: () => sellersApi.deliveryArea(sellerId),
+    retry: retryServerErrorsOnce,
+    enabled,
+  });
+}
+
+/** Availability for the Availability tab. */
 export function useAdminSellerAvailability(sellerId: string, enabled = true) {
   return useQuery({
     queryKey: adminSellerKeys.availability(sellerId),

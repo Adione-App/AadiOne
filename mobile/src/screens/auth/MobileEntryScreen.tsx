@@ -13,7 +13,6 @@
 import { useState } from "react";
 import {
   Image,
-  ImageBackground,
   Keyboard,
   KeyboardAvoidingView,
   Pressable,
@@ -35,6 +34,7 @@ import { AUTH_REASON_COPY } from "@/lib/guestAccess";
 import { useAuth } from "@/lib/store";
 import { useKeyboardReveal } from "@/lib/useKeyboardReveal";
 import { AppText, Button, Input } from "@/components/ui";
+import { BackgroundImage } from "@/components/BackgroundImage";
 
 import adioneLogo from "../../../assets/adione-logo.png";
 import mobileBackground from "../../../assets/mobile-no-background.png";
@@ -150,7 +150,7 @@ export default function MobileEntryScreen({
               {/* -------------------------------------------------------------- */}
 
               <View style={[styles.hero, { height: heroHeight }]}>
-                <ImageBackground
+                <BackgroundImage
                   source={mobileBackground}
                   style={styles.heroBackground}
                   resizeMode="cover"
@@ -214,7 +214,7 @@ export default function MobileEntryScreen({
                       ))}
                     </View>
                   </View>
-                </ImageBackground>
+                </BackgroundImage>
               </View>
 
               {/* -------------------------------------------------------------- */}

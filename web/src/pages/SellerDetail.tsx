@@ -28,6 +28,7 @@ import {
   adminSellerKeys,
   formatCommissionBp,
   sellerErrorMessage,
+  useAdminSellerDeliveryArea,
   useSellerDetail,
   useSellerPermissions,
 } from '@/lib/sellers';
@@ -50,6 +51,7 @@ import SellerListingsTab from './SellerListingsTab';
 import SellerOnboardingTab from './SellerOnboardingTab';
 import SellerOrdersTab from './SellerOrdersTab';
 import SellerRestaurantTab from './SellerRestaurantTab';
+import SellerDeliveryArea from './SellerDeliveryArea';
 import StoreLocationPanel, { type SellerLocation, type StoreLocationSource } from '@/seller/StoreLocationPanel';
 import { SellerLoginPanel } from './SellerLoginPanel';
 
@@ -422,6 +424,7 @@ function OverviewTab({
       </Panel>
 
       <AdminStoreLocation sellerId={seller.id} />
+      <SellerDeliveryArea sellerId={seller.id} />
 
       <Panel title="Onboarding">
         <dl className="divide-y divide-gray-100">
@@ -613,22 +616,31 @@ function SellerActivityTab({ sellerId }: { sellerId: string }) {
 }
 
 /**
- * Admin correction of a store's delivery point (GET/PATCH
+ * Admin correction of a store's name, address and delivery point (GET/PATCH
  * /admin/sellers/:id/location) — the seller's own Store Location form, with
- * the admin as editor. Validated and audited by the server. Hidden without
- * SELLER_MANAGE. "Use my current location" is off: the admin is not at the shop.
+ * the admin as editor, plus the store name and a map with a movable pin.
+ * Validated and audited by the server. Hidden without SELLER_MANAGE.
+ *
+ * "Use this device's location" is there for an admin standing at the
+ * storefront; it is never applied without "Use this point", and the pin can
+ * always be corrected by hand — an admin's desk is not the shop.
  */
 function AdminStoreLocation({ sellerId }: { sellerId: string }) {
   const { canManage } = useSellerPermissions();
   const queryClient = useQueryClient();
   const [notice, setNotice] = useState<string | null>(null);
+  const area = useAdminSellerDeliveryArea(sellerId, canManage);
   if (!canManage) return null;
   const source: StoreLocationSource = {
     queryKey: ['admin', 'sellers', sellerId, 'location'],
     load: () => api.get<SellerLocation>(`/admin/sellers/${sellerId}/location`),
     save: (body) => api.patch<SellerLocation>(`/admin/sellers/${sellerId}/location`, body),
     errorMessage: (error) => sellerErrorMessage(error, 'Could not update the store location.'),
-    deviceLocation: false,
+    deviceLocation: true,
+    deviceLocationLabel: "Use this device's location — only when you are standing at the storefront",
+    nameEditable: true,
+    map: true,
+    radiusKm: area.data?.effectiveRadiusKm ?? null,
   };
   return (
     <div className="space-y-2">
@@ -637,7 +649,8 @@ function AdminStoreLocation({ sellerId }: { sellerId: string }) {
         source={source}
         onSaved={() => {
           void queryClient.invalidateQueries({ queryKey: adminSellerKeys.detail(sellerId) });
-          setNotice('Store location corrected. Distances, delivery fees and serviceability now use the new point.');
+          void queryClient.invalidateQueries({ queryKey: adminSellerKeys.deliveryArea(sellerId) });
+          setNotice('Store details saved. Distances, delivery fees and serviceability now use this point.');
         }}
       />
     </div>

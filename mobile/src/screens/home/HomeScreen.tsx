@@ -42,6 +42,7 @@ import {
   useStores,
 } from "@/lib/queries";
 import { formatUnreadBadge } from "@/lib/notifications";
+import { outOfAreaDetail } from "@/lib/deliveryArea";
 import { useCartError } from "@/lib/useCartActions";
 import { useLocation, usePreferences } from "@/lib/store";
 import { isActiveLiveDestination, liveLocationLabel } from "@/lib/liveLocation";
@@ -1069,7 +1070,12 @@ export default function HomeScreen({
             {serviceability && !serviceability.serviceable && (
               <View style={styles.noticeContainer}>
                 <NoticeStrip
-                  message="We don't deliver to your location yet — you can browse, but ordering is unavailable."
+                  message={[
+                    "We don't deliver to your location yet — you can browse, but ordering is unavailable.",
+                    outOfAreaDetail(serviceability),
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                   tone="info"
                 />
               </View>

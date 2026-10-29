@@ -3,7 +3,6 @@ import {
   Alert,
   AppState,
   Image,
-  ImageBackground,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -32,6 +31,7 @@ import {
   NoticeStrip,
   Screen,
 } from "@/components/ui";
+import { BackgroundImage } from "@/components/BackgroundImage";
 
 type Stage = "ready" | "opened" | "claimed";
 
@@ -447,7 +447,7 @@ function ReadyPaymentView({
           </View>
         </View>
 
-        <ImageBackground
+        <BackgroundImage
           source={CHECKOUT_UPI_BANNER}
           resizeMode="contain"
           style={styles.heroArtwork}

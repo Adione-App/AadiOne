@@ -78,6 +78,7 @@ import {
   useMyCoupons,
 } from "@/lib/queries";
 import { isCheckingLine, isOrderableLine, orderedLines, partialOrderNotice, unavailableLabel } from "@/lib/cartAvailability";
+import { outOfAreaDetail } from "@/lib/deliveryArea";
 import {
   cartUnitCount,
   useCartActions,
@@ -999,7 +1000,12 @@ export default function CartScreen({
                 <NoticeStrip
                   message={
                     deliversToHomeLocation
-                      ? "We don't deliver to your current location, so this order can't be placed yet."
+                      ? [
+                          "We don't deliver to your current location, so this order can't be placed yet.",
+                          outOfAreaDetail(serviceability),
+                        ]
+                          .filter(Boolean)
+                          .join(" ")
                       : "We don't deliver to the selected address yet — choose another address below."
                   }
                   tone="info"

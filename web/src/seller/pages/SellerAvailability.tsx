@@ -5,6 +5,10 @@
  * GET /seller/availability, which every one of those writes also returns.
  * Admin deactivation is never writable from here, and nothing here changes
  * how the server combines these into "can customers order now".
+ *
+ * `WeeklyHours` and `Closures` are also the admin panel's editors (seller
+ * detail → Availability), given the admin routes through an
+ * `AvailabilityEditorSource` — one form, one set of rules.
  */
 
 import { useMemo, useState } from 'react';
@@ -63,13 +67,44 @@ function fullWeek(hours: SellerHours[]): SellerHours[] {
   );
 }
 
-function useSaveAvailability<TInput>(send: (input: TInput) => Promise<SellerAvailability>) {
+/**
+ * Where the hours and closures editors read and write. Default: the signed-in
+ * seller's own routes. The admin panel passes `/admin/sellers/:id/...`.
+ */
+export interface AvailabilityEditorSource {
+  queryKey: readonly unknown[];
+  saveHours: (hours: SellerHours[], timezone?: string) => Promise<SellerAvailability>;
+  addClosure: (input: { date: string; reason: string | null }) => Promise<SellerAvailability>;
+  removeClosure: (id: string) => Promise<SellerAvailability>;
+  errorMessage: (error: unknown) => string;
+  notify: (message: string) => void;
+  /** Admin only: the timezone the hours are read in is chosen with them. */
+  timezoneEditable?: boolean;
+}
+
+const SELLER_EDITOR: AvailabilityEditorSource = {
+  queryKey: sellerKeys.availability,
+  saveHours: (hours) => sellerApi.put<SellerAvailability>('/seller/hours', { hours }),
+  addClosure: (input) => sellerApi.post<SellerAvailability>('/seller/closures', input),
+  removeClosure: (id) => sellerApi.delete<SellerAvailability>(`/seller/closures/${id}`),
+  errorMessage: (error) => sellerErrorMessage(error),
+  notify: (message) => toast(message),
+};
+
+function useSaveAvailability<TInput>(source: AvailabilityEditorSource, send: (input: TInput) => Promise<SellerAvailability>) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: send,
-    onSuccess: (data) => queryClient.setQueryData(sellerKeys.availability, data),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: sellerKeys.availability }),
+    onSuccess: (data) => queryClient.setQueryData(source.queryKey, data),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: source.queryKey }),
   });
+}
+
+/** Timezones the browser knows, the store's own first; a short list where the API is missing. */
+function timezoneOptions(current: string): string[] {
+  const intl = Intl as unknown as { supportedValuesOf?: (key: string) => string[] };
+  const known = intl.supportedValuesOf?.('timeZone') ?? ['Asia/Kolkata', 'UTC'];
+  return [current, ...known.filter((zone) => zone !== current)];
 }
 
 function dayHours(day: SellerHours): string {
@@ -78,22 +113,25 @@ function dayHours(day: SellerHours): string {
   return `${time12h(day.opensAt)} – ${time12h(day.closesAt)}`;
 }
 
-function WeeklyHours({ availability }: { availability: SellerAvailability }) {
+export function WeeklyHours({ availability, source = SELLER_EDITOR }: { availability: SellerAvailability; source?: AvailabilityEditorSource }) {
   const serverWeek = useMemo(() => fullWeek(availability.hours), [availability.hours]);
-  const serverSignature = JSON.stringify(serverWeek);
+  const serverSignature = JSON.stringify(serverWeek) + availability.timezone;
   const [draft, setDraft] = useState<SellerHours[]>(serverWeek);
+  const [timezone, setTimezone] = useState(availability.timezone);
   const [seededFrom, setSeededFrom] = useState(serverSignature);
-  const save = useSaveAvailability((hours: SellerHours[]) => sellerApi.put<SellerAvailability>('/seller/hours', { hours }));
-  const today = weekdayIn(availability.timezone);
+  const save = useSaveAvailability(source, (input: { hours: SellerHours[]; timezone?: string }) => source.saveHours(input.hours, input.timezone));
+  const today = weekdayIn(timezone);
 
   // Re-seed the form when the SAVED hours change (after a save, or an edit
   // made elsewhere) — a background refetch of unchanged hours keeps edits.
   if (serverSignature !== seededFrom) {
     setSeededFrom(serverSignature);
     setDraft(serverWeek);
+    setTimezone(availability.timezone);
   }
 
-  const dirty = JSON.stringify(draft) !== serverSignature;
+  const timezoneChanged = timezone !== availability.timezone;
+  const dirty = JSON.stringify(draft) !== JSON.stringify(serverWeek) || timezoneChanged;
 
   function patch(dayOfWeek: number, changes: Partial<SellerHours>): void {
     setDraft((days) => days.map((day) => (day.dayOfWeek === dayOfWeek ? { ...day, ...changes } : day)));
@@ -105,11 +143,26 @@ function WeeklyHours({ availability }: { availability: SellerAvailability }) {
       action={
         <div className="flex gap-2">
           {dirty && (
-            <Button variant="ghost" disabled={save.isPending} onClick={() => setDraft(serverWeek)}>
+            <Button
+              variant="ghost"
+              disabled={save.isPending}
+              onClick={() => {
+                setDraft(serverWeek);
+                setTimezone(availability.timezone);
+              }}
+            >
               Discard
             </Button>
           )}
-          <Button disabled={!dirty || save.isPending} onClick={() => save.mutate(draft, { onSuccess: () => toast('Weekly hours saved.') })}>
+          <Button
+            disabled={!dirty || save.isPending}
+            onClick={() =>
+              save.mutate(
+                { hours: draft, ...(timezoneChanged ? { timezone } : {}) },
+                { onSuccess: () => source.notify(timezoneChanged ? `Weekly hours saved, read in ${timezone}.` : 'Weekly hours saved.') },
+              )
+            }
+          >
             {save.isPending ? 'Saving…' : 'Save hours'}
           </Button>
         </div>
@@ -121,8 +174,19 @@ function WeeklyHours({ availability }: { availability: SellerAvailability }) {
             No weekly hours saved yet, so your store is open all day, every day. Set your hours and save.
           </p>
         )}
-        {save.isError && <ErrorBanner message={sellerErrorMessage(save.error)} />}
+        {save.isError && <ErrorBanner message={source.errorMessage(save.error)} />}
         {dirty && <p className="text-sm font-medium text-warn-500">You have unsaved changes.</p>}
+        {source.timezoneEditable && (
+          <Field label="Timezone" hint="The store's own clock: opening hours, closures and “today” are all read in it — never the server's.">
+            <select value={timezone} onChange={(event) => setTimezone(event.target.value)} className={`${inputClass} sm:max-w-xs`}>
+              {timezoneOptions(availability.timezone).map((zone) => (
+                <option key={zone} value={zone}>
+                  {zone}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
 
         <div className="divide-y divide-gray-100">
           {WEEK.map(({ dayOfWeek, name }) => {
@@ -163,7 +227,7 @@ function WeeklyHours({ availability }: { availability: SellerAvailability }) {
           })}
         </div>
         <p className="text-xs text-gray-500">
-          Times are in {availability.timezone}. The same opening and closing time means open all day; a closing time earlier than
+          Times are in {timezone}. The same opening and closing time means open all day; a closing time earlier than
           the opening time runs past midnight.
         </p>
       </div>
@@ -181,15 +245,13 @@ function formatClosureDate(iso: string): string {
   });
 }
 
-function Closures({ availability }: { availability: SellerAvailability }) {
+export function Closures({ availability, source = SELLER_EDITOR }: { availability: SellerAvailability; source?: AvailabilityEditorSource }) {
   const today = todayIsoInIndia();
   const [date, setDate] = useState('');
   const [reason, setReason] = useState('');
   const [removing, setRemoving] = useState<{ id: string; date: string } | null>(null);
-  const add = useSaveAvailability((input: { date: string; reason: string | null }) =>
-    sellerApi.post<SellerAvailability>('/seller/closures', input),
-  );
-  const remove = useSaveAvailability((id: string) => sellerApi.delete<SellerAvailability>(`/seller/closures/${id}`));
+  const add = useSaveAvailability(source, source.addClosure);
+  const remove = useSaveAvailability(source, source.removeClosure);
 
   return (
     <Panel title="Closures">
@@ -198,7 +260,7 @@ function Closures({ availability }: { availability: SellerAvailability }) {
           Days your store is closed all day — holidays, stock-taking, travel. Customers cannot order on those days.
         </p>
 
-        {(add.isError || remove.isError) && <ErrorBanner message={sellerErrorMessage(add.error ?? remove.error)} />}
+        {(add.isError || remove.isError) && <ErrorBanner message={source.errorMessage(add.error ?? remove.error)} />}
 
         {availability.upcomingClosures.length === 0 ? (
           <EmptyPanel icon="calendar" title="No upcoming closures" hint="Add a date below if you'll be closed for a day." />
@@ -233,7 +295,7 @@ function Closures({ availability }: { availability: SellerAvailability }) {
               { date, reason: reason.trim() || null },
               {
                 onSuccess: () => {
-                  toast(`Closed on ${formatClosureDate(date)}.`);
+                  source.notify(`Closed on ${formatClosureDate(date)}.`);
                   setDate('');
                   setReason('');
                 },
@@ -268,7 +330,7 @@ function Closures({ availability }: { availability: SellerAvailability }) {
                 onClick={() => {
                   const target = removing;
                   setRemoving(null);
-                  remove.mutate(target.id, { onSuccess: () => toast(`Open again on ${formatClosureDate(target.date)}.`) });
+                  remove.mutate(target.id, { onSuccess: () => source.notify(`Open again on ${formatClosureDate(target.date)}.`) });
                 }}
               >
                 Remove closure

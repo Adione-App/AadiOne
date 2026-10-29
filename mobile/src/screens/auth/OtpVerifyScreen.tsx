@@ -17,7 +17,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  ImageBackground,
   Keyboard,
   KeyboardAvoidingView,
   Pressable,
@@ -25,6 +24,7 @@ import {
   StyleSheet,
   TextInput,
   View,
+  type TextInputInstance,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -38,6 +38,7 @@ import { loginCompleted } from "@/lib/authGate";
 import { useAuth } from "@/lib/store";
 import { useKeyboardReveal } from "@/lib/useKeyboardReveal";
 import { AppText, Button } from "@/components/ui";
+import { BackgroundImage } from "@/components/BackgroundImage";
 import type { AuthScreenProps } from "@/navigation/types";
 import ReferralCodeStep from "./ReferralCodeStep";
 
@@ -75,7 +76,7 @@ export default function OtpVerifyScreen({
     route.params.resendAfterSeconds,
   );
 
-  const inputs = useRef<(TextInput | null)[]>([]);
+  const inputs = useRef<(TextInputInstance | null)[]>([]);
   // The box the caret is in (autofocus starts at the first one).
   const [focused, setFocused] = useState<number | null>(0);
 
@@ -271,7 +272,7 @@ export default function OtpVerifyScreen({
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-            <ImageBackground
+            <BackgroundImage
               source={enterOtpBackground}
               style={styles.illustration}
               resizeMode="cover"
@@ -311,7 +312,7 @@ export default function OtpVerifyScreen({
               {/* Top illustration                                                   */}
               {/* ------------------------------------------------------------------ */}
 
-              <ImageBackground
+              <BackgroundImage
                 source={enterOtpBackground}
                 style={styles.illustration}
                 resizeMode="cover"

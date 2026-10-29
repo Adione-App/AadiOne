@@ -1,7 +1,7 @@
 /**
  * Store availability changes the app must not miss: a store opening or
- * closing (its switch, hours, a holiday, admin), or ordering being paused
- * app-wide. The server decides everything; this only makes the app ASK again
+ * closing (its switch, hours, a holiday, admin), its delivery radius changing,
+ * or ordering being paused app-wide. The server decides everything; this only makes the app ASK again
  * — on resume from the background (a cart kept overnight is checked against
  * today's stores) and on the server's realtime `store.availability_changed`.
  *
@@ -13,6 +13,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { keys } from "./queries";
 import { homeShelvesQueryKey } from "./homeLayoutQuery";
+import { useLocation } from "./store";
 
 let client: QueryClient | null = null;
 
@@ -48,6 +49,11 @@ function run(): void {
   ] as const) {
     void client.invalidateQueries({ queryKey: [...queryKey] });
   }
+  // A store's delivery radius or map point can change too: ask again whether
+  // the point on screen is served (same point — the current answer stays
+  // until the new one lands).
+  const { location, setLocation } = useLocation.getState();
+  if (location) void setLocation(location);
 }
 
 /** Ask the server again (throttled). */

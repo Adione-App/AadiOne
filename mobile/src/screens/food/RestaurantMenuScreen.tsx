@@ -11,7 +11,8 @@ import {
   View,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
-  type ViewToken,
+  type ListViewToken,
+  type ScrollViewInstance,
 } from "react-native";
 import { Image } from "expo-image";
 import { ArrowLeft, ChevronDown, ChevronUp, Clock, MapPin, UtensilsCrossed } from "lucide-react-native";
@@ -285,7 +286,7 @@ interface Tab {
 }
 
 function SectionTabs({ tabs, active, onPress }: { tabs: Tab[]; active: string | null; onPress: (key: string) => void }) {
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollViewInstance>(null);
   const offsets = useRef(new Map<string, number>());
   // Keep the active tab in view as the menu scrolls.
   useEffect(() => {
@@ -436,7 +437,7 @@ export default function RestaurantMenuScreen({
     [sections, insets.top],
   );
 
-  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
+  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ListViewToken[] }) => {
     if (jumping.current) return;
     // A section's zero-height footer counts as "visible" at the very top of the
     // screen; it belongs to the section ABOVE, so it must not decide the tab.

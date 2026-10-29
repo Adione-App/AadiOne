@@ -29,6 +29,7 @@ import { cache, CacheKey } from '../../infra/cache';
 import { moduleLogger } from '../../common/logger';
 import { badRequest } from '../../common/errors';
 import * as repository from './configuration.repository';
+import { DELIVERY_RADIUS_LIMIT_KM, isValidDeliveryRadiusKm } from '../sellers/delivery-radius-limit';
 
 const log = moduleLogger('configuration');
 
@@ -249,6 +250,12 @@ function validateValue(key: keyof ConfigValues, value: unknown): void {
     }
   }
 
+  // Hyperlocal delivery: a slip of the keyboard (120 for 12) must not open a
+  // whole district. Sellers' own overrides use the same limit.
+  if (key === ConfigKey.MAX_SERVICE_RADIUS_KM && !isValidDeliveryRadiusKm(value)) {
+    fail(`must be more than 0 and at most ${DELIVERY_RADIUS_LIMIT_KM} km`);
+  }
+
   if (NON_NEGATIVE_NUMBER_KEYS.includes(key)) {
     if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
       fail('must be a number of zero or more');
@@ -330,7 +337,8 @@ function validateValue(key: keyof ConfigValues, value: unknown): void {
   }
 }
 
-function isValidTimeZone(timeZone: string): boolean {
+/** An IANA timezone this runtime knows (e.g. Asia/Kolkata). Also used for a seller's own timezone. */
+export function isValidTimeZone(timeZone: string): boolean {
   try {
     new Intl.DateTimeFormat('en-US', { timeZone });
     return true;

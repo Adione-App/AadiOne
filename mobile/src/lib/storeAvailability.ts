@@ -37,6 +37,7 @@ function run(): void {
     homeShelvesQueryKey,
     keys.previouslyOrdered,
     ["public-config"],
+    ["platform-availability"],
     ["checkout-quote"],
     ["product"],
     ["products"],

@@ -23,6 +23,7 @@ import type {
   OfferDto,
   OrderDetailDto,
   OrderSummaryDto,
+  PlatformAvailabilityDto,
   ProductDetailDto,
   ProductSummaryDto,
   PublicConfig,
@@ -34,6 +35,8 @@ import type {
   StoreSummaryDto,
 } from "@shared";
 import { api, ApiRequestError } from "./api";
+import { useEffect } from "react";
+import { refreshDelayMs } from "./platformAvailability";
 import { useAuth, useSignedIn } from "./store";
 import { isPrivateQueryKey } from "./guestAccess";
 import {
@@ -104,6 +107,35 @@ export function usePublicConfig() {
     queryFn: () => api.get<PublicConfig>("/config/public"),
     staleTime: 60_000,
   });
+}
+
+/** Key of the app-wide availability (GET /availability). */
+export const PLATFORM_AVAILABILITY_KEY = ["platform-availability"] as const;
+
+/**
+ * The app-wide availability, decided by the server (master switch, emergency
+ * closure, pauses, holidays, weekly hours). Asked again on app resume and on
+ * the realtime availability event (lib/storeAvailability.ts), and — instead
+ * of polling — once at the server's `nextChangeAt` (a window closing, a pause
+ * starting or ending). An older server without the route answers 404: the
+ * caller then falls back to the public configuration's master switch.
+ */
+export function usePlatformAvailability() {
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: PLATFORM_AVAILABILITY_KEY,
+    queryFn: () => api.get<PlatformAvailabilityDto>("/availability"),
+    staleTime: 60_000,
+    retry: (count, error) => !(error instanceof ApiRequestError && error.status === 404) && count < 2,
+  });
+  const nextChangeAt = query.data?.nextChangeAt;
+  useEffect(() => {
+    const delay = refreshDelayMs(nextChangeAt, Date.now());
+    if (delay === null) return undefined;
+    const timer = setTimeout(() => void queryClient.invalidateQueries({ queryKey: PLATFORM_AVAILABILITY_KEY }), delay);
+    return () => clearTimeout(timer);
+  }, [nextChangeAt, queryClient]);
+  return query;
 }
 
 export function useHomeFeed() {

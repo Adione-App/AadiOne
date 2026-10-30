@@ -72,6 +72,7 @@ import { api, ApiRequestError, resolveImageUrl } from "@/lib/api";
 import { showCartNotice } from "@/lib/cartNotice";
 import { checkoutPaymentState } from "@/lib/paymentOptions";
 import {
+  PLATFORM_AVAILABILITY_KEY,
   clearCartAfterOrder,
   keys,
   useCartMutations,
@@ -546,6 +547,8 @@ export default function CartScreen({
             // marked) and the server's reason; a fresh key makes the next
             // attempt a new request, not a replay of this refusal.
             await Promise.all([refetch(), quote.refetch()]);
+            // The app-wide status too (Home's notice), when the app itself closed.
+            if (err.code === ErrorCode.ORDERING_PAUSED) void queryClient.invalidateQueries({ queryKey: PLATFORM_AVAILABILITY_KEY });
             setIdempotencyKey(Crypto.randomUUID());
             setCheckoutError(err.message);
           } else if (

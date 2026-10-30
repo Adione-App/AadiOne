@@ -2451,3 +2451,59 @@ model AuditLog {
   @@index([actorUserId, createdAt])
   @@map("audit_logs")
 }
+
+/// How a global pause began (platform-availability.ts).
+///   IMMEDIATE  "Pause now": from now until `endsAt`, or until resumed (null).
+///   SCHEDULED  a future window, `startsAt` to `endsAt` (both required).
+///   EMERGENCY  an emergency closure: from now until an admin ends it.
+enum PlatformPauseKind {
+  IMMEDIATE
+  SCHEDULED
+  EMERGENCY
+}
+
+/// An app-wide pause in ordering — instants, so a pause is evaluated from
+/// the database on every request: it starts and ends on time with no timer,
+/// and survives a backend restart. Never deleted: cancelling (before it
+/// starts) or ending early (resume) stamps the row, keeping the history.
+model PlatformPause {
+  id      String            @id @default(uuid()) @db.Uuid
+  kind    PlatformPauseKind
+  /// Customer-facing; null = the standard sentence for the kind.
+  message String?           @db.VarChar(200)
+
+  startsAt DateTime  @map("starts_at") @db.Timestamptz(3)
+  /// Null = until an admin resumes / ends it (IMMEDIATE without an end, EMERGENCY).
+  endsAt   DateTime? @map("ends_at") @db.Timestamptz(3)
+
+  /// Cancelled before it started.
+  cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  /// Resumed / ended early by an admin.
+  endedAt     DateTime? @map("ended_at") @db.Timestamptz(3)
+
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([startsAt])
+  @@map("platform_pauses")
+}
+
+/// A full-day app-wide closure (public holiday, maintenance day) — LOCAL
+/// calendar dates in STORE_TIMEZONE, both inclusive: closed from 00:00 on
+/// `startDate` until 24:00 on `endDate`, local time.
+model PlatformHoliday {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @db.VarChar(80)
+  /// Customer-facing; null = "Aadione is closed for <name>."
+  message   String?  @db.VarChar(200)
+  startDate DateTime @map("start_date") @db.Date
+  endDate   DateTime @map("end_date") @db.Date
+
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([endDate])
+  @@map("platform_holidays")
+}

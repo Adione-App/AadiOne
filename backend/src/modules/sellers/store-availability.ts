@@ -2,7 +2,9 @@
  * Store availability for customers — two INDEPENDENT layers, one source of
  * truth each:
  *
- *   1. App-wide ordering (Configuration ORDERING_ENABLED). Off: customers keep
+ *   1. App-wide ordering — platform/platform-availability.ts: the master
+ *      switch (ORDERING_ENABLED), the emergency closure, pauses, holidays and
+ *      the app-wide weekly hours, in that order. Closed: customers keep
  *      browsing and filling their cart, but no order and no payment start is
  *      accepted. It never changes any store's own state.
  *   2. Each seller's availability — seller.service.ts's
@@ -17,11 +19,11 @@
  * shown. Nothing here is cached: every call reads the current state.
  */
 
-import { ConfigKey, ErrorCode } from '../../shared';
+import { ErrorCode, type PlatformClosedReason } from '../../shared';
 import { AppError } from '../../common/errors';
 import { prisma } from '../../infra/db/prisma';
 import { getZonedParts } from '../../shared/datetime';
-import * as configService from '../configuration/configuration.service';
+import { getPlatformAvailability } from '../platform/platform-availability.service';
 import {
   closureKey,
   evaluateSellerAvailability,
@@ -39,21 +41,27 @@ export const DEFAULT_ORDERING_PAUSED_MESSAGE =
 
 export interface OrderingState {
   enabled: boolean;
-  /** What Home and Cart show while paused; null while ordering is on. */
+  /** What Home and Cart show while closed (with the reopening time when known); null while open. */
   message: string | null;
+  /** Why, when closed (GLOBAL_DISABLED, HOLIDAY_CLOSURE, OUTSIDE_OPERATING_HOURS, …). */
+  reasonCode: PlatformClosedReason | null;
 }
 
+/** App-wide ordering right now — the one global rule (platform-availability.ts). */
 export async function orderingState(): Promise<OrderingState> {
-  const config = await configService.getMany([ConfigKey.ORDERING_ENABLED, ConfigKey.ORDERING_PAUSED_MESSAGE]);
-  if (config.ORDERING_ENABLED) return { enabled: true, message: null };
-  return { enabled: false, message: config.ORDERING_PAUSED_MESSAGE.trim() || DEFAULT_ORDERING_PAUSED_MESSAGE };
+  const availability = await getPlatformAvailability();
+  if (availability.acceptingOrders) return { enabled: true, message: null, reasonCode: null };
+  return { enabled: false, message: availability.message ?? DEFAULT_ORDERING_PAUSED_MESSAGE, reasonCode: availability.reasonCode };
 }
 
-/** Refuses any new order or payment start while ordering is paused app-wide. */
+/** Refuses any new order or payment start while the app is not taking orders. */
 export async function assertOrderingEnabled(): Promise<void> {
   const state = await orderingState();
   if (state.enabled) return;
-  throw new AppError(ErrorCode.ORDERING_PAUSED, { message: state.message ?? DEFAULT_ORDERING_PAUSED_MESSAGE });
+  throw new AppError(ErrorCode.ORDERING_PAUSED, {
+    message: state.message ?? DEFAULT_ORDERING_PAUSED_MESSAGE,
+    internalMessage: `app-wide ordering closed: ${state.reasonCode}`,
+  });
 }
 
 /* -------------------------------------------------------------------------- */

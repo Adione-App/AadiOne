@@ -39,6 +39,7 @@ import { paymentRouter } from '../modules/payments/payment.routes';
 import { appVersionRouter } from '../modules/app-version/app-version.routes';
 import { clientErrorRouter } from '../modules/client-errors/client-errors.routes';
 import { contentRouter } from '../modules/content/content.routes';
+import { platformAvailabilityRouter } from '../modules/platform/platform-availability.routes';
 import { requireSupportedAppVersion, requireSupportedAppVersionForPayments } from '../middleware/appVersion';
 import {
   deviceRouter,
@@ -53,6 +54,8 @@ export const apiRouter: Router = Router();
 apiRouter.use(publicApiLimit);
 
 apiRouter.use('/config', configurationRouter);
+// App-wide ordering availability, computed now (guests too).
+apiRouter.use('/availability', platformAvailabilityRouter);
 // Public, never version-gated: an app that must update has to learn that.
 apiRouter.use('/app-version', appVersionRouter);
 // Public: app crash reports (redacted, rate-limited, log-only).

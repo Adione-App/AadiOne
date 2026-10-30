@@ -472,8 +472,10 @@ export default function ConfigPage() {
   }
 
   // The Home category order has its own editor (Banners → Home page category order).
-  // Managed on their own pages: Banners → Home page category order, and App Updates.
-  const entries = config.data.filter((entry) => entry.key !== "HOME_CATEGORY_ORDER" && entry.key !== "APP_UPDATE_POLICY");
+  // Managed on their own pages: Banners → Home page category order, App Updates,
+  // and App Settings → Global Availability (weekly hours, main location).
+  const OWN_PAGE_KEYS = new Set(["HOME_CATEGORY_ORDER", "APP_UPDATE_POLICY", "PLATFORM_OPERATING_HOURS", "PLATFORM_LOCATION"]);
+  const entries = config.data.filter((entry) => !OWN_PAGE_KEYS.has(entry.key));
 
   /**
    * Group configuration entries.
@@ -637,7 +639,11 @@ export default function ConfigPage() {
               <span className="font-semibold">Ordering Open</span> pauses or reopens ordering for the whole app. Each store is controlled on its seller page
               (Sellers → a seller): <span className="font-semibold">Activate / Deactivate</span> (admin), its{" "}
               <span className="font-semibold">Accepting Orders</span> switch (seller or admin), closures and weekly hours (Availability tab). A store&apos;s open hours never
-              override a pause here or an admin deactivation.
+              override a pause here or an admin deactivation. App-wide hours, pauses, holidays and the emergency closure are in{" "}
+              <Link to="/global-availability" className="font-semibold text-brand-600 hover:underline">
+                App Settings → Global Availability
+              </Link>
+              .
             </p>
           )}
           {group.title === "Payments" &&

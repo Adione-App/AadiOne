@@ -36,6 +36,9 @@ export const ConfigKey = {
   /* app-wide ordering switch (store-availability.ts) */
   ORDERING_ENABLED: "ORDERING_ENABLED",
   ORDERING_PAUSED_MESSAGE: "ORDERING_PAUSED_MESSAGE",
+  /* global availability (platform-availability.ts) */
+  PLATFORM_OPERATING_HOURS: "PLATFORM_OPERATING_HOURS",
+  PLATFORM_LOCATION: "PLATFORM_LOCATION",
 
   /* payment methods (global switches — payment-availability.ts) */
   PAYMENT_ONLINE_ENABLED: "PAYMENT_ONLINE_ENABLED",
@@ -92,6 +95,28 @@ export const ConfigKey = {
 
 export type ConfigKey = (typeof ConfigKey)[keyof typeof ConfigKey];
 
+/**
+ * One day of Aadione's app-wide weekly schedule (PLATFORM_OPERATING_HOURS).
+ * 24-hour "HH:mm" in STORE_TIMEZONE; opening inclusive, closing exclusive.
+ * The same time twice = open the whole day; closing before opening = the
+ * window runs past midnight into the next day (18:00–02:00).
+ */
+export interface PlatformDayHours {
+  /** 0 = Sunday … 6 = Saturday. */
+  dayOfWeek: number;
+  isClosed: boolean;
+  opensAt: string;
+  closesAt: string;
+}
+
+/** Aadione's main address / service location (PLATFORM_LOCATION) — informational; never a delivery origin. */
+export interface PlatformLocation {
+  addressLine: string;
+  landmark: string | null;
+  latitude: number;
+  longitude: number;
+}
+
 /** A delivery-fee band. The first slab whose `maxKm` covers the distance wins. */
 export interface DeliveryFeeSlab {
   maxKm: number;
@@ -126,6 +151,14 @@ export interface ConfigValues {
   ORDERING_ENABLED: boolean;
   /** Shown on Home and Cart while ORDERING_ENABLED is off; empty = the standard sentence. */
   ORDERING_PAUSED_MESSAGE: string;
+  /**
+   * App-wide weekly hours: exactly 7 days, or EMPTY = no hour restriction
+   * (how the app behaved before hours existed — and still does until an
+   * admin saves a schedule).
+   */
+  PLATFORM_OPERATING_HOURS: PlatformDayHours[];
+  /** Aadione's main location; `{}` = not set. Informational only. */
+  PLATFORM_LOCATION: PlatformLocation | Record<string, never>;
 
   /** New orders / payments may use Online Payment. Off: no new online order or payment; in-flight payments still complete. */
   PAYMENT_ONLINE_ENABLED: boolean;
@@ -207,6 +240,9 @@ export const CONFIG_DEFAULTS: ConfigValues = {
   // On: an installation that never sets it keeps today's behaviour.
   ORDERING_ENABLED: true,
   ORDERING_PAUSED_MESSAGE: "",
+  // Not configured: no app-wide hours, no main location — today's behaviour.
+  PLATFORM_OPERATING_HOURS: [],
+  PLATFORM_LOCATION: {},
 
   // Both on: an installation that never sets them keeps today's behaviour.
   PAYMENT_ONLINE_ENABLED: true,
@@ -338,6 +374,12 @@ export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
 
   ORDERING_PAUSED_MESSAGE:
     "Message shown on Home and Cart while ordering is paused. Empty = \"Ordering is paused right now. You can keep browsing and adding items to your cart.\"",
+
+  PLATFORM_OPERATING_HOURS:
+    "App-wide weekly ordering hours (App Settings → Global Availability), in the marketplace timezone. Empty = no hour restriction.",
+
+  PLATFORM_LOCATION:
+    "Aadione's main address and map point (App Settings → Global Availability). Informational: delivery is measured from each seller's own location.",
 
   PAYMENT_ONLINE_ENABLED:
     "Accept Online Payment for new orders. Off: the app shows it as unavailable and the server refuses new online orders and payments; payments already in progress still complete.",

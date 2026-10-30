@@ -33,6 +33,7 @@ import { colors, radius, spacing } from "@shared/theme";
 
 import {
   useHomeFeed,
+  usePlatformAvailability,
   usePublicConfig,
   useNotificationUnreadCount,
   useOffers,
@@ -43,6 +44,7 @@ import {
 } from "@/lib/queries";
 import { formatUnreadBadge } from "@/lib/notifications";
 import { outOfAreaDetail } from "@/lib/deliveryArea";
+import { globalClosedNotice } from "@/lib/platformAvailability";
 import { useCartError } from "@/lib/useCartActions";
 import { useLocation, usePreferences } from "@/lib/store";
 import { isActiveLiveDestination, liveLocationLabel } from "@/lib/liveLocation";
@@ -237,9 +239,12 @@ export default function HomeScreen({
     useNotificationUnreadCount({ poll: isFocused }).data ?? 0;
 
   const feed = useHomeFeed();
-  // App-wide ordering switch (admin): paused = browse and fill the cart, no orders.
+  // App-wide availability (server-decided: master switch, emergency, pauses,
+  // holidays, hours). Closed = browse and fill the cart, no orders. An older
+  // server without /availability: its master switch, as before.
   const publicConfig = usePublicConfig().data;
-  const orderingPaused = publicConfig?.ORDERING_ENABLED === false;
+  const platformAvailability = usePlatformAvailability().data;
+  const globalClosed = globalClosedNotice(platformAvailability, publicConfig);
   // Only the shared cart error — Home does NOT subscribe to the cart
   // itself: each ProductShelf does, so a quantity tap re-renders the shelves,
   // not this whole screen.
@@ -1035,14 +1040,9 @@ export default function HomeScreen({
                 SERVICEABILITY / CART NOTICES
             ==================================================== */}
 
-            {orderingPaused && (
+            {globalClosed && (
               <View style={styles.noticeContainer}>
-                <NoticeStrip
-                  message={
-                    publicConfig?.ORDERING_PAUSED_MESSAGE?.trim() ||
-                    "Ordering is paused right now. You can keep browsing and adding items to your cart."
-                  }
-                />
+                <NoticeStrip message={globalClosed} />
               </View>
             )}
 

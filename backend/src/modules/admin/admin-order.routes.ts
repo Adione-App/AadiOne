@@ -541,8 +541,13 @@ adminOrderRouter.patch(
       value,
       actorUserId: requireUser(req).id,
     });
-    // App-wide ordering paused/resumed: apps refresh Home and the cart.
-    if (key === ConfigKey.ORDERING_ENABLED || key === ConfigKey.ORDERING_PAUSED_MESSAGE) {
+    // App-wide ordering paused/resumed (or its hours' timezone moved): apps refresh Home and the cart.
+    if (
+      key === ConfigKey.ORDERING_ENABLED ||
+      key === ConfigKey.ORDERING_PAUSED_MESSAGE ||
+      key === ConfigKey.STORE_TIMEZONE ||
+      key === ConfigKey.PLATFORM_OPERATING_HOURS
+    ) {
       emitStoreAvailabilityChanged(null);
     }
     ok(res, { value: saved });

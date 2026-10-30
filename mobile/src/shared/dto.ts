@@ -2218,3 +2218,111 @@ export interface SellerSettlementDto {
   status: SettlementStatus;
   paidAt: string | null;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Global availability — the whole Aadione app (platform-availability.ts)     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Why the app is not taking orders, highest precedence first. Seller-level
+ * reasons (a store closed, outside a store's area) stay on the cart lines and
+ * the checkout errors; these are app-wide only.
+ */
+export type PlatformClosedReason =
+  | 'GLOBAL_DISABLED'
+  | 'EMERGENCY_CLOSURE'
+  | 'MANUAL_PAUSE'
+  | 'SCHEDULED_PAUSE'
+  | 'HOLIDAY_CLOSURE'
+  | 'OUTSIDE_OPERATING_HOURS';
+
+export type PlatformAvailabilityStatus = 'OPEN' | 'OFF' | 'EMERGENCY' | 'PAUSED' | 'HOLIDAY' | 'OUTSIDE_HOURS';
+
+/** GET /availability — computed on the server for "now"; the app never decides it. */
+export interface PlatformAvailabilityDto {
+  acceptingOrders: boolean;
+  status: PlatformAvailabilityStatus;
+  reasonCode: PlatformClosedReason | null;
+  /** What customers see while closed (includes the reopening time when known); null when open. */
+  message: string | null;
+  /** IANA timezone every rule is evaluated in (STORE_TIMEZONE). */
+  timezone: string;
+  /** Server time, ISO 8601 with the timezone's offset. */
+  currentTime: string;
+  /** When ordering next opens — only when it can be determined (never for a manual OFF). */
+  nextOpeningAt?: string;
+  /** "Opens today at 8:00 AM" — with `nextOpeningAt`. */
+  nextOpeningText?: string;
+  /** When this answer may change next (a window closing, a pause starting or ending) — ask again then. */
+  nextChangeAt?: string;
+  /** False: no app-wide weekly schedule is configured (no hour restriction). */
+  hoursConfigured: boolean;
+  /** Today's window in the platform timezone; null when no schedule is configured. */
+  todayOpeningHours: { isClosed: boolean; opensAt: string; closesAt: string } | null;
+  globalLocation: { addressLine: string; landmark: string | null; latitude: number; longitude: number } | null;
+  /** MAX_SERVICE_RADIUS_KM — each seller may override it with its own radius. */
+  defaultServiceRadiusKm: number;
+  /** The restriction behind `reasonCode`, when it is a pause or a holiday. */
+  activeRestriction: {
+    kind: PlatformClosedReason;
+    id: string | null;
+    name: string | null;
+    startsAt: string | null;
+    endsAt: string | null;
+  } | null;
+}
+
+export type PlatformPauseKind = 'IMMEDIATE' | 'SCHEDULED' | 'EMERGENCY';
+export type PlatformPauseStatus = 'UPCOMING' | 'ACTIVE' | 'EXPIRED' | 'ENDED' | 'CANCELLED';
+
+export interface PlatformPauseDto {
+  id: string;
+  kind: PlatformPauseKind;
+  message: string | null;
+  startsAt: string;
+  /** Null = until resumed / ended by an admin. */
+  endsAt: string | null;
+  /** The same instants as local "YYYY-MM-DDTHH:mm" in the platform timezone. */
+  startsAtLocal: string;
+  endsAtLocal: string | null;
+  status: PlatformPauseStatus;
+  cancelledAt: string | null;
+  endedAt: string | null;
+  createdAt: string;
+  createdByName: string | null;
+}
+
+export type PlatformHolidayStatus = 'UPCOMING' | 'ACTIVE' | 'PAST';
+
+export interface PlatformHolidayDto {
+  id: string;
+  name: string;
+  message: string | null;
+  /** Local calendar dates (YYYY-MM-DD) in the platform timezone, both inclusive. */
+  startDate: string;
+  endDate: string;
+  status: PlatformHolidayStatus;
+  createdAt: string;
+  createdByName: string | null;
+}
+
+/** GET /admin/platform-availability — the settings as configured, and what they add up to now. */
+export interface AdminPlatformAvailabilityDto {
+  availability: PlatformAvailabilityDto;
+  settings: {
+    /** The master switch (ORDERING_ENABLED) and its message — PATCH /admin/config. */
+    orderingEnabled: boolean;
+    pausedMessage: string;
+    timezone: string;
+    /** Exactly 7 days, or empty = no schedule. */
+    hours: { dayOfWeek: number; isClosed: boolean; opensAt: string; closesAt: string }[];
+    location: { addressLine: string; landmark: string | null; latitude: number; longitude: number } | null;
+    defaultServiceRadiusKm: number;
+  };
+  /** Who last changed the master switch, from its configuration row. */
+  masterSwitchChange: { at: string; byName: string | null } | null;
+  /** Upcoming and active pauses, and the last 30 days' finished ones. */
+  pauses: PlatformPauseDto[];
+  /** Upcoming and active holidays, and the last 30 days' past ones. */
+  holidays: PlatformHolidayDto[];
+}

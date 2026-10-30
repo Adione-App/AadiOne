@@ -30,6 +30,8 @@ import { moduleLogger } from '../../common/logger';
 import { badRequest } from '../../common/errors';
 import * as repository from './configuration.repository';
 import { DELIVERY_RADIUS_LIMIT_KM, isValidDeliveryRadiusKm } from '../sellers/delivery-radius-limit';
+import { weeklyHoursProblems } from '../platform/platform-schedule';
+import { COORDINATE_PROBLEM_MESSAGE, coordinateProblem } from '../../shared/distance';
 
 const log = moduleLogger('configuration');
 
@@ -312,6 +314,28 @@ function validateValue(key: keyof ConfigValues, value: unknown): void {
   if (key === ConfigKey.DEFAULT_COD_POLICY) {
     if (!['ALLOW', 'DENY', 'INHERIT'].includes(String(value))) {
       fail('must be ALLOW, DENY or INHERIT');
+    }
+  }
+
+  // App-wide weekly hours: 7 valid days, or [] = no schedule (platform-schedule.ts).
+  if (key === ConfigKey.PLATFORM_OPERATING_HOURS) {
+    const problems = weeklyHoursProblems(value);
+    if (problems.length > 0) fail(problems.join(' '));
+  }
+
+  // Aadione's main location: {} (not set), or an address with a valid map point in India.
+  if (key === ConfigKey.PLATFORM_LOCATION) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) fail('must be a location object');
+    const loc = value as Record<string, unknown>;
+    if (Object.keys(loc).length > 0) {
+      if (typeof loc['addressLine'] !== 'string' || loc['addressLine'].trim().length < 2 || loc['addressLine'].length > 300) {
+        fail('needs an address of 2 to 300 characters');
+      }
+      if (loc['landmark'] !== null && loc['landmark'] !== undefined && (typeof loc['landmark'] !== 'string' || loc['landmark'].length > 160)) {
+        fail('landmark must be text of at most 160 characters');
+      }
+      const problem = coordinateProblem(loc['latitude'], loc['longitude'], { requireIndia: true });
+      if (problem) fail(COORDINATE_PROBLEM_MESSAGE[problem]);
     }
   }
 

@@ -323,6 +323,10 @@ function validateValue(key: keyof ConfigValues, value: unknown): void {
     if (problems.length > 0) fail(problems.join(' '));
   }
 
+  if (key === ConfigKey.PLATFORM_OPERATING_MODE) {
+    if (!['', 'FIXED_TIMING', 'ALWAYS_OPEN'].includes(String(value))) fail('must be FIXED_TIMING or ALWAYS_OPEN');
+  }
+
   // Aadione's main location: {} (not set), or an address with a valid map point in India.
   if (key === ConfigKey.PLATFORM_LOCATION) {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) fail('must be a location object');
@@ -330,6 +334,9 @@ function validateValue(key: keyof ConfigValues, value: unknown): void {
     if (Object.keys(loc).length > 0) {
       if (typeof loc['addressLine'] !== 'string' || loc['addressLine'].trim().length < 2 || loc['addressLine'].length > 300) {
         fail('needs an address of 2 to 300 characters');
+      }
+      if (loc['name'] !== null && loc['name'] !== undefined && (typeof loc['name'] !== 'string' || loc['name'].length > 120)) {
+        fail('name must be text of at most 120 characters');
       }
       if (loc['landmark'] !== null && loc['landmark'] !== undefined && (typeof loc['landmark'] !== 'string' || loc['landmark'].length > 160)) {
         fail('landmark must be text of at most 160 characters');

@@ -8,6 +8,7 @@
  *   master switch + its message   Configuration ORDERING_ENABLED / ORDERING_PAUSED_MESSAGE
  *   timezone                      Configuration STORE_TIMEZONE (the marketplace timezone)
  *   weekly hours                  Configuration PLATFORM_OPERATING_HOURS (empty = none)
+ *   Fixed Timing / Always Open    Configuration PLATFORM_OPERATING_MODE ("" = follows the hours)
  *   main location                 Configuration PLATFORM_LOCATION ({} = not set)
  *   default service radius        Configuration MAX_SERVICE_RADIUS_KM (unchanged meaning)
  *   pauses / emergency closures   platform_pauses (instants)
@@ -33,6 +34,7 @@ import type {
   PlatformHolidayDto,
   PlatformHolidayStatus,
   PlatformLocation,
+  PlatformOperatingMode,
   PlatformPauseDto,
   PlatformPauseKind,
   PlatformPauseStatus,
@@ -85,9 +87,20 @@ const dateOf = (d: Date) => d.toISOString().slice(0, 10);
 /* -------------------------------------------------------------------------- */
 
 interface Loaded {
+  /** `hours` here are the ones that APPLY: empty while Always Open. */
   inputs: PlatformInputs;
+  operatingMode: PlatformOperatingMode;
+  operatingModeChosen: boolean;
+  /** The saved schedule, kept while Always Open. */
+  savedHours: PlatformDayHours[];
   location: PlatformLocation | null;
   defaultServiceRadiusKm: number;
+}
+
+/** The mode in force: the chosen one, or — never chosen — Fixed Timing exactly when a schedule is saved. */
+export function effectiveOperatingMode(chosen: PlatformOperatingMode | '', hours: readonly PlatformDayHours[]): PlatformOperatingMode {
+  if (chosen === 'FIXED_TIMING' || chosen === 'ALWAYS_OPEN') return chosen;
+  return hours.length > 0 ? 'FIXED_TIMING' : 'ALWAYS_OPEN';
 }
 
 export function locationOrNull(value: PlatformLocation | Record<string, never>): PlatformLocation | null {
@@ -100,10 +113,13 @@ async function load(now: Date): Promise<Loaded> {
     ConfigKey.ORDERING_PAUSED_MESSAGE,
     ConfigKey.STORE_TIMEZONE,
     ConfigKey.PLATFORM_OPERATING_HOURS,
+    ConfigKey.PLATFORM_OPERATING_MODE,
     ConfigKey.PLATFORM_LOCATION,
     ConfigKey.MAX_SERVICE_RADIUS_KM,
   ]);
   const timezone = config.STORE_TIMEZONE || 'Asia/Kolkata';
+  const savedHours = Array.isArray(config.PLATFORM_OPERATING_HOURS) ? config.PLATFORM_OPERATING_HOURS : [];
+  const operatingMode = effectiveOperatingMode(config.PLATFORM_OPERATING_MODE, savedHours);
   const yesterday = addDays(localDateString(getZonedParts(now, timezone)), -1);
   const [pauses, holidays] = await Promise.all([
     // Not cancelled, not ended early, not over.
@@ -118,10 +134,14 @@ async function load(now: Date): Promise<Loaded> {
       orderingEnabled: config.ORDERING_ENABLED,
       pausedMessage: config.ORDERING_PAUSED_MESSAGE,
       timezone,
-      hours: Array.isArray(config.PLATFORM_OPERATING_HOURS) ? config.PLATFORM_OPERATING_HOURS : [],
+      // Always Open: the schedule is kept but does not apply.
+      hours: operatingMode === 'FIXED_TIMING' ? savedHours : [],
       pauses: pauses.map((p): ScheduledPause => ({ id: p.id, kind: p.kind, message: p.message, startsAt: p.startsAt, endsAt: p.endsAt })),
       holidays: holidays.map((h): Holiday => ({ id: h.id, name: h.name, message: h.message, startDate: dateOf(h.startDate), endDate: dateOf(h.endDate) })),
     },
+    operatingMode,
+    operatingModeChosen: config.PLATFORM_OPERATING_MODE !== '',
+    savedHours,
     location: locationOrNull(config.PLATFORM_LOCATION),
     defaultServiceRadiusKm: config.MAX_SERVICE_RADIUS_KM,
   };
@@ -143,6 +163,7 @@ function toDto(loaded: Loaded, now: Date): PlatformAvailabilityDto {
     currentTime: isoInZone(now, tz),
     ...(opening ? { nextOpeningAt: isoInZone(opening, tz), nextOpeningText: openingText! } : {}),
     ...(change ? { nextChangeAt: isoInZone(change, tz) } : {}),
+    operatingMode: loaded.operatingMode,
     hoursConfigured: inputs.hours.length > 0,
     todayOpeningHours: todayHours(inputs, now),
     globalLocation: loaded.location,
@@ -207,7 +228,18 @@ export async function getAdminView(now: Date = new Date()): Promise<AdminPlatfor
     prisma.configuration.findFirst({ where: { key: ConfigKey.ORDERING_ENABLED, sellerId: null }, select: { updatedAt: true, updatedByUserId: true } }),
     configService.getMany([ConfigKey.ORDERING_ENABLED, ConfigKey.ORDERING_PAUSED_MESSAGE]),
   ]);
-  const names = await userNames([...pauses.map((p) => p.createdByUserId), ...holidays.map((h) => h.createdByUserId), masterRow?.updatedByUserId ?? null]);
+  const hoursRow = await prisma.configuration.findFirst({
+    where: { key: ConfigKey.PLATFORM_OPERATING_HOURS, sellerId: null },
+    select: { updatedAt: true, updatedByUserId: true },
+  });
+  const names = await userNames([
+    ...pauses.map((p) => p.createdByUserId),
+    ...holidays.map((h) => h.createdByUserId),
+    masterRow?.updatedByUserId ?? null,
+    hoursRow?.updatedByUserId ?? null,
+  ]);
+  const change = (row: { updatedAt: Date; updatedByUserId: string | null } | null) =>
+    row ? { at: row.updatedAt.toISOString(), byName: row.updatedByUserId ? (names.get(row.updatedByUserId) ?? null) : null } : null;
 
   return {
     availability: toDto(loaded, now),
@@ -215,13 +247,14 @@ export async function getAdminView(now: Date = new Date()): Promise<AdminPlatfor
       orderingEnabled: config.ORDERING_ENABLED,
       pausedMessage: config.ORDERING_PAUSED_MESSAGE,
       timezone: tz,
-      hours: [...loaded.inputs.hours],
+      operatingMode: loaded.operatingMode,
+      operatingModeChosen: loaded.operatingModeChosen,
+      hours: [...loaded.savedHours],
+      hoursChange: change(hoursRow),
       location: loaded.location,
       defaultServiceRadiusKm: loaded.defaultServiceRadiusKm,
     },
-    masterSwitchChange: masterRow
-      ? { at: masterRow.updatedAt.toISOString(), byName: masterRow.updatedByUserId ? (names.get(masterRow.updatedByUserId) ?? null) : null }
-      : null,
+    masterSwitchChange: change(masterRow),
     pauses: pauses.map(
       (p): PlatformPauseDto => ({
         id: p.id,
@@ -261,6 +294,23 @@ export async function getAdminView(now: Date = new Date()): Promise<AdminPlatfor
 
 /** Saves the weekly schedule (7 days) or clears it ([] = no hour restriction). Validated by the configuration service. */
 export async function setOperatingHours(hours: PlatformDayHours[], actorUserId: string): Promise<AdminPlatformAvailabilityDto> {
+  const [chosenMode, currentHours] = await Promise.all([
+    configService.get(ConfigKey.PLATFORM_OPERATING_MODE),
+    configService.get(ConfigKey.PLATFORM_OPERATING_HOURS),
+  ]);
+  if (hours.length === 0 && effectiveOperatingMode(chosenMode, Array.isArray(currentHours) ? currentHours : []) === 'FIXED_TIMING') {
+    throw conflict('Fixed Timing needs a weekly schedule — switch to Always Open before removing it.');
+  }
+  // Saving hours never changes the mode: a mode never chosen is pinned to the
+  // one in force now (Always Open on a fresh install; Fixed Timing where a
+  // schedule was already applying), so Fixed Timing is always a deliberate choice.
+  if (chosenMode === '') {
+    await configService.set({
+      key: ConfigKey.PLATFORM_OPERATING_MODE,
+      value: effectiveOperatingMode('', Array.isArray(currentHours) ? currentHours : []) as never,
+      actorUserId,
+    });
+  }
   const sorted = [...hours].sort((a, b) => a.dayOfWeek - b.dayOfWeek).map((h) => ({ dayOfWeek: h.dayOfWeek, isClosed: h.isClosed, opensAt: h.opensAt, closesAt: h.closesAt }));
   const before = await configService.get(ConfigKey.PLATFORM_OPERATING_HOURS);
   await configService.set({ key: ConfigKey.PLATFORM_OPERATING_HOURS, value: sorted as never, actorUserId });
@@ -271,10 +321,44 @@ export async function setOperatingHours(hours: PlatformDayHours[], actorUserId: 
   return getAdminView();
 }
 
+/**
+ * Fixed Timing (the saved weekly schedule decides) or Always Open (no hour
+ * restriction; the schedule is kept). Neither touches the master switch,
+ * pauses, holidays or the emergency closure.
+ */
+export async function setOperatingMode(mode: PlatformOperatingMode, actorUserId: string): Promise<AdminPlatformAvailabilityDto> {
+  const [before, hours] = await Promise.all([
+    configService.get(ConfigKey.PLATFORM_OPERATING_MODE),
+    configService.get(ConfigKey.PLATFORM_OPERATING_HOURS),
+  ]);
+  if (mode === 'FIXED_TIMING' && (!Array.isArray(hours) || hours.length === 0)) {
+    throw invalid('Save the weekly operating hours first — Fixed Timing needs a schedule.');
+  }
+  await configService.set({ key: ConfigKey.PLATFORM_OPERATING_MODE, value: mode as never, actorUserId });
+  await prisma.auditLog.create({
+    data: {
+      actorUserId,
+      action: 'platform.operating_mode_update',
+      entityType: 'Configuration',
+      entityId: ConfigKey.PLATFORM_OPERATING_MODE,
+      before: { mode: effectiveOperatingMode(before, Array.isArray(hours) ? hours : []), chosen: before !== '' },
+      after: { mode },
+    },
+  });
+  emitStoreAvailabilityChanged(null);
+  return getAdminView();
+}
+
 /** Saves (or clears, with null) Aadione's main location. Informational only. */
 export async function setLocation(location: PlatformLocation | null, actorUserId: string): Promise<AdminPlatformAvailabilityDto> {
   const value = location
-    ? { addressLine: location.addressLine.trim(), landmark: location.landmark?.trim() || null, latitude: location.latitude, longitude: location.longitude }
+    ? {
+        name: location.name?.trim() || null,
+        addressLine: location.addressLine.trim(),
+        landmark: location.landmark?.trim() || null,
+        latitude: location.latitude,
+        longitude: location.longitude,
+      }
     : {};
   const before = await configService.get(ConfigKey.PLATFORM_LOCATION);
   await configService.set({ key: ConfigKey.PLATFORM_LOCATION, value: value as never, actorUserId });
@@ -289,7 +373,8 @@ export async function setLocation(location: PlatformLocation | null, actorUserId
 /* -------------------------------------------------------------------------- */
 
 export type CreatePauseInput =
-  | { kind: 'IMMEDIATE'; message?: string | null; resumeAtLocal?: string | null }
+  /** Resume at a local time, or after `durationMinutes` of server time; neither = until resumed. */
+  | { kind: 'IMMEDIATE'; message?: string | null; resumeAtLocal?: string | null; durationMinutes?: number | null }
   | { kind: 'EMERGENCY'; message?: string | null }
   | { kind: 'SCHEDULED'; message?: string | null; startsAtLocal: string; endsAtLocal: string };
 
@@ -335,8 +420,15 @@ export async function createPause(input: CreatePauseInput, actorUserId: string, 
   const message = input.message?.trim() || null;
   let startsAt = now;
   let endsAt: Date | null = null;
+  if (input.kind === 'IMMEDIATE' && input.resumeAtLocal && input.durationMinutes) {
+    throw invalid('Give either a resume time or a duration, not both.');
+  }
   if (input.kind === 'IMMEDIATE' && input.resumeAtLocal) {
     endsAt = parseInZone(input.resumeAtLocal, tz, 'The resume time');
+    assertWindow(startsAt, endsAt, now);
+  }
+  if (input.kind === 'IMMEDIATE' && input.durationMinutes) {
+    endsAt = new Date(now.getTime() + input.durationMinutes * 60_000);
     assertWindow(startsAt, endsAt, now);
   }
   if (input.kind === 'SCHEDULED') {

@@ -546,7 +546,8 @@ adminOrderRouter.patch(
       key === ConfigKey.ORDERING_ENABLED ||
       key === ConfigKey.ORDERING_PAUSED_MESSAGE ||
       key === ConfigKey.STORE_TIMEZONE ||
-      key === ConfigKey.PLATFORM_OPERATING_HOURS
+      key === ConfigKey.PLATFORM_OPERATING_HOURS ||
+      key === ConfigKey.PLATFORM_OPERATING_MODE
     ) {
       emitStoreAvailabilityChanged(null);
     }

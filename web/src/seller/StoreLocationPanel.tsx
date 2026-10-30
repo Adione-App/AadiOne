@@ -393,7 +393,7 @@ function LocationForm({
               </button>
             </div>
           ) : (
-            <p className="text-xs text-gray-400">Address suggestions are off — no reverse-geocoding provider is configured (VITE_REVERSE_GEOCODE_URL).</p>
+            <p className="text-xs text-gray-400">Address suggestions are turned off (VITE_REVERSE_GEOCODE_URL=off).</p>
           ))}
         {suggestion && (
           <div role="status" className="rounded-lg bg-brand-50 px-3 py-2 text-sm text-brand-700">

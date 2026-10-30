@@ -6,7 +6,7 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
-import type { AdminPlatformAvailabilityDto, ConfigKey, PlatformDayHours, PlatformLocation } from '@shared';
+import type { AdminPlatformAvailabilityDto, ConfigKey, PlatformDayHours, PlatformLocation, PlatformOperatingMode } from '@shared';
 import { api } from '@/lib/api';
 
 export const PLATFORM_AVAILABILITY_KEY = ['admin', 'platform-availability'] as const;
@@ -15,9 +15,11 @@ const BASE = '/admin/platform-availability';
 export const platformApi = {
   view: () => api.get<AdminPlatformAvailabilityDto>(BASE),
   setHours: (hours: PlatformDayHours[]) => api.put<AdminPlatformAvailabilityDto>(`${BASE}/hours`, { hours }),
+  setMode: (mode: PlatformOperatingMode) => api.put<AdminPlatformAvailabilityDto>(`${BASE}/mode`, { mode }),
   setLocation: (location: PlatformLocation | null) => api.put<AdminPlatformAvailabilityDto>(`${BASE}/location`, { location }),
-  pauseNow: (message: string | null, resumeAtLocal: string | null) =>
-    api.post<AdminPlatformAvailabilityDto>(`${BASE}/pauses`, { kind: 'IMMEDIATE', message, resumeAtLocal }),
+  /** Until resumed (neither), until a local time, or for a number of minutes (server clock). */
+  pauseNow: (message: string | null, until: { resumeAtLocal: string } | { durationMinutes: number } | null) =>
+    api.post<AdminPlatformAvailabilityDto>(`${BASE}/pauses`, { kind: 'IMMEDIATE', message, ...(until ?? {}) }),
   schedulePause: (message: string | null, startsAtLocal: string, endsAtLocal: string) =>
     api.post<AdminPlatformAvailabilityDto>(`${BASE}/pauses`, { kind: 'SCHEDULED', message, startsAtLocal, endsAtLocal }),
   startEmergency: (message: string | null) => api.post<AdminPlatformAvailabilityDto>(`${BASE}/pauses`, { kind: 'EMERGENCY', message }),

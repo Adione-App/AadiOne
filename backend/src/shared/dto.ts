@@ -2248,11 +2248,13 @@ export interface PlatformAvailabilityDto {
   nextOpeningText?: string;
   /** When this answer may change next (a window closing, a pause starting or ending) — ask again then. */
   nextChangeAt?: string;
-  /** False: no app-wide weekly schedule is configured (no hour restriction). */
+  /** FIXED_TIMING: the weekly hours apply; ALWAYS_OPEN: no hour restriction. */
+  operatingMode: 'FIXED_TIMING' | 'ALWAYS_OPEN';
+  /** True when the weekly hours restrict ordering (Fixed Timing with a saved schedule). */
   hoursConfigured: boolean;
   /** Today's window in the platform timezone; null when no schedule is configured. */
   todayOpeningHours: { isClosed: boolean; opensAt: string; closesAt: string } | null;
-  globalLocation: { addressLine: string; landmark: string | null; latitude: number; longitude: number } | null;
+  globalLocation: { name?: string | null; addressLine: string; landmark: string | null; latitude: number; longitude: number } | null;
   /** MAX_SERVICE_RADIUS_KM — each seller may override it with its own radius. */
   defaultServiceRadiusKm: number;
   /** The restriction behind `reasonCode`, when it is a pause or a holiday. */
@@ -2307,9 +2309,15 @@ export interface AdminPlatformAvailabilityDto {
     orderingEnabled: boolean;
     pausedMessage: string;
     timezone: string;
-    /** Exactly 7 days, or empty = no schedule. */
+    /** The mode in force (an unset mode follows whether a schedule is saved). */
+    operatingMode: 'FIXED_TIMING' | 'ALWAYS_OPEN';
+    /** False while the mode has never been chosen explicitly. */
+    operatingModeChosen: boolean;
+    /** The saved schedule — exactly 7 days, or empty = none. Kept while Always Open. */
     hours: { dayOfWeek: number; isClosed: boolean; opensAt: string; closesAt: string }[];
-    location: { addressLine: string; landmark: string | null; latitude: number; longitude: number } | null;
+    /** Who last changed the weekly hours, from their configuration row. */
+    hoursChange: { at: string; byName: string | null } | null;
+    location: { name?: string | null; addressLine: string; landmark: string | null; latitude: number; longitude: number } | null;
     defaultServiceRadiusKm: number;
   };
   /** Who last changed the master switch, from its configuration row. */

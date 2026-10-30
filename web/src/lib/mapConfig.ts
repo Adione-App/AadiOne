@@ -8,11 +8,13 @@
  *                              shown). "off" hides the map — the latitude /
  *                              longitude fields still work.
  *   VITE_MAP_TILE_ATTRIBUTION  Attribution HTML for a custom tile provider.
- *   VITE_REVERSE_GEOCODE_URL   A Nominatim-compatible `/reverse` endpoint
- *                              (e.g. a self-hosted Nominatim, or a provider's
- *                              Nominatim-compatible API including its key).
- *                              Unset: no "Suggest address" button. Nothing is
- *                              ever geocoded automatically.
+ *   VITE_REVERSE_GEOCODE_URL   A Nominatim-compatible `/reverse` endpoint.
+ *                              Default: OpenStreetMap's public Nominatim (no
+ *                              key; its policy allows light use with a
+ *                              Referer — admin lookups are one request per
+ *                              click, never automatic). A self-hosted or
+ *                              provider endpoint can replace it; "off" turns
+ *                              address lookups off.
  */
 
 const OSM_TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
@@ -28,10 +30,15 @@ export const MAP_TILES: { url: string; attribution: string } | null =
       ? { url: env('VITE_MAP_TILE_URL'), attribution: env('VITE_MAP_TILE_ATTRIBUTION') || 'Map data' }
       : { url: OSM_TILES, attribution: OSM_ATTRIBUTION };
 
-export const REVERSE_GEOCODE_URL: string | null = env('VITE_REVERSE_GEOCODE_URL') || null;
+const OSM_REVERSE = 'https://nominatim.openstreetmap.org/reverse';
+
+export const REVERSE_GEOCODE_URL: string | null =
+  env('VITE_REVERSE_GEOCODE_URL').toLowerCase() === 'off' ? null : env('VITE_REVERSE_GEOCODE_URL') || OSM_REVERSE;
 
 /** An address suggested for a map point — every field optional, never applied without the admin's click. */
 export interface SuggestedAddress {
+  /** A readable name for the place: the point's own name (a shop, a building), else its road / village. */
+  placeName: string | null;
   addressLine: string | null;
   locality: string | null;
   city: string | null;
@@ -56,7 +63,7 @@ export async function suggestAddress(latitude: number, longitude: number): Promi
   url.searchParams.set('accept-language', 'en');
   const response = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
   if (!response.ok) throw new Error(`The address lookup failed (${response.status}).`);
-  const body = (await response.json()) as { display_name?: string; address?: Record<string, string>; error?: string };
+  const body = (await response.json()) as { display_name?: string; name?: string; address?: Record<string, string>; error?: string };
   if (body.error || !body.address) throw new Error(body.error ?? 'No address was found for this point.');
   const a = body.address;
   const first = (...keys: string[]): string | null => {
@@ -66,6 +73,7 @@ export async function suggestAddress(latitude: number, longitude: number): Promi
   const street = [first('house_number'), first('road', 'pedestrian', 'street')].filter(Boolean).join(', ');
   const pincode = first('postcode')?.replace(/\s/g, '') ?? null;
   return {
+    placeName: body.name?.trim() || first('amenity', 'shop', 'building', 'tourism', 'office', 'road', 'neighbourhood', 'suburb', 'village', 'town', 'city'),
     addressLine: street || null,
     locality: first('neighbourhood', 'suburb', 'quarter', 'hamlet'),
     city: first('village', 'town', 'city', 'municipality'),

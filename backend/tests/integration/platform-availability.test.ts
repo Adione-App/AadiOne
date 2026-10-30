@@ -199,6 +199,10 @@ describe('weekly hours', () => {
     const saved = data<AdminPlatformAvailabilityDto>(await as(admin.token).put(`${BASE}/hours`, { hours: later }).expect(200));
     expect(saved.settings.hours).toEqual(later);
     expect(data<AdminPlatformAvailabilityDto>(await as(admin.token).get(BASE).expect(200)).settings.hours).toEqual(later);
+    // Saving hours does not apply them: still Always Open until Fixed Timing is chosen.
+    expect(saved.settings).toMatchObject({ operatingMode: 'ALWAYS_OPEN', operatingModeChosen: true });
+    expect((await availability()).acceptingOrders).toBe(true);
+    await as(admin.token).put(`${BASE}/mode`, { mode: 'FIXED_TIMING' }).expect(200);
 
     const closed = await availability();
     expect(closed).toMatchObject({ acceptingOrders: false, status: 'OUTSIDE_HOURS', reasonCode: 'OUTSIDE_OPERATING_HOURS', hoursConfigured: true });
@@ -212,9 +216,9 @@ describe('weekly hours', () => {
     // Inside the hours: open.
     await as(admin.token).put(`${BASE}/hours`, { hours: everyDay(hhmm(-60), hhmm(60)) }).expect(200);
     expect(await availability()).toMatchObject({ acceptingOrders: true, status: 'OPEN' });
-    // Cleared: no hour restriction at all.
+    // Always Open: no hour restriction at all (the schedule is kept).
     await as(admin.token).put(`${BASE}/hours`, { hours: later }).expect(200);
-    await as(admin.token).put(`${BASE}/hours`, { hours: [] }).expect(200);
+    await as(admin.token).put(`${BASE}/mode`, { mode: 'ALWAYS_OPEN' }).expect(200);
     expect(await availability()).toMatchObject({ acceptingOrders: true, hoursConfigured: false });
   });
 
@@ -358,14 +362,15 @@ describe('main location and radius', () => {
     const sellerId = await seedSeller('Radius Shop');
     const location = { addressLine: 'Aadione HQ, Station Road, Sikar', landmark: 'Near clock tower', latitude: 27.6094, longitude: 75.1399 };
     const saved = data<AdminPlatformAvailabilityDto>(await as(admin.token).put(`${BASE}/location`, { location }).expect(200));
-    expect(saved.settings.location).toEqual(location);
-    expect((await availability()).globalLocation).toEqual(location);
+    // No name given: stored as null (the name field came later).
+    expect(saved.settings.location).toEqual({ ...location, name: null });
+    expect((await availability()).globalLocation).toEqual({ ...location, name: null });
 
     await as(admin.token).put(`${BASE}/location`, { location: { ...location, latitude: 91 } }).expect(400);
     await as(admin.token).put(`${BASE}/location`, { location: { ...location, latitude: 0, longitude: 0 } }).expect(400);
     await as(admin.token).put(`${BASE}/location`, { location: { ...location, addressLine: 'x' } }).expect(400);
     await as(admin.token).patch('/admin/config', { key: ConfigKey.MAX_SERVICE_RADIUS_KM, value: -1 }).expect(400);
-    expect((await availability()).globalLocation).toEqual(location);
+    expect((await availability()).globalLocation).toEqual({ ...location, name: null });
 
     // Seller untouched; its own radius still decides its delivery area.
     const seller = await prisma.seller.findUniqueOrThrow({ where: { id: sellerId }, include: { hours: true } });
@@ -415,5 +420,100 @@ describe('seller rules under the global rule', () => {
     await as(admin.token).post(`${BASE}/pauses`, { kind: 'EMERGENCY' }).expect(201);
     await as(world.token).get(`/orders/${orderId}`).expect(200);
     await as(world.token).post(`/orders/${orderId}/cancel`, { reason: 'Changed my mind' }).expect(200);
+  });
+});
+
+describe('operating mode: Fixed Timing / Always Open', () => {
+  it('never chosen: follows the schedule (production behaviour unchanged); Always Open lifts only the hours and keeps them', async () => {
+    const admin = await panelUser(UserRole.ADMIN);
+    const world = await shopper('9400005010');
+    const later = everyDay(hhmm(120), hhmm(180)); // closed now
+
+    expect((await availability()).operatingMode).toBe('ALWAYS_OPEN'); // nothing saved
+    // As stored before the mode existed (production): hours saved, no mode → the hours apply.
+    await configService.set({ key: ConfigKey.PLATFORM_OPERATING_HOURS, value: later as never, actorUserId: admin.userId });
+    let view = data<AdminPlatformAvailabilityDto>(await as(admin.token).get(BASE).expect(200));
+    expect(view.settings).toMatchObject({ operatingMode: 'FIXED_TIMING', operatingModeChosen: false });
+    expect(view.settings.hoursChange?.byName).toBe(`Ops ${seq}`);
+    // Editing the hours then keeps that mode (pinned), it does not flip it.
+    view = data<AdminPlatformAvailabilityDto>(await as(admin.token).put(`${BASE}/hours`, { hours: later }).expect(200));
+    expect(view.settings).toMatchObject({ operatingMode: 'FIXED_TIMING', operatingModeChosen: true });
+    expect(await availability()).toMatchObject({ status: 'OUTSIDE_HOURS', operatingMode: 'FIXED_TIMING' });
+
+    view = data<AdminPlatformAvailabilityDto>(await as(admin.token).put(`${BASE}/mode`, { mode: 'ALWAYS_OPEN' }).expect(200));
+    expect(view.settings).toMatchObject({ operatingMode: 'ALWAYS_OPEN', operatingModeChosen: true, hours: later });
+    expect(await availability()).toMatchObject({ acceptingOrders: true, operatingMode: 'ALWAYS_OPEN', hoursConfigured: false, todayOpeningHours: null });
+    expect((await world.placeOrder()).status).toBe(201);
+    expect(await prisma.auditLog.count({ where: { action: 'platform.operating_mode_update' } })).toBe(1);
+
+    // Back to Fixed Timing: the kept schedule applies again.
+    await as(admin.token).put(`${BASE}/mode`, { mode: 'FIXED_TIMING' }).expect(200);
+    expect(await availability()).toMatchObject({ acceptingOrders: false, reasonCode: 'OUTSIDE_OPERATING_HOURS' });
+    // Fixed Timing cannot lose its schedule.
+    await as(admin.token).put(`${BASE}/hours`, { hours: [] }).expect(409);
+  });
+
+  it('Always Open never bypasses the master switch, a pause, a holiday or an emergency', async () => {
+    const admin = await panelUser(UserRole.ADMIN);
+    const world = await shopper('9400005011');
+    await as(admin.token).put(`${BASE}/hours`, { hours: everyDay(hhmm(120), hhmm(180)) }).expect(200);
+    await as(admin.token).put(`${BASE}/mode`, { mode: 'ALWAYS_OPEN' }).expect(200);
+
+    await as(admin.token).patch('/admin/config', { key: ConfigKey.ORDERING_ENABLED, value: false }).expect(200);
+    expect((await availability()).reasonCode).toBe('GLOBAL_DISABLED');
+    expect((await world.placeOrder()).status).toBe(409);
+    await as(admin.token).patch('/admin/config', { key: ConfigKey.ORDERING_ENABLED, value: true }).expect(200);
+
+    const paused = data<AdminPlatformAvailabilityDto>(await as(admin.token).post(`${BASE}/pauses`, { kind: 'IMMEDIATE' }).expect(201));
+    expect((await availability()).reasonCode).toBe('MANUAL_PAUSE');
+    await as(admin.token).post(`${BASE}/pauses/${paused.pauses[0]!.id}/end`).expect(200);
+
+    const holiday = data<AdminPlatformAvailabilityDto>(await as(admin.token).post(`${BASE}/holidays`, { name: 'Local Day', startDate: today(), endDate: today() }).expect(201));
+    expect((await availability()).reasonCode).toBe('HOLIDAY_CLOSURE');
+    await as(admin.token).delete(`${BASE}/holidays/${holiday.holidays[0]!.id}`).expect(200);
+
+    await as(admin.token).post(`${BASE}/pauses`, { kind: 'EMERGENCY' }).expect(201);
+    expect((await availability()).reasonCode).toBe('EMERGENCY_CLOSURE');
+  });
+
+  it('Fixed Timing needs a saved schedule; only CONFIG_WRITE may switch; invalid modes are refused', async () => {
+    const admin = await panelUser(UserRole.ADMIN);
+    const staff = await panelUser(UserRole.STAFF);
+    await as(admin.token).put(`${BASE}/mode`, { mode: 'FIXED_TIMING' }).expect(400);
+    await as(admin.token).put(`${BASE}/mode`, { mode: 'SOMETIMES' }).expect(400);
+    await as(admin.token).patch('/admin/config', { key: ConfigKey.PLATFORM_OPERATING_MODE, value: 'SOMETIMES' }).expect(400);
+    expect((await as(staff.token).put(`${BASE}/mode`, { mode: 'ALWAYS_OPEN' })).status).toBe(403);
+    expect((await as(null).put(`${BASE}/mode`, { mode: 'ALWAYS_OPEN' })).status).toBe(401);
+    expect((await availability()).operatingMode).toBe('ALWAYS_OPEN');
+  });
+});
+
+describe('main location name', () => {
+  it('is saved and read back with the address; a location saved before names existed still reads', async () => {
+    const admin = await panelUser(UserRole.ADMIN);
+    const location = { name: 'Aadione Main Store', addressLine: 'Bus Stand Road, Railmagra', landmark: null, latitude: 25.029, longitude: 74.1096 };
+    const saved = data<AdminPlatformAvailabilityDto>(await as(admin.token).put(`${BASE}/location`, { location }).expect(200));
+    expect(saved.settings.location).toEqual(location);
+    expect((await availability()).globalLocation).toEqual(location);
+    await as(admin.token).put(`${BASE}/location`, { location: { ...location, name: 'x'.repeat(121) } }).expect(400);
+
+    // As stored by the first version (no name).
+    await configService.set({ key: ConfigKey.PLATFORM_LOCATION, value: { addressLine: 'Old HQ', landmark: null, latitude: 25.03, longitude: 74.11 } as never });
+    expect((await availability()).globalLocation).toMatchObject({ addressLine: 'Old HQ', latitude: 25.03 });
+  });
+});
+
+describe('pause for a duration', () => {
+  it('ends that long after the server\'s now; a duration and a resume time together are refused', async () => {
+    const admin = await panelUser(UserRole.ADMIN);
+    const before = Date.now();
+    const view = data<AdminPlatformAvailabilityDto>(await as(admin.token).post(`${BASE}/pauses`, { kind: 'IMMEDIATE', durationMinutes: 30 }).expect(201));
+    const ends = Date.parse(view.pauses[0]!.endsAt!);
+    expect(ends - before).toBeGreaterThanOrEqual(30 * 60_000 - 1_000);
+    expect(ends - Date.now()).toBeLessThanOrEqual(30 * 60_000 + 1_000);
+    expect((await availability()).reasonCode).toBe('MANUAL_PAUSE');
+    await as(admin.token).post(`${BASE}/pauses/${view.pauses[0]!.id}/end`).expect(200);
+    await as(admin.token).post(`${BASE}/pauses`, { kind: 'IMMEDIATE', durationMinutes: 30, resumeAtLocal: localIn(60) }).expect(400);
+    await as(admin.token).post(`${BASE}/pauses`, { kind: 'IMMEDIATE', durationMinutes: 0 }).expect(400);
   });
 });

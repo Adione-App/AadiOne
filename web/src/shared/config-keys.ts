@@ -45,6 +45,7 @@ export const ConfigKey = {
   ORDERING_PAUSED_MESSAGE: "ORDERING_PAUSED_MESSAGE",
   /* global availability (platform-availability.ts) */
   PLATFORM_OPERATING_HOURS: "PLATFORM_OPERATING_HOURS",
+  PLATFORM_OPERATING_MODE: "PLATFORM_OPERATING_MODE",
   PLATFORM_LOCATION: "PLATFORM_LOCATION",
 
   /* payment methods (global switches — payment-availability.ts) */
@@ -116,8 +117,18 @@ export interface PlatformDayHours {
   closesAt: string;
 }
 
+/**
+ * How the app-wide weekly hours apply (PLATFORM_OPERATING_MODE).
+ *   FIXED_TIMING  the Monday–Sunday schedule decides when the app takes orders;
+ *   ALWAYS_OPEN   no hour restriction (the saved schedule is kept for later).
+ * Neither ever overrides the master switch, pauses, holidays or an emergency.
+ */
+export type PlatformOperatingMode = "FIXED_TIMING" | "ALWAYS_OPEN";
+
 /** Aadione's main address / service location (PLATFORM_LOCATION) — informational; never a delivery origin. */
 export interface PlatformLocation {
+  /** Display name, e.g. "Aadione Main Store"; optional (older saved locations have none). */
+  name?: string | null;
   addressLine: string;
   landmark: string | null;
   latitude: number;
@@ -164,6 +175,12 @@ export interface ConfigValues {
    * admin saves a schedule).
    */
   PLATFORM_OPERATING_HOURS: PlatformDayHours[];
+  /**
+   * Fixed Timing or Always Open. "" = never chosen: follows the schedule
+   * (FIXED_TIMING when one is saved, else ALWAYS_OPEN) — how it behaved
+   * before the mode existed.
+   */
+  PLATFORM_OPERATING_MODE: PlatformOperatingMode | "";
   /** Aadione's main location; `{}` = not set. Informational only. */
   PLATFORM_LOCATION: PlatformLocation | Record<string, never>;
 
@@ -249,6 +266,7 @@ export const CONFIG_DEFAULTS: ConfigValues = {
   ORDERING_PAUSED_MESSAGE: "",
   // Not configured: no app-wide hours, no main location — today's behaviour.
   PLATFORM_OPERATING_HOURS: [],
+  PLATFORM_OPERATING_MODE: "",
   PLATFORM_LOCATION: {},
 
   // Both on: an installation that never sets them keeps today's behaviour.
@@ -384,6 +402,9 @@ export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
 
   PLATFORM_OPERATING_HOURS:
     "App-wide weekly ordering hours (App Settings → Global Availability), in the marketplace timezone. Empty = no hour restriction.",
+
+  PLATFORM_OPERATING_MODE:
+    "Fixed Timing (the weekly hours decide) or Always Open (no hour restriction). Empty = follows whether weekly hours are saved.",
 
   PLATFORM_LOCATION:
     "Aadione's main address and map point (App Settings → Global Availability). Informational: delivery is measured from each seller's own location.",

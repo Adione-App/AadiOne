@@ -32,7 +32,6 @@ import CustomersPage from '@/pages/Customers';
 import DeliveryPage from '@/pages/Delivery';
 import ReferralsPage from '@/pages/Referrals';
 import ConfigPage from '@/pages/Config';
-import GlobalAvailabilityPage from '@/pages/GlobalAvailability';
 import AppUpdatesPage from '@/pages/AppUpdates';
 import PaymentsPage from '@/pages/Payments';
 import RefundsPage from '@/pages/Refunds';
@@ -43,7 +42,7 @@ import AuditLogsPage from '@/pages/AuditLogs';
 import { AadioneWordmark } from '@/components/PartnerLogin';
 import SellerApp from '@/seller/SellerApp';
 
-type NavSection = 'MAIN' | 'MARKETPLACE' | 'USERS' | 'FINANCE' | 'GROWTH' | 'APP_SETTINGS' | 'SYSTEM';
+type NavSection = 'MAIN' | 'MARKETPLACE' | 'USERS' | 'FINANCE' | 'GROWTH' | 'SYSTEM';
 
 interface NavItem {
   to: string;
@@ -67,7 +66,6 @@ const SECTIONS: { key: NavSection; label: string }[] = [
   { key: 'USERS', label: 'Users' },
   { key: 'FINANCE', label: 'Finance' },
   { key: 'GROWTH', label: 'Growth' },
-  { key: 'APP_SETTINGS', label: 'App Settings' },
   { key: 'SYSTEM', label: 'System' },
 ];
 
@@ -173,15 +171,6 @@ const NAV: NavItem[] = [
     permission: Permission.SETTLEMENT_READ,
   },
   { to: '/referrals', label: 'Referrals', icon: 'gift', section: 'GROWTH', title: 'Referrals', subtitle: 'Refer & Earn activity and rewards issued' },
-  {
-    to: '/global-availability',
-    label: 'Global Availability',
-    icon: 'clock',
-    section: 'APP_SETTINGS',
-    title: 'Global Availability',
-    subtitle: 'When the whole Aadione app takes orders — master switch, hours, pauses, closures, main location',
-    permission: Permission.CONFIG_READ,
-  },
   { to: '/notifications', label: 'Notifications', icon: 'bell', section: 'SYSTEM', title: 'Notifications', subtitle: 'Platform operational notifications' },
   {
     to: '/audit-logs',
@@ -201,7 +190,7 @@ const NAV: NavItem[] = [
     subtitle: 'Optional and mandatory customer app updates',
     permission: Permission.CONFIG_READ,
   },
-  { to: '/settings', label: 'Configuration', icon: 'config', section: 'SYSTEM', title: 'Configuration', subtitle: 'Platform settings' },
+  { to: '/settings', label: 'Configuration', icon: 'config', section: 'SYSTEM', title: 'Configuration', subtitle: 'Aadione app availability, main store location and platform settings' },
 ];
 
 /**
@@ -479,7 +468,8 @@ function AdminApp() {
         <Route path="/audit-logs" element={<AuditLogsPage />} />
         <Route path="/app-updates" element={<AppUpdatesPage />} />
         <Route path="/settings" element={<ConfigPage />} />
-        <Route path="/global-availability" element={<GlobalAvailabilityPage />} />
+        {/* Old link: the app availability settings now live at the top of Configuration. */}
+        <Route path="/global-availability" element={<Navigate to="/settings#app-availability" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Shell>

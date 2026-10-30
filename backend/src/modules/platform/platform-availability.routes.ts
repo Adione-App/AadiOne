@@ -5,6 +5,7 @@
  *
  *   GET  /admin/platform-availability                    CONFIG_READ: settings + computed status
  *   PUT  /admin/platform-availability/hours              CONFIG_WRITE: weekly hours ([] = none)
+ *   PUT  /admin/platform-availability/mode               CONFIG_WRITE: FIXED_TIMING / ALWAYS_OPEN
  *   PUT  /admin/platform-availability/location           CONFIG_WRITE: main location (null = clear)
  *   POST /admin/platform-availability/pauses             CONFIG_WRITE: pause now / scheduled / emergency
  *   PATCH /admin/platform-availability/pauses/:id        CONFIG_WRITE: message, reschedule, resume time
@@ -76,6 +77,15 @@ adminPlatformAvailabilityRouter.put(
 );
 
 adminPlatformAvailabilityRouter.put(
+  `${BASE}/mode`,
+  requirePermission(Permission.CONFIG_WRITE),
+  validate({ body: z.object({ mode: z.enum(['FIXED_TIMING', 'ALWAYS_OPEN']) }).strict() }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await service.setOperatingMode(req.body.mode, requireUser(req).id));
+  }),
+);
+
+adminPlatformAvailabilityRouter.put(
   `${BASE}/location`,
   requirePermission(Permission.CONFIG_WRITE),
   validate({
@@ -83,6 +93,7 @@ adminPlatformAvailabilityRouter.put(
       .object({
         location: z
           .object({
+            name: z.string().trim().max(120).nullable().optional(),
             addressLine: z.string().trim().min(2).max(300),
             landmark: z.string().trim().max(160).nullable().optional(),
             // Range, (0, 0), swapped and India are checked by the configuration service.
@@ -95,7 +106,7 @@ adminPlatformAvailabilityRouter.put(
       .strict(),
   }),
   asyncHandler(async (req: Request, res: Response) => {
-    const location = req.body.location as { addressLine: string; landmark?: string | null; latitude: number; longitude: number } | null;
+    const location = req.body.location as { name?: string | null; addressLine: string; landmark?: string | null; latitude: number; longitude: number } | null;
     ok(res, await service.setLocation(location ? { ...location, landmark: location.landmark ?? null } : null, requireUser(req).id));
   }),
 );
@@ -105,7 +116,15 @@ adminPlatformAvailabilityRouter.post(
   requirePermission(Permission.CONFIG_WRITE),
   validate({
     body: z.discriminatedUnion('kind', [
-      z.object({ kind: z.literal('IMMEDIATE'), message, resumeAtLocal: localDateTime.nullable().optional() }).strict(),
+      z
+        .object({
+          kind: z.literal('IMMEDIATE'),
+          message,
+          resumeAtLocal: localDateTime.nullable().optional(),
+          // "Pause for 30 minutes": from the server's clock, at most 31 days.
+          durationMinutes: z.number().int().min(1).max(31 * 24 * 60).nullable().optional(),
+        })
+        .strict(),
       z.object({ kind: z.literal('EMERGENCY'), message }).strict(),
       z.object({ kind: z.literal('SCHEDULED'), message, startsAtLocal: localDateTime, endsAtLocal: localDateTime }).strict(),
     ]),

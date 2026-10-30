@@ -20,6 +20,7 @@ import type { ConfigKey } from "@shared";
 
 import { api } from "@/lib/api";
 import { Card, ErrorBanner, Spinner } from "@/components/ui";
+import GlobalAvailabilitySettings from "@/pages/GlobalAvailability";
 
 interface ConfigEntry {
   key: ConfigKey;
@@ -472,9 +473,21 @@ export default function ConfigPage() {
   }
 
   // The Home category order has its own editor (Banners → Home page category order).
-  // Managed on their own pages: Banners → Home page category order, App Updates,
-  // and App Settings → Global Availability (weekly hours, main location).
-  const OWN_PAGE_KEYS = new Set(["HOME_CATEGORY_ORDER", "APP_UPDATE_POLICY", "PLATFORM_OPERATING_HOURS", "PLATFORM_LOCATION"]);
+  // Managed elsewhere: Banners → Home page category order and App Updates on
+  // their own pages; the app's availability, hours, mode, timezone, main
+  // location and default radius in the Aadione App Availability sections at
+  // the top of this page (GlobalAvailability.tsx) — never twice.
+  const OWN_PAGE_KEYS = new Set([
+    "HOME_CATEGORY_ORDER",
+    "APP_UPDATE_POLICY",
+    "ORDERING_ENABLED",
+    "ORDERING_PAUSED_MESSAGE",
+    "PLATFORM_OPERATING_HOURS",
+    "PLATFORM_OPERATING_MODE",
+    "PLATFORM_LOCATION",
+    "STORE_TIMEZONE",
+    "MAX_SERVICE_RADIUS_KM",
+  ]);
   const entries = config.data.filter((entry) => !OWN_PAGE_KEYS.has(entry.key));
 
   /**
@@ -616,9 +629,10 @@ export default function ConfigPage() {
    */
   return (
     <div className="space-y-4">
-      <ErrorBanner message={error} />
-
       <nav aria-label="Configuration sections" className="flex flex-wrap gap-2">
+        <a href="#app-availability" className="rounded-full border border-brand-200 bg-brand-50 px-3 py-1.5 text-sm font-semibold text-brand-700">
+          App Availability
+        </a>
         {grouped.map((group) => (
           <a key={group.title} href={`#cfg-${group.title.toLowerCase().replace(/\s+/g, "-")}`} className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-brand-200">
             {group.title}
@@ -626,24 +640,24 @@ export default function ConfigPage() {
         ))}
       </nav>
 
+      {/* The Aadione app's availability and main store location — first, in a fixed order. */}
+      <GlobalAvailabilitySettings />
+
+      <h2 className="pt-2 text-lg font-semibold text-gray-900">Other settings</h2>
+      <ErrorBanner message={error} />
+
       {grouped.map((group) => (
         <Card key={group.title}>
           <h2 id={`cfg-${group.title.toLowerCase().replace(/\s+/g, "-")}`} className="mb-3 scroll-mt-24 font-semibold">{group.title}</h2>
-          {group.title === "Orders" && entries.find((entry) => entry.key === "ORDERING_ENABLED")?.value === false && (
-            <p role="alert" className="mb-3 rounded-xl bg-danger-50 px-3.5 py-2.5 text-sm font-medium text-danger-700">
-              Ordering is paused app-wide — customers can browse and fill their carts, but cannot place any order until it is enabled again.
-            </p>
-          )}
           {group.title === "Orders" && (
             <p className="mb-3 rounded-xl bg-info-50 px-3.5 py-2.5 text-sm text-gray-700">
-              <span className="font-semibold">Ordering Open</span> pauses or reopens ordering for the whole app. Each store is controlled on its seller page
-              (Sellers → a seller): <span className="font-semibold">Activate / Deactivate</span> (admin), its{" "}
+              Whether the whole app takes orders — App Availability, hours, pauses, holidays — is set at the{" "}
+              <a href="#app-availability" className="font-semibold text-brand-600 hover:underline">
+                top of this page
+              </a>
+              . Each store is controlled on its seller page (Sellers → a seller): <span className="font-semibold">Activate / Deactivate</span> (admin), its{" "}
               <span className="font-semibold">Accepting Orders</span> switch (seller or admin), closures and weekly hours (Availability tab). A store&apos;s open hours never
-              override a pause here or an admin deactivation. App-wide hours, pauses, holidays and the emergency closure are in{" "}
-              <Link to="/global-availability" className="font-semibold text-brand-600 hover:underline">
-                App Settings → Global Availability
-              </Link>
-              .
+              override an app-wide closure or an admin deactivation.
             </p>
           )}
           {group.title === "Payments" &&
@@ -655,7 +669,7 @@ export default function ConfigPage() {
             )}
           {group.title === "Delivery" && (
             <p className="mb-3 rounded-xl bg-info-50 px-3.5 py-2.5 text-sm text-gray-700">
-              The delivery radius is measured in a straight line from each seller&apos;s own map point, which the seller sets in the Seller Panel
+              The default delivery radius is set at the top of this page. It is measured in a straight line from each seller&apos;s own map point, which the seller sets in the Seller Panel
               (Profile → Store location) and an admin can correct on the seller&apos;s page (Overview → Store location, Delivery area — with a map and a
               distance check). Checkout needs every seller in the order to deliver to the address.
             </p>

@@ -27,11 +27,11 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { onSessionExpired } from "@/lib/api";
 import { retryInterruptedRestore, useAuth, useLocation } from "@/lib/store";
-import { onStoreAvailabilityChanged } from "@/lib/socket";
+import { onMyOrderChanged, onStoreAvailabilityChanged } from "@/lib/socket";
 import { revalidateStoreAvailability, setAvailabilityQueryClient } from "@/lib/storeAvailability";
 import { loginClosed } from "@/lib/authGate";
 import { isPrivateQueryKey } from "@/lib/guestAccess";
-import { forgetPrivateQueries } from "@/lib/queries";
+import { forgetPrivateQueries, keys } from "@/lib/queries";
 import { useRecentSearches } from "@/lib/recentSearches";
 import { useWishlist } from "@/lib/useWishlist";
 import { forgetCartAfterSignOut, hydrateCartFromDisk } from "@/lib/useCartActions";
@@ -98,6 +98,9 @@ const queryClient = new QueryClient({
 // realtime event make the app ask the server again.
 setAvailabilityQueryClient(queryClient);
 onStoreAvailabilityChanged(revalidateStoreAvailability);
+// An order of mine changed (paid and placed, moved on, ended): the order list
+// and Home's orders-in-progress carousel ask again — only those on screen refetch.
+onMyOrderChanged(() => void queryClient.invalidateQueries({ queryKey: keys.orders }));
 
 const asyncStoragePersister = createAsyncStoragePersister({
   storage: AsyncStorage,
@@ -314,6 +317,9 @@ export default function App() {
       // Stores may have opened or closed while the app was away (a cart kept
       // overnight): ask the server again for whatever is on screen.
       revalidateStoreAvailability();
+      // Back from paying (or from anywhere): an order placed or moved on
+      // meanwhile shows on Home without a restart.
+      void queryClient.invalidateQueries({ queryKey: keys.orders });
     });
     return () => subscription.remove();
   }, []);

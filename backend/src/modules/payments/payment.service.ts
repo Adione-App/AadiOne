@@ -1349,8 +1349,9 @@ async function settleCapture(input: SettlementInput): Promise<void> {
   // Belt and braces: a mismatched capture can never reach placement.
   if (amountMismatch) throw amountMismatchError();
 
-  if (outcome.orderStatus === OrderStatus.PENDING_PAYMENT) {
-    // Commits the stock reservation and places the order, in one transaction.
+  if (outcome.orderStatus === OrderStatus.PENDING_PAYMENT || outcome.orderStatus === OrderStatus.PAYMENT_CONFIRMED) {
+    // Commits the stock reservation and places the order — or, for a paid
+    // order whose placement stopped half-way (PAYMENT_CONFIRMED), finishes it.
     await confirmPaymentAndPlace(order.id, input.actorType);
   }
 }
@@ -1365,7 +1366,7 @@ async function recordAttemptFailure(
   attempt: { status: string; reason: string | null },
   source: "webhook" | "refresh" | "reconcile",
 ): Promise<void> {
-  await prisma.payment.updateMany({
+  const updated = await prisma.payment.updateMany({
     where: { id: paymentId, status: { in: [PaymentStatus.CREATED, PaymentStatus.PENDING] } },
     data: {
       failureCode: attempt.status.slice(0, 80),
@@ -1376,6 +1377,43 @@ async function recordAttemptFailure(
     { paymentId, attemptStatus: attempt.status, source },
     "payment attempt failed — order stays PENDING_PAYMENT for a retry",
   );
+  if (updated.count > 0) await notifyAttemptFailed(paymentId, attempt.status);
+}
+
+/**
+ * Tells the customer a payment attempt failed or was abandoned — also when
+ * the app was closed (the webhook brings the news). Only while the order is
+ * still unpaid: a failure that arrives after (or alongside) a successful
+ * attempt never contradicts it. Once per order (dedupe key), however many
+ * attempts fail or the event is replayed; the order's own end — the hold
+ * expiring — is a separate PAYMENT_FAILED notice from the state machine.
+ */
+async function notifyAttemptFailed(paymentId: string, attemptStatus: string): Promise<void> {
+  try {
+    const payment = await prisma.payment.findUnique({
+      where: { id: paymentId },
+      select: { order: { select: { id: true, userId: true, orderNumber: true, status: true, paymentStatus: true } } },
+    });
+    const order = payment?.order;
+    if (!order || order.status !== OrderStatus.PENDING_PAYMENT || order.paymentStatus === OrderPaymentStatus.PAID) return;
+    const captured = await prisma.payment.count({
+      where: {
+        orderId: order.id,
+        status: { in: MONEY_TAKEN },
+        OR: [{ failureCode: null }, { failureCode: { not: ORPHAN_CAPTURE } }],
+      },
+    });
+    if (captured > 0) return;
+    await notificationService.notify({
+      userId: order.userId,
+      type: NotificationType.PAYMENT_FAILED,
+      dedupeKey: `order:${order.id}:payment-attempt-failed`,
+      orderId: order.id,
+      context: { orderNumber: order.orderNumber, attempt: /DROP|CANCEL/i.test(attemptStatus) ? "CANCELLED" : "FAILED" },
+    });
+  } catch (error) {
+    log.warn({ err: error, paymentId }, "payment-failed notification not sent");
+  }
 }
 
 /** Closes a gateway order that can no longer be paid (expired/terminated). */
@@ -1523,19 +1561,31 @@ export async function handleWebhook(
     return { received: true };
   }
 
-  const record = await prisma.paymentEvent.upsert({
-    where: {
-      provider_eventId: { provider: provider.name, eventId: event.eventId },
-    },
-    create: {
-      provider: provider.name,
-      eventId: event.eventId,
-      eventType: event.type,
-      signatureValid: true,
-      payload: event.payload as never,
-    },
-    update: {},
-  });
+  let record: { id: string };
+  try {
+    record = await prisma.paymentEvent.upsert({
+      where: {
+        provider_eventId: { provider: provider.name, eventId: event.eventId },
+      },
+      create: {
+        provider: provider.name,
+        eventId: event.eventId,
+        eventType: event.type,
+        signatureValid: true,
+        payload: event.payload as never,
+      },
+      update: {},
+    });
+  } catch (error) {
+    // The same event delivered twice AT ONCE: the other delivery holds it
+    // (unique provider + event id) and settles it. Acknowledged, so Cashfree
+    // does not keep retrying a duplicate; the settlement itself is exactly-once.
+    if ((error as { code?: string }).code === "P2002") {
+      log.info({ eventId: event.eventId }, "webhook delivered concurrently — the other delivery settles it");
+      return { received: true };
+    }
+    throw error;
+  }
 
   try {
     const payment = event.providerOrderId
@@ -2491,6 +2541,15 @@ export async function refreshPayment(
   if (!order)
     throw new AppError(ErrorCode.NOT_FOUND, { message: "Order not found." });
 
+  // Paid, but its placement stopped half-way (PAYMENT_CONFIRMED): finish it
+  // now rather than wait for reconciliation — exactly once whoever gets
+  // there first (see confirmPaymentAndPlace).
+  if (order.status === OrderStatus.PAYMENT_CONFIRMED) {
+    await confirmPaymentAndPlace(order.id, ActorType.SYSTEM).catch((error: unknown) =>
+      log.error({ err: error, orderId: order.id }, "finishing a half-placed paid order from refresh failed"),
+    );
+  }
+
   let lastAttemptFailed = false;
   let attemptPending = false;
 
@@ -2684,6 +2743,25 @@ export async function reconcileCheckoutPayments(): Promise<number> {
       log.warn({ orderId: order.id }, "paid order placed by reconciliation");
     } catch (error) {
       log.error({ err: error, orderId: order.id }, "placing a paid order failed");
+    }
+  }
+
+  // A paid order whose placement stopped half-way (PAYMENT_CONFIRMED: paid,
+  // stock committed, not yet PROCESSING) — finished here if nothing else did
+  // within a minute. Never left resting where neither the customer nor the
+  // sellers see it as placed.
+  const halfPlaced = await prisma.order.findMany({
+    where: { status: OrderStatus.PAYMENT_CONFIRMED, updatedAt: { lt: new Date(Date.now() - 60_000) } },
+    select: { id: true },
+    take: 10,
+  });
+  for (const order of halfPlaced) {
+    try {
+      await confirmPaymentAndPlace(order.id, ActorType.SYSTEM);
+      settled += 1;
+      log.warn({ orderId: order.id }, "half-placed paid order finished by reconciliation");
+    } catch (error) {
+      log.error({ err: error, orderId: order.id }, "finishing a half-placed paid order failed");
     }
   }
 

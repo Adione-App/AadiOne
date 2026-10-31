@@ -171,6 +171,8 @@ export interface NotifyContext {
   productName?: string;
   status?: string;
   count?: number;
+  /** PAYMENT_FAILED for one attempt (the order can still be paid), not the order's end. */
+  attempt?: 'FAILED' | 'CANCELLED';
 }
 
 /**
@@ -215,6 +217,18 @@ function compose(type: NotificationType, c: NotifyContext): { title: string; bod
         body: `${seller} could not accept your order.${c.reason ? ` ${c.reason}.` : ''} Any payment for it will be refunded.`,
       };
     case NotificationType.PAYMENT_FAILED:
+      if (c.attempt === 'CANCELLED') {
+        return {
+          title: 'Payment not completed',
+          body: `The payment for order ${order} was cancelled, so the order is not placed yet. Open it in the app to pay and place it.`,
+        };
+      }
+      if (c.attempt === 'FAILED') {
+        return {
+          title: 'Payment failed',
+          body: `Your payment for order ${order} did not go through. No money has been deducted, or it will be refunded. Open the order in the app to try again.`,
+        };
+      }
       return {
         title: 'Payment failed',
         body: 'Your payment did not go through. No money has been deducted, or it will be refunded.',

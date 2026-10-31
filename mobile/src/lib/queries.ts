@@ -37,6 +37,7 @@ import type {
 import { api, ApiRequestError } from "./api";
 import { useEffect } from "react";
 import { refreshDelayMs } from "./platformAvailability";
+import { activeOrdersFromList } from "./activeOrders";
 import { useAuth, useSignedIn } from "./store";
 import { isPrivateQueryKey } from "./guestAccess";
 import {
@@ -84,6 +85,8 @@ export const keys = {
   offers: ["offers"] as const,
   cart: ["cart"] as const,
   orders: ["orders"] as const,
+  /** Under `orders`: anything that refreshes the order list refreshes this too. */
+  activeOrders: ["orders", "active"] as const,
   order: (id: string) => ["order", id] as const,
   referralSummary: ["referral-summary"] as const,
   myCoupons: ["my-coupons"] as const,
@@ -792,6 +795,34 @@ export function useOrders() {
     // A cancelled/delivered order must show its real status the moment this
     // list is opened, not whatever it was up to 30s ago — see useCart's same
     // reasoning above.
+    refetchOnMount: "always",
+  });
+}
+
+/**
+ * Every order of this customer on its way (GET /orders/active): placed — paid
+ * online (Cashfree-verified) or COD — and not delivered or cancelled. Never an
+ * online order still awaiting payment. Home's orders-in-progress carousel.
+ * Refreshed on mount, on app resume, and on the realtime order event
+ * (App.tsx); an older server without the route answers from the order list,
+ * by the same rule.
+ */
+export function useActiveOrders() {
+  const signedIn = useSignedIn();
+  return useQuery({
+    queryKey: keys.activeOrders,
+    queryFn: async () => {
+      try {
+        return (await api.get<{ items: OrderSummaryDto[] }>("/orders/active")).items;
+      } catch (error) {
+        // Older server: "/orders/active" is read as /orders/:id (400) or unknown (404).
+        if (error instanceof ApiRequestError && (error.status === 400 || error.status === 404)) {
+          return activeOrdersFromList((await api.get<CursorPage<OrderSummaryDto>>("/orders?limit=20")).items);
+        }
+        throw error;
+      }
+    },
+    enabled: signedIn,
     refetchOnMount: "always",
   });
 }

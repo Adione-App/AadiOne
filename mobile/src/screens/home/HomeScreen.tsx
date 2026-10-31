@@ -23,7 +23,6 @@ import React, {
 } from "react";
 
 import { Ionicons } from "@expo/vector-icons";
-import { ChevronRight, Package } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useIsFocused } from "@react-navigation/native";
 import * as Clipboard from "expo-clipboard";
@@ -37,7 +36,7 @@ import {
   usePublicConfig,
   useNotificationUnreadCount,
   useOffers,
-  useOrders,
+  useActiveOrders,
   usePreviouslyOrdered,
   useRestaurants,
   useStores,
@@ -45,6 +44,7 @@ import {
 import { formatUnreadBadge } from "@/lib/notifications";
 import { outOfAreaDetail } from "@/lib/deliveryArea";
 import { globalClosedNotice } from "@/lib/platformAvailability";
+import { ActiveOrdersCarousel } from "./sections/ActiveOrdersCarousel";
 import { useCartError } from "@/lib/useCartActions";
 import { useLocation, usePreferences } from "@/lib/store";
 import { isActiveLiveDestination, liveLocationLabel } from "@/lib/liveLocation";
@@ -251,19 +251,12 @@ export default function HomeScreen({
   const cartError = useCartError();
   const previouslyOrdered = usePreviouslyOrdered();
 
-  // The most recent order that's still ONGOING (not delivered/cancelled/
-  // rejected/failed/refunded — see `bucket`, computed server-side in
-  // OrderSummaryDto) — surfaced as a banner below so a customer with an
-  // order already in flight can check on it without losing the NEW,
-  // already-empty cart they're free to build in the meantime (see
-  // useCartActions.ts's `resetPendingCartAfterOrder` for the other half of
-  // that: placing an order no longer leaves its own items stuck showing in
-  // the Mini Cart). `orders.data.items` is already newest-first (server
-  // returns them in placement order), so the first ONGOING one found is
-  // the most recent.
-  const orders = useOrders();
-  const ongoingOrder =
-    orders.data?.items.find((order) => order.bucket === "ONGOING") ?? null;
+  // Orders in progress: EVERY order of this customer on its way — paid online
+  // (Cashfree-verified) or COD, not delivered or cancelled (GET /orders/active)
+  // — one card each in a carousel, so a customer can start a new order while
+  // earlier ones are still being prepared or delivered. Never an online order
+  // still awaiting payment.
+  const activeOrders = useActiveOrders().data ?? [];
 
   const { location, liveDestination, serviceability, refresh } = useLocation();
   // A live GPS location is named by its FULL address, from the stored
@@ -1093,47 +1086,9 @@ export default function HomeScreen({
                 delivered; this keeps that earlier order reachable.
             ==================================================== */}
 
-            {ongoingOrder && (
+            {activeOrders.length > 0 && (
               <View style={styles.noticeContainer}>
-                <Pressable
-                  onPress={() => onOpenOrderTracking(ongoingOrder.id)}
-                  style={styles.ongoingOrderCard}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Order ${ongoingOrder.orderNumber}, ${ongoingOrder.statusLabel}. View order`}
-                >
-                  <View style={styles.ongoingOrderIcon}>
-                    <Package size={20} color={colors.primary} strokeWidth={2} />
-                  </View>
-
-                  <View style={styles.ongoingOrderText}>
-                    <AppText variant="bodyStrong" numberOfLines={1}>
-                      Order #{ongoingOrder.orderNumber}
-                    </AppText>
-                    <AppText
-                      variant="caption"
-                      color={colors.primary}
-                      numberOfLines={1}
-                      style={styles.ongoingOrderStatus}
-                    >
-                      {ongoingOrder.statusLabel}
-                    </AppText>
-                  </View>
-
-                  <View style={styles.ongoingOrderAction}>
-                    <AppText
-                      variant="bodyStrong"
-                      color={colors.primary}
-                      style={styles.ongoingOrderActionText}
-                    >
-                      Track
-                    </AppText>
-                    <ChevronRight
-                      size={16}
-                      color={colors.primary}
-                      strokeWidth={2.5}
-                    />
-                  </View>
-                </Pressable>
+                <ActiveOrdersCarousel orders={activeOrders} paused={!isFocused} onOpen={onOpenOrderTracking} />
               </View>
             )}
 
@@ -1453,61 +1408,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.base,
 
     marginTop: spacing.sm,
-  },
-
-  /* ================================================================
-     ORDER IN PROGRESS
-  ================================================================ */
-
-  ongoingOrderCard: {
-    flexDirection: "row",
-    alignItems: "center",
-
-    padding: spacing.sm,
-
-    borderRadius: radius.lg,
-
-    borderWidth: 1,
-    borderColor: colors.primaryLight,
-
-    backgroundColor: colors.primarySurface,
-  },
-
-  ongoingOrderIcon: {
-    width: 40,
-    height: 40,
-
-    borderRadius: radius.circle,
-
-    backgroundColor: colors.surface,
-
-    alignItems: "center",
-    justifyContent: "center",
-
-    marginRight: spacing.sm,
-  },
-
-  ongoingOrderText: {
-    flex: 1,
-    minWidth: 0,
-  },
-
-  ongoingOrderStatus: {
-    marginTop: 1,
-    fontWeight: "700",
-  },
-
-  ongoingOrderAction: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 1,
-
-    marginLeft: spacing.sm,
-  },
-
-  ongoingOrderActionText: {
-    fontSize: 14,
-    lineHeight: 20,
   },
 
   /* ================================================================

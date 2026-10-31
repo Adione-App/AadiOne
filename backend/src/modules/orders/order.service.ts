@@ -33,6 +33,7 @@ import {
   SELLER_ORDER_STATUS_LABELS,
   toCustomerTimelineStep,
   toOrderBucket,
+  CUSTOMER_ACTIVE_ORDER_STATUSES,
   type CheckoutQuoteResponse,
   type CursorPage,
   type OrderDetailDto,
@@ -1640,6 +1641,33 @@ export async function listOrders(
     hasMore,
     nextCursor: hasMore && last ? last.createdAt.toISOString() : null,
   };
+}
+
+/** How many active orders Home shows at most (a customer rarely has more than a few). */
+const ACTIVE_ORDERS_LIMIT = 20;
+
+/**
+ * The customer's orders on their way (CUSTOMER_ACTIVE_ORDER_STATUSES), newest placed
+ * first. An ONLINE order counts only once its payment is confirmed — by
+ * status (PENDING_PAYMENT is excluded) AND by money (paid, or partly
+ * refunded after a seller's portion was cancelled): an unverified payment
+ * never shows as an order. COD counts from placement.
+ */
+export async function listActiveOrders(userId: string): Promise<OrderSummaryDto[]> {
+  const orders = await prisma.order.findMany({
+    where: {
+      userId,
+      status: { in: [...CUSTOMER_ACTIVE_ORDER_STATUSES] },
+      OR: [
+        { paymentMethod: PaymentMethod.COD },
+        { paymentStatus: { in: [OrderPaymentStatus.PAID, OrderPaymentStatus.PARTIALLY_REFUNDED] } },
+      ],
+    },
+    include: ORDER_DETAIL_INCLUDE,
+    orderBy: [{ placedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+    take: ACTIVE_ORDERS_LIMIT,
+  });
+  return orders.map(toSummary);
 }
 
 /* -------------------------------------------------------------------------- */

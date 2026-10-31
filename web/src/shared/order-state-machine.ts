@@ -25,6 +25,7 @@
  */
 
 import {
+  ACTIVE_ORDER_STATUSES,
   ActorType,
   OrderStatus,
   SellerOrderStatus,
@@ -322,6 +323,20 @@ export const OrderBucket = {
   CANCELLED: "CANCELLED",
 } as const;
 export type OrderBucket = (typeof OrderBucket)[keyof typeof OrderBucket];
+
+/**
+ * The orders a CUSTOMER is waiting for — placed (paid online, or COD), not
+ * yet delivered, not ended: ACTIVE_ORDER_STATUSES (a seller still has work)
+ * plus PAYMENT_CONFIRMED (paid, placement completing). What Home's "order in
+ * progress" carousel shows (GET /orders/active). Narrower than the ONGOING
+ * bucket: PENDING_PAYMENT (online, not paid — never an order until Cashfree
+ * confirms the money) and PARTIALLY_REFUNDED are not orders on their way.
+ */
+export const CUSTOMER_ACTIVE_ORDER_STATUSES: readonly OrderStatus[] = [OrderStatus.PAYMENT_CONFIRMED, ...ACTIVE_ORDER_STATUSES];
+
+export function isCustomerActiveOrder(status: OrderStatus): boolean {
+  return CUSTOMER_ACTIVE_ORDER_STATUSES.includes(status);
+}
 
 export function toOrderBucket(status: OrderStatus): OrderBucket {
   if (status === OrderStatus.DELIVERED) return OrderBucket.DELIVERED;

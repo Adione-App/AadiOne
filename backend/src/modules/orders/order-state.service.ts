@@ -869,12 +869,25 @@ async function dispatchOrderSideEffects(
 /**
  * `PAYMENT_CONFIRMED` is transient by design: the customer should never see
  * it as a resting state, so it advances to `PROCESSING` immediately.
+ *
+ * Resumable: the two steps are separate transactions, so a failure between
+ * them (a database blip, a restart) leaves a PAID order at
+ * PAYMENT_CONFIRMED. Calling this again finishes the placement from wherever
+ * it stopped — the webhook's retry, the app's refresh and the reconciliation
+ * job all do — and does nothing for an order already past it. Each step is
+ * itself exactly-once (row lock; same-status = no-op), so concurrent callers
+ * never repeat the stock commit or the notifications.
  */
 export async function confirmPaymentAndPlace(
   orderId: string,
   actorType: ActorType = ActorType.SYSTEM,
 ): Promise<OrderTransitionResult> {
-  await transitionOrder({ orderId, toStatus: OrderStatus.PAYMENT_CONFIRMED, actorType });
+  const current = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+  if (current.status === OrderStatus.PENDING_PAYMENT) {
+    await transitionOrder({ orderId, toStatus: OrderStatus.PAYMENT_CONFIRMED, actorType });
+  } else if (current.status !== OrderStatus.PAYMENT_CONFIRMED) {
+    return { order: current, fromStatus: current.status, changed: false };
+  }
   return transitionOrder({ orderId, toStatus: OrderStatus.PROCESSING, actorType });
 }
 

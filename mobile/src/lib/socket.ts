@@ -51,8 +51,21 @@ export function connectSocket(accessToken: string): void {
   });
   // A store opened/closed or ordering was paused (server: emitStoreAvailabilityChanged).
   socket.on('store.availability_changed', () => availabilityListener?.());
+  // One of MY orders changed — placed after payment, moved on, delivered or
+  // cancelled (server: emitOrderStatus, this user's room only).
+  socket.on('order.status_changed', () => orderListener?.());
   // Back after a drop: events may have been missed meanwhile — ask again.
-  socket.io.on('reconnect', () => availabilityListener?.());
+  socket.io.on('reconnect', () => {
+    availabilityListener?.();
+    orderListener?.();
+  });
+}
+
+let orderListener: (() => void) | null = null;
+
+/** App.tsx wires this to refresh the order queries (Home's carousel, My Orders). */
+export function onMyOrderChanged(listener: (() => void) | null): void {
+  orderListener = listener;
 }
 
 let availabilityListener: (() => void) | null = null;

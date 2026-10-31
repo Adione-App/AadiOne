@@ -140,6 +140,20 @@ orderRouter.get(
   }),
 );
 
+/**
+ * GET /orders/active — every order of THIS customer that is on its way:
+ * placed (paid online, or COD), not delivered, not cancelled
+ * (CUSTOMER_ACTIVE_ORDER_STATUSES). Never an online order awaiting payment. Home's
+ * order carousel. Declared before `/:id` so "active" is not read as an id.
+ */
+orderRouter.get(
+  '/active',
+  requirePermission(Permission.ORDER_READ_OWN),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, { items: await service.listActiveOrders(requireUser(req).id) });
+  }),
+);
+
 orderRouter.get(
   '/:id',
   requirePermission(Permission.ORDER_READ_OWN),

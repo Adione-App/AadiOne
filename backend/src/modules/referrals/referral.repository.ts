@@ -139,7 +139,8 @@ export async function listMyCoupons(
 ): Promise<CouponWithRedemptions[]> {
   return client.coupon.findMany({
     where: { issuedToUserId: userId },
-    include: { redemptions: { select: { id: true, createdAt: true } } },
+    // A use given back by a cancellation is not a use (coupon-release.ts).
+    include: { redemptions: { where: { releasedAt: null }, select: { id: true, createdAt: true } } },
     orderBy: { createdAt: 'desc' },
   });
 }
@@ -184,7 +185,7 @@ export async function listForAdmin(
         referrer: { select: { mobile: true, fullName: true } },
         referred: { select: { mobile: true, fullName: true } },
         rewardCoupon: {
-          select: { code: true, validTo: true, redemptions: { select: { id: true } } },
+          select: { code: true, validTo: true, redemptions: { where: { releasedAt: null }, select: { id: true } } },
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -211,13 +212,13 @@ export async function getAdminStats(client: DbClient = prisma): Promise<AdminRef
     client.referral.count(),
     client.referral.count({ where: { status: ReferralStatus.REWARD_ISSUED } }),
     client.coupon.count({
-      where: { origin: CouponOrigin.REFERRAL_REWARD, redemptions: { some: {} } },
+      where: { origin: CouponOrigin.REFERRAL_REWARD, redemptions: { some: { releasedAt: null } } },
     }),
     client.coupon.count({
       where: {
         origin: CouponOrigin.REFERRAL_REWARD,
         validTo: { lt: new Date() },
-        redemptions: { none: {} },
+        redemptions: { none: { releasedAt: null } },
       },
     }),
   ]);

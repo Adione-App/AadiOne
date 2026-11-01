@@ -92,7 +92,7 @@ const NAV: NavItem[] = [
     icon: 'rupee',
     section: 'MAIN',
     title: 'Refunds',
-    subtitle: 'Refunds sent back through Cashfree',
+    subtitle: 'Customer requests, refunds by order, COD payouts and retries',
     permission: Permission.ORDER_REFUND,
   },
   { to: '/delivery', label: 'Delivery', icon: 'delivery', section: 'MAIN', title: 'Delivery', subtitle: 'Agents, assignments and cash settlement' },

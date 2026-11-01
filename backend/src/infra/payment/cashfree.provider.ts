@@ -513,6 +513,7 @@ export class CashfreeProvider implements PaymentProvider {
     return {
       providerRefundId: String(refund.cf_refund_id ?? cashfreeRefundId(refundId)),
       status: mapRefundStatus(refund.refund_status),
+      providerStatus: String(refund.refund_status),
     };
   }
 }

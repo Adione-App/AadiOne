@@ -15,6 +15,7 @@ import { orderCreationPerUser } from '../../middleware/rateLimit';
 import { idempotency } from '../../middleware/idempotency';
 import * as service from './order.service';
 import { deliveryDestinationFields, destinationFrom, requireOneDestination } from './delivery-destination';
+import { registerOrderRefundRoutes } from '../refunds/customer-refund.routes';
 
 const uuid = z.string().uuid();
 
@@ -179,3 +180,6 @@ orderRouter.post(
     );
   }),
 );
+
+/* Refunds: GET /orders/:id/refunds, POST /orders/:id/refund-requests. */
+registerOrderRefundRoutes(orderRouter);

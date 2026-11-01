@@ -75,6 +75,7 @@ import { zonedDayRange, zonedToday } from '../orders/seller-order-views';
 import { AppError } from '../../common/errors';
 import { moduleLogger } from '../../common/logger';
 import { prisma, runInTransaction, type DbClient } from '../../infra/db/prisma';
+import { applyDeductionsToSettlement, outstandingDeductionsPaise } from './seller-deduction.service';
 
 const log = moduleLogger('seller-settlement');
 
@@ -88,6 +89,14 @@ const log = moduleLogger('seller-settlement');
 export const SETTLEMENT_CLOSE_LAG_MS = 60_000;
 
 const PAID_PAYMENT_STATUSES = [OrderPaymentStatus.PAID, OrderPaymentStatus.PARTIALLY_REFUNDED] as const;
+/**
+ * A DELIVERED order can only be refunded AFTER delivery (refund requests):
+ * its payment may then read PARTIALLY_REFUNDED or even REFUNDED, yet the
+ * seller's portion stays settleable — what was refunded is recovered as a
+ * seller deduction on the next settlement (seller-deduction.service.ts), never
+ * by dropping the sale (which would take it twice).
+ */
+const DELIVERED_PAYMENT_STATUSES = [...PAID_PAYMENT_STATUSES, OrderPaymentStatus.REFUNDED] as const;
 const HOLDING_REFUND_STATUSES = ['PENDING', 'PROCESSING', 'COMPLETED'] as const;
 
 /* -------------------------------------------------------------------------- */
@@ -141,10 +150,20 @@ interface SellerOrderForEarnings {
     paymentStatus: OrderPaymentStatus;
     paymentMethod: string;
     /** Full-order refunds only (sellerOrderId = null). */
-    refunds: { amountPaise: number; status: string }[];
+    refunds: EarningsRefund[];
   };
-  refunds: { amountPaise: number; status: string }[];
+  refunds: EarningsRefund[];
 }
+
+interface EarningsRefund {
+  amountPaise: number;
+  status: string;
+  /** Set when the refund belongs to a refund group (null: issued before groups). */
+  group?: { postDelivery: boolean } | null;
+}
+
+/** Refunds before delivery (cancellations) — a refund AFTER delivery is a seller deduction instead. */
+const beforeDelivery = (r: EarningsRefund) => !r.group?.postDelivery;
 
 /** Exported for the admin order-financials report — the ONE eligibility rule. */
 export function toEarningsRow(sellerOrder: SellerOrderForEarnings): SellerOrderEarningsRow {
@@ -152,17 +171,18 @@ export function toEarningsRow(sellerOrder: SellerOrderForEarnings): SellerOrderE
     sellerOrder.status === SellerOrderStatus.CANCELLED || sellerOrder.status === SellerOrderStatus.REJECTED;
   const grossPaise = sellerOrder.subtotalPaise;
   const sellerPayablePaise = grossPaise - sellerOrder.commissionPaise;
-  const refundedPaise = sellerOrder.refunds
+  const ownRefunds = sellerOrder.refunds.filter(beforeDelivery);
+  const refundedPaise = ownRefunds
     .filter((r) => r.status === 'COMPLETED')
     .reduce((sum, r) => sum + r.amountPaise, 0);
   const isLive = (r: { status: string }) => (HOLDING_REFUND_STATUSES as readonly string[]).includes(r.status);
-  const holdingRefund = sellerOrder.refunds.some(isLive);
-  const orderRefunded = sellerOrder.order.refunds.some(isLive);
+  const holdingRefund = ownRefunds.some(isLive);
+  const orderRefunded = sellerOrder.order.refunds.filter(beforeDelivery).some(isLive);
 
   let ineligibleReason: IneligibleReason | null = null;
   if (cancelled) ineligibleReason = 'CANCELLED';
   else if (sellerOrder.order.status !== OrderStatus.DELIVERED) ineligibleReason = 'NOT_DELIVERED';
-  else if (!(PAID_PAYMENT_STATUSES as readonly OrderPaymentStatus[]).includes(sellerOrder.order.paymentStatus))
+  else if (!(DELIVERED_PAYMENT_STATUSES as readonly OrderPaymentStatus[]).includes(sellerOrder.order.paymentStatus))
     ineligibleReason = 'NOT_PAID';
   else if (holdingRefund) ineligibleReason = 'REFUND_ON_ACTIVE_ORDER';
   else if (orderRefunded) ineligibleReason = 'ORDER_REFUNDED';
@@ -201,10 +221,13 @@ export const EARNINGS_SELECT = {
       status: true,
       paymentStatus: true,
       paymentMethod: true,
-      refunds: { where: { sellerOrderId: null }, select: { amountPaise: true, status: true } },
+      refunds: {
+        where: { sellerOrderId: null },
+        select: { amountPaise: true, status: true, group: { select: { postDelivery: true } } },
+      },
     },
   },
-  refunds: { select: { amountPaise: true, status: true } },
+  refunds: { select: { amountPaise: true, status: true, group: { select: { postDelivery: true } } } },
 } as const;
 
 async function loadSellerOrThrow(sellerId: string, scopeSellerId?: string) {
@@ -250,8 +273,12 @@ export interface SellerEarningsSummaryDto {
   pendingSettlementPaise: number;
   /** Inside a settlement that is PENDING/PROCESSING/FAILED — not paid yet. */
   inSettlementPaise: number;
-  /** Sum of every PAID settlement's netPayablePaise. */
+  /** Sum of every PAID settlement's netPayablePaise (after deductions). */
   settledAmountPaise: number;
+  /** Seller deductions (refunds after delivery) already taken from settlements. */
+  deductionsAppliedPaise: number;
+  /** Seller deductions still to come out of future settlements. */
+  outstandingDeductionsPaise: number;
   lastSettlementPeriodEnd: string | null;
   /** lastSettlementPeriodEnd + settlementCycleHours; null before the first settlement. */
   nextSettlementDueAt: string | null;
@@ -260,7 +287,8 @@ export interface SellerEarningsSummaryDto {
 function summarise(
   seller: { id: string; name: string; settlementCycleHours: number },
   rows: SellerOrderEarningsRow[],
-  settlements: { periodStart: Date; periodEnd: Date; status: SettlementStatus; netPayablePaise: number }[],
+  settlements: { periodStart: Date; periodEnd: Date; status: SettlementStatus; netPayablePaise: number; deductionsPaise: number }[],
+  outstandingDeductionsPaise = 0,
 ): SellerEarningsSummaryDto {
   const active = rows.filter((r) => r.cancelledPaise === 0);
   const grossSalesPaise = active.reduce((s, r) => s + r.grossPaise, 0);
@@ -281,10 +309,10 @@ function summarise(
     else inSettlementPaise += row.finalPayablePaise;
   }
 
-  const settledAmountPaise = settlements
-    .filter((s) => s.status === SettlementStatus.PAID)
-    .reduce((s, row) => s + row.netPayablePaise, 0);
-  if (settledAmountPaise !== settledFromRows) {
+  const paid = settlements.filter((s) => s.status === SettlementStatus.PAID);
+  const settledAmountPaise = paid.reduce((s, row) => s + row.netPayablePaise, 0);
+  const deductedFromPaid = paid.reduce((s, row) => s + row.deductionsPaise, 0);
+  if (settledAmountPaise + deductedFromPaid !== settledFromRows) {
     // Stored settlement totals and the live SellerOrders they cover must
     // agree (see this module's STABILITY note). A mismatch means some
     // settled order's inputs changed after the fact — loud, never silent.
@@ -312,6 +340,8 @@ function summarise(
     pendingSettlementPaise,
     inSettlementPaise,
     settledAmountPaise,
+    deductionsAppliedPaise: settlements.reduce((s, row) => s + row.deductionsPaise, 0),
+    outstandingDeductionsPaise,
     lastSettlementPeriodEnd: last?.toISOString() ?? null,
     nextSettlementDueAt: last
       ? new Date(last.getTime() + seller.settlementCycleHours * 3_600_000).toISOString()
@@ -330,7 +360,7 @@ export async function getEarningsSummary(
     prisma.sellerOrder.findMany({ where: { sellerId, order: sellerVisibleOrderWhere }, select: EARNINGS_SELECT }),
     prisma.sellerSettlement.findMany({ where: { sellerId } }),
   ]);
-  return summarise(seller, sellerOrders.map(toEarningsRow), settlements);
+  return summarise(seller, sellerOrders.map(toEarningsRow), settlements, await outstandingDeductionsPaise(sellerId));
 }
 
 export interface SellerTodayEarningsDto {
@@ -375,6 +405,15 @@ export async function listEarningsSummaries(options: { sellerId?: string }): Pro
     where: { id: { in: sellerIds } },
     select: { id: true, name: true, settlementCycleHours: true },
   });
+  const outstanding = await prisma.sellerDeduction.groupBy({
+    by: ['sellerId'],
+    where: { sellerId: { in: sellerIds }, status: { not: 'APPLIED' } },
+    _sum: { amountPaise: true, appliedPaise: true },
+  });
+  const outstandingOf = (sellerId: string) => {
+    const row = outstanding.find((o) => o.sellerId === sellerId);
+    return row ? (row._sum.amountPaise ?? 0) - (row._sum.appliedPaise ?? 0) : 0;
+  };
 
   return sellers
     .map((seller) =>
@@ -382,6 +421,7 @@ export async function listEarningsSummaries(options: { sellerId?: string }): Pro
         seller,
         sellerOrders.filter((so) => so.sellerId === seller.id).map(toEarningsRow),
         settlements.filter((s) => s.sellerId === seller.id),
+        outstandingOf(seller.id),
       ),
     )
     .sort((a, b) => b.pendingSettlementPaise - a.pendingSettlementPaise);
@@ -447,7 +487,7 @@ async function findEligibleRows(
       status: { notIn: [SellerOrderStatus.CANCELLED, SellerOrderStatus.REJECTED] },
       order: {
         status: OrderStatus.DELIVERED,
-        paymentStatus: { in: [...PAID_PAYMENT_STATUSES] },
+        paymentStatus: { in: [...DELIVERED_PAYMENT_STATUSES] },
         deliveredAt: { gt: range.start, lte: range.end },
       },
     },
@@ -576,20 +616,32 @@ export async function createSettlement(
       });
     }
 
-    const settlement = await tx.sellerSettlement.create({
+    const base = totals(rows);
+    const created = await tx.sellerSettlement.create({
       data: {
         sellerId,
         periodStart,
         periodEnd,
-        ...totals(rows),
+        ...base,
         status: SettlementStatus.PENDING,
       },
     });
+    // Refunds after delivery come back out of THIS (new) settlement: oldest
+    // first, never beyond its payable; the rest carries forward. Under the
+    // seller lock taken above, so no deduction is ever applied twice.
+    const deductionsPaise = await applyDeductionsToSettlement(tx, sellerId, created.id, base.netPayablePaise);
+    const settlement =
+      deductionsPaise > 0
+        ? await tx.sellerSettlement.update({
+            where: { id: created.id },
+            data: { deductionsPaise, netPayablePaise: base.netPayablePaise - deductionsPaise },
+          })
+        : created;
     log.info(
-      { settlementId: settlement.id, sellerId, sellerOrders: rows.length, netPayablePaise: settlement.netPayablePaise },
+      { settlementId: settlement.id, sellerId, sellerOrders: rows.length, deductionsPaise, netPayablePaise: settlement.netPayablePaise },
       'settlement created',
     );
-    return { created: true, settlement: toSettlementDetail(settlement, seller.name, rows) };
+    return { created: true, settlement: toSettlementDetail(settlement, seller.name, rows, await deductionLines(tx, settlement.id)) };
   });
 
   // After commit, and only for a NEW settlement (an idempotent replay
@@ -615,6 +667,7 @@ interface SettlementRow {
   periodEnd: Date;
   grossSalesPaise: number;
   commissionPaise: number;
+  deductionsPaise: number;
   netPayablePaise: number;
   status: SettlementStatus;
   paidAt: Date | null;
@@ -631,6 +684,9 @@ function toSettlementDto(settlement: SettlementRow, sellerName: string) {
     periodEnd: settlement.periodEnd.toISOString(),
     grossSalesPaise: settlement.grossSalesPaise,
     commissionPaise: settlement.commissionPaise,
+    /** Refunds after delivery recovered from this payout (0 before deductions existed). */
+    deductionsPaise: settlement.deductionsPaise,
+    /** grossSalesPaise - commissionPaise - deductionsPaise. */
     netPayablePaise: settlement.netPayablePaise,
     status: settlement.status,
     paidAt: settlement.paidAt?.toISOString() ?? null,
@@ -640,14 +696,43 @@ function toSettlementDto(settlement: SettlementRow, sellerName: string) {
   };
 }
 
-export type SettlementDetailDto = ReturnType<typeof toSettlementDto> & { sellerOrders: SellerOrderEarningsRow[] };
+export interface SettlementDeductionLine {
+  deductionId: string;
+  orderNumber: string;
+  amountPaise: number;
+  reason: string;
+}
+
+export type SettlementDetailDto = ReturnType<typeof toSettlementDto> & {
+  sellerOrders: SellerOrderEarningsRow[];
+  /** The seller deductions (refunds after delivery) taken from this payout. */
+  deductions: SettlementDeductionLine[];
+};
 
 function toSettlementDetail(
   settlement: SettlementRow,
   sellerName: string,
   sellerOrders: SellerOrderEarningsRow[],
+  deductions: SettlementDeductionLine[] = [],
 ): SettlementDetailDto {
-  return { ...toSettlementDto(settlement, sellerName), sellerOrders };
+  return { ...toSettlementDto(settlement, sellerName), sellerOrders, deductions };
+}
+
+async function deductionLines(db: DbClient, settlementId: string): Promise<SettlementDeductionLine[]> {
+  const applications = await db.sellerDeductionApplication.findMany({
+    where: { settlementId },
+    orderBy: { createdAt: 'asc' },
+    select: {
+      amountPaise: true,
+      deduction: { select: { id: true, reason: true, sellerOrder: { select: { order: { select: { orderNumber: true } } } } } },
+    },
+  });
+  return applications.map((a) => ({
+    deductionId: a.deduction.id,
+    orderNumber: a.deduction.sellerOrder.order.orderNumber,
+    amountPaise: a.amountPaise,
+    reason: a.deduction.reason,
+  }));
 }
 
 async function buildDetail(db: DbClient, settlement: SettlementRow, sellerName: string) {
@@ -656,13 +741,16 @@ async function buildDetail(db: DbClient, settlement: SettlementRow, sellerName: 
     end: settlement.periodEnd,
   });
   const live = totals(rows);
-  if (live.netPayablePaise !== settlement.netPayablePaise || live.grossSalesPaise !== settlement.grossSalesPaise) {
+  if (
+    live.netPayablePaise - settlement.deductionsPaise !== settlement.netPayablePaise ||
+    live.grossSalesPaise !== settlement.grossSalesPaise
+  ) {
     log.error(
-      { settlementId: settlement.id, stored: settlement.netPayablePaise, live: live.netPayablePaise },
+      { settlementId: settlement.id, stored: settlement.netPayablePaise, live: live.netPayablePaise, deductions: settlement.deductionsPaise },
       'settlement totals disagree with the SellerOrders its period covers',
     );
   }
-  return toSettlementDetail(settlement, sellerName, rows);
+  return toSettlementDetail(settlement, sellerName, rows, await deductionLines(db, settlement.id));
 }
 
 export async function getSettlementDetail(settlementId: string, scopeSellerId?: string) {

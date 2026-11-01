@@ -23,6 +23,7 @@ import type { Prisma } from '@prisma/client';
 import { AppError } from '../../common/errors';
 import { prisma } from '../../infra/db/prisma';
 import { transitionSellerOrder } from './order-state.service';
+import { withRefundAction } from '../refunds/refund-action';
 import { isOrderVisibleToSeller, sellerVisibleOrderWhere } from './order-visibility';
 import {
   handoverOf,
@@ -237,11 +238,21 @@ export async function updateSellerOrderStatus(input: UpdateSellerOrderStatusInpu
   // valid but forbidden.
   await loadOwned(input.sellerOrderId, input.scopeSellerId);
 
-  await transitionSellerOrder({
-    sellerOrderId: input.sellerOrderId,
-    toStatus: input.toStatus,
-    actorType: input.actorType,
-    actorUserId: input.actorUserId,
-    reason: input.reason ?? null,
-  });
+  // A rejection / cancellation refunds this portion (and the fees, if it was
+  // the last one) as ONE refund group, attributed to whoever acted.
+  await withRefundAction(
+    {
+      origin: input.actorType === ActorType.ADMIN ? 'ADMIN' : 'AUTO',
+      reason: input.reason ?? 'Seller order cancelled or rejected',
+      actorUserId: input.actorUserId,
+    },
+    () =>
+      transitionSellerOrder({
+        sellerOrderId: input.sellerOrderId,
+        toStatus: input.toStatus,
+        actorType: input.actorType,
+        actorUserId: input.actorUserId,
+        reason: input.reason ?? null,
+      }),
+  );
 }

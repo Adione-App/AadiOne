@@ -23,6 +23,7 @@ import { adminContentRouter } from './admin-content.routes';
 import { adminProductImportRouter } from '../product-import/import.routes';
 import { adminAppVersionRouter } from '../app-version/app-version.routes';
 import { adminPlatformAvailabilityRouter } from '../platform/platform-availability.routes';
+import { adminRefundRouter } from '../refunds/admin-refund.routes';
 
 export const adminRouter: Router = Router();
 
@@ -38,6 +39,7 @@ adminRouter.use('/', adminReferralRouter);
 adminRouter.use('/', adminProductApprovalRouter);
 adminRouter.use('/', adminRestaurantRouter);
 adminRouter.use('/', adminMarketplaceRouter);
+adminRouter.use('/', adminRefundRouter);
 adminRouter.use('/', adminContentRouter);
 adminRouter.use('/', adminPlatformAvailabilityRouter);
 adminRouter.use('/', adminProductImportRouter);

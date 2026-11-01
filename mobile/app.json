@@ -60,6 +60,14 @@
       ],
       "expo-status-bar",
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "Aadione uses your photos only when you attach a picture of an item to a refund request.",
+          "cameraPermission": "Aadione uses the camera only when you take a picture of an item for a refund request.",
+          "microphonePermission": false
+        }
+      ],
+      [
         "expo-notifications",
         {
           "icon": "./assets/adione-icon.png",

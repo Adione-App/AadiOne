@@ -343,9 +343,11 @@ describe('refund — idempotency', () => {
     expect(request.headers['x-idempotency-key']).toBe(cashfreeRefundId(ourRefundId));
     expect(first).toEqual({ providerRefundId: '900001', status: 'PENDING' });
 
-    // A retry: Cashfree answers 409 and the existing refund is read back.
+    // A retry: Cashfree answers 409 and the existing refund is read back —
+    // the same refund, now also carrying Cashfree's own status word
+    // (`providerStatus`, kept as evidence by refund corrections).
     const second = await provider.refund(input);
-    expect(second).toEqual(first);
+    expect(second).toEqual({ ...first, providerStatus: 'PENDING' });
     expect(gateway.refunds.size).toBe(1);
   });
 

@@ -34,6 +34,7 @@ import * as paymentService from "../payments/payment.service";
 import { verifyDeliveryOtp } from "../orders/order.service";
 import { SellerOrderStatus } from "../../shared";
 import { transitionOrder, transitionSellerOrder } from "../orders/order-state.service";
+import { withRefundAction } from "../refunds/refund-action";
 import {
   COLLECTED_PAYMENT_STATUS_LIST,
   COMPLETED_SALE_STATUS_LIST,
@@ -346,23 +347,29 @@ export async function cancelWholeOrder(
   const active = selectSellerOrdersToCancel(sellerOrders);
   const failures: { sellerOrderId: string; error: unknown }[] = [];
 
-  for (const sellerOrder of active) {
-    try {
-      await transitionSellerOrder({
-        sellerOrderId: sellerOrder.id,
-        toStatus: SellerOrderStatus.CANCELLED,
-        actorType: ActorType.ADMIN,
-        actorUserId,
-        reason: reason ?? "Order cancelled by admin",
-      });
-    } catch (error) {
-      failures.push({ sellerOrderId: sellerOrder.id, error });
-      log.error(
-        { err: error, orderId, sellerOrderId: sellerOrder.id },
-        "seller order cancellation failed during whole-order cancel — safe to retry",
-      );
-    }
-  }
+  // ONE admin cancellation, ONE refund group for everything it refunds.
+  await withRefundAction(
+    { origin: "ADMIN", reason: reason ?? "Order cancelled by admin", actorUserId },
+    async () => {
+      for (const sellerOrder of active) {
+        try {
+          await transitionSellerOrder({
+            sellerOrderId: sellerOrder.id,
+            toStatus: SellerOrderStatus.CANCELLED,
+            actorType: ActorType.ADMIN,
+            actorUserId,
+            reason: reason ?? "Order cancelled by admin",
+          });
+        } catch (error) {
+          failures.push({ sellerOrderId: sellerOrder.id, error });
+          log.error(
+            { err: error, orderId, sellerOrderId: sellerOrder.id },
+            "seller order cancellation failed during whole-order cancel — safe to retry",
+          );
+        }
+      }
+    },
+  );
 
   if (failures.length > 0) {
     throw new AppError(ErrorCode.INTERNAL_ERROR, {

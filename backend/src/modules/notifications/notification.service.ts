@@ -173,6 +173,10 @@ export interface NotifyContext {
   count?: number;
   /** PAYMENT_FAILED for one attempt (the order can still be paid), not the order's end. */
   attempt?: 'FAILED' | 'CANCELLED';
+  /** REFUND_UPDATE: which update — a refund delayed, or a refund request received / approved / rejected. */
+  refundStage?: 'DELAYED' | 'REQUEST_RECEIVED' | 'REQUEST_APPROVED' | 'REQUEST_REJECTED';
+  /** SELLER_REFUND_ISSUED after delivery: the seller's net taken from its next payout (commission reversed). */
+  deductionPaise?: number;
 }
 
 /**
@@ -239,6 +243,23 @@ function compose(type: NotificationType, c: NotifyContext): { title: string; bod
       return { title: 'Refund started', body: `Your refund of ${money(c.amountPaise)} for order ${order} has been started.` };
     case NotificationType.REFUND_COMPLETED:
       return { title: 'Refund complete', body: `${money(c.amountPaise)} for order ${order} has been refunded.` };
+    case NotificationType.REFUND_UPDATE:
+      switch (c.refundStage) {
+        case 'REQUEST_RECEIVED':
+          return { title: 'Refund request received', body: `We have received your refund request for order ${order}. We will review it and update you.` };
+        case 'REQUEST_APPROVED':
+          return { title: 'Refund approved', body: `Your refund of ${money(c.amountPaise)} for order ${order} has been approved.` };
+        case 'REQUEST_REJECTED':
+          return {
+            title: 'Refund request not approved',
+            body: `Your refund request for order ${order} was not approved${c.reason ? `: ${sentence(c.reason)}` : '.'}`,
+          };
+        default:
+          return {
+            title: 'Refund delayed',
+            body: `Your refund of ${money(c.amountPaise)} for order ${order} is taking longer than usual. We are on it — no action is needed from you.`,
+          };
+      }
     case NotificationType.BACK_IN_STOCK:
       return { title: 'Back in stock', body: 'An item you wanted is available again.' };
 
@@ -250,7 +271,15 @@ function compose(type: NotificationType, c: NotifyContext): { title: string; bod
     case NotificationType.SELLER_ORDER_UPDATE:
       return { title: 'Order update', body: `Order ${order} is now ${String(c.status ?? '').toLowerCase().replace(/_/g, ' ')}.` };
     case NotificationType.SELLER_REFUND_ISSUED:
-      return { title: 'Refund issued', body: `${money(c.amountPaise)} was refunded to the customer for your cancelled order ${order}.` };
+      return c.reason === 'POST_DELIVERY'
+        ? {
+            title: 'Refund after delivery',
+            body:
+              c.deductionPaise !== undefined
+                ? `${money(c.amountPaise)} was refunded to the customer for order ${order} after delivery. ${money(c.deductionPaise)} (your earning on it, commission reversed) will be deducted from your next payout.`
+                : `${money(c.amountPaise)} was refunded to the customer for order ${order} after delivery. Your earning on it will be deducted from your next payout.`,
+          }
+        : { title: 'Refund issued', body: `${money(c.amountPaise)} was refunded to the customer for your cancelled order ${order}.` };
     case NotificationType.SELLER_ONBOARDING_APPROVED:
       return { title: 'You are approved', body: 'Your seller account has been approved. You can start selling.' };
     case NotificationType.SELLER_ONBOARDING_REJECTED:
@@ -287,6 +316,8 @@ function compose(type: NotificationType, c: NotifyContext): { title: string; bod
       return { title: 'Refund needs attention', body: `A ${money(c.amountPaise)} refund on order ${order} ${c.reason ?? 'failed'}.` };
     case NotificationType.ADMIN_SETTLEMENT_FAILED:
       return { title: 'Payout failed', body: `The ${money(c.amountPaise)} payout to ${seller} failed and needs a retry.` };
+    case NotificationType.ADMIN_REFUND_REQUEST:
+      return { title: 'Refund request to review', body: `A customer asked for a refund on order ${order}.` };
     default:
       return { title: 'Update', body: order ? `There is an update on your order ${order}.` : 'There is an update for you.' };
   }

@@ -22,6 +22,7 @@ import type {
   HomeFeedDto,
   OfferDto,
   OrderDetailDto,
+  OrderRefundsDto,
   OrderSummaryDto,
   PlatformAvailabilityDto,
   ProductDetailDto,
@@ -88,6 +89,8 @@ export const keys = {
   /** Under `orders`: anything that refreshes the order list refreshes this too. */
   activeOrders: ["orders", "active"] as const,
   order: (id: string) => ["order", id] as const,
+  /** Under `order`: refreshing the order refreshes its refunds too. */
+  orderRefunds: (id: string) => ["order", id, "refunds"] as const,
   referralSummary: ["referral-summary"] as const,
   myCoupons: ["my-coupons"] as const,
   // Keyed by user so a second account signing in on the same phone never
@@ -837,6 +840,22 @@ export function useOrder(id: string, live: boolean) {
     // updating is worse than one that costs a request every 30 seconds.
     refetchInterval: live ? 30_000 : false,
     refetchOnMount: "always",
+  });
+}
+
+/**
+ * The order's refunds, consolidated by the server (GET /orders/:id/refunds):
+ * one entry per refund, never split by seller. An older server without the
+ * route answers 404 — the screen then simply shows no refunds card.
+ */
+export function useOrderRefunds(orderId: string, enabled: boolean) {
+  const signedIn = useSignedIn();
+  return useQuery({
+    queryKey: keys.orderRefunds(orderId),
+    queryFn: () => api.get<OrderRefundsDto>(`/orders/${orderId}/refunds`),
+    enabled: signedIn && enabled,
+    staleTime: 30_000,
+    retry: (count, error) => !(error instanceof ApiRequestError && error.status === 404) && count < 2,
   });
 }
 

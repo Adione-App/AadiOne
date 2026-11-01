@@ -46,6 +46,7 @@ import {
   notificationRouter,
 } from '../modules/notifications/notification.routes';
 import { referralRouter, rewardsRouter } from '../modules/referrals/referral.routes';
+import { customerRefundRequestRouter } from '../modules/refunds/customer-refund.routes';
 
 export const apiRouter: Router = Router();
 
@@ -77,6 +78,7 @@ apiRouter.use('/cart', requireSupportedAppVersion, cartRouter);
 apiRouter.use('/addresses', requireSupportedAppVersion, addressRouter);
 apiRouter.use('/checkout', requireSupportedAppVersion, checkoutRouter);
 apiRouter.use('/orders', requireSupportedAppVersion, orderRouter);
+apiRouter.use('/refund-requests', requireSupportedAppVersion, customerRefundRequestRouter);
 apiRouter.use('/payments', requireSupportedAppVersionForPayments, paymentRouter);
 apiRouter.use('/notifications', notificationRouter);
 apiRouter.use('/devices', deviceRouter);

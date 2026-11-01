@@ -41,7 +41,10 @@ import { orderAddressText } from "@/lib/addressDisplay";
 
 import { colors, radius, spacing } from "@shared/theme";
 
-import { keys, useOrder } from "@/lib/queries";
+import { keys, useOrder, useOrderRefunds } from "@/lib/queries";
+import { showRefundsCard } from "@/lib/refunds";
+import { RefundSummaryCard } from "./RefundSummaryCard";
+import { RefundRequestModal } from "./RefundRequestModal";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { useSystemBack } from "@/lib/useSystemBack";
 
@@ -159,6 +162,11 @@ export default function OrderTrackingScreen({
   */
 
   const { data: order, isLoading, isError, refetch } = useOrder(orderId, true);
+
+  // The order's refunds (one line per refund) and the "Request a refund"
+  // entry point — not asked for an online order still awaiting payment.
+  const { data: refunds } = useOrderRefunds(orderId, !!order && order.status !== OrderStatus.PENDING_PAYMENT);
+  const [requestOpen, setRequestOpen] = useState(false);
 
   /*
   |--------------------------------------------------------------------------
@@ -958,6 +966,14 @@ export default function OrderTrackingScreen({
         </View>
 
         {/* ====================================================
+            REFUNDS
+        ==================================================== */}
+
+        {refunds && showRefundsCard(refunds) && (
+          <RefundSummaryCard data={refunds} onRequestRefund={() => setRequestOpen(true)} />
+        )}
+
+        {/* ====================================================
             ALREADY PAID
         ==================================================== */}
 
@@ -1023,6 +1039,22 @@ export default function OrderTrackingScreen({
           </View>
         )}
       </ScrollView>
+
+      {refunds?.request.eligible && (
+        <RefundRequestModal
+          visible={requestOpen}
+          orderId={orderId}
+          items={order.items}
+          refundableItemIds={refunds.request.refundableItemIds}
+          photoRequiredCategories={refunds.request.photoRequiredCategories}
+          onClose={() => setRequestOpen(false)}
+          onSubmitted={() => {
+            setRequestOpen(false);
+            void queryClient.invalidateQueries({ queryKey: keys.orderRefunds(orderId) });
+            Alert.alert("Request sent", "We will review your refund request and update you.");
+          }}
+        />
+      )}
     </Screen>
   );
 }

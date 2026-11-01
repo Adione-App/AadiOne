@@ -13,6 +13,7 @@ import { validate, validatedQuery } from '../../middleware/validate';
 import { requirePermission } from '../../middleware/auth';
 import { attachSellerContext, requireSellerId } from '../../middleware/sellerAuth';
 import * as service from './seller-settlement.service';
+import { listSellerDeductions } from './seller-deduction.service';
 
 const uuid = z.string().uuid();
 
@@ -35,6 +36,15 @@ sellerSettlementRouter.get(
   requirePermission(Permission.SELLER_SETTLEMENT_READ),
   asyncHandler(async (req: Request, res: Response) => {
     ok(res, await service.getTodayEarnings(requireSellerId(req)));
+  }),
+);
+
+/** The seller's own deductions (refunds after delivery) and where each was applied. */
+sellerSettlementRouter.get(
+  '/deductions',
+  requirePermission(Permission.SELLER_SETTLEMENT_READ),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, { items: await listSellerDeductions(requireSellerId(req)) });
   }),
 );
 

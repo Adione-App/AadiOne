@@ -749,6 +749,14 @@ describe('settlement status transitions', () => {
   });
 });
 
+/** The fee components a fully cancelled order refunds: one per fee actually charged. */
+function feeComponents(order: { deliveryFeePaise: number; platformFeePaise: number }): [string, number][] {
+  return [
+    ...(order.deliveryFeePaise > 0 ? ([['DELIVERY_FEE', order.deliveryFeePaise]] as [string, number][]) : []),
+    ...(order.platformFeePaise > 0 ? ([['PLATFORM_FEE', order.platformFeePaise]] as [string, number][]) : []),
+  ];
+}
+
 describe('multi-seller refunds (partial refunds, full-cancellation final refund) and delivered-order refunds', () => {
   const cancelSo = (token: string, id: string) =>
     api()
@@ -827,7 +835,11 @@ describe('multi-seller refunds (partial refunds, full-cancellation final refund)
     expect([b.cancelledAmountPaise, b.refundedAmountPaise, b.netPayablePaise, b.pendingSettlementPaise]).toEqual([2000, 2000, 0, 0]);
   });
 
-  it('cancelling every seller portion refunds each portion once, then the remaining fees in one final refund', async () => {
+  // CHANGED 2026-11-01 (refund management): the fees come back as two typed
+  // components (DELIVERY_FEE, PLATFORM_FEE) of the same refund group, not one
+  // "remaining amount" refund — which used to sweep a FAILED portion's money
+  // into the fee refund (refund-groups.test.ts covers that fix).
+  it('cancelling every seller portion refunds each portion once, then the delivery and platform fees as their own components', async () => {
     const adminToken = await loginAdmin();
     const platformSellerId = await seedStore();
     const sellerAId = await seedSellerWithOwner('9400000062', 'All Cancel Seller A', 1000);
@@ -857,14 +869,18 @@ describe('multi-seller refunds (partial refunds, full-cancellation final refund)
     expect([mid.status, mid.paymentStatus]).toEqual(['PARTIALLY_CANCELLED', 'PARTIALLY_REFUNDED']);
     expect(await prisma.refund.count({ where: { orderId: placed.orderId, sellerOrderId: null } })).toBe(0);
 
-    // Last active portion: its refund, then ONE final order-level refund.
+    // Last active portion: its refund, then the fees — one component each.
     await cancelSo(adminToken, so(platformSellerId)).expect(204);
-    const refunds = await prisma.refund.findMany({ where: { orderId: placed.orderId }, orderBy: { createdAt: 'asc' } });
-    expect(refunds.map((r) => [r.sellerOrderId, r.amountPaise, r.status])).toEqual([
-      [so(sellerAId), 2500, 'COMPLETED'],
-      [so(platformSellerId), 1700, 'COMPLETED'],
-      [null, fees, 'COMPLETED'],
+    const refunds = await prisma.refund.findMany({
+      where: { orderId: placed.orderId },
+      orderBy: [{ createdAt: 'asc' }, { componentType: 'asc' }],
+    });
+    expect(refunds.map((r) => [r.sellerOrderId, r.componentType, r.amountPaise, r.status])).toEqual([
+      [so(sellerAId), 'SELLER_PRODUCT', 2500, 'COMPLETED'],
+      [so(platformSellerId), 'SELLER_PRODUCT', 1700, 'COMPLETED'],
+      ...feeComponents(placedOrder).map(([type, amount]) => [null, type, amount, 'COMPLETED']),
     ]);
+    expect(refunds.filter((r) => r.sellerOrderId === null).reduce((s, r) => s + r.amountPaise, 0)).toBe(fees);
     // Exactly what was captured comes back — never more.
     expect(refunds.reduce((s, r) => s + r.amountPaise, 0)).toBe(payment.amountPaise);
 
@@ -897,10 +913,14 @@ describe('multi-seller refunds (partial refunds, full-cancellation final refund)
 
     await cancelSo(adminToken, placed.sellerOrders[0]!.id).expect(204);
 
-    const refunds = await prisma.refund.findMany({ where: { orderId: placed.orderId }, orderBy: { createdAt: 'asc' } });
-    expect(refunds.map((r) => [r.sellerOrderId !== null, r.status])).toEqual([
-      [true, 'COMPLETED'],
-      [false, 'COMPLETED'],
+    const refunds = await prisma.refund.findMany({
+      where: { orderId: placed.orderId },
+      orderBy: [{ createdAt: 'asc' }, { componentType: 'asc' }],
+    });
+    const placedOrder = await prisma.order.findUniqueOrThrow({ where: { id: placed.orderId } });
+    expect(refunds.map((r) => [r.componentType, r.status])).toEqual([
+      ['SELLER_PRODUCT', 'COMPLETED'],
+      ...feeComponents(placedOrder).map(([type]) => [type, 'COMPLETED']),
     ]);
     expect(refunds[0]!.amountPaise).toBe(3100);
     expect(refunds.reduce((s, r) => s + r.amountPaise, 0)).toBe(payment.amountPaise);
@@ -914,7 +934,8 @@ describe('multi-seller refunds (partial refunds, full-cancellation final refund)
     const soId = placed.sellerOrders[0]!.id;
     await cancelSo(adminToken, soId).expect(204);
     const before = await prisma.refund.findMany({ where: { orderId: placed.orderId } });
-    expect(before).toHaveLength(2);
+    // The portion, plus one component per fee charged.
+    expect(before).toHaveLength(1 + feeComponents(await prisma.order.findUniqueOrThrow({ where: { id: placed.orderId } })).length);
 
     // The same cancellation again, the refund hook called again directly,
     // and an admin full refund — none may move any more money.
@@ -933,14 +954,18 @@ describe('multi-seller refunds (partial refunds, full-cancellation final refund)
     expect([order.status, order.paymentStatus]).toEqual(['REFUNDED', 'REFUNDED']);
   });
 
-  it('the order reaches REFUNDED only once the final refund actually succeeds', async () => {
+  // CHANGED 2026-11-01 (refund management): a fee refund the provider
+  // refused is no longer re-issued by a later automatic call as a second,
+  // unlinked refund — it is retried by an admin, as itself and in the same
+  // group, only after Cashfree confirms no refund exists (refund-groups.test.ts).
+  it('the order reaches REFUNDED only once every fee refund actually succeeds; a refused one waits for the admin retry', async () => {
     const { adminToken, placed } = await paidSingleSellerOrder('9400000066', 'Failing Final Refund Seller', 2600);
     const soId = placed.sellerOrders[0]!.id;
     const original = paymentsInfra.payments.refund.bind(paymentsInfra.payments);
     let calls = 0;
     const spy = vi.spyOn(paymentsInfra.payments, 'refund').mockImplementation(async (input) => {
       calls += 1;
-      // The seller-portion refund goes through; the final fee refund is refused.
+      // The seller-portion refund goes through; the first fee refund is refused.
       if (calls === 2) throw new Error('provider unavailable');
       return original(input);
     });
@@ -948,20 +973,21 @@ describe('multi-seller refunds (partial refunds, full-cancellation final refund)
     await cancelSo(adminToken, soId).expect(204);
     let order = await prisma.order.findUniqueOrThrow({ where: { id: placed.orderId } });
     expect([order.status, order.paymentStatus]).toEqual(['CANCELLED', 'PARTIALLY_REFUNDED']);
-    const failed = await prisma.refund.findFirstOrThrow({ where: { orderId: placed.orderId, sellerOrderId: null } });
-    expect(failed.status).toBe('FAILED');
+    const failed = await prisma.refund.findFirstOrThrow({ where: { orderId: placed.orderId, sellerOrderId: null, status: 'FAILED' } });
+    expect(failed.componentType).toBe(feeComponents(order)[0]![0]);
     expect(
       (await prisma.orderStatusHistory.findMany({ where: { orderId: placed.orderId } })).some((h) => h.toStatus === 'REFUNDED'),
     ).toBe(false);
+    const group = await prisma.refundGroup.findUniqueOrThrow({ where: { id: failed.groupId! } });
+    expect(group.status).toBe('PARTIAL_FAILURE');
 
-    // A later attempt (the provider is back) completes it — once.
+    // A later automatic call (the provider is back) does NOT re-issue it.
     spy.mockRestore();
+    const countBefore = await prisma.refund.count({ where: { orderId: placed.orderId } });
     await paymentService.refundSellerOrderIfPaid(soId, 'retry after provider outage');
+    expect(await prisma.refund.count({ where: { orderId: placed.orderId } })).toBe(countBefore);
     order = await prisma.order.findUniqueOrThrow({ where: { id: placed.orderId } });
-    expect([order.status, order.paymentStatus]).toEqual(['REFUNDED', 'REFUNDED']);
-    const refunds = await prisma.refund.findMany({ where: { orderId: placed.orderId } });
-    expect(refunds.filter((r) => r.status === 'COMPLETED').reduce((s, r) => s + r.amountPaise, 0)).toBe(order.totalPaise);
-    expect(refunds.filter((r) => r.sellerOrderId === null).map((r) => r.status).sort()).toEqual(['COMPLETED', 'FAILED']);
+    expect([order.status, order.paymentStatus]).toEqual(['CANCELLED', 'PARTIALLY_REFUNDED']);
   });
 
   it('READY_FOR_PICKUP + the last portion cancelled: parent CANCELLED, then REFUNDED once fully refunded; repeats are no-ops', async () => {

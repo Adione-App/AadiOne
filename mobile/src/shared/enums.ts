@@ -417,6 +417,21 @@ export const SettlementStatus = {
 export type SettlementStatus = (typeof SettlementStatus)[keyof typeof SettlementStatus];
 
 /* -------------------------------------------------------------------------- */
+/* Refunds                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/** Why a customer asks for a refund on a delivered order. */
+export const RefundRequestCategory = {
+  MISSING_ITEM: 'MISSING_ITEM',
+  DAMAGED_ITEM: 'DAMAGED_ITEM',
+  WRONG_ITEM: 'WRONG_ITEM',
+  QUALITY_ISSUE: 'QUALITY_ISSUE',
+  DELIVERY_DISPUTE: 'DELIVERY_DISPUTE',
+  OTHER: 'OTHER',
+} as const;
+export type RefundRequestCategory = (typeof RefundRequestCategory)[keyof typeof RefundRequestCategory];
+
+/* -------------------------------------------------------------------------- */
 /* Notifications                                                              */
 /* -------------------------------------------------------------------------- */
 
@@ -433,6 +448,7 @@ export const NotificationType = {
   PAYMENT_SUCCESS: 'PAYMENT_SUCCESS',
   REFUND_INITIATED: 'REFUND_INITIATED',
   REFUND_COMPLETED: 'REFUND_COMPLETED',
+  REFUND_UPDATE: 'REFUND_UPDATE',
   BACK_IN_STOCK: 'BACK_IN_STOCK',
   // seller-facing
   SELLER_NEW_ORDER: 'SELLER_NEW_ORDER',
@@ -456,6 +472,7 @@ export const NotificationType = {
   ADMIN_PRODUCTS_SUBMITTED: 'ADMIN_PRODUCTS_SUBMITTED',
   ADMIN_REFUND_FAILED: 'ADMIN_REFUND_FAILED',
   ADMIN_SETTLEMENT_FAILED: 'ADMIN_SETTLEMENT_FAILED',
+  ADMIN_REFUND_REQUEST: 'ADMIN_REFUND_REQUEST',
 } as const;
 export type NotificationType =
   (typeof NotificationType)[keyof typeof NotificationType];

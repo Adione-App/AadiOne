@@ -132,6 +132,7 @@ const PRESENTATION: Record<string, NotificationPresentation> = {
   PAYMENT_FAILED: { icon: "alert-circle-outline", ...BAD },
   REFUND_INITIATED: { icon: "return-down-back-outline", ...WARN },
   REFUND_COMPLETED: { icon: "wallet-outline", ...GOOD },
+  REFUND_UPDATE: { icon: "return-down-back-outline", ...WARN },
   BACK_IN_STOCK: { icon: "cube-outline", ...GOOD },
 };
 

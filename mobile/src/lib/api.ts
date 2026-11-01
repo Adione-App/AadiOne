@@ -339,8 +339,10 @@ async function performRequest<T>(
     else externalSignal.addEventListener("abort", onExternalAbort);
   }
 
+  // A multipart upload (FormData) sets its own Content-Type with the boundary.
+  const isForm = typeof FormData !== "undefined" && options.body instanceof FormData;
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    ...(isForm ? {} : { "Content-Type": "application/json" }),
     ...NGROK_HEADERS,
     // X-App-Platform / X-App-Version / X-App-Build: the server enforces the
     // minimum supported version on the customer APIs (app-version.ts).
@@ -363,7 +365,7 @@ async function performRequest<T>(
       headers,
       ...(options.body !== undefined
         ? {
-            body: JSON.stringify(options.body),
+            body: isForm ? (options.body as FormData) : JSON.stringify(options.body),
           }
         : {}),
       signal: controller.signal,
@@ -487,6 +489,14 @@ export const api = {
       method: "POST",
       body,
       ...(idempotencyKey ? { idempotencyKey } : {}),
+    }),
+
+  /** multipart/form-data (photos). Never retried; a longer timeout for slow uploads. */
+  postForm: <T>(path: string, form: FormData) =>
+    request<T>(path, {
+      method: "POST",
+      body: form,
+      timeoutMs: 60_000,
     }),
 
   patch: <T>(path: string, body?: unknown) =>

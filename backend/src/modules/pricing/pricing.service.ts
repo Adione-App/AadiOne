@@ -239,8 +239,9 @@ export async function resolveCoupon(
     throw new AppError(ErrorCode.COUPON_LIMIT_REACHED);
   }
 
+  // A use given back by a cancellation (coupon-release.ts) no longer counts.
   const usedByUser = await prisma.couponRedemption.count({
-    where: { couponId: coupon.id, userId },
+    where: { couponId: coupon.id, userId, releasedAt: null },
   });
   if (usedByUser >= coupon.usageLimitPerUser) {
     throw new AppError(ErrorCode.COUPON_LIMIT_REACHED, {

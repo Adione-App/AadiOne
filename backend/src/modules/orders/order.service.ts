@@ -67,6 +67,7 @@ import * as inventoryService from "../inventory/inventory.service";
 import * as cartService from "../cart/cart.service";
 import * as commissionService from "../commission/commission.service";
 import * as notificationService from "../notifications/notification.service";
+import { withRefundAction } from "../refunds/refund-action";
 import {
   announceNewOrder,
   transitionOrder,
@@ -1264,7 +1265,8 @@ export async function placeOrder(
             AND (usage_limit_total IS NULL OR used_count < usage_limit_total)
           RETURNING usage_limit_per_user`;
         if (claimed.length === 0) throw new AppError(ErrorCode.COUPON_LIMIT_REACHED);
-        const usedByUser = await tx.couponRedemption.count({ where: { couponId: coupon.id, userId: input.userId } });
+        // A use given back by a cancellation (coupon-release.ts) no longer counts.
+        const usedByUser = await tx.couponRedemption.count({ where: { couponId: coupon.id, userId: input.userId, releasedAt: null } });
         if (usedByUser >= claimed[0]!.usage_limit_per_user) {
           throw new AppError(ErrorCode.COUPON_LIMIT_REACHED, { message: "You have already used this coupon." });
         }
@@ -1714,15 +1716,19 @@ export async function cancelOrder(
         so.status === SellerOrderStatus.NEW ||
         so.status === SellerOrderStatus.ACCEPTED,
     );
-    for (const sellerOrder of cancellable) {
-      await transitionSellerOrder({
-        sellerOrderId: sellerOrder.id,
-        toStatus: SellerOrderStatus.CANCELLED,
-        actorType: ActorType.CUSTOMER,
-        actorUserId: userId,
-        reason,
-      });
-    }
+    // ONE cancellation, ONE refund group: every portion's refund and the
+    // fees land together (refund-action.ts) — the customer sees one refund.
+    await withRefundAction({ origin: "AUTO", reason, actorUserId: userId }, async () => {
+      for (const sellerOrder of cancellable) {
+        await transitionSellerOrder({
+          sellerOrderId: sellerOrder.id,
+          toStatus: SellerOrderStatus.CANCELLED,
+          actorType: ActorType.CUSTOMER,
+          actorUserId: userId,
+          reason,
+        });
+      }
+    });
   }
 
   return getOrderDetail(userId, orderId);

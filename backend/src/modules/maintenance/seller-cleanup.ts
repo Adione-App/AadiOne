@@ -816,7 +816,12 @@ async function buildPlan(
         WHERE EXISTS (SELECT 1 FROM unnest(${needles}::text[]) AS n WHERE strpos(pe.payload::text, n) > 0)
         ORDER BY pe.id`,
     );
-    const redemptions = await db.couponRedemption.groupBy({ by: ['couponId'], where: { orderId: { in: orderIds } }, _count: { _all: true } });
+    // A released use was already given back to the coupon's count.
+    const redemptions = await db.couponRedemption.groupBy({
+      by: ['couponId'],
+      where: { orderId: { in: orderIds }, releasedAt: null },
+      _count: { _all: true },
+    });
     couponDecrements = redemptions.map((row) => ({ couponId: row.couponId, count: row._count._all })).sort((a, b) => a.couponId.localeCompare(b.couponId));
     purgedPaymentIds = payments.map((p) => p.id);
     purgedRefundIds = refunds.map((r) => r.id);
@@ -1200,13 +1205,29 @@ export async function executeSellerCleanup(
         if (mode === 'preserve') {
           // Re-checked: still no money attached.
           const money =
-            (await tx.payment.count({ where: { orderId: { in: ids } } })) + (await tx.refund.count({ where: { orderId: { in: ids } } }));
-          if (money > 0) throw new Error('a deletable order gained a payment or refund — stopped, nothing changed');
+            (await tx.payment.count({ where: { orderId: { in: ids } } })) +
+            (await tx.refund.count({ where: { orderId: { in: ids } } })) +
+            (await tx.refundGroup.count({ where: { orderId: { in: ids } } })) +
+            (await tx.refundRequest.count({ where: { orderId: { in: ids } } }));
+          if (money > 0) throw new Error('a deletable order gained a payment, refund or refund request — stopped, nothing changed');
         } else {
-          // Purge: exactly the itemised money rows, nothing more (refunds first — RESTRICT).
+          // Refund requests, manual (COD) refund payouts and seller deductions
+          // are financial records this tool never removes.
+          const refundRecords =
+            (await tx.refundRequest.count({ where: { orderId: { in: ids } } })) +
+            (await tx.manualRefundPayout.count({ where: { orderId: { in: ids } } })) +
+            (await tx.sellerDeduction.count({ where: { orderId: { in: ids } } }));
+          if (refundRecords > 0) {
+            throw new Error('refund requests, manual refund payouts or seller deductions exist for these orders — this tool does not remove them; stopped, nothing changed');
+          }
+          // Purge: exactly the itemised money rows, nothing more (refunds first — RESTRICT;
+          // retry links inside the purged set are cut first so the rows can go together).
+          await tx.refund.updateMany({ where: { id: { in: internals.purgedRefundIds } }, data: { retryOfId: null } });
           const refunds = await tx.refund.deleteMany({ where: { id: { in: internals.purgedRefundIds } } });
           if (refunds.count !== internals.purgedRefundIds.length) throw new Error('refunds changed since the plan — stopped, nothing changed');
           if ((await tx.refund.count({ where: { orderId: { in: ids } } })) > 0) throw new Error('an order gained a refund — stopped, nothing changed');
+          // Their refund groups are empty now (no refunds, requests, payouts or deductions).
+          await tx.refundGroup.deleteMany({ where: { orderId: { in: ids } } });
           await tx.paymentEvent.deleteMany({ where: { id: { in: internals.purgedPaymentEventIds } } });
           for (const { couponId, count } of internals.couponDecrements) {
             await tx.$executeRaw`UPDATE coupons SET used_count = GREATEST(used_count - ${count}, 0), updated_at = now() WHERE id = ${couponId}::uuid`;
@@ -1217,6 +1238,12 @@ export async function executeSellerCleanup(
         await tx.notification.deleteMany({ where: { orderId: { in: ids } } });
         // Payments, coupon redemptions, order lines, status history and delivery tasks cascade.
         deletedOrders = (await tx.order.deleteMany({ where: { id: { in: ids } } })).count;
+      }
+      if (
+        internals.purgedSettlementIds.length > 0 &&
+        (await tx.sellerDeductionApplication.count({ where: { settlementId: { in: internals.purgedSettlementIds } } })) > 0
+      ) {
+        throw new Error('a settlement to purge carries seller deductions — this tool does not remove them; stopped, nothing changed');
       }
       const deletedSettlements =
         internals.purgedSettlementIds.length > 0

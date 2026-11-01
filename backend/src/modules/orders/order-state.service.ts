@@ -45,6 +45,7 @@ import * as inventoryService from '../inventory/inventory.service';
 import * as notificationService from '../notifications/notification.service';
 import * as referralService from '../referrals/referral.service';
 import * as deliveryService from '../delivery/delivery.service';
+import { releaseCouponRedemptions } from './coupon-release';
 import { customerPaidPaise } from './coupon-allocation';
 import {
   emitAdminOrderStatus,
@@ -501,6 +502,8 @@ async function recomputeParentOrderStatus(
   if (nextStatus === OrderStatus.CANCELLED) {
     const released = await deliveryService.releaseTasksForCancelledOrder(tx, orderId);
     if (released > 0) log.info({ orderId, released }, 'rider released — order fully cancelled before pickup');
+    // The whole order is cancelled: its coupon use is given back, once.
+    await releaseCouponRedemptions(tx, orderId, 'ORDER_CANCELLED');
   }
 
   try {
@@ -760,6 +763,12 @@ export async function transitionOrder(input: OrderTransitionInput): Promise<Orde
     if (toStatus === OrderStatus.CANCELLED || toStatus === OrderStatus.REFUNDED) {
       const released = await deliveryService.releaseTasksForCancelledOrder(tx, order.id);
       if (released > 0) log.info({ orderId: order.id, released, toStatus }, 'rider released — order ended before pickup');
+    }
+
+    // Cancelled, or never paid: the order's coupon use is given back, once
+    // (a REFUNDED order was CANCELLED first and released then).
+    if (toStatus === OrderStatus.CANCELLED || toStatus === OrderStatus.PAYMENT_FAILED) {
+      await releaseCouponRedemptions(tx, order.id, toStatus === OrderStatus.CANCELLED ? 'ORDER_CANCELLED' : 'PAYMENT_FAILED');
     }
 
     // Refer & Earn: DELIVERED is the one unambiguous "genuinely fulfilled

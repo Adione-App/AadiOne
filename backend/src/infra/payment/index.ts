@@ -120,6 +120,8 @@ export interface WebhookEvent {
 export interface RefundResult {
   providerRefundId: string;
   status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  /** The provider's own status word as read (e.g. Cashfree "SUCCESS"), for evidence. */
+  providerStatus?: string;
 }
 
 export interface PaymentProvider {

@@ -74,6 +74,7 @@ const PRESENTATION: Record<string, NotificationPresentation> = {
   ADMIN_SELLER_APPLICATION_SUBMITTED: { label: 'Seller application', icon: 'store', toneClass: NEUTRAL },
   ADMIN_PRODUCTS_SUBMITTED: { label: 'Product approval', icon: 'products', toneClass: NEUTRAL },
   ADMIN_REFUND_FAILED: { label: 'Refund issue', icon: 'alert', toneClass: DANGER },
+  ADMIN_REFUND_REQUEST: { label: 'Refund request', icon: 'clipboard', toneClass: WARN },
   ADMIN_SETTLEMENT_FAILED: { label: 'Settlement failed', icon: 'rupee', toneClass: DANGER },
   // seller
   SELLER_NEW_ORDER: { label: 'New order', icon: 'orders', toneClass: NEUTRAL },
@@ -107,7 +108,9 @@ export function presentNotification(type: string): NotificationPresentation {
 export function adminNotificationDestination(notification: NotificationDto): string | null {
   switch (notification.type) {
     case 'ADMIN_REFUND_FAILED':
-      return '/refunds?status=FAILED';
+      return '/refunds?tab=groups';
+    case 'ADMIN_REFUND_REQUEST':
+      return '/refunds?tab=requests';
     case 'ADMIN_PRODUCTS_SUBMITTED':
       return '/product-approvals';
     case 'ADMIN_ONBOARDING_SUBMITTED':

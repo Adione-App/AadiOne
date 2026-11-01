@@ -36,7 +36,15 @@ export function buildDocumentKey(sellerId: string): string {
   return `seller-documents/${sellerId}/${randomUUID()}.pdf`;
 }
 
-const KEY_PATTERN = /^seller-documents\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.pdf$/i;
+const EVIDENCE_EXTENSION = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' } as const;
+
+/** Server-generated key for a refund request's evidence photo: `refund-evidence/<requestId>/<uuid>.<ext>`. */
+export function buildRefundEvidenceKey(requestId: string, contentType: keyof typeof EVIDENCE_EXTENSION): string {
+  if (!/^[0-9a-f-]{36}$/i.test(requestId)) throw new Error('invalid refund request id for an evidence key');
+  return `refund-evidence/${requestId}/${randomUUID()}.${EVIDENCE_EXTENSION[contentType]}`;
+}
+
+const KEY_PATTERN = /^(seller-documents\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.pdf|refund-evidence\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.(jpg|png|webp))$/i;
 
 function assertDocumentKey(key: string): void {
   if (!KEY_PATTERN.test(key)) {

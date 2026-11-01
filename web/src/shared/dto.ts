@@ -29,6 +29,7 @@ import type {
   PaymentMethod,
   ProductStatus,
   ReferralStatus,
+  RefundRequestCategory,
   SellerDocumentType,
   SellerLifecycleStatus,
   SellerOrderStatus,
@@ -1911,6 +1912,95 @@ export interface OrderDetailDto extends OrderSummaryDto {
 
 export interface CancelOrderRequest {
   reason: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Refunds — the customer's consolidated view                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Where a refund stands, for the customer. UNDER_REVIEW / REJECTED belong to
+ * a refund request; the rest are a refund group's status (derived from its
+ * parts — never SUCCESS before every part is confirmed).
+ */
+export type CustomerRefundStatus =
+  | 'UNDER_REVIEW'
+  | 'APPROVED'
+  | 'PROCESSING'
+  | 'SUCCESS'
+  | 'PARTIAL_FAILURE'
+  | 'FAILED'
+  | 'REJECTED';
+
+/**
+ * ONE refund as the customer sees it: everything one action pays back
+ * (a cancellation, an approved request). Never split by seller, never a
+ * payment-provider id.
+ *   REFUND   a refund group
+ *   REQUEST  a refund request not (or not yet) approved
+ *   LEGACY   a refund issued before groups existed — shown as issued
+ */
+export interface CustomerRefundDto {
+  id: string;
+  kind: 'REFUND' | 'REQUEST' | 'LEGACY';
+  status: CustomerRefundStatus;
+  statusLabel: string;
+  title: string;
+  /** What is being refunded (a request under review: what was asked for). */
+  amountPaise: number;
+  /** What is confirmed back with the customer. */
+  refundedPaise: number;
+  /** Back to the original online payment, or a UPI / bank transfer (Cash on Delivery). */
+  destination: 'ORIGINAL_PAYMENT' | 'BANK_TRANSFER';
+  /** A short customer-facing explanation, or null. */
+  note: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+/** GET /orders/:id/refunds */
+export interface OrderRefundsDto {
+  refunds: CustomerRefundDto[];
+  /** Whether the customer can ask for a refund on this order now, and why not. */
+  request: {
+    eligible: boolean;
+    /** Why not (null when eligible, or when the order is simply not delivered). */
+    reason: string | null;
+    windowEndsAt: string | null;
+    /** The order items that can still be refunded. */
+    refundableItemIds: string[];
+    /** Categories that need at least one photo. */
+    photoRequiredCategories: RefundRequestCategory[];
+  };
+}
+
+/** POST /orders/:id/refund-requests (multipart: these fields + up to 4 `photos`). */
+export interface CreateRefundRequestBody {
+  category: RefundRequestCategory;
+  description: string;
+  /** JSON in the multipart form: [{ orderItemId, qty }]. Never an amount. */
+  items: { orderItemId: string; qty: number }[];
+}
+
+/** GET /refund-requests/:id — the customer's own request. */
+export interface CustomerRefundRequestDto {
+  id: string;
+  orderId: string;
+  orderNumber: string;
+  category: RefundRequestCategory;
+  categoryLabel: string;
+  description: string;
+  items: { orderItemId: string; productName: string; variantName: string; qty: number; amountPaise: number }[];
+  /** What the server valued the chosen items at. */
+  requestedPaise: number;
+  approvedPaise: number | null;
+  photoCount: number;
+  status: CustomerRefundStatus;
+  statusLabel: string;
+  note: string | null;
+  refundedPaise: number;
+  createdAt: string;
+  reviewedAt: string | null;
 }
 
 /** Seller/admin action on one SellerOrder — accept, reject, prepare, ready, cancel. */

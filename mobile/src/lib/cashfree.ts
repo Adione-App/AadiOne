@@ -26,6 +26,10 @@ export interface CashfreeOutcome {
   kind: "verify" | "error";
   /** Cashfree's error message for "error" (never shown as proof of anything). */
   message: string | null;
+  /** Cashfree's error code for "error". */
+  code: string | null;
+  /** From doWebPayment() to the callback — an instant error means Cashfree refused the launch. */
+  elapsedMs: number | null;
 }
 
 type Sdk = typeof import("react-native-cashfree-pg-sdk");
@@ -66,6 +70,20 @@ export function preloadCashfreeSdk(): void {
 /** The checkout currently open (the SDK keeps ONE global callback). */
 let open: Promise<CashfreeOutcome> | null = null;
 
+export interface CheckoutDiagnostics {
+  /** One line per stage (never secrets — the session id is not passed here). */
+  onDiagnostic?: (event: string, data: Record<string, unknown>) => void;
+  /** Also relay Cashfree's own SDK event stream (diagnostic builds only). */
+  subscribeEvents?: boolean;
+}
+
+/** Cashfree's event meta as a plain object (the SDK hands a Map-typed object). */
+function plainMeta(meta: unknown): Record<string, unknown> {
+  if (!meta || typeof meta !== "object") return {};
+  if (meta instanceof Map) return Object.fromEntries(meta.entries());
+  return { ...(meta as Record<string, unknown>) };
+}
+
 /**
  * Opens Cashfree's complete hosted checkout for this Cashfree order and
  * resolves once it closes. Only one can be open at a time: the SDK keeps a
@@ -73,28 +91,74 @@ let open: Promise<CashfreeOutcome> | null = null;
  * one's outcome instead of replacing its callback. The first callback wins —
  * a duplicate or late callback is ignored.
  */
-export function openCashfreeCheckout(checkout: CashfreeCheckout): Promise<CashfreeOutcome> {
+export function openCashfreeCheckout(checkout: CashfreeCheckout, diagnostics: CheckoutDiagnostics = {}): Promise<CashfreeOutcome> {
+  const report = (event: string, data: Record<string, unknown>) => {
+    try {
+      diagnostics.onDiagnostic?.(event, data);
+    } catch {
+      // diagnostics never break a payment
+    }
+  };
   if (!isCashfreeAvailable()) {
+    report("sdk_native_module_missing", { platform: Platform.OS });
     return Promise.reject(new Error("CASHFREE_UNAVAILABLE"));
   }
-  if (open) return open;
+  if (open) {
+    report("sdk_already_open", {});
+    return open;
+  }
   const { sdk, contract } = loadSdk();
   markPaymentStage("sdkReady");
 
   const started = new Promise<CashfreeOutcome>((resolve, reject) => {
     const service = sdk.CFPaymentGatewayService;
     let settled = false;
+    let invokedAt: number | null = null;
+    const elapsed = () => (invokedAt === null ? null : Date.now() - invokedAt);
+    let subscribed = false;
     const finish = (outcome: CashfreeOutcome) => {
-      if (settled) return;
+      if (settled) {
+        report("sdk_duplicate_callback_ignored", { kind: outcome.kind, code: outcome.code });
+        return;
+      }
       settled = true;
       service.removeCallback();
+      if (subscribed) {
+        try {
+          service.removeEventSubscriber();
+        } catch {
+          // best effort
+        }
+      }
+      report("sdk_callback", {
+        at: new Date().toISOString(),
+        kind: outcome.kind,
+        code: outcome.code,
+        message: outcome.message,
+        elapsedMs: outcome.elapsedMs,
+      });
       resolve(outcome);
     };
 
     try {
+      if (diagnostics.subscribeEvents) {
+        // Cashfree's own analytics events (checkout opened, payment mode
+        // chosen, errors…) — shows whether its UI actually started.
+        service.setEventSubscriber({
+          onReceivedEvent: (eventName: string, meta: Map<string, string>) =>
+            report("cf_event", { name: eventName, meta: plainMeta(meta), sinceInvokeMs: elapsed() }),
+        });
+        subscribed = true;
+      }
       service.setCallback({
-        onVerify: () => finish({ kind: "verify", message: null }),
-        onError: (error) => finish({ kind: "error", message: error?.getMessage?.() ?? null }),
+        onVerify: () => finish({ kind: "verify", message: null, code: null, elapsedMs: elapsed() }),
+        onError: (error) =>
+          finish({
+            kind: "error",
+            message: error?.getMessage?.() ?? null,
+            code: error?.getCode?.() ?? null,
+            elapsedMs: elapsed(),
+          }),
       });
 
       const session = new contract.CFSession(
@@ -104,11 +168,21 @@ export function openCashfreeCheckout(checkout: CashfreeCheckout): Promise<Cashfr
           ? contract.CFEnvironment.PRODUCTION
           : contract.CFEnvironment.SANDBOX,
       );
+      invokedAt = Date.now();
+      report("sdk_invoke", {
+        at: new Date(invokedAt).toISOString(),
+        cashfreeOrderId: checkout.orderId,
+        environment: session.environment,
+        sessionPresent: checkout.paymentSessionId.length > 0,
+        sessionLength: checkout.paymentSessionId.length,
+      });
       service.doWebPayment(session);
+      report("sdk_invoke_returned", { afterMs: elapsed() });
       markPaymentStage("checkoutInvoked");
     } catch (error) {
       settled = true;
       service.removeCallback();
+      report("sdk_threw", { message: error instanceof Error ? error.message : String(error), afterMs: elapsed() });
       reject(error instanceof Error ? error : new Error(String(error)));
     }
   }).finally(() => {

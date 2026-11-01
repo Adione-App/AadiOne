@@ -794,6 +794,11 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
+    // Opaque, the box's own colour: the front layer must hide the back one
+    // completely. Transparent, the margins `contain` leaves around a wide or
+    // tall product showed the back slot's (previous) product through them —
+    // two overlapping images instead of only the latest one.
+    backgroundColor: colors.surface,
   },
 
   image: {

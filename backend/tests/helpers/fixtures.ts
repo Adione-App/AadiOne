@@ -71,12 +71,14 @@ export async function seedStore(options: { open?: boolean } = {}): Promise<strin
   });
 
   const open = options.open ?? true;
+  // Open = 24 hours (opens === closes, the app's all-day form). 00:00–23:59
+  // was closed from 23:59 to 00:00, failing any test run in that minute.
   await prisma.sellerHours.createMany({
     data: Array.from({ length: 7 }, (_, dayOfWeek) => ({
       sellerId: seller.id,
       dayOfWeek,
       opensAt: open ? '00:00' : '08:00',
-      closesAt: open ? '23:59' : '08:01',
+      closesAt: open ? '00:00' : '08:01',
       isClosed: false,
     })),
   });

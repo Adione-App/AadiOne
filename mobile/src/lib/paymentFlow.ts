@@ -34,7 +34,23 @@ export interface PendingOrder {
   amountPaise: number;
 }
 
-export type CheckoutClosed = { kind: "verify" | "error"; message: string | null };
+export type CheckoutClosed = {
+  kind: "verify" | "error";
+  message: string | null;
+  /** Cashfree's error code (onError), when it gave one. */
+  code?: string | null;
+  /** Milliseconds from doWebPayment() to the callback — tells a refused launch from a customer who came back. */
+  elapsedMs?: number | null;
+};
+
+/** Why Cashfree's checkout could not be shown at all (no payment could have started). */
+export type LaunchFailure =
+  /** The server gave no usable Cashfree session (POST /payments/create failed, or an incomplete session). */
+  | "SESSION"
+  /** The Cashfree SDK threw before showing anything (native module missing, invalid session). */
+  | "SDK"
+  /** Cashfree refused the session at once (its onError arrived before anyone could have paid). */
+  | "GATEWAY_REJECTED";
 
 export type NotCompletedReason =
   /** Back without paying, checkout closed, nothing in progress. */
@@ -63,7 +79,13 @@ export type PaymentState =
   /** The order can no longer be paid (window closed / cancelled), or a late payment is being refunded. */
   | { phase: "ended"; orderId: string; reason: "CLOSED" | "LATE_REFUND"; message: string }
   /** This build cannot open Cashfree's checkout. */
-  | { phase: "unavailable"; order: PendingOrder; message: string };
+  | { phase: "unavailable"; order: PendingOrder; message: string }
+  /**
+   * Cashfree's checkout could not be opened — never shown as "payment not
+   * completed": nothing was paid. `detail` is the actual error (server or
+   * Cashfree), shown small so it can be reported.
+   */
+  | { phase: "launch_failed"; order: PendingOrder; reason: LaunchFailure; message: string; detail: string };
 
 export interface PaymentFlowDeps {
   available(): boolean;
@@ -77,6 +99,10 @@ export interface PaymentFlowDeps {
   /** Remembers the unpaid order across restarts (null = nothing pending). */
   persist(order: PendingOrder | null): void;
   onChange(state: PaymentState): void;
+  /** Diagnostics for every launch stage (logcat in release builds). Never given secrets. */
+  log?(event: string, data: Record<string, unknown>): void;
+  /** Clock for launch timing. */
+  now?(): number;
 }
 
 export const MESSAGES = {
@@ -90,7 +116,41 @@ export const MESSAGES = {
   LATE_REFUND:
     "Your payment arrived after the payment time ended, so this order wasn't placed. The money is being refunded to the same account (usually 3–5 working days).",
   UNAVAILABLE: "Online payment isn't available in this version of the app. Please update Aadione, or pay by cash on delivery.",
+  LAUNCH_FAILED: "We couldn't open Cashfree's secure checkout, so no payment was started. Please try again.",
 } as const;
+
+/** An onError sooner than this after doWebPayment() means Cashfree refused the launch — nobody pays that fast. */
+export const QUICK_REFUSAL_MS = 2_500;
+
+/** Cashfree error codes / messages that mean the customer closed or cancelled the checkout. */
+export function isCancellation(closed: Pick<CheckoutClosed, "code" | "message">): boolean {
+  const text = `${closed.code ?? ""} ${closed.message ?? ""}`.toLowerCase();
+  return /cancel|dropped/.test(text);
+}
+
+/** A session the native SDK can open: all three fields present and a known environment. */
+export function validCheckout(session: CashfreeCheckout | null | undefined): session is CashfreeCheckout {
+  return (
+    !!session &&
+    typeof session.paymentSessionId === "string" &&
+    session.paymentSessionId.trim().length > 0 &&
+    typeof session.orderId === "string" &&
+    session.orderId.trim().length > 0 &&
+    (session.environment === "PRODUCTION" || session.environment === "SANDBOX")
+  );
+}
+
+/** "session_ab…(118)" — enough to correlate, never the whole id. */
+export const maskId = (id: string | null | undefined) => (id ? `${id.slice(0, 10)}…(${id.length})` : null);
+
+function describeError(error: unknown): { message: string; code: string | null; status: number | null } {
+  const e = (error ?? {}) as { message?: unknown; code?: unknown; status?: unknown };
+  return {
+    message: typeof e.message === "string" && e.message ? e.message : String(error),
+    code: typeof e.code === "string" ? e.code : null,
+    status: typeof e.status === "number" ? e.status : null,
+  };
+}
 
 /** Right after the checkout closes with Cashfree's success callback: a UPI payment can take seconds to settle. */
 export const VERIFY_ATTEMPTS = 6;
@@ -205,45 +265,99 @@ export function createPaymentFlow(deps: PaymentFlowDeps) {
     if (step.poll) void poll(order, closedWith, mine);
   }
 
+  const log = (event: string, data: Record<string, unknown>) => {
+    try {
+      deps.log?.(event, data);
+    } catch {
+      // diagnostics never break a payment
+    }
+  };
+
+  function launchFailed(order: PendingOrder, reason: LaunchFailure, detail: string, message: string = MESSAGES.LAUNCH_FAILED): void {
+    log("launch_failed", { orderId: order.orderId, reason, detail });
+    set({ phase: "launch_failed", order, reason, message, detail });
+  }
+
+  /** Server codes after which the order itself may have changed (paid / closed) — asked about, quietly. */
+  const ORDER_MAY_HAVE_CHANGED = new Set(["PAYMENT_ALREADY_CAPTURED", "VALIDATION_ERROR", "SELLER_CLOSED", "ORDERING_PAUSED"]);
+
   async function openWith(order: PendingOrder, session: CashfreeCheckout | null, mine: number): Promise<void> {
     if (!deps.available()) {
+      log("sdk_unavailable", { orderId: order.orderId });
       set({ phase: "unavailable", order, message: MESSAGES.UNAVAILABLE });
       return;
     }
     set({ phase: "opening", order });
     let checkout = session;
     if (!checkout) {
+      log("session_request", { orderId: order.orderId });
       try {
         const created = await deps.createSession(order.orderId);
         checkout = created.cashfree ?? null;
         if (Number.isInteger(created.amountPaise) && created.amountPaise > 0) order = { ...order, amountPaise: created.amountPaise };
       } catch (error) {
-        // Could not start — already paid meanwhile (PAYMENT_ALREADY_CAPTURED),
-        // a store closed and the unpaid order was cancelled, the window
-        // closed, no network: the server's own answer decides what to show.
-        await reconcile(order, null, mine);
-        // A cancellation the server explained (e.g. the store closed before
-        // any payment) is shown in its words.
-        const reason = (error as { message?: string; status?: number } | null) ?? null;
-        if (mine === generation && state.phase === "ended" && state.reason === "CLOSED" && reason?.message && (reason.status ?? 0) >= 400 && (reason.status ?? 0) < 500) {
-          set({ ...state, message: reason.message });
+        const e = describeError(error);
+        log("session_error", { orderId: order.orderId, ...e });
+        if (mine !== generation) return;
+        if (e.code && ORDER_MAY_HAVE_CHANGED.has(e.code)) {
+          // Already paid meanwhile, the window closed, or a store closed and
+          // the unpaid order was cancelled: the server's state decides.
+          const result = await ask(order.orderId);
+          if (mine !== generation) return;
+          const verdict = result ? verdictOf(result) : null;
+          if (result && verdict && verdict.kind !== "UNPAID") {
+            apply(order, result, null);
+            if (state.phase === "ended" && state.reason === "CLOSED" && e.status !== null && e.status >= 400 && e.status < 500) {
+              set({ ...state, message: e.message });
+            }
+            return;
+          }
         }
-        return;
-      }
-      if (!checkout) {
-        set({ phase: "unavailable", order, message: MESSAGES.UNAVAILABLE });
+        // Nothing was opened, so nothing can have been paid: say what failed.
+        launchFailed(order, "SESSION", `Server: ${e.message}${e.code ? ` (${e.code})` : ""}`, e.status !== null && e.status < 500 ? e.message : MESSAGES.LAUNCH_FAILED);
         return;
       }
     }
     if (mine !== generation) return;
+    const received = checkout as Partial<CashfreeCheckout> | null;
+    if (!validCheckout(checkout)) {
+      launchFailed(order, "SESSION", `Server: incomplete Cashfree session (${JSON.stringify({ hasSession: !!received?.paymentSessionId, hasOrder: !!received?.orderId, environment: received?.environment ?? null })})`);
+      return;
+    }
+
     set({ phase: "paying", order });
+    log("sdk_open", { orderId: order.orderId, cashfreeOrderId: checkout.orderId, environment: checkout.environment, session: maskId(checkout.paymentSessionId) });
     let closed: CheckoutClosed;
     try {
       closed = await deps.open(checkout);
-    } catch {
-      closed = { kind: "error", message: null };
+    } catch (error) {
+      // The SDK threw before showing anything: nothing was paid.
+      const e = describeError(error);
+      if (mine !== generation) return;
+      launchFailed(order, "SDK", `Cashfree SDK: ${e.message}`);
+      return;
     }
+    log("sdk_closed", { orderId: order.orderId, kind: closed.kind, code: closed.code ?? null, message: closed.message, elapsedMs: closed.elapsedMs ?? null });
     if (mine !== generation) return;
+
+    // Cashfree refused the session at once (invalid / expired session, app not
+    // allowed for this account, environment mismatch…): its checkout never
+    // became payable. Shown as what it is — with Cashfree's own reason — and
+    // never as "payment not completed". One quiet server check still runs in
+    // case the order was paid by another route.
+    if (
+      closed.kind === "error" &&
+      typeof closed.elapsedMs === "number" &&
+      closed.elapsedMs < QUICK_REFUSAL_MS &&
+      !isCancellation(closed)
+    ) {
+      launchFailed(order, "GATEWAY_REJECTED", `Cashfree: ${closed.message ?? "error"}${closed.code ? ` (${closed.code})` : ""}`);
+      const result = await ask(order.orderId);
+      if (mine === generation && result && verdictOf(result).kind === "PAID") apply(order, result, null);
+      return;
+    }
+
+    // The customer was in Cashfree's checkout and came back: ask the server.
     await reconcile(order, closed.kind, mine);
   }
 
@@ -285,6 +399,14 @@ export function createPaymentFlow(deps: PaymentFlowDeps) {
    */
   async function check(order: PendingOrder | null = pendingOrder()): Promise<PaymentState> {
     if (!order || busy) return state;
+    // A launch that failed is not "waiting for a payment": nothing was opened.
+    // Only a confirmed payment (another route) changes what is shown.
+    if (state.phase === "launch_failed") {
+      const mineCheck = ++generation;
+      const result = await ask(order.orderId);
+      if (mineCheck === generation && !busy && result && verdictOf(result).kind !== "UNPAID") apply(order, result, null);
+      return state;
+    }
     const mine = ++generation;
     const result = await ask(order.orderId);
     if (mine !== generation || busy) return state;

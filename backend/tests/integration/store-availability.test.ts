@@ -39,7 +39,7 @@ interface Availability {
 let sellerId: string;
 let token: string;
 
-/** A live grocery store at the Sikar fixture point, open 00:00–23:59 every day, with its owner signed in. */
+/** A live grocery store at the Sikar fixture point, open 24 hours every day (00:00–00:00), with its owner signed in. */
 async function seedOwnStore(): Promise<{ id: string; token: string }> {
   const seller = await prisma.seller.create({
     data: {
@@ -58,7 +58,7 @@ async function seedOwnStore(): Promise<{ id: string; token: string }> {
     },
   });
   await prisma.sellerHours.createMany({
-    data: Array.from({ length: 7 }, (_, dayOfWeek) => ({ sellerId: seller.id, dayOfWeek, opensAt: '00:00', closesAt: '23:59', isClosed: false })),
+    data: Array.from({ length: 7 }, (_, dayOfWeek) => ({ sellerId: seller.id, dayOfWeek, opensAt: '00:00', closesAt: '00:00', isClosed: false })),
   });
   const user = await prisma.user.create({ data: { mobile: OWNER_MOBILE, fullName: 'Store Owner', role: UserRole.SELLER_OWNER } });
   await prisma.sellerStaff.create({ data: { sellerId: seller.id, userId: user.id, role: 'OWNER', isActive: true } });
@@ -151,7 +151,7 @@ describe('PUT /seller/hours', () => {
       (await putHours([{ dayOfWeek: 3, opensAt: '10:30', closesAt: '19:45', isClosed: false }]).expect(200)).body,
     ).data;
     expect(data.hours.find((h) => h.dayOfWeek === 3)).toMatchObject({ opensAt: '10:30', closesAt: '19:45', isClosed: false });
-    // The store opened every day 00:00–23:59; the untouched days keep that.
+    // The store was open 24 hours every day; the untouched days keep that.
     expect(data.hours.find((h) => h.dayOfWeek === 4)?.opensAt).toBe('00:00');
   });
 

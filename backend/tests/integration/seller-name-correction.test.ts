@@ -33,7 +33,7 @@ async function restaurant(code: string, name: string, menuName: string) {
     },
   });
   await prisma.sellerHours.createMany({
-    data: Array.from({ length: 7 }, (_, dayOfWeek) => ({ sellerId: seller.id, dayOfWeek, opensAt: '00:00', closesAt: '23:59', isClosed: false })),
+    data: Array.from({ length: 7 }, (_, dayOfWeek) => ({ sellerId: seller.id, dayOfWeek, opensAt: '00:00', closesAt: '00:00', isClosed: false })),
   });
   await prisma.restaurantProfile.create({ data: { sellerId: seller.id, cuisine: ['Indian', 'Chicken', 'egg'], isVegOnly: false, avgPrepMins: 20 } });
   counter += 1;

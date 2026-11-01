@@ -75,7 +75,7 @@ async function seedSeller(code: string, name: string, sellerType: SellerType, ma
     },
   });
   await prisma.sellerHours.createMany({
-    data: Array.from({ length: 7 }, (_, dayOfWeek) => ({ sellerId: seller.id, dayOfWeek, opensAt: '00:00', closesAt: '23:59', isClosed: false })),
+    data: Array.from({ length: 7 }, (_, dayOfWeek) => ({ sellerId: seller.id, dayOfWeek, opensAt: '00:00', closesAt: '00:00', isClosed: false })),
   });
   await prisma.sellerProfile.create({ data: { sellerId: seller.id, businessName: name, ownerFullName: 'Owner', ownerMobile: '9000000099', ownerEmail: `${code.toLowerCase()}@adione.test` } });
   if (masterCategoryId) await prisma.sellerCategory.create({ data: { sellerId: seller.id, categoryId: masterCategoryId } });

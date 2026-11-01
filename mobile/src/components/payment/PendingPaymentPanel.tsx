@@ -30,7 +30,13 @@ import {
 
 /** True when the panel has something to show for this state. */
 export function paymentPanelShown(state: PaymentState): boolean {
-  return state.phase === "checking" || state.phase === "waiting" || state.phase === "ended" || state.phase === "unavailable";
+  return (
+    state.phase === "checking" ||
+    state.phase === "waiting" ||
+    state.phase === "ended" ||
+    state.phase === "unavailable" ||
+    state.phase === "launch_failed"
+  );
 }
 
 export function PendingPaymentPanel({ state, onCancelled }: { state: PaymentState; onCancelled: () => void }) {
@@ -68,7 +74,7 @@ export function PendingPaymentPanel({ state, onCancelled }: { state: PaymentStat
     );
   }
 
-  if (state.phase !== "waiting" && state.phase !== "unavailable") return null;
+  if (state.phase !== "waiting" && state.phase !== "unavailable" && state.phase !== "launch_failed") return null;
   const order = state.order;
   const amount = formatPaise(order.amountPaise);
   const reason = state.phase === "waiting" ? state.reason : null;
@@ -126,6 +132,30 @@ export function PendingPaymentPanel({ state, onCancelled }: { state: PaymentStat
 
   // Cashfree said success and the server is confirming it: no second payment offered.
   const confirming = reason === "CONFIRMING";
+
+  // Cashfree's checkout never opened: say so, with the actual error, and try again.
+  if (state.phase === "launch_failed") {
+    return (
+      <View style={styles.card} accessibilityLiveRegion="polite">
+        <View style={styles.row}>
+          <Ionicons name="alert-circle-outline" size={20} color={colors.warning} />
+          <AppText variant="bodyStrong" style={styles.flex}>
+            Couldn't open Cashfree checkout
+          </AppText>
+        </View>
+        <AppText variant="body" color={colors.textSecondary}>
+          {state.message}
+        </AppText>
+        <AppText variant="caption" color={colors.textSecondary}>
+          {state.detail}
+        </AppText>
+        <View style={styles.actions}>
+          <Button label={`Try again · ${amount}`} onPress={() => void resumePayment()} disabled={cancelling} style={styles.grow} />
+        </View>
+        <Button label="Cancel order" variant="ghost" onPress={confirmCancel} loading={cancelling} style={styles.cancel} />
+      </View>
+    );
+  }
 
   return (
     <View style={styles.card} accessibilityLiveRegion="polite">

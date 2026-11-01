@@ -81,7 +81,7 @@ async function kitchen(
     },
   });
   await prisma.sellerHours.createMany({
-    data: Array.from({ length: 7 }, (_, dayOfWeek) => ({ sellerId: seller.id, dayOfWeek, opensAt: '00:00', closesAt: '23:59', isClosed: false })),
+    data: Array.from({ length: 7 }, (_, dayOfWeek) => ({ sellerId: seller.id, dayOfWeek, opensAt: '00:00', closesAt: '00:00', isClosed: false })),
   });
   if (sellerType !== 'GROCERY') {
     await prisma.restaurantProfile.create({ data: { sellerId: seller.id, cuisine: ['North Indian'], isVegOnly: options.vegOnly ?? false, avgPrepMins: 25 } });

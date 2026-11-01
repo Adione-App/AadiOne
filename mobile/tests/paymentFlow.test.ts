@@ -41,6 +41,8 @@ function harness(options: {
   createSession?: () => Promise<CreatePaymentResult>;
   /** Hold the checkout open until released. */
   holdOpen?: boolean;
+  /** Custom SDK behaviour (throws, instant refusal, …). */
+  openImpl?: (session: CashfreeCheckout) => Promise<CheckoutClosed>;
 }) {
   const answers = [...(options.answers ?? [])];
   const closes = [...(options.closes ?? [])];
@@ -57,6 +59,7 @@ function harness(options: {
     available: () => options.available ?? true,
     open: (session) => {
       log.opens.push(session);
+      if (options.openImpl) return options.openImpl(session);
       if (options.holdOpen) return new Promise((resolve) => (release = resolve));
       return Promise.resolve(closes.shift() ?? { kind: "error", message: null });
     },
@@ -243,6 +246,110 @@ describe("recovery", () => {
     flow.reset();
     assert.equal(flow.state().phase, "idle");
     assert.equal(log.persisted.at(-1), null);
+  });
+});
+
+describe("launching Cashfree — a launch that fails is never 'payment not completed'", () => {
+  const apiError = (message: string, code: string, status: number) => Object.assign(new Error(message), { code, status });
+
+  it("a NEW order with a valid session opens Cashfree first — no status check, no checking/waiting state before it", async () => {
+    const { flow, log, release } = harness({ holdOpen: true, answers: [PAID] });
+    const started = flow.start(ORDER, SESSION);
+    await settle();
+    assert.equal(log.opens.length, 1);
+    assert.equal(log.refreshes, 0);
+    assert.deepEqual(phases(log.states), ["opening", "paying"]);
+    release({ kind: "verify", message: null, code: null, elapsedMs: 40_000 });
+    assert.equal((await started).phase, "paid");
+  });
+
+  it("the SDK throws before showing anything: launch_failed (SDK) with its error — no 'checking', no 'wasn't completed', no status call", async () => {
+    const { flow, log } = harness({ openImpl: async () => { throw new Error("Session is invalid"); } });
+    const state = await flow.start(ORDER, SESSION);
+    assert.equal(state.phase, "launch_failed");
+    assert.equal(state.phase === "launch_failed" && state.reason, "SDK");
+    assert.match(state.phase === "launch_failed" ? state.detail : "", /Session is invalid/);
+    assert.equal(log.refreshes, 0);
+    assert.ok(!phases(log.states).includes("checking"));
+    assert.ok(!phases(log.states).includes("waiting"));
+  });
+
+  it("Cashfree refuses the session at once (onError in 300 ms): launch_failed (GATEWAY_REJECTED) with Cashfree's message and code", async () => {
+    const { flow, log } = harness({
+      openImpl: async () => ({ kind: "error", message: "payment_session_id is invalid", code: "request_failed", elapsedMs: 300 }),
+      answers: [unpaid()],
+    });
+    const state = await flow.start(ORDER, SESSION);
+    assert.equal(state.phase === "launch_failed" && state.reason, "GATEWAY_REJECTED");
+    assert.equal(state.phase === "launch_failed" ? state.detail : "", "Cashfree: payment_session_id is invalid (request_failed)");
+    assert.ok(!phases(log.states).includes("waiting"));
+    assert.ok(!phases(log.states).includes("checking"));
+  });
+
+  it("an instant refusal for an order that turns out paid (another route) shows it paid", async () => {
+    const { flow } = harness({ openImpl: async () => ({ kind: "error", message: "invalid", code: "x", elapsedMs: 100 }), answers: [PAID] });
+    assert.equal((await flow.start(ORDER, SESSION)).phase, "paid");
+  });
+
+  it("a quick close that IS a cancellation, or an error after the customer was in the checkout, goes to the server (customer came back)", async () => {
+    const cancelled = harness({ openImpl: async () => ({ kind: "error", message: "payment cancelled by user", code: "action_cancelled", elapsedMs: 900 }), answers: [unpaid()] });
+    assert.equal(((await cancelled.flow.start(ORDER, SESSION)) as { reason?: string }).reason, "NOT_COMPLETED");
+    const later = harness({ openImpl: async () => ({ kind: "error", message: "failed", code: "payment_failed", elapsedMs: 45_000 }), answers: [unpaid()] });
+    assert.equal(((await later.flow.start(ORDER, SESSION)) as { reason?: string }).reason, "NOT_COMPLETED");
+  });
+
+  it("the server cannot create a session: launch_failed (SESSION) with the server's reason — no reconciliation, Cashfree not called", async () => {
+    const { flow, log } = harness({ createSession: async () => { throw apiError("Payments are temporarily unavailable", "PAYMENT_FAILED", 502); } });
+    const state = await flow.start(ORDER, null);
+    assert.equal(state.phase === "launch_failed" && state.reason, "SESSION");
+    assert.equal(state.phase === "launch_failed" ? state.detail : "", "Server: Payments are temporarily unavailable (PAYMENT_FAILED)");
+    assert.equal(log.opens.length, 0);
+    assert.equal(log.refreshes, 0);
+  });
+
+  it("the server refuses because the order closed (store closed before payment): shown as ended, in the server's words", async () => {
+    const { flow } = harness({
+      createSession: async () => { throw apiError("The store closed. Your order was cancelled before any payment.", "SELLER_CLOSED", 422); },
+      answers: [unpaid({ status: "CANCELLED" as PaymentRefreshResult["status"] })],
+    });
+    const state = await flow.start(ORDER, null);
+    assert.equal(state.phase, "ended");
+    assert.equal(state.phase === "ended" && state.message, "The store closed. Your order was cancelled before any payment.");
+  });
+
+  it("an incomplete session (missing id / unknown environment) never reaches the SDK", async () => {
+    for (const bad of [
+      { ...SESSION, paymentSessionId: "" },
+      { ...SESSION, orderId: "  " },
+      { ...SESSION, environment: "TEST" as CashfreeCheckout["environment"] },
+    ]) {
+      const { flow, log } = harness({});
+      const state = await flow.start(ORDER, bad);
+      assert.equal(state.phase === "launch_failed" && state.reason, "SESSION");
+      assert.equal(log.opens.length, 0);
+    }
+  });
+
+  it("Try again after a failed launch gets the server's session for the SAME order and opens Cashfree", async () => {
+    let first = true;
+    const { flow, log } = harness({
+      openImpl: async () => {
+        if (first) { first = false; return { kind: "error", message: "invalid", code: "request_failed", elapsedMs: 200 }; }
+        return { kind: "verify", message: null, code: null, elapsedMs: 30_000 };
+      },
+      answers: [unpaid(), PAID],
+    });
+    assert.equal((await flow.start(ORDER, SESSION)).phase, "launch_failed");
+    const again = await flow.resume();
+    assert.equal(log.sessions, 1); // POST /payments/create for the same order — never a new order
+    assert.equal(log.opens.length, 2);
+    assert.equal(again.phase, "paid");
+  });
+
+  it("a quiet check (resume / cart opened) keeps a failed launch as it is — it never turns into 'wasn't completed'", async () => {
+    const { flow } = harness({ openImpl: async () => { throw new Error("boom"); }, answers: [unpaid()] });
+    await flow.start(ORDER, SESSION);
+    assert.equal((await flow.check()).phase, "launch_failed");
   });
 });
 

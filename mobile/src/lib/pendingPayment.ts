@@ -15,7 +15,8 @@ import type { QueryClient } from "@tanstack/react-query";
 import { create } from "zustand";
 import { api } from "./api";
 import { isCashfreeAvailable, openCashfreeCheckout } from "./cashfree";
-import { createPaymentFlow, type PaymentState, type PendingOrder } from "./paymentFlow";
+import { createPaymentFlow, maskId, type PaymentState, type PendingOrder } from "./paymentFlow";
+import { PAYMENT_DIAGNOSTICS, recordDiagnostic, sanitizeDiagnostic } from "./paymentDiagnostics";
 import type { CashfreeCheckout, CreatePaymentResult, PaymentRefreshResult } from "./payments";
 import { useAuth } from "./store";
 
@@ -49,9 +50,26 @@ function invalidateAfterOutcome(): void {
   }
 }
 
+/**
+ * One line per payment-launch stage, in every build: release builds print it
+ * to logcat (`adb logcat -s ReactNativeJS`), so a device that cannot open
+ * Cashfree's checkout shows exactly where and why. Never secrets: a session
+ * id is shown only as a prefix and length.
+ */
+export function logPaymentLaunch(event: string, data: Record<string, unknown> = {}): void {
+  try {
+    // eslint-disable-next-line no-console
+    console.log("[payment-launch]", event, JSON.stringify(sanitizeDiagnostic(data)));
+    recordDiagnostic(event, data);
+  } catch {
+    // diagnostics never break a payment
+  }
+}
+
 const flow = createPaymentFlow({
   available: isCashfreeAvailable,
-  open: (session: CashfreeCheckout) => openCashfreeCheckout(session),
+  open: (session: CashfreeCheckout) =>
+    openCashfreeCheckout(session, { onDiagnostic: logPaymentLaunch, subscribeEvents: PAYMENT_DIAGNOSTICS }),
   // A fresh key per request: the server's per-order lock and reuse of the
   // open Cashfree order are what keep this to one Cashfree order.
   createSession: (orderId) => api.post<CreatePaymentResult>("/payments/create", { orderId }, Crypto.randomUUID()),
@@ -63,7 +81,10 @@ const flow = createPaymentFlow({
       : AsyncStorage.removeItem(PENDING_KEY);
     void write.catch(() => undefined);
   },
+  log: logPaymentLaunch,
+  now: () => Date.now(),
   onChange: (state) => {
+    logPaymentLaunch("state", { phase: state.phase, ...("reason" in state ? { reason: state.reason } : {}) });
     usePayment.setState({ state });
     if (state.phase === "paid" || state.phase === "ended") {
       // The detail cached at placement still says "awaiting payment": the
@@ -77,6 +98,14 @@ const flow = createPaymentFlow({
 /** Right after the order is placed: Cashfree's checkout opens at once. */
 export function startPayment(order: PendingOrder, session: CashfreeCheckout | null): Promise<PaymentState> {
   usePayment.setState({ announce: true });
+  logPaymentLaunch("start", {
+    orderId: order.orderId,
+    amountPaise: order.amountPaise,
+    withSession: session !== null,
+    cashfreeOrderId: session?.orderId ?? null,
+    environment: session?.environment ?? null,
+    session: maskId(session?.paymentSessionId),
+  });
   return flow.start(order, session);
 }
 

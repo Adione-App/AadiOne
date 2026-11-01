@@ -36,7 +36,7 @@ async function seedRestaurant(code: string, items: { name: string; stockQty?: nu
     },
   });
   await prisma.sellerHours.createMany({
-    data: Array.from({ length: 7 }, (_, dayOfWeek) => ({ sellerId: seller.id, dayOfWeek, opensAt: '00:00', closesAt: '23:59', isClosed: false })),
+    data: Array.from({ length: 7 }, (_, dayOfWeek) => ({ sellerId: seller.id, dayOfWeek, opensAt: '00:00', closesAt: '00:00', isClosed: false })),
   });
   await prisma.restaurantProfile.create({ data: { sellerId: seller.id, cuisine: ['Indian'], isVegOnly: false } });
   const menu = await prisma.category.create({ data: { sellerId: seller.id, name: 'Main Menu', slug: `menu-${code}`, path: `menu-${code}`, depth: 0 } });

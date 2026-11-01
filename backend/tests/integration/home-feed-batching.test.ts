@@ -53,7 +53,7 @@ async function seller(
     },
   });
   await prisma.sellerHours.createMany({
-    data: Array.from({ length: 7 }, (_, dayOfWeek) => ({ sellerId: created.id, dayOfWeek, opensAt: '00:00', closesAt: '23:59', isClosed: false })),
+    data: Array.from({ length: 7 }, (_, dayOfWeek) => ({ sellerId: created.id, dayOfWeek, opensAt: '00:00', closesAt: '00:00', isClosed: false })),
   });
   return created.id;
 }

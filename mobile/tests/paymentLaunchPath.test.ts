@@ -52,8 +52,9 @@ describe("Cashfree's checkout is the payment screen", () => {
 
   it("the SDK callback resolves once, and one checkout is open at a time", () => {
     const wrapper = read("src/lib/cashfree.ts");
-    assert.match(wrapper, /if \(settled\) return;/);
-    assert.match(wrapper, /if \(open\) return open;/);
+    // The first callback wins; a later one is only logged.
+    assert.match(wrapper, /if \(settled\) \{\s*report\("sdk_duplicate_callback_ignored"/);
+    assert.match(wrapper, /if \(open\) \{\s*report\("sdk_already_open", \{\}\);\s*return open;/);
   });
 
   it("the environment comes from the server's session (sandbox / production), never hardcoded", () => {

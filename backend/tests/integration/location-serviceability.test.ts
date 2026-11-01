@@ -68,7 +68,7 @@ async function createSeller(
       sellerId: seller.id,
       dayOfWeek,
       opensAt: '00:00',
-      closesAt: '23:59',
+      closesAt: '00:00',
       isClosed: closed,
     })),
   });

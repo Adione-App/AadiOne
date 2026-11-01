@@ -54,6 +54,19 @@
         "EXPO_PUBLIC_API_URL": "https://api.adione.in/api/v1",
         "EXPO_ROUTER_DISABLE_RN_NAVIGATION_CHECK": "1"
       }
+    },
+    "diagnostic-apk": {
+      "extends": "production-apk",
+      "environment": "production",
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://api.adione.in/api/v1",
+        "EXPO_ROUTER_DISABLE_RN_NAVIGATION_CHECK": "1",
+        "EXPO_PUBLIC_PAYMENT_DIAGNOSTICS": "1"
+      }
     }
   },
   "submit": {

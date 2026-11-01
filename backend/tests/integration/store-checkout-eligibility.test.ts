@@ -38,7 +38,7 @@ import { STORE_COORDS, configureTestMerchantUpi, seedAddress, seedProduct, selle
 const MOBILE = '9876500011';
 
 /** A live grocery store at the fixture point; open all day unless `hours` says otherwise. */
-async function seedSeller(name: string, hours: { opensAt: string; closesAt: string } | null = { opensAt: '00:00', closesAt: '23:59' }) {
+async function seedSeller(name: string, hours: { opensAt: string; closesAt: string } | null = { opensAt: '00:00', closesAt: '00:00' }) {
   const seller = await prisma.seller.create({
     data: {
       code: `SEL-${randomUUID().slice(0, 8).toUpperCase()}`,
@@ -160,7 +160,7 @@ describe('seller availability layer (shared rule, batch evaluation)', () => {
     expect((await at('2026-10-27T03:29:00Z')).closedReason).toBe('OUTSIDE_HOURS');
 
     // 2026-10-27 01:30 IST is still 2026-10-26 in UTC: a closure on the 27th applies.
-    await prisma.sellerHours.updateMany({ where: { sellerId }, data: { opensAt: '00:00', closesAt: '23:59' } });
+    await prisma.sellerHours.updateMany({ where: { sellerId }, data: { opensAt: '00:00', closesAt: '00:00' } });
     const allDay = await prisma.seller.findUniqueOrThrow({ where: { id: sellerId }, include: { hours: true } });
     await prisma.sellerClosure.create({ data: { sellerId, closedOn: new Date('2026-10-27T00:00:00Z') } });
     const night = (await storeStatuses([allDay], new Date('2026-10-26T20:00:00Z'))).get(sellerId)!;

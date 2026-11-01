@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import * as Crypto from "expo-crypto";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   ActivityIndicator,
   FlatList,
@@ -73,8 +74,26 @@ import { showCartNotice } from "@/lib/cartNotice";
 import { checkoutPaymentState } from "@/lib/paymentOptions";
 import { preloadCashfreeSdk } from "@/lib/cashfree";
 import { PAYMENT_INTENT_KEY, sessionFromOrderResponse, type CreatePaymentResult } from "@/lib/payments";
-import { checkPendingPayment, dismissPaymentOutcome, startPayment, usePayment } from "@/lib/pendingPayment";
+import { checkPendingPayment, dismissPaymentOutcome, logPaymentLaunch, startPayment, usePayment } from "@/lib/pendingPayment";
 import { PendingPaymentPanel, paymentPanelShown } from "@/components/payment/PendingPaymentPanel";
+import { PaymentDiagnosticsPanel } from "@/components/payment/PaymentDiagnosticsPanel";
+import { PAYMENT_DIAGNOSTICS } from "@/lib/paymentDiagnostics";
+import { createCheckoutIntents } from "@/lib/checkoutIntent";
+
+/**
+ * The idempotency key of each checkout (lib/checkoutIntent.ts): the SAME key
+ * for a retry of the exact same order request, a NEW key for anything else —
+ * including any checkout after an order was created. Kept on disk so a retry
+ * after an app restart replays instead of ordering twice.
+ */
+const CHECKOUT_INTENT_STORAGE = "adione.checkout-intent";
+const checkoutIntents = createCheckoutIntents(
+  {
+    get: () => AsyncStorage.getItem(CHECKOUT_INTENT_STORAGE),
+    set: (value) => (value === null ? AsyncStorage.removeItem(CHECKOUT_INTENT_STORAGE) : AsyncStorage.setItem(CHECKOUT_INTENT_STORAGE, value)),
+  },
+  () => Crypto.randomUUID(),
+);
 import { beginPaymentLaunch, cancelPaymentLaunch, markPaymentStage } from "@/lib/paymentTiming";
 import {
   PLATFORM_AVAILABILITY_KEY,
@@ -346,15 +365,13 @@ export default function CartScreen({
       />
     </View>
   ) : null;
+  // Internal diagnostic build only: the launch log on screen (no adb needed).
+  const diagnosticsPanel = PAYMENT_DIAGNOSTICS ? (
+    <View style={styles.noticeContainer}>
+      <PaymentDiagnosticsPanel />
+    </View>
+  ) : null;
 
-  /**
-   * One idempotency key per checkout attempt. Regenerated only when the
-   * customer must start a new attempt after a basket/price change — see
-   * `placeOrder`'s PRICE_CHANGED / ITEM_OUT_OF_STOCK handling below.
-   */
-  const [idempotencyKey, setIdempotencyKey] = useState(() =>
-    Crypto.randomUUID(),
-  );
 
   const addresses = useQuery({
     queryKey: ["addresses"],
@@ -418,15 +435,8 @@ export default function CartScreen({
     ? JSON.stringify(destinationBody)
     : null;
 
-  /**
-   * A new destination is a new checkout attempt: the server refuses one
-   * idempotency key with a different body (409), and must never replay an
-   * order placed to the previous destination. Retrying the SAME destination
-   * keeps the key, so a retried request returns the same order.
-   */
-  useEffect(() => {
-    setIdempotencyKey(Crypto.randomUUID());
-  }, [destinationKey]);
+  // A new destination is a new request body, so a new idempotency key on its
+  // own (lib/checkoutIntent.ts) — never a replay of an order to the old one.
 
   /**
    * `/checkout/quote` prices the SERVER's cart, so the quote is keyed on what
@@ -540,14 +550,7 @@ export default function CartScreen({
           }
         }
 
-        const result = await api.post<{
-          order: OrderDetailDto;
-          requiresPayment: boolean;
-          /** An online order: the Cashfree session, opened with the order (newer servers). */
-          payment?: CreatePaymentResult;
-        }>(
-          "/orders",
-          {
+        const orderBody = {
             // The saved address id OR the live location — the same
             // destination the quote on screen was computed for.
             ...destinationBody,
@@ -572,9 +575,29 @@ export default function CartScreen({
             expectedItems: orderedLines(
               cart.items.map((item) => ({ ...item, sellerListingId: sellerListingIdOf(item) })),
             ),
-          },
-          idempotencyKey,
-        );
+        };
+        type PlacedOrder = {
+          order: OrderDetailDto;
+          requiresPayment: boolean;
+          /** An online order: the Cashfree session, opened with the order (newer servers). */
+          payment?: CreatePaymentResult;
+        };
+        // The key for THIS request body: a retry of the same request (timeout,
+        // double tap, after a restart) reuses it and gets the same order back.
+        let result: PlacedOrder;
+        try {
+          result = await api.post<PlacedOrder>("/orders", orderBody, await checkoutIntents.keyFor(orderBody));
+        } catch (err) {
+          // A key the server holds for a different request (e.g. one kept
+          // from an earlier app version) is never ours to replay: this is a
+          // new checkout — once more, with a new key.
+          if (!(err instanceof ApiRequestError) || err.code !== ErrorCode.IDEMPOTENCY_KEY_REUSED) throw err;
+          await checkoutIntents.abandon();
+          result = await api.post<PlacedOrder>("/orders", orderBody, await checkoutIntents.keyFor(orderBody));
+        }
+        // The order exists: this checkout is finished. The next one — even
+        // for the very same items — is a new order with a new key.
+        await checkoutIntents.completed();
 
         // The order transaction already marked the cart CONVERTED server-side,
         // so this is a known-correct state, not an optimistic guess — write it
@@ -608,6 +631,15 @@ export default function CartScreen({
         markPaymentStage("orderResponse");
         const pending = { orderId: result.order.id, amountPaise: result.order.bill.totalPaise };
         const session = sessionFromOrderResponse(result.payment);
+        logPaymentLaunch("order_response", {
+          orderId: pending.orderId,
+          hasPayment: !!result.payment,
+          hasCashfree: !!result.payment?.cashfree,
+          sessionAccepted: !!session?.cashfree,
+          providerOrderId: result.payment?.providerOrderId ?? null,
+          cashfreeOrderId: result.payment?.cashfree?.orderId ?? null,
+          environment: result.payment?.cashfree?.environment ?? null,
+        });
         if (session?.cashfree) {
           // The session came with the order: no further request.
           markPaymentStage("sessionReady");
@@ -622,8 +654,14 @@ export default function CartScreen({
           markPaymentStage("sessionRequest");
           created = await api.post<CreatePaymentResult>("/payments/create", { orderId: pending.orderId }, Crypto.randomUUID());
           markPaymentStage("sessionReady");
-        } catch {
-          created = null; // the flow asks the server what to do next
+        } catch (error) {
+          // Logged; the flow asks once more and shows the server's reason.
+          logPaymentLaunch("session_error_cart", {
+            orderId: pending.orderId,
+            message: error instanceof Error ? error.message : String(error),
+            code: error instanceof ApiRequestError ? error.code : null,
+          });
+          created = null;
         }
         if (created && !created.cashfree && created.upiIntentUrl) {
           // Manual UPI (development servers only): its own screen, as before.
@@ -654,7 +692,7 @@ export default function CartScreen({
             // method is available) is a new request, not a replay of this
             // refusal.
             showCartNotice(err.message);
-            setIdempotencyKey(Crypto.randomUUID());
+            void checkoutIntents.abandon();
             void quote.refetch();
           } else if (
             err.code === ErrorCode.SELLER_CLOSED ||
@@ -670,7 +708,7 @@ export default function CartScreen({
             await Promise.all([refetch(), quote.refetch()]);
             // The app-wide status too (Home's notice), when the app itself closed.
             if (err.code === ErrorCode.ORDERING_PAUSED) void queryClient.invalidateQueries({ queryKey: PLATFORM_AVAILABILITY_KEY });
-            setIdempotencyKey(Crypto.randomUUID());
+            void checkoutIntents.abandon();
             setCheckoutError(err.message);
           } else if (
             err.code === ErrorCode.PRICE_CHANGED ||
@@ -690,7 +728,7 @@ export default function CartScreen({
             // with a clean, genuinely-current cart. Never surfaced as a
             // persistent `checkoutError` — see `syncNotice`.
             await Promise.all([refetch(), quote.refetch()]);
-            setIdempotencyKey(Crypto.randomUUID());
+            void checkoutIntents.abandon();
             showSyncNotice(buildSyncNoticeMessage(err));
           } else {
             // Everything else (bad coupon, minimum order not met, COD not
@@ -715,7 +753,6 @@ export default function CartScreen({
       bill,
       cart,
       refetch,
-      idempotencyKey,
       queryClient,
       onPlaced,
       showSyncNotice,
@@ -805,6 +842,7 @@ export default function CartScreen({
         </View>
 
         {paymentPanel}
+        {diagnosticsPanel}
 
         <EmptyState
           icon={
@@ -1136,6 +1174,7 @@ export default function CartScreen({
 
             {/* An unpaid online order: continue / cancel it here. */}
             {paymentPanel}
+            {diagnosticsPanel}
 
             {outOfArea && (
               <View style={styles.noticeContainer}>

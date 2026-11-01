@@ -1803,6 +1803,13 @@ export interface PlaceOrderRequest extends DeliveryDestinationRequest {
    * the CartItem model's own comment).
    */
   expectedItems?: { sellerListingId: string; unitPricePaise: number }[];
+  /**
+   * ONLINE orders: also open the payment gateway's checkout with the order,
+   * and return its session as `payment` in the response — so the app can open
+   * the checkout without a second request. Opt-in (apps that send it); an
+   * order without it behaves exactly as before. Never makes an order paid.
+   */
+  openPayment?: boolean;
 }
 
 export interface OrderItemDto {

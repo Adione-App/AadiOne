@@ -13,6 +13,13 @@ loadTestEnv();
 assertSafeTestEnv();
 const approved = approvedSettings();
 
+// Parse the app's configuration NOW, from `.env.test` alone — before the test
+// file imports anything that loads `@prisma/client`, whose module reads
+// `backend/.env` into process.env (stray, possibly live, values the app would
+// otherwise validate). The parsed config is then reused by this file's whole
+// module graph; what Prisma adds later is removed below.
+await import('../src/config/env');
+
 // Importing the app creates its Prisma client, and Prisma then loads
 // `backend/.env` into process.env by itself (tests/test-env.ts). Before any
 // test runs, drop whatever it added and check the environment again.

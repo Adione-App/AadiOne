@@ -51,6 +51,7 @@ import type {
   WebhookEvent,
 } from "../../infra/payment";
 import { moduleLogger } from "../../common/logger";
+import { stageTimer, type StageTimer } from "../../common/stageTimer";
 import { randomUUID } from "node:crypto";
 import { cache } from "../../infra/cache";
 import { CacheKey } from "../../infra/cache/types";
@@ -244,19 +245,26 @@ export async function createPayment(
   userId: string,
   orderId: string,
 ): Promise<CreatePaymentResult> {
+  const timer = stageTimer();
   const order = await loadPayableOrder(userId, orderId);
+  timer.mark("loadOrder");
 
   if (provider.fetchOrder) {
     // Checked again UNDER the lock: while this request waited, the order may
     // have been paid, cancelled or expired, and its hold may have changed.
-    return withPaymentInitLock(order.id, async () => {
+    const result = await withPaymentInitLock(order.id, async () => {
+      timer.mark("lock");
       const payable = await loadPayableOrder(userId, orderId);
+      timer.mark("reloadOrder");
       // Its stores and app-wide ordering, before the FIRST attempt only
       // (unpaid-order-guard.ts): a closed store cancels the unpaid order and
       // puts its lines back in the cart instead of asking for money.
       await assertUnpaidOrderStillOrderable(payable);
-      return createCheckoutSession(payable);
+      timer.mark("orderabilityGuard");
+      return createCheckoutSession(payable, timer);
     });
+    log.debug({ orderId, timing: timer.summary() }, "payment create timing");
+    return result;
   }
 
   // Direct UPI: the same check. (No lock here, as before: a concurrent call
@@ -354,6 +362,40 @@ export async function createPayment(
       : {}),
   };
 }
+/**
+ * Opens the gateway checkout for an ONLINE order placed in this very request
+ * (POST /orders), so the app can open Cashfree's checkout straight from the
+ * order response instead of making a second round trip to /payments/create.
+ *
+ * Exactly the same checkout path as createPayment — the per-order lock, the
+ * ownership / still-awaiting-payment check under it, the reuse of an open
+ * gateway order, the hold planning, the server's amount — minus only the
+ * checks this request has just made: placement read the order it created
+ * and refused closed stores and paused ordering a moment ago (the unpaid-
+ * order guard exists for LATER attempts, when the customer comes back).
+ *
+ * Never fails the placement: on any error it returns null and the app opens
+ * the checkout with POST /payments/create as before (which reports the
+ * reason). Hosted-checkout gateways only (Cashfree); null otherwise.
+ */
+export async function openCheckoutForPlacedOrder(userId: string, orderId: string): Promise<CreatePaymentResult | null> {
+  if (!provider.fetchOrder) return null;
+  const timer = stageTimer();
+  try {
+    const result = await withPaymentInitLock(orderId, async () => {
+      timer.mark("lock");
+      const payable = await loadPayableOrder(userId, orderId);
+      timer.mark("loadOrder");
+      return createCheckoutSession(payable, timer);
+    });
+    log.debug({ orderId, timing: timer.summary() }, "checkout opened with the order");
+    return result;
+  } catch (error) {
+    log.warn({ err: error, orderId }, "checkout not opened with the order — the app opens it via /payments/create");
+    return null;
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Hosted checkout (Cashfree)                                                 */
 /* -------------------------------------------------------------------------- */
@@ -504,6 +546,7 @@ async function assertNewOnlinePaymentAllowed(): Promise<void> {
 
 async function createCheckoutSession(
   order: Order & { user: User },
+  timer?: StageTimer,
 ): Promise<CreatePaymentResult> {
   const now = Date.now();
   const holdEndsAt = order.reservationExpiresAt?.getTime() ?? 0;
@@ -522,6 +565,8 @@ async function createCheckoutSession(
     },
     orderBy: { createdAt: "desc" },
   });
+
+  timer?.mark("findOpenCheckout");
 
   // Reopening the sheet returns the SAME gateway order while it can still be
   // paid — a new order per tap would let one AdiOne order be paid twice.
@@ -608,6 +653,7 @@ async function createCheckoutSession(
     );
   }
 
+  timer?.mark("planHold");
   const intent = await provider.createIntent({
     orderId: order.id,
     orderNumber: order.orderNumber,
@@ -623,6 +669,7 @@ async function createCheckoutSession(
     expiresAt: new Date(gatewayExpiresAt),
   });
 
+  timer?.mark("gatewayCreateOrder");
   if (!intent.checkout) {
     throw new AppError(ErrorCode.PAYMENT_FAILED, {
       internalMessage: `${provider.name} returned no checkout session for order ${order.id}`,
@@ -643,6 +690,7 @@ async function createCheckoutSession(
     },
   });
 
+  timer?.mark("persistPayment");
   log.info(
     { orderId: order.id, paymentId: payment.id, providerOrderId: intent.providerOrderId },
     "gateway checkout opened",

@@ -29,6 +29,25 @@ export type CreatePaymentResult = CreatePaymentResponse & {
 };
 
 /**
+ * Query key of an order's payment session. The Cart seeds it from the
+ * `POST /orders` response (which carries the session for an online order),
+ * so the payment screen opens Cashfree's checkout without another request.
+ */
+export const PAYMENT_INTENT_KEY = (orderId: string) => ["payment-intent", orderId] as const;
+
+/**
+ * The session the order response carried, when it is a usable Cashfree
+ * checkout for THIS order (older servers send none). Pure — unit-tested.
+ */
+export function sessionFromOrderResponse(payment: CreatePaymentResult | null | undefined): CreatePaymentResult | null {
+  if (!payment?.cashfree) return null;
+  const { paymentSessionId, orderId: cashfreeOrderId } = payment.cashfree;
+  if (!paymentSessionId || !cashfreeOrderId || payment.providerOrderId !== cashfreeOrderId) return null;
+  if (!Number.isInteger(payment.amountPaise) || payment.amountPaise <= 0) return null;
+  return payment;
+}
+
+/**
  * `POST /payments/:orderId/refresh` — the server asked Cashfree itself. This,
  * never the SDK callback, is what decides whether the order is paid.
  */

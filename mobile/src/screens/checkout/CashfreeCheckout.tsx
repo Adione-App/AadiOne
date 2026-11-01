@@ -1,11 +1,11 @@
 /**
  * Cashfree checkout for an order awaiting payment.
  *
- *   1. The customer picks an installed UPI app (Paytm, PhonePe, Google Pay…)
- *      and it opens straight away for this Cashfree order — or "More payment
- *      options" opens Cashfree's hosted checkout (UPI ID, cards, net banking).
- *      Amount, merchant and reference all come from the server-created
- *      Cashfree order, never from the phone.
+ *   1. Cashfree's COMPLETE checkout opens straight away (no Aadione payment-
+ *      method screen in between): UPI apps, UPI ID, cards, wallets, net
+ *      banking — whatever the Cashfree account offers. Amount, merchant and
+ *      reference all come from the server-created Cashfree order, never from
+ *      the phone.
  *   2. When the customer is back — success callback, failure, or backing out —
  *      the app asks the SERVER (`POST /payments/:orderId/refresh`), which asks
  *      Cashfree. The SDK callback, or simply returning, is never payment.
@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { Alert, AppState, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import * as Crypto from "expo-crypto";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -25,30 +25,22 @@ import { OrderStatus } from "@shared";
 import { formatPaise } from "@shared/money";
 import { colors, radius, spacing } from "@shared/theme";
 import { api, ApiRequestError } from "@/lib/api";
-import {
-  isCashfreeAvailable,
-  listInstalledUpiApps,
-  openCashfreeCheckout,
-  openCashfreeUpiApp,
-  supportsDirectUpiApps,
-  type CashfreeOutcome,
-  type UpiAppOption,
-} from "@/lib/cashfree";
+import { isCashfreeAvailable, openCashfreeCheckout, type CashfreeOutcome } from "@/lib/cashfree";
+import { cancelPaymentLaunch } from "@/lib/paymentTiming";
 import type { CashfreeCheckout as CheckoutSession, CreatePaymentResult, PaymentRefreshResult } from "@/lib/payments";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { useSystemBack } from "@/lib/useSystemBack";
 import { AppText, Button, Card, NoticeStrip, Screen } from "@/components/ui";
 
 type Phase =
-  | "ready" // nothing attempted yet
-  | "paying" // a UPI app / Cashfree checkout is open
+  | "launching" // opening Cashfree's checkout (the first time, automatically)
+  | "ready" // checkout could not be opened automatically; the customer can try
+  | "paying" // Cashfree's checkout (or a UPI app it opened) is open
   | "verifying" // asking the server what happened
   | "pending" // Cashfree says the attempt is still in progress — keep checking
   | "retry" // not paid; the order can still be paid
   | "closed" // the payment window closed without a payment
   | "late"; // paid after the window closed — refund under way
-
-type Method = { kind: "app"; app: UpiAppOption } | { kind: "web" };
 
 /** Polls after the payment UI closes: a UPI payment can take a few seconds to settle. */
 const VERIFY_ATTEMPTS = 6;
@@ -81,15 +73,15 @@ export default function CashfreeCheckout({
 }) {
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
-  const [phase, setPhase] = useState<Phase>("ready");
+  const [phase, setPhase] = useState<Phase>("launching");
   const [notice, setNotice] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
-  /** Installed UPI apps; null while looking them up. */
-  const [apps, setApps] = useState<UpiAppOption[] | null>(supportsDirectUpiApps() ? null : []);
   const attempted = useRef(false);
+  const launched = useRef(false);
+  const inFlight = useRef(false);
   const checkout = useRef<CheckoutSession>(initialCheckout);
   const mounted = useRef(true);
-  const phaseRef = useRef<Phase>("ready");
+  const phaseRef = useRef<Phase>("launching");
   const pendingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingPolls = useRef(0);
   phaseRef.current = phase;
@@ -100,15 +92,17 @@ export default function CashfreeCheckout({
   };
 
   useEffect(() => {
-    if (supportsDirectUpiApps()) {
-      void listInstalledUpiApps().then((found) => {
-        if (mounted.current) setApps(found);
-      });
+    mounted.current = true;
+    // Cashfree's checkout opens at once — once, even if effects run twice.
+    if (!launched.current) {
+      launched.current = true;
+      void pay();
     }
     return () => {
       mounted.current = false;
       stopPendingPoll();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Back from a UPI app by the app switcher (or the phone was locked): check
@@ -131,7 +125,7 @@ export default function CashfreeCheckout({
    * Shows what the server said. Only `paymentStatus === PAID` (or the order
    * having moved on to PROCESSING) is a paid order.
    */
-  function apply(result: PaymentRefreshResult, context: { outcome: CashfreeOutcome | null; appName: string | null } | null): void {
+  function apply(result: PaymentRefreshResult, context: { outcome: CashfreeOutcome | null } | null): void {
     if (result.paymentStatus === "PAID" || result.status === OrderStatus.PROCESSING) {
       stopPendingPoll();
       onPaid();
@@ -157,16 +151,16 @@ export default function CashfreeCheckout({
     setPhase("retry");
     if (result.lastAttemptFailed) {
       setNotice("The payment did not go through. No money was taken for it — you can try again.");
-    } else if (context?.outcome?.kind === "error" && context.appName) {
-      // The chosen app could not be opened or was closed before paying.
-      setNotice(`The payment was not completed in ${context.appName}. Try again, choose another UPI app or use More payment options. ${MAYBE_DEDUCTED}`);
+    } else if (context?.outcome?.kind === "error") {
+      // The checkout was closed before paying (or could not finish).
+      setNotice(`The payment was not completed. You can try again. ${MAYBE_DEDUCTED}`);
     } else {
       setNotice(`We haven't received a confirmation yet. ${MAYBE_DEDUCTED} You can also try again.`);
     }
   }
 
   /** The server's answer, polled briefly while a payment may still be settling. */
-  async function verify(context: { outcome: CashfreeOutcome | null; appName: string | null } | null): Promise<void> {
+  async function verify(context: { outcome: CashfreeOutcome | null } | null): Promise<void> {
     setPhase("verifying");
     setNotice(null);
     let last: PaymentRefreshResult | null = null;
@@ -213,57 +207,62 @@ export default function CashfreeCheckout({
     }, PENDING_POLL_MS);
   }
 
-  async function pay(method: Method): Promise<void> {
+  /** Opens Cashfree's complete checkout, then asks the server what happened. One at a time. */
+  async function pay(): Promise<void> {
+    if (inFlight.current) return;
     if (!isCashfreeAvailable()) {
+      cancelPaymentLaunch();
       setNotice(UNAVAILABLE);
+      setPhase("ready");
       return;
     }
-    stopPendingPoll();
-    setNotice(null);
+    inFlight.current = true;
+    try {
+      stopPendingPoll();
+      setNotice(null);
 
-    // After the first attempt, ask the server for the current session: it
-    // returns the same Cashfree order while it is valid (so one order can
-    // never be paid twice) and a fresh one only if it expired.
-    if (attempted.current) {
-      try {
-        const fresh = await api.post<CreatePaymentResult>(
-          "/payments/create",
-          { orderId },
-          Crypto.randomUUID(),
-        );
-        if (fresh.cashfree) checkout.current = fresh.cashfree;
-      } catch (err) {
-        if (err instanceof ApiRequestError && err.code === "PAYMENT_ALREADY_CAPTURED") {
-          onPaid();
+      // After the first attempt, ask the server for the current session: it
+      // returns the same Cashfree order while it is valid (so one order can
+      // never be paid twice) and a fresh one only if it expired.
+      if (attempted.current) {
+        setPhase("launching");
+        try {
+          const fresh = await api.post<CreatePaymentResult>("/payments/create", { orderId }, Crypto.randomUUID());
+          if (fresh.cashfree) checkout.current = fresh.cashfree;
+        } catch (err) {
+          if (err instanceof ApiRequestError && err.code === "PAYMENT_ALREADY_CAPTURED") {
+            onPaid();
+            return;
+          }
+          if (!mounted.current) return;
+          setNotice(err instanceof ApiRequestError ? err.message : "Could not start the payment. Please try again.");
+          setPhase("retry");
           return;
         }
-        setNotice(err instanceof ApiRequestError ? err.message : "Could not start the payment. Please try again.");
-        setPhase("retry");
-        return;
       }
-    }
 
-    attempted.current = true;
-    pendingPolls.current = 0;
-    setPhase("paying");
-    let outcome: CashfreeOutcome | null = null;
-    try {
-      // Whatever the SDK reports, the server decides.
-      outcome =
-        method.kind === "app"
-          ? await openCashfreeUpiApp(checkout.current, method.app.packageName)
-          : await openCashfreeCheckout(checkout.current);
-    } catch {
-      // The payment UI could not be started (e.g. the app is gone).
-      outcome = { kind: "error", message: null };
+      attempted.current = true;
+      pendingPolls.current = 0;
+      setPhase("paying");
+      let outcome: CashfreeOutcome | null = null;
+      try {
+        // Whatever the SDK reports, the server decides.
+        outcome = await openCashfreeCheckout(checkout.current);
+      } catch {
+        // The checkout could not be started (e.g. the SDK is missing).
+        cancelPaymentLaunch();
+        outcome = { kind: "error", message: null };
+      }
+      if (mounted.current) await verify({ outcome });
+    } finally {
+      inFlight.current = false;
     }
-    if (mounted.current) await verify({ outcome, appName: method.kind === "app" ? method.app.name : null });
   }
 
   /** Paying again while the last payment is still pending could charge twice — ask first. */
-  function choose(method: Method): void {
+  function payAgain(): void {
     if (phase !== "pending") {
-      void pay(method);
+      void pay();
       return;
     }
     Alert.alert(
@@ -271,7 +270,7 @@ export default function CashfreeCheckout({
       "Pay again only if your UPI app shows that the payment failed or was cancelled. If money was deducted, this order will be confirmed automatically.",
       [
         { text: "Keep waiting", style: "cancel" },
-        { text: "Pay again", style: "destructive", onPress: () => void pay(method) },
+        { text: "Pay again", style: "destructive", onPress: () => void pay() },
       ],
     );
   }
@@ -311,15 +310,15 @@ export default function CashfreeCheckout({
     }
   }
 
-  // Android system back asks first, exactly like the header arrow.
+  // Android system back asks first, exactly like the header arrow. (While
+  // Cashfree's checkout is open, back belongs to Cashfree: closing it returns
+  // here and the server is asked what happened.)
   useSystemBack(() => {
     confirmLeave();
     return true;
   });
 
-  const busy = phase === "paying" || phase === "verifying";
-  const directApps = supportsDirectUpiApps();
-  const hasApps = (apps?.length ?? 0) > 0;
+  const busy = phase === "launching" || phase === "paying" || phase === "verifying";
 
   return (
     <Screen>
@@ -382,21 +381,33 @@ export default function CashfreeCheckout({
             </AppText>
             <Button label="Back to cart" onPress={onCancelled} style={styles.action} />
           </Card>
+        ) : phase === "launching" ? (
+          <Card style={styles.stateCard}>
+            <View style={styles.statusRow}>
+              <ActivityIndicator color={colors.primary} />
+              <AppText variant="bodyStrong" style={styles.statusTitle}>
+                Opening secure checkout…
+              </AppText>
+            </View>
+            <AppText variant="body" color={colors.textSecondary}>
+              Pay with any UPI app, UPI ID, card, wallet or net banking on Cashfree's secure checkout.
+            </AppText>
+          </Card>
         ) : (
           <>
             {phase === "pending" || phase === "verifying" || phase === "paying" ? (
               <Card style={styles.stateCard}>
                 <View style={styles.statusRow}>
-                  <Ionicons
-                    name={phase === "pending" ? "hourglass-outline" : "sync-outline"}
-                    size={22}
-                    color={colors.primary}
-                  />
+                  {phase === "pending" ? (
+                    <Ionicons name="hourglass-outline" size={22} color={colors.primary} />
+                  ) : (
+                    <ActivityIndicator color={colors.primary} />
+                  )}
                   <AppText variant="bodyStrong" style={styles.statusTitle}>
                     {phase === "pending"
                       ? "Payment pending — checking status"
                       : phase === "paying"
-                        ? "Complete the payment in your UPI app"
+                        ? "Complete the payment on Cashfree's checkout"
                         : "Checking your payment…"}
                   </AppText>
                 </View>
@@ -406,85 +417,24 @@ export default function CashfreeCheckout({
                     : "Your order is confirmed only after the payment is verified with Cashfree."}
                 </AppText>
                 {phase === "pending" && (
-                  <Button
-                    label="Check payment status"
-                    onPress={() => void verify(null)}
-                    style={styles.action}
-                  />
+                  <Button label="Check payment status" onPress={() => void verify(null)} style={styles.action} />
                 )}
               </Card>
             ) : null}
 
-            {phase !== "verifying" && phase !== "paying" && (
+            {(phase === "retry" || phase === "ready" || phase === "pending") && (
               <Card style={styles.stateCard}>
-                {directApps && (
-                  <>
-                    <AppText variant="bodyStrong">
-                      {phase === "pending" ? "Pay again with a UPI app" : "Pay with a UPI app"}
-                    </AppText>
-                    {apps === null ? (
-                      <AppText variant="body" color={colors.textSecondary}>
-                        Looking for UPI apps on this phone…
-                      </AppText>
-                    ) : hasApps ? (
-                      <View style={styles.appList}>
-                        {apps.map((app) => (
-                          <Pressable
-                            key={app.packageName}
-                            onPress={() => choose({ kind: "app", app })}
-                            disabled={busy || cancelling}
-                            style={({ pressed }) => [styles.appRow, pressed && styles.appRowPressed]}
-                            accessibilityRole="button"
-                            accessibilityLabel={`Pay ${amount} with ${app.name}`}
-                          >
-                            <View style={[styles.appBadge, app.tint ? { backgroundColor: app.tint } : null]}>
-                              <AppText variant="caption" color={app.tint ? colors.onPrimary : colors.primary} style={styles.appInitials}>
-                                {app.initials}
-                              </AppText>
-                            </View>
-                            <AppText variant="bodyStrong" style={styles.appName} numberOfLines={1}>
-                              {app.name}
-                            </AppText>
-                            <AppText variant="caption" color={colors.primary}>
-                              Pay {amount}
-                            </AppText>
-                            <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
-                          </Pressable>
-                        ))}
-                      </View>
-                    ) : (
-                      <AppText variant="body" color={colors.textSecondary}>
-                        No UPI app was found on this phone. You can still pay by UPI ID, card or net banking below.
-                      </AppText>
-                    )}
-                  </>
-                )}
-
-                {!directApps && (
-                  <AppText variant="body" color={colors.textSecondary}>
-                    Pay with any UPI app, card or net banking on Cashfree's secure checkout. Your order is
-                    confirmed only after the payment is verified with Cashfree.
-                  </AppText>
-                )}
-
+                <AppText variant="body" color={colors.textSecondary}>
+                  Pay with any UPI app, UPI ID, card, wallet or net banking on Cashfree's secure checkout. Your
+                  order is confirmed only after the payment is verified with Cashfree.
+                </AppText>
                 <Button
-                  label={
-                    directApps && hasApps
-                      ? "More payment options"
-                      : phase === "retry"
-                        ? `Try again · ${amount}`
-                        : `Pay ${amount}`
-                  }
-                  variant={directApps && hasApps ? "secondary" : "primary"}
-                  onPress={() => choose({ kind: "web" })}
+                  label={phase === "ready" ? `Pay ${amount}` : phase === "pending" ? `Pay again · ${amount}` : `Try again · ${amount}`}
+                  variant={phase === "pending" ? "secondary" : "primary"}
+                  onPress={payAgain}
                   disabled={busy || cancelling}
                   style={styles.action}
                 />
-                {directApps && hasApps && (
-                  <AppText variant="caption" color={colors.textSecondary}>
-                    UPI ID, cards and net banking
-                  </AppText>
-                )}
                 {phase === "retry" && (
                   <Button
                     label="Check payment status"
@@ -546,37 +496,6 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   statusTitle: {
-    flex: 1,
-  },
-  appList: {
-    gap: spacing.sm,
-  },
-  appRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    minHeight: 56,
-    paddingHorizontal: spacing.md,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-  },
-  appRowPressed: {
-    opacity: 0.85,
-  },
-  appBadge: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.primaryLight,
-  },
-  appInitials: {
-    fontWeight: "800",
-  },
-  appName: {
     flex: 1,
   },
   action: {

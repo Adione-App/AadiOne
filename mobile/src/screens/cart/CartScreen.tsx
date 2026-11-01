@@ -71,6 +71,9 @@ import type { LiveFixParams } from "@/navigation/types";
 import { api, ApiRequestError, resolveImageUrl } from "@/lib/api";
 import { showCartNotice } from "@/lib/cartNotice";
 import { checkoutPaymentState } from "@/lib/paymentOptions";
+import { preloadCashfreeSdk } from "@/lib/cashfree";
+import { PAYMENT_INTENT_KEY, sessionFromOrderResponse, type CreatePaymentResult } from "@/lib/payments";
+import { beginPaymentLaunch, cancelPaymentLaunch, markPaymentStage } from "@/lib/paymentTiming";
 import {
   PLATFORM_AVAILABILITY_KEY,
   clearCartAfterOrder,
@@ -454,17 +457,26 @@ export default function CartScreen({
     };
   }, [quote.data, cart]);
 
+  // Cashfree's SDK is loaded while the customer looks at the cart, so "Pay
+  // Online" never waits for it. Loads code only — opens and sends nothing.
+  useEffect(() => {
+    preloadCashfreeSdk();
+  }, []);
+
   const placeOrder = useCallback(
     async (method: PaymentMethod): Promise<void> => {
       if (!destinationBody || !quote.data || !cart || placing) return;
 
       setPlacing(method);
       setCheckoutError(null);
+      if (method === PaymentMethod.ONLINE) markPaymentStage("orderRequest");
 
       try {
         const result = await api.post<{
           order: OrderDetailDto;
           requiresPayment: boolean;
+          /** An online order: the Cashfree session, opened with the order (newer servers). */
+          payment?: CreatePaymentResult;
         }>(
           "/orders",
           {
@@ -472,6 +484,9 @@ export default function CartScreen({
             // destination the quote on screen was computed for.
             ...destinationBody,
             paymentMethod: method,
+            // Online: the server opens Cashfree's checkout with the order and
+            // returns its session, so checkout opens without another request.
+            ...(method === PaymentMethod.ONLINE ? { openPayment: true } : {}),
             // Safety check only — the server calculates the real amount. Uses
             // the merged bill (`bill`, not the possibly-stale `quote.data.bill`)
             // so it matches exactly what the customer is looking at on screen.
@@ -508,6 +523,16 @@ export default function CartScreen({
         // background — awaiting that refetch here used to hold the customer on
         // this screen for a whole extra round trip after the order existed.
         queryClient.setQueryData(keys.order(result.order.id), result.order);
+        if (result.requiresPayment) {
+          markPaymentStage("orderResponse");
+          // The session came with the order: the payment screen opens
+          // Cashfree's checkout from it without another request.
+          const session = sessionFromOrderResponse(result.payment);
+          if (session) {
+            queryClient.setQueryData(PAYMENT_INTENT_KEY(result.order.id), session);
+            markPaymentStage("sessionReady");
+          }
+        }
         void queryClient.invalidateQueries({ queryKey: keys.cart });
         void queryClient.invalidateQueries({ queryKey: keys.orders });
         void queryClient.invalidateQueries({
@@ -516,6 +541,7 @@ export default function CartScreen({
 
         onPlaced(result.order, result.requiresPayment);
       } catch (err) {
+        cancelPaymentLaunch();
         if (err instanceof ApiRequestError) {
           if (err.isOffline) {
             // A genuine connectivity failure — the request may or may not
@@ -611,6 +637,7 @@ export default function CartScreen({
 
   const handlePayOnlinePress = useCallback(() => {
     if (placing) return;
+    beginPaymentLaunch();
     void placeOrder(PaymentMethod.ONLINE);
   }, [placing, placeOrder]);
 

@@ -14,6 +14,7 @@ import { authenticate, requirePermission, requireUser } from '../../middleware/a
 import { orderCreationPerUser } from '../../middleware/rateLimit';
 import { idempotency } from '../../middleware/idempotency';
 import * as service from './order.service';
+import * as paymentService from '../payments/payment.service';
 import { deliveryDestinationFields, destinationFrom, requireOneDestination } from './delivery-destination';
 import { registerOrderRefundRoutes } from '../refunds/customer-refund.routes';
 
@@ -95,6 +96,8 @@ orderRouter.post(
           }),
         )
         .optional(),
+      // ONLINE orders: open the gateway checkout with the order (see below).
+      openPayment: z.boolean().optional(),
       })
       .superRefine(requireOneDestination),
   }),
@@ -114,7 +117,19 @@ orderRouter.post(
       idempotencyKey: req.idempotencyKey as string,
     });
 
-    created(res, result);
+    // An ONLINE order from an app that asks for it (`openPayment`): the gateway
+    // checkout is opened right here, so the app can open Cashfree's checkout
+    // straight from this response — no second round trip. Same checkout path
+    // as POST /payments/create; null when it could not be opened (the app then
+    // calls /payments/create, as apps without `openPayment` always do). The
+    // order is never "confirmed" by this: only the server's verification with
+    // Cashfree does that.
+    const payment =
+      result.requiresPayment && body.openPayment === true
+        ? await paymentService.openCheckoutForPlacedOrder(user.id, result.order.id)
+        : null;
+
+    created(res, payment ? { ...result, payment } : result);
   }),
 );
 

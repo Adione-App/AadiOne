@@ -17,7 +17,8 @@ import { OrderStatus } from "@shared";
 import { formatPaise } from "@shared/money";
 import { colors, radius, spacing } from "@shared/theme";
 import { api, ApiRequestError } from "@/lib/api";
-import type { CreatePaymentResult } from "@/lib/payments";
+import { PAYMENT_INTENT_KEY, type CreatePaymentResult } from "@/lib/payments";
+import { markPaymentStage } from "@/lib/paymentTiming";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { useSystemBack } from "@/lib/useSystemBack";
 import CashfreeCheckout from "./CashfreeCheckout";
@@ -83,14 +84,22 @@ export default function UpiPaymentScreen({
    * intent.data.amountPaise returned by the server.
    * Never calculate or hardcode the payment amount on the client.
    */
+  // The order response normally carries the Cashfree session already (seeded
+  // under this key by the Cart): then nothing is fetched and Cashfree's
+  // checkout opens at once. Otherwise (an older server, or the session could
+  // not be opened with the order) it is created here, as before.
   const intent = useQuery({
-    queryKey: ["payment-intent", orderId],
-    queryFn: () =>
-      api.post<CreatePaymentResult>(
+    queryKey: PAYMENT_INTENT_KEY(orderId),
+    queryFn: async () => {
+      markPaymentStage("sessionRequest");
+      const result = await api.post<CreatePaymentResult>(
         "/payments/create",
         { orderId },
         paymentIdempotencyKey,
-      ),
+      );
+      markPaymentStage("sessionReady");
+      return result;
+    },
     staleTime: Infinity,
     retry: false,
   });
@@ -269,7 +278,7 @@ export default function UpiPaymentScreen({
   );
 
   if (intent.isLoading) {
-    return <Loading label="Preparing payment…" />;
+    return <Loading label="Opening secure checkout…" />;
   }
 
   // Gateway mode (Cashfree): the server issued a checkout session. None of

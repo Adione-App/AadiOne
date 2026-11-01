@@ -73,6 +73,8 @@ import { showCartNotice } from "@/lib/cartNotice";
 import { checkoutPaymentState } from "@/lib/paymentOptions";
 import { preloadCashfreeSdk } from "@/lib/cashfree";
 import { PAYMENT_INTENT_KEY, sessionFromOrderResponse, type CreatePaymentResult } from "@/lib/payments";
+import { checkPendingPayment, dismissPaymentOutcome, startPayment, usePayment } from "@/lib/pendingPayment";
+import { PendingPaymentPanel, paymentPanelShown } from "@/components/payment/PendingPaymentPanel";
 import { beginPaymentLaunch, cancelPaymentLaunch, markPaymentStage } from "@/lib/paymentTiming";
 import {
   PLATFORM_AVAILABILITY_KEY,
@@ -82,7 +84,10 @@ import {
   useMyCoupons,
 } from "@/lib/queries";
 import { isCheckingLine, isOrderableLine, orderedLines, partialOrderNotice, unavailableLabel } from "@/lib/cartAvailability";
-import { outOfAreaDetail } from "@/lib/deliveryArea";
+import { NOT_DELIVERING_MESSAGE, deliveryView, outOfAreaDetail } from "@/lib/deliveryArea";
+import { GPS_FAILURE_MESSAGE } from "@/lib/currentLocation";
+import { ensureFreshCurrentLocation } from "@/lib/locationService";
+import { DeliveryStatusNotice } from "@/components/location/DeliveryStatusNotice";
 import {
   cartUnitCount,
   useCartActions,
@@ -176,13 +181,17 @@ function buildSyncNoticeMessage(err: ApiRequestError): string {
 
 export default function CartScreen({
   onPlaced,
+  onOpenOrder,
   onAddAddress,
   onChangeLocation,
   onCompleteLiveDetails,
   onBrowse,
   onOpenSearch,
 }: {
+  /** A COD order (tracking), or — development servers only — the manual UPI screen. */
   onPlaced: (order: OrderDetailDto, requiresPayment: boolean) => void;
+  /** An online order the server confirmed as paid: its normal confirmation (tracking). */
+  onOpenOrder: (orderId: string) => void;
   onAddAddress: () => void;
   /** Select Location: a saved address, or the live (current) location. */
   onChangeLocation: () => void;
@@ -202,6 +211,9 @@ export default function CartScreen({
     liveDestination,
     selectAddress,
     setLocation,
+    checking: locationChecking,
+    error: locationError,
+    gps,
   } = useLocation();
 
   // The ONE cart source this screen reads — same optimistic, instantly-
@@ -299,8 +311,41 @@ export default function CartScreen({
       // last answer: ask the server again — a store may have opened or
       // closed since (the current lines stay on screen meanwhile).
       void refetch();
+      // An unpaid online order may have been paid meanwhile (a late webhook,
+      // the bank answering): ask quietly — never while a checkout is open.
+      if (usePayment.getState().state.phase === "waiting") void checkPendingPayment();
     }, [refetch]),
   );
+
+  /**
+   * The online payment, in place: Cashfree's checkout opens from here and
+   * whatever happens is shown in this screen (PendingPaymentPanel) — no
+   * Aadione payment screen. A payment the SERVER confirmed opens the order's
+   * normal confirmation.
+   */
+  const onlinePayment = usePayment((s) => s.state);
+  const announcePayment = usePayment((s) => s.announce);
+  useEffect(() => {
+    if (onlinePayment.phase !== "paid" || !announcePayment) return;
+    const orderId = onlinePayment.orderId;
+    dismissPaymentOutcome();
+    onOpenOrder(orderId);
+  }, [onlinePayment, announcePayment, onOpenOrder]);
+  // While a payment is starting, open or being checked, nothing else is paid for.
+  const paymentInProgress =
+    onlinePayment.phase === "opening" || onlinePayment.phase === "paying" || onlinePayment.phase === "checking";
+  const paymentPanel = paymentPanelShown(onlinePayment) ? (
+    <View style={styles.noticeContainer}>
+      <PendingPaymentPanel
+        state={onlinePayment}
+        // The unpaid order was cancelled: its items are back in the cart.
+        onCancelled={() => {
+          void refetch();
+          void queryClient.invalidateQueries({ queryKey: keys.orders });
+        }}
+      />
+    </View>
+  ) : null;
 
   /**
    * One idempotency key per checkout attempt. Regenerated only when the
@@ -472,6 +517,29 @@ export default function CartScreen({
       if (method === PaymentMethod.ONLINE) markPaymentStage("orderRequest");
 
       try {
+        // An order to the LIVE location goes to where the phone is now: a
+        // reading older than a couple of minutes is taken again first
+        // (lib/currentLocation.ts ensureFresh). Moved since — the destination
+        // on screen is no longer where the customer is: nothing is ordered,
+        // the new point is checked and quoted, and they look again. No
+        // reading at all: nothing is ordered either — never to the old point.
+        // (The server checks the point's serviceability again regardless.)
+        if (live) {
+          const fresh = await ensureFreshCurrentLocation();
+          if (fresh.kind === "FAILED") {
+            cancelPaymentLaunch();
+            setCheckoutError(`${GPS_FAILURE_MESSAGE[fresh.failure]} Your order was not placed.`);
+            return;
+          }
+          if (fresh.kind === "UPDATED" && fresh.moved) {
+            cancelPaymentLaunch();
+            setCheckoutError(
+              "Your location has changed. Check the delivery address and availability for where you are now, then place the order again.",
+            );
+            return;
+          }
+        }
+
         const result = await api.post<{
           order: OrderDetailDto;
           requiresPayment: boolean;
@@ -523,23 +591,50 @@ export default function CartScreen({
         // background — awaiting that refetch here used to hold the customer on
         // this screen for a whole extra round trip after the order existed.
         queryClient.setQueryData(keys.order(result.order.id), result.order);
-        if (result.requiresPayment) {
-          markPaymentStage("orderResponse");
-          // The session came with the order: the payment screen opens
-          // Cashfree's checkout from it without another request.
-          const session = sessionFromOrderResponse(result.payment);
-          if (session) {
-            queryClient.setQueryData(PAYMENT_INTENT_KEY(result.order.id), session);
-            markPaymentStage("sessionReady");
-          }
-        }
         void queryClient.invalidateQueries({ queryKey: keys.cart });
         void queryClient.invalidateQueries({ queryKey: keys.orders });
         void queryClient.invalidateQueries({
           queryKey: keys.previouslyOrdered,
         });
 
-        onPlaced(result.order, result.requiresPayment);
+        if (!result.requiresPayment) {
+          onPlaced(result.order, false);
+          return;
+        }
+
+        // ONLINE: Cashfree's checkout opens right here, straight away — no
+        // Aadione payment screen in between. The order stays unconfirmed
+        // until the SERVER verifies the payment (lib/paymentFlow.ts).
+        markPaymentStage("orderResponse");
+        const pending = { orderId: result.order.id, amountPaise: result.order.bill.totalPaise };
+        const session = sessionFromOrderResponse(result.payment);
+        if (session?.cashfree) {
+          // The session came with the order: no further request.
+          markPaymentStage("sessionReady");
+          void startPayment({ ...pending, amountPaise: session.amountPaise }, session.cashfree);
+          return;
+        }
+        // No session with the order (an older server, or Cashfree could not
+        // be reached at that moment): ask for it once. The server reuses an
+        // open Cashfree order for this order — never a second one.
+        let created: CreatePaymentResult | null = null;
+        try {
+          markPaymentStage("sessionRequest");
+          created = await api.post<CreatePaymentResult>("/payments/create", { orderId: pending.orderId }, Crypto.randomUUID());
+          markPaymentStage("sessionReady");
+        } catch {
+          created = null; // the flow asks the server what to do next
+        }
+        if (created && !created.cashfree && created.upiIntentUrl) {
+          // Manual UPI (development servers only): its own screen, as before.
+          queryClient.setQueryData(PAYMENT_INTENT_KEY(pending.orderId), created);
+          onPlaced(result.order, true);
+          return;
+        }
+        void startPayment(
+          created?.amountPaise ? { ...pending, amountPaise: created.amountPaise } : pending,
+          created?.cashfree ?? null,
+        );
       } catch (err) {
         cancelPaymentLaunch();
         if (err instanceof ApiRequestError) {
@@ -614,6 +709,7 @@ export default function CartScreen({
     },
     [
       destinationBody,
+      live,
       quote,
       placing,
       bill,
@@ -708,6 +804,8 @@ export default function CartScreen({
           </Pressable>
         </View>
 
+        {paymentPanel}
+
         <EmptyState
           icon={
             <View>
@@ -717,7 +815,7 @@ export default function CartScreen({
               </View>
             </View>
           }
-          title="Your cart is empty"
+          title={paymentPanel ? "Nothing else in your cart" : "Your cart is empty"}
           hint="Looks like you haven't added anything yet. Start exploring and fill it up with your favourite groceries!"
           action={{
             label: "Continue Shopping",
@@ -745,6 +843,16 @@ export default function CartScreen({
    * delivery check here follows the address the order actually uses, and the
    * bar says plainly that it is not Home's location.
    */
+  // The chosen location's delivery state (lib/deliveryArea.ts) — used here
+  // for what a failed current-location reading means for a live order.
+  const deliveryLocation = deliveryView({
+    location,
+    serviceability,
+    checking: locationChecking,
+    error: locationError,
+    gps,
+    now: Date.now(),
+  });
   const deliversToHomeLocation =
     live !== null ||
     selectedAddress === null ||
@@ -783,6 +891,7 @@ export default function CartScreen({
   const canPlaceOrderBase =
     canCheckout &&
     !placing &&
+    !paymentInProgress &&
     !actions.busy &&
     destinationBody !== null &&
     Boolean(quote.data);
@@ -1025,13 +1134,16 @@ export default function CartScreen({
               </View>
             )}
 
+            {/* An unpaid online order: continue / cancel it here. */}
+            {paymentPanel}
+
             {outOfArea && (
               <View style={styles.noticeContainer}>
                 <NoticeStrip
                   message={
                     deliversToHomeLocation
                       ? [
-                          "We don't deliver to your current location, so this order can't be placed yet.",
+                          serviceability?.message || NOT_DELIVERING_MESSAGE,
                           outOfAreaDetail(serviceability),
                         ]
                           .filter(Boolean)
@@ -1040,6 +1152,15 @@ export default function CartScreen({
                   }
                   tone="info"
                 />
+              </View>
+            )}
+
+            {/* Ordering to the live location needs the phone's current
+                position: permission off, GPS off or no reading — say so,
+                with the way to fix it (or choose a saved address). */}
+            {live && deliveryLocation.state === "GPS_FAILED" && (
+              <View style={styles.noticeContainer}>
+                <DeliveryStatusNotice view={deliveryLocation} onChooseAddress={() => setAddressPickerOpen(true)} />
               </View>
             )}
 

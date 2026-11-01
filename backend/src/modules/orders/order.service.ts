@@ -60,6 +60,7 @@ import { unorderableMessage, unorderableReason } from "../cart/orderability";
 import { cartLineEligibility } from "../cart/eligibility";
 import { trackedAvailableQty } from "../inventory/stock-rules";
 import { assertOrderingEnabled, statusOf, storeStatuses, type StoreStatus } from "../sellers/store-availability";
+import { restoreUnpaidOrderLines } from "./unpaid-order-guard";
 import { resolveDestination, type DestinationInput } from "./delivery-destination";
 import { allocateProportionally } from "./coupon-allocation";
 import * as pricingService from "../pricing/pricing.service";
@@ -1703,13 +1704,15 @@ export async function cancelOrder(
   }
 
   if (order.status === OrderStatus.PENDING_PAYMENT) {
-    await transitionOrder({
+    const cancelled = await transitionOrder({
       orderId,
       toStatus: OrderStatus.CANCELLED,
       actorType: ActorType.CUSTOMER,
       actorUserId: userId,
       reason,
     });
+    // Never paid: its items go back into the cart (once — only this call moved it).
+    if (cancelled.changed) await restoreUnpaidOrderLines(orderId);
   } else {
     const cancellable = order.sellerOrders.filter(
       (so) =>

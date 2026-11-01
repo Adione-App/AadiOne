@@ -61,33 +61,56 @@ export async function assertUnpaidOrderStillOrderable(order: { id: string; userI
     reason: `Cancelled before payment: ${reason}`,
   });
 
-  const listings = await prisma.sellerListing.findMany({
-    where: {
-      OR: sellerOrders.flatMap((sellerOrder) =>
-        sellerOrder.items
-          .filter((item) => item.variantId !== null)
-          .map((item) => ({ sellerId: sellerOrder.sellerId, variantId: item.variantId! })),
-      ),
-    },
-    select: { id: true, sellerId: true, variantId: true },
-  });
-  const listingId = new Map(listings.map((listing) => [`${listing.sellerId}|${listing.variantId}`, listing.id]));
-  const lines = sellerOrders.flatMap((sellerOrder) =>
-    sellerOrder.items.flatMap((item) => {
-      const id = item.variantId ? listingId.get(`${sellerOrder.sellerId}|${item.variantId}`) : undefined;
-      return id ? [{ sellerListingId: id, qty: item.qty }] : [];
-    }),
-  );
-  try {
-    if (cancelled.changed) await cartService.restoreLines(order.userId, lines);
-  } catch (error) {
-    // The order is cancelled and nothing was paid; only the convenience of
-    // getting the items back failed.
-    log.error({ err: error, orderId: order.id }, 'cancelled unpaid order: lines not restored to the cart');
-  }
+  if (cancelled.changed) await restoreUnpaidOrderLines(order.id);
 
   throw new AppError(closed.length > 0 ? ErrorCode.SELLER_CLOSED : ErrorCode.ORDERING_PAUSED, {
     message: `${reason} Your order was cancelled before any payment, and its items are back in your cart.`,
     internalMessage: `unpaid order ${order.id} cancelled at payment start: ${closed.length > 0 ? `${closed.length} store(s) closed` : 'ordering paused'}`,
   });
+}
+
+/**
+ * An unpaid online order that ended WITHOUT payment — cancelled before any
+ * payment (above), cancelled by the customer, or its payment window expired
+ * (jobs releaseExpiredReservations) — gives its lines back to the customer's
+ * cart: ordering took them out of the cart, but only a paid order uses them
+ * up. Call it only from the call that actually moved the order (its
+ * transition reported `changed`), so the lines come back once.
+ *
+ * Best effort: the order's state is already final and nothing was paid;
+ * only the convenience of getting the items back can fail (logged).
+ */
+export async function restoreUnpaidOrderLines(orderId: string): Promise<void> {
+  try {
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        userId: true,
+        paymentStatus: true,
+        sellerOrders: { select: { sellerId: true, items: { select: { variantId: true, qty: true } } } },
+      },
+    });
+    // Never for an order money was taken for (it is refunded, not re-carted).
+    if (!order || order.paymentStatus === 'PAID' || order.paymentStatus === 'PARTIALLY_REFUNDED' || order.paymentStatus === 'REFUNDED') return;
+    const keys = order.sellerOrders.flatMap((sellerOrder) =>
+      sellerOrder.items
+        .filter((item) => item.variantId !== null)
+        .map((item) => ({ sellerId: sellerOrder.sellerId, variantId: item.variantId! })),
+    );
+    if (keys.length === 0) return;
+    const listings = await prisma.sellerListing.findMany({
+      where: { OR: keys },
+      select: { id: true, sellerId: true, variantId: true },
+    });
+    const listingId = new Map(listings.map((listing) => [`${listing.sellerId}|${listing.variantId}`, listing.id]));
+    const lines = order.sellerOrders.flatMap((sellerOrder) =>
+      sellerOrder.items.flatMap((item) => {
+        const id = item.variantId ? listingId.get(`${sellerOrder.sellerId}|${item.variantId}`) : undefined;
+        return id ? [{ sellerListingId: id, qty: item.qty }] : [];
+      }),
+    );
+    await cartService.restoreLines(order.userId, lines);
+  } catch (error) {
+    log.error({ err: error, orderId }, 'unpaid order ended: lines not restored to the cart');
+  }
 }

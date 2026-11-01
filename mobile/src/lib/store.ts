@@ -15,6 +15,7 @@ import { api, ApiRequestError, readRefreshToken, saveRefreshToken, setAccessToke
 import { refreshFailureKind } from './guestAccess';
 import { connectSocket, disconnectSocket } from './socket';
 import { forgetPushRegistration, registerForPush } from './push';
+import type { GpsStatus } from './currentLocation';
 
 /* -------------------------------------------------------------------------- */
 /* Auth                                                                       */
@@ -164,6 +165,12 @@ export interface ChosenLocation {
   source: 'GPS' | 'ADDRESS';
   /** The fix's reported accuracy radius (metres), GPS only. */
   accuracyM?: number | null;
+  /**
+   * When that fix was taken (epoch ms), GPS only. A GPS location is the
+   * phone's CURRENT position only while this is recent — it is read again on
+   * launch, on return to the app and before an order (lib/currentLocation.ts).
+   */
+  fixedAt?: number | null;
 }
 
 /**
@@ -266,6 +273,19 @@ interface LocationState {
   error: string | null;
   /** True once startup hydration from disk has run (whether or not it found anything). */
   hydrated: boolean;
+  /**
+   * The last attempt to read the phone's current position (lib/currentLocation.ts):
+   * 'failed' keeps why (permission, GPS off, timeout, …) — a GPS location
+   * from earlier is then NOT the current one.
+   */
+  gps: GpsStatus;
+  setGps: (gps: GpsStatus) => void;
+  /**
+   * A fresh GPS reading becomes the chosen location: its live destination
+   * (null when it cannot be one) replaces any saved-address choice, and the
+   * server checks serviceability for it.
+   */
+  applyCurrentLocation: (location: ChosenLocation, liveDestination: LiveLocationInput | null) => Promise<void>;
   setLocation: (location: ChosenLocation) => Promise<void>;
   selectAddress: (addressId: string | null) => void;
   /** Set BEFORE `setLocation` for the same point (which would otherwise clear it). */
@@ -277,9 +297,11 @@ interface LocationState {
   /**
    * Silent background re-verification of the CHOSEN location: re-checks
    * serviceability for the same coordinates (the store's own state — open,
-   * radius — can change while the customer stays put). It never swaps in the
-   * device's current position: that used to replace a saved address or a
-   * confirmed point with a minutes-old, unchecked GPS reading.
+   * radius — can change while the customer stays put). It never reads the
+   * GPS itself: a fresh reading of the phone's position is taken by
+   * lib/locationService.ts (launch, return to the app, before an order),
+   * which replaces a GPS point only — never a saved address the customer
+   * picked.
    */
   refresh: () => Promise<void>;
 }
@@ -295,6 +317,18 @@ export const useLocation = create<LocationState>((set, get) => ({
   checking: false,
   error: null,
   hydrated: false,
+  gps: { phase: 'idle', failure: null },
+
+  setGps(gps) {
+    set({ gps });
+  },
+
+  async applyCurrentLocation(location, liveDestination) {
+    // Never a saved address: a GPS point orders to itself (or, without a
+    // complete live destination, checkout asks for the details / an address).
+    set({ liveDestination, selectedAddressId: null });
+    await get().setLocation({ ...location, source: 'GPS' });
+  },
 
   async setLocation(location) {
     const check = ++latestCheck;
@@ -352,7 +386,15 @@ export const useLocation = create<LocationState>((set, get) => ({
       if (raw) {
         const parsed: unknown = JSON.parse(raw);
         if (isValidCachedLocation(parsed)) {
-          const location: ChosenLocation = { ...parsed.location, source: parsed.location.source === 'ADDRESS' ? 'ADDRESS' : 'GPS' };
+          const source = parsed.location.source === 'ADDRESS' ? 'ADDRESS' : 'GPS';
+          const fixedAt = parsed.location.fixedAt;
+          // Painted for the first frame only; a GPS point is read again at
+          // launch, so its old reading time is kept (never refreshed here).
+          const location: ChosenLocation = {
+            ...parsed.location,
+            source,
+            fixedAt: source === 'GPS' && typeof fixedAt === 'number' && Number.isFinite(fixedAt) ? fixedAt : null,
+          };
           set({
             location,
             serviceability: parsed.serviceability,

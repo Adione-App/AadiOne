@@ -421,35 +421,63 @@ export async function estimateEta(input: {
  * One round trip, because on rural 3G each additional call is a visible pause.
  */
 export async function getServiceability(latitude: number, longitude: number): Promise<ServiceabilityResult> {
+  return (await evaluateLocation(latitude, longitude)).result;
+}
+
+/** Why no store serves a point (null: at least one does). */
+export type LocationOutsideReason = 'OUTSIDE_SERVICE_STATE' | 'NO_ELIGIBLE_STORE' | 'OUTSIDE_RADIUS';
+
+export interface LocationEvaluation {
+  result: ServiceabilityResult;
+  /** The live sellers whose own radius covers the point, nearest first. */
+  serving: SellerWithHours[];
+  outsideReason: LocationOutsideReason | null;
+}
+
+/**
+ * `getServiceability` plus WHICH sellers serve the point and, when none
+ * does, why — for the location check's status (location-serviceability.ts).
+ *
+ * The radius is each seller's own (`maxServiceRadiusKm`, else the
+ * MAX_SERVICE_RADIUS_KM configuration — `checkServiceability`), inclusive at
+ * the boundary. A seller without a usable map point (never set, or (0, 0))
+ * serves nobody and is not a candidate: its "distance" is meaningless.
+ */
+export async function evaluateLocation(latitude: number, longitude: number): Promise<LocationEvaluation> {
   if (!isValidCoordinates(latitude, longitude)) {
     throw new AppError(ErrorCode.INVALID_COORDINATES, {
       internalMessage: `invalid coordinates: ${latitude}, ${longitude}`,
     });
   }
 
-  const sellers = await repository.findLiveSellers();
+  const sellers = (await repository.findLiveSellers()).filter(
+    (seller) => coordinateProblem(seller.latitude, seller.longitude) === null,
+  );
   const checks = await Promise.all(
     sellers.map(async (seller) => ({ seller, check: await checkServiceability(latitude, longitude, seller) })),
   );
   const byDistance = [...checks].sort((a, b) => a.check.distanceKm - b.check.distanceKm);
   // Rajasthan only: a point outside it (or too near its border to confirm)
   // is served by nobody, however near a seller is.
-  const serving = pointInServiceState(latitude, longitude)
-    ? byDistance.filter((entry) => entry.check.serviceable)
-    : [];
+  const inServiceState = pointInServiceState(latitude, longitude);
+  const serving = inServiceState ? byDistance.filter((entry) => entry.check.serviceable) : [];
   const nearest = serving[0] ?? byDistance[0] ?? null;
 
   if (!nearest || serving.length === 0) {
     const { MAX_SERVICE_RADIUS_KM } = await configService.getMany([ConfigKey.MAX_SERVICE_RADIUS_KM]);
     return {
-      serviceable: false,
-      distanceKm: nearest?.check.distanceKm ?? 0,
-      maxRadiusKm: nearest?.check.maxRadiusKm ?? MAX_SERVICE_RADIUS_KM,
-      etaMinutes: null,
-      etaMinMinutes: null,
-      etaMaxMinutes: null,
-      deliveryFeePaise: null,
-      sellerOpen: false,
+      result: {
+        serviceable: false,
+        distanceKm: nearest?.check.distanceKm ?? 0,
+        maxRadiusKm: nearest?.check.maxRadiusKm ?? MAX_SERVICE_RADIUS_KM,
+        etaMinutes: null,
+        etaMinMinutes: null,
+        etaMaxMinutes: null,
+        deliveryFeePaise: null,
+        sellerOpen: false,
+      },
+      serving: [],
+      outsideReason: !inServiceState ? 'OUTSIDE_SERVICE_STATE' : !nearest ? 'NO_ELIGIBLE_STORE' : 'OUTSIDE_RADIUS',
     };
   }
 
@@ -459,14 +487,18 @@ export async function getServiceability(latitude: number, longitude: number): Pr
   ]);
 
   return {
-    serviceable: true,
-    distanceKm: nearest.check.distanceKm,
-    maxRadiusKm: nearest.check.maxRadiusKm,
-    etaMinutes: eta.etaMinutes,
-    etaMinMinutes: eta.etaMinMinutes,
-    etaMaxMinutes: eta.etaMaxMinutes,
-    deliveryFeePaise: nearest.check.deliveryFeePaise,
-    sellerOpen: openStates.some((state) => state.isOpen),
+    result: {
+      serviceable: true,
+      distanceKm: nearest.check.distanceKm,
+      maxRadiusKm: nearest.check.maxRadiusKm,
+      etaMinutes: eta.etaMinutes,
+      etaMinMinutes: eta.etaMinMinutes,
+      etaMaxMinutes: eta.etaMaxMinutes,
+      deliveryFeePaise: nearest.check.deliveryFeePaise,
+      sellerOpen: openStates.some((state) => state.isOpen),
+    },
+    serving: serving.map((entry) => entry.seller),
+    outsideReason: null,
   };
 }
 

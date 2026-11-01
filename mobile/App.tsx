@@ -29,6 +29,8 @@ import { onSessionExpired } from "@/lib/api";
 import { retryInterruptedRestore, useAuth, useLocation } from "@/lib/store";
 import { onMyOrderChanged, onStoreAvailabilityChanged } from "@/lib/socket";
 import { revalidateStoreAvailability, setAvailabilityQueryClient } from "@/lib/storeAvailability";
+import { refreshCurrentLocation } from "@/lib/locationService";
+import { checkPendingPayment, restorePendingPayment, setPaymentQueryClient } from "@/lib/pendingPayment";
 import { loginClosed } from "@/lib/authGate";
 import { isPrivateQueryKey } from "@/lib/guestAccess";
 import { forgetPrivateQueries, keys } from "@/lib/queries";
@@ -97,6 +99,7 @@ const queryClient = new QueryClient({
 // Store availability (lib/storeAvailability.ts): app resume and the
 // realtime event make the app ask the server again.
 setAvailabilityQueryClient(queryClient);
+setPaymentQueryClient(queryClient);
 onStoreAvailabilityChanged(revalidateStoreAvailability);
 // An order of mine changed (paid and placed, moved on, ended): the order list
 // and Home's orders-in-progress carousel ask again — only those on screen refetch.
@@ -260,6 +263,15 @@ export default function App() {
           // The last update answer for this installed version (offline launch).
           useAppUpdate.getState().hydrate(),
         ]);
+        // Where the phone IS now: a GPS location from an earlier session is
+        // read again (permission already granted only — no dialog here; the
+        // first-launch explanation on Home asks). Not awaited: browsing
+        // never waits for the GPS. A saved address the customer picked is
+        // kept and re-checked instead (lib/currentLocation.ts).
+        void refreshCurrentLocation("launch");
+        // An unpaid online order from before the app was closed (killed while
+        // a UPI app was open): asked about quietly — confirmed if it was paid.
+        if (useAuth.getState().status === "authenticated") void restorePendingPayment();
         // The cart snapshot is read from disk alongside the restore, so it
         // can land after the status already turned guest: drop it again.
         if (useAuth.getState().status !== "authenticated") forgetCartAfterSignOut();
@@ -317,6 +329,14 @@ export default function App() {
       // Stores may have opened or closed while the app was away (a cart kept
       // overnight): ask the server again for whatever is on screen.
       revalidateStoreAvailability();
+      // The customer may have moved while the app was away (Home in the
+      // morning, the office later): read the phone's position again —
+      // foreground only, never in the background, at most once a minute.
+      void refreshCurrentLocation("resume");
+      // Back from a UPI app / the background: an unpaid order may have been
+      // paid meanwhile (late webhook) — asked quietly, never while Cashfree's
+      // checkout is still open (it reconciles itself when it closes).
+      void checkPendingPayment();
       // Back from paying (or from anywhere): an order placed or moved on
       // meanwhile shows on Home without a restart.
       void queryClient.invalidateQueries({ queryKey: keys.orders });

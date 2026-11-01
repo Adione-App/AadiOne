@@ -18,6 +18,7 @@ import { prisma } from '../infra/db/prisma';
 import { payments as provider } from '../infra/payment';
 import { moduleLogger } from '../common/logger';
 import { confirmPaymentAndPlace, transitionOrder } from '../modules/orders/order-state.service';
+import { restoreUnpaidOrderLines } from '../modules/orders/unpaid-order-guard';
 import * as notificationService from '../modules/notifications/notification.service';
 import { reconcileCheckoutPayments } from '../modules/payments/payment.service';
 import { cleanupProductImports, runProductImportWorker } from '../modules/product-import/import-worker';
@@ -59,12 +60,14 @@ export async function releaseExpiredReservations(): Promise<number> {
     try {
       // The state machine releases the reservation as a side effect, so stock
       // and status can never disagree.
-      await transitionOrder({
+      const expiredNow = await transitionOrder({
         orderId: order.id,
         toStatus: OrderStatus.PAYMENT_FAILED,
         actorType: ActorType.SYSTEM,
         reason: 'Payment was not completed in time',
       });
+      // Never paid: the items go back into the customer's cart.
+      if (expiredNow.changed) await restoreUnpaidOrderLines(order.id);
       log.info({ orderId: order.id }, 'released expired reservation');
     } catch (error) {
       log.error({ err: error, orderId: order.id }, 'failed to release reservation');

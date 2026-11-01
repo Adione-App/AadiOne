@@ -13,6 +13,8 @@
  */
 
 import * as Location from 'expo-location';
+import { Linking, Platform } from 'react-native';
+import type { DeviceReading, PermissionState } from './currentLocation';
 import {
   LocationError,
   detectLocation,
@@ -25,11 +27,16 @@ import {
   type GeocodeCandidate,
 } from '@shared/location';
 
-export function detectDeviceLocation(): Promise<DetectResult> {
+export function detectDeviceLocation(options: { prompt?: boolean } = {}): Promise<DetectResult> {
+  const prompt = options.prompt ?? true;
   return detectLocation(
     {
       async requestPermission() {
-        const { status } = await Location.requestForegroundPermissionsAsync();
+        // Foreground ("while using the app") only — never background. Without
+        // `prompt` no dialog is shown: the permission as it already stands.
+        const { status } = prompt
+          ? await Location.requestForegroundPermissionsAsync()
+          : await Location.getForegroundPermissionsAsync();
         return status === 'granted';
       },
       servicesEnabled: () => Location.hasServicesEnabledAsync(),
@@ -38,7 +45,8 @@ export function detectDeviceLocation(): Promise<DetectResult> {
           const position = await Location.getCurrentPositionAsync({
             // A delivery address needs metres, not the kilometres "Balanced" gives indoors.
             accuracy: Location.Accuracy.High,
-            mayShowUserSettingsDialog: true,
+            // The system's "turn on location" dialog only for the customer's own tap.
+            mayShowUserSettingsDialog: prompt,
           });
           return {
             latitude: position.coords.latitude,
@@ -55,6 +63,49 @@ export function detectDeviceLocation(): Promise<DetectResult> {
     },
     { timeoutMs: 20_000 },
   );
+}
+
+/** Foreground location permission as it stands — never shows a dialog. */
+export async function getLocationPermission(): Promise<PermissionState> {
+  const { status, canAskAgain } = await Location.getForegroundPermissionsAsync();
+  return { granted: status === 'granted', canAskAgain: status === 'granted' || canAskAgain !== false };
+}
+
+/**
+ * One fresh reading for the current-location controller (lib/currentLocation.ts):
+ * a denial the OS will not ask about again is PERMISSION_BLOCKED, so the
+ * screen offers Settings instead of a button that can no longer prompt.
+ */
+export async function readDeviceLocation(options: { prompt: boolean }): Promise<DeviceReading> {
+  const result = await detectDeviceLocation({ prompt: options.prompt });
+  if (result.status === 'OK') {
+    return { status: 'OK', latitude: result.latitude, longitude: result.longitude, accuracyM: result.accuracyM };
+  }
+  if (result.status === 'PERMISSION_DENIED') {
+    const permission = await getLocationPermission().catch(() => null);
+    if (permission && !permission.canAskAgain) return { status: 'PERMISSION_BLOCKED' };
+  }
+  return { status: result.status };
+}
+
+/**
+ * GPS switched off: Android shows the system "turn on location" dialog; iOS
+ * cannot open the location switch for an app, so its Settings open instead.
+ * Resolves true when location services are on afterwards.
+ */
+export async function enableLocationServices(): Promise<boolean> {
+  try {
+    if (Platform.OS === 'android') await Location.enableNetworkProviderAsync();
+    else await Linking.openSettings();
+  } catch {
+    // Declined or unavailable: the check below says so.
+  }
+  return Location.hasServicesEnabledAsync().catch(() => false);
+}
+
+/** The app's own settings page (location permission). */
+export function openLocationSettings(): void {
+  void Linking.openSettings().catch(() => undefined);
 }
 
 /** Suggested address fields for a point; null when the OS geocoder has nothing (or fails). */

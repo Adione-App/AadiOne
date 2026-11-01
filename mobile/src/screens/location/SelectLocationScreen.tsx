@@ -1,7 +1,6 @@
 import { useState } from "react";
 import {
   ActivityIndicator,
-  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,25 +11,18 @@ import { useQuery } from "@tanstack/react-query";
 import type { AddressDto } from "@shared";
 import { colors, radius, spacing } from "@shared/theme";
 import { formatAddressLines } from "@shared/address";
-import { DETECT_MESSAGE, type DetectStatus } from "@shared/location";
 import { formatIndianMobile } from "@shared/phone";
 import { addressSummary } from "@/lib/addressDisplay";
-import {
-  buildLiveDestination,
-  isActiveLiveDestination,
-  isHomeState,
-  liveLocationLabel,
-} from "@/lib/liveLocation";
-import { detectDeviceLocation, suggestAddressFor } from "@/lib/deviceLocation";
+import { isActiveLiveDestination } from "@/lib/liveLocation";
+import { GPS_FAILURE_MESSAGE, type GpsFailure } from "@/lib/currentLocation";
+import { enableLocationServices, openLocationSettings } from "@/lib/deviceLocation";
+import { refreshCurrentLocation } from "@/lib/locationService";
 import { api } from "@/lib/api";
-import { useAuth, useLocation, useSignedIn } from "@/lib/store";
+import { useLocation, useSignedIn } from "@/lib/store";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { AppText, Button, Card, Loading, Screen } from "@/components/ui";
 
-type SelectError = { status: Exclude<DetectStatus, "OK"> | "OUTSIDE_STATE"; message: string };
-
-const OUTSIDE_STATE_MESSAGE =
-  "Aadione currently delivers only in Rajasthan, and your current location appears to be outside Rajasthan.";
+type SelectError = { status: GpsFailure; message: string };
 
 export default function SelectLocationScreen({
   onBack,
@@ -41,12 +33,11 @@ export default function SelectLocationScreen({
 }) {
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
-  const user = useAuth((s) => s.user);
   const signedIn = useSignedIn();
 
-  const { selectedAddressId, setLocation, setLiveDestination, selectAddress, liveDestination, location } = useLocation();
+  const { selectedAddressId, setLocation, selectAddress, liveDestination, location } = useLocation();
 
-  const [detecting, setDetecting] = useState<"gps" | "address" | null>(null);
+  const [detecting, setDetecting] = useState<"gps" | null>(null);
   const [detectError, setDetectError] = useState<SelectError | null>(null);
 
   // Saved addresses are an account's. A guest still chooses where they are
@@ -59,48 +50,38 @@ export default function SelectLocationScreen({
   });
 
   /**
-   * Permission → one fresh GPS fix → the readable address → SELECTED, and
-   * back to where the customer came from. No second confirmation.
+   * Permission (the system dialog only if it may still ask) → one fresh GPS
+   * fix → the readable address → SELECTED, and back to where the customer
+   * came from. No second confirmation. The same reading as every other
+   * current-location request (lib/locationService.ts — never two at once).
    *
    * What is selected is a genuine live destination: these exact coordinates
    * (sent as `liveLocation` at checkout), the address the geocoder could
    * read, and the recipient from the verified profile. Anything the geocoder
-   * or profile lacked is completed at checkout before paying.
+   * or profile lacked is completed at checkout before paying. A point
+   * outside Rajasthan is selected as the current location — Home then says
+   * Aadione does not deliver there — but never as an order destination.
    *
-   * Nothing is selected for a failed fix (no fallback point) or a point
-   * outside Rajasthan; the server re-checks the point and the seller radius
-   * on the quote and the order regardless.
+   * Nothing is selected for a failed fix (no fallback point); the server
+   * re-checks the point and the seller radius on the quote and the order.
    */
   async function useCurrentLocation(): Promise<void> {
     setDetecting("gps");
     setDetectError(null);
     try {
-      const result = await detectDeviceLocation();
-      if (result.status !== "OK") {
-        setDetectError({ status: result.status, message: DETECT_MESSAGE[result.status] });
+      const outcome = await refreshCurrentLocation("user", { prompt: true });
+      if (outcome.kind === "FAILED") {
+        setDetectError({ status: outcome.failure, message: GPS_FAILURE_MESSAGE[outcome.failure] });
         return;
       }
-      setDetecting("address");
-      const suggestion = await suggestAddressFor(result.latitude, result.longitude);
-      const destination = buildLiveDestination(result, suggestion, user);
-      if (!isHomeState(destination.state)) {
-        setDetectError({ status: "OUTSIDE_STATE", message: OUTSIDE_STATE_MESSAGE });
-        return;
-      }
-      // The details first, then the point they belong to (the store keeps a
-      // live destination only for the current GPS location).
-      setLiveDestination(destination);
-      void setLocation({
-        latitude: destination.latitude,
-        longitude: destination.longitude,
-        label: liveLocationLabel(destination),
-        source: "GPS",
-        accuracyM: destination.accuracyM,
-      });
-      onBack();
+      if (outcome.kind === "UPDATED") onBack();
     } finally {
       setDetecting(null);
     }
+  }
+
+  async function turnOnLocation(): Promise<void> {
+    if (await enableLocationServices()) await useCurrentLocation();
   }
 
   // The live location already confirmed, if it is still the chosen one.
@@ -178,9 +159,7 @@ export default function SelectLocationScreen({
             >
               {detecting === "gps"
                 ? "Finding your location…"
-                : detecting === "address"
-                  ? "Reading the address…"
-                  : "Deliver to where you are now — selected at once"}
+                : "Deliver to where you are now — selected at once"}
             </AppText>
           </View>
 
@@ -194,18 +173,22 @@ export default function SelectLocationScreen({
             <AppText variant="body" color={colors.danger}>
               {detectError.message}
             </AppText>
-            <Button
-              label="Try again"
-              onPress={() => void useCurrentLocation()}
-              loading={detecting !== null}
-              style={{ marginTop: spacing.md }}
-            />
-            {detectError.status === "PERMISSION_DENIED" && (
+            {detectError.status === "PERMISSION_BLOCKED" ? (
+              // The OS will not ask again: only Settings can allow it.
+              <Button label="Open Settings" onPress={openLocationSettings} style={{ marginTop: spacing.md }} />
+            ) : detectError.status === "SERVICES_DISABLED" ? (
               <Button
-                label="Open settings"
-                variant="ghost"
-                onPress={() => void Linking.openSettings()}
-                style={{ marginTop: spacing.xs }}
+                label="Turn on location"
+                onPress={() => void turnOnLocation()}
+                loading={detecting !== null}
+                style={{ marginTop: spacing.md }}
+              />
+            ) : (
+              <Button
+                label={detectError.status === "PERMISSION_DENIED" ? "Allow location" : "Try again"}
+                onPress={() => void useCurrentLocation()}
+                loading={detecting !== null}
+                style={{ marginTop: spacing.md }}
               />
             )}
           </Card>

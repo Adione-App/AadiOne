@@ -2,17 +2,18 @@
  * Makes UPI apps visible to the app on both platforms.
  *
  * Android 11 (API 30) and iOS 9 both restrict which other apps a package can
- * see, and BOTH FAIL SILENTLY: without the declarations below,
- * `Linking.canOpenURL('phonepe://')` returns false — or throws on iOS — on a
- * phone with PhonePe installed, and a payment checkout (Cashfree's UPI app
- * list included) cannot find the installed UPI apps.
+ * see, and BOTH FAIL SILENTLY: without the declarations below, Cashfree's
+ * checkout cannot find or open the UPI apps installed on the phone (its UPI
+ * app list stays empty), even though the apps are there.
  *
- *   Android  <queries><package> for each app in the catalogue, plus a generic
- *            upi:// intent so the system chooser fallback resolves.
- *   iOS      LSApplicationQueriesSchemes for the same schemes.
+ *   Android  <queries><package> for each common UPI app, plus a generic
+ *            upi:// intent so any UPI app (and the system chooser) resolves.
+ *   iOS      LSApplicationQueriesSchemes for the same apps' schemes.
  *
- * Both lists are derived from `src/lib/upi-apps.json`, so adding an app there
- * wires up both platforms at once.
+ * The lists are kept here (they used to be derived from the app's own UPI
+ * app-picker catalogue, removed with that screen — Cashfree's checkout now
+ * lists the apps itself). Same values, same order: the generated manifest and
+ * Info.plist are unchanged.
  *
  * This lives in a config plugin rather than in android/ and ios/ directly
  * because `expo prebuild` regenerates those folders and would drop the edits.
@@ -20,15 +21,18 @@
 
 const { withAndroidManifest, withInfoPlist } = require('expo/config-plugins');
 
-const upiApps = require('../src/lib/upi-apps.json');
-
 const UPI_SCHEME = 'upi';
 
-const ANDROID_PACKAGES = upiApps.map((app) => app.androidPackage);
+// Google Pay, PhonePe, Paytm, BHIM.
+const ANDROID_PACKAGES = [
+  'com.google.android.apps.nbu.paisa.user',
+  'com.phonepe.app',
+  'net.one97.paytm',
+  'in.org.npci.upiapp',
+];
 
-// Every scheme the app probes, plus upi:// itself for the chooser fallback.
-// Listing schemes we never call would be noise in the App Store review notes.
-const IOS_SCHEMES = [UPI_SCHEME, ...upiApps.flatMap((app) => app.schemes)];
+// upi:// itself for the chooser fallback, then each app's own schemes.
+const IOS_SCHEMES = [UPI_SCHEME, 'tez', 'gpay', 'phonepe', 'paytmmp', 'paytm', 'bhim'];
 
 function withUpiAndroidQueries(config) {
   return withAndroidManifest(config, (cfg) => {
@@ -55,9 +59,9 @@ function withUpiAndroidQueries(config) {
       });
     }
 
-    // The scheme query above is not enough on its own: probing an app's own
-    // scheme (phonepe://) needs that package visible, since phonepe:// is not
-    // upi:// and so is not covered by the intent filter.
+    // The scheme query above is not enough on its own: opening an app by its
+    // own scheme (phonepe://) needs that package visible, since phonepe:// is
+    // not upi:// and so is not covered by the intent filter.
     for (const pkg of ANDROID_PACKAGES) {
       const already = queries.package.some((p) => p.$?.['android:name'] === pkg);
       if (!already) queries.package.push({ $: { 'android:name': pkg } });
@@ -80,3 +84,7 @@ function withUpiIosQueries(config) {
 module.exports = function withUpiQueries(config) {
   return withUpiIosQueries(withUpiAndroidQueries(config));
 };
+
+// For the config check (tests/upiQueriesPlugin.test.ts).
+module.exports.ANDROID_PACKAGES = ANDROID_PACKAGES;
+module.exports.IOS_SCHEMES = IOS_SCHEMES;

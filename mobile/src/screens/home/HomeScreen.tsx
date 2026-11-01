@@ -42,7 +42,9 @@ import {
   useStores,
 } from "@/lib/queries";
 import { formatUnreadBadge } from "@/lib/notifications";
-import { outOfAreaDetail } from "@/lib/deliveryArea";
+import { deliveryHeadline, deliveryView } from "@/lib/deliveryArea";
+import { DeliveryStatusNotice, deliveryNoticeShown } from "@/components/location/DeliveryStatusNotice";
+import { LocationPermissionIntro } from "@/components/location/LocationPermissionIntro";
 import { globalClosedNotice } from "@/lib/platformAvailability";
 import { ActiveOrdersCarousel } from "./sections/ActiveOrdersCarousel";
 import { useCartError } from "@/lib/useCartActions";
@@ -258,7 +260,11 @@ export default function HomeScreen({
   // still awaiting payment.
   const activeOrders = useActiveOrders().data ?? [];
 
-  const { location, liveDestination, serviceability, refresh } = useLocation();
+  const { location, liveDestination, serviceability, refresh, checking, error: locationError, gps } = useLocation();
+  // Delivery at the CHOSEN location, one state per reason (lib/deliveryArea.ts):
+  // a GPS point counts as where the phone is only after this session's reading.
+  const delivery = deliveryView({ location, serviceability, checking, error: locationError, gps, now: Date.now() });
+  const headline = deliveryHeadline(delivery);
   // A live GPS location is named by its FULL address, from the stored
   // destination itself (not a shortened label saved earlier).
   const locationLabel = isActiveLiveDestination(liveDestination, location)
@@ -874,13 +880,24 @@ export default function HomeScreen({
 
               <View style={styles.locationText}>
                 <View style={styles.deliveringRow}>
-                  <Ionicons name="location" size={11} color={colors.primary} />
+                  <Ionicons
+                    name="location"
+                    size={11}
+                    color={headline.tone === "danger" ? colors.danger : colors.primary}
+                  />
                   <AppText
                     variant="caption"
-                    color={colors.textSecondary}
+                    color={
+                      headline.tone === "ok"
+                        ? colors.primaryDark
+                        : headline.tone === "danger"
+                          ? colors.danger
+                          : colors.textSecondary
+                    }
+                    numberOfLines={1}
                     style={styles.deliveringText}
                   >
-                    Delivering to
+                    {headline.text}
                   </AppText>
                 </View>
 
@@ -1045,8 +1062,9 @@ export default function HomeScreen({
               </View>
             )}
 
-            {/* No delivery location chosen yet: ask here, never at launch. */}
-            {!location && (
+            {/* No delivery location chosen yet (and no failed attempt to
+                explain): ask here. The first-launch explanation asks once. */}
+            {delivery.state === "NO_LOCATION" && (
               <Pressable
                 onPress={onOpenLocation}
                 style={styles.noticeContainer}
@@ -1060,25 +1078,17 @@ export default function HomeScreen({
               </Pressable>
             )}
 
-            {serviceability && !serviceability.serviceable && (
-              <View style={styles.noticeContainer}>
-                <NoticeStrip
-                  message={[
-                    "We don't deliver to your location yet — you can browse, but ordering is unavailable.",
-                    outOfAreaDetail(serviceability),
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
-                  tone="info"
-                />
-              </View>
-            )}
-
-            {serviceability?.sellerOpen === false && (
-              <View style={styles.noticeContainer}>
-                <NoticeStrip message="Every store near you is closed right now. You can keep browsing — ordering opens when a store opens." />
-              </View>
-            )}
+            {/* Delivery at the chosen location: outside the area, stores
+                closed / not taking orders, the current location unavailable
+                (permission, GPS off, timeout) or the check failing — each
+                with its own way forward. App-wide pauses have their own
+                notice above. Browsing always continues. */}
+            {deliveryNoticeShown(delivery) &&
+              !(delivery.state === "ORDERING_DISABLED" && globalClosed) && (
+                <View style={styles.noticeContainer}>
+                  <DeliveryStatusNotice view={delivery} onChooseAddress={onOpenLocation} />
+                </View>
+              )}
 
             {/* ====================================================
                 ORDER IN PROGRESS — a customer can start a brand new
@@ -1114,6 +1124,9 @@ export default function HomeScreen({
           </>
         }
       />
+
+      {/* First launch only: why the location is needed, then the system dialog. */}
+      <LocationPermissionIntro enabled={isFocused} />
     </Screen>
   );
 }

@@ -192,7 +192,40 @@ export interface ServiceabilityResult {
   /** Location check: at least one seller that delivers here is open now.
    * Checkout quote: every seller in the cart is open now. */
   sellerOpen: boolean;
+  /**
+   * Location check only (absent from older servers and from the checkout
+   * quote): why ordering here is or is not possible right now — one state
+   * per reason, so the app never shows a generic error for a known cause.
+   */
+  status?: ServiceabilityStatus;
+  /** The customer-facing sentence for `status`; null when AVAILABLE. */
+  message?: string | null;
+  /**
+   * Location check only: an order could be placed here right now — inside a
+   * live store's radius, that store taking orders, app-wide ordering on.
+   * Display only: placement checks all of it again on the server.
+   */
+  canOrder?: boolean;
 }
+
+/**
+ * Why a location can or cannot order (GET /store/serviceability):
+ *   AVAILABLE              a store delivers here and takes orders now
+ *   OUTSIDE_RADIUS         live stores exist, none within its own radius
+ *   OUTSIDE_SERVICE_STATE  the point is outside the state Aadione serves
+ *   NO_ELIGIBLE_STORE      no live store with a usable map point at all
+ *   STORE_CLOSED           in range, but every serving store is closed (hours / closure)
+ *   STORE_NOT_ACCEPTING    in range, but every serving store switched orders off
+ *   ORDERING_DISABLED      in range, but app-wide ordering is off / paused
+ */
+export type ServiceabilityStatus =
+  | 'AVAILABLE'
+  | 'OUTSIDE_RADIUS'
+  | 'OUTSIDE_SERVICE_STATE'
+  | 'NO_ELIGIBLE_STORE'
+  | 'STORE_CLOSED'
+  | 'STORE_NOT_ACCEPTING'
+  | 'ORDERING_DISABLED';
 
 /* -------------------------------------------------------------------------- */
 /* Seller onboarding & self-service (admin creates; seller manages its own)  */

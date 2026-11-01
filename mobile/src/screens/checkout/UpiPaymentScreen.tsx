@@ -21,7 +21,7 @@ import { PAYMENT_INTENT_KEY, type CreatePaymentResult } from "@/lib/payments";
 import { markPaymentStage } from "@/lib/paymentTiming";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { useSystemBack } from "@/lib/useSystemBack";
-import CashfreeCheckout from "./CashfreeCheckout";
+import { startPayment } from "@/lib/pendingPayment";
 
 import {
   AppText,
@@ -265,11 +265,21 @@ export default function UpiPaymentScreen({
     }
   }
 
+  // Cashfree is never paid on this screen: its checkout opens from the Cart
+  // (lib/pendingPayment.ts). Should a Cashfree session ever land here, it is
+  // handed to that flow and the customer goes straight back to the Cart.
+  const cashfreeSession = intent.data?.cashfree ?? null;
+  const cashfreeAmount = intent.data?.amountPaise ?? 0;
+  useEffect(() => {
+    if (!cashfreeSession) return;
+    void startPayment({ orderId, amountPaise: cashfreeAmount }, cashfreeSession);
+    onCancelled();
+  }, [cashfreeSession, cashfreeAmount, orderId, onCancelled]);
+
   // Android system back asks first, exactly like the header arrow — it used
   // to leave the screen silently (order left pending, nothing cancelled).
-  // Cashfree mode handles it in CashfreeCheckout.
   useSystemBack(
-    intent.data?.cashfree
+    cashfreeSession
       ? null
       : () => {
           confirmLeave();
@@ -278,23 +288,11 @@ export default function UpiPaymentScreen({
   );
 
   if (intent.isLoading) {
-    return <Loading label="Opening secure checkout…" />;
+    return <Loading label="Preparing UPI payment…" />;
   }
 
-  // Gateway mode (Cashfree): the server issued a checkout session. None of
-  // the UPI-intent / "I have paid" flow below applies.
-  if (intent.data?.cashfree) {
-    return (
-      <CashfreeCheckout
-        orderId={orderId}
-        amountPaise={intent.data.amountPaise}
-        initialCheckout={intent.data.cashfree}
-        onPaid={onPaid}
-        onCancel={onCancel}
-        onCancelled={onCancelled}
-      />
-    );
-  }
+  // Gateway mode (Cashfree): handed to the Cart's flow above.
+  if (cashfreeSession) return null;
 
   if (intent.isError || !intent.data || !intent.data.upiIntentUrl) {
     return (

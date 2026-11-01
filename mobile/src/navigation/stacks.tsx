@@ -451,13 +451,17 @@ export function CartStack() {
               }
               onPlaced={(order, requiresPayment) =>
                 requiresPayment
-                  ? navigation.replace("UpiPayment", {
+                  ? // Manual UPI only (development servers). Cashfree's
+                    // checkout opens from the Cart itself — no screen.
+                    navigation.replace("UpiPayment", {
                       orderId: order.id,
                     })
                   : navigation.replace("OrderTracking", {
                       orderId: order.id,
                     })
               }
+              // An online order the server confirmed as paid.
+              onOpenOrder={(orderId) => navigation.navigate("OrderTracking", { orderId })}
             />
           </RequireAccount>
         )}

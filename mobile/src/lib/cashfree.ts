@@ -63,21 +63,30 @@ export function preloadCashfreeSdk(): void {
   }
 }
 
+/** The checkout currently open (the SDK keeps ONE global callback). */
+let open: Promise<CashfreeOutcome> | null = null;
+
 /**
  * Opens Cashfree's complete hosted checkout for this Cashfree order and
  * resolves once it closes. Only one can be open at a time: the SDK keeps a
- * single global callback.
+ * single global callback, so a second call while one is open gets the open
+ * one's outcome instead of replacing its callback. The first callback wins —
+ * a duplicate or late callback is ignored.
  */
 export function openCashfreeCheckout(checkout: CashfreeCheckout): Promise<CashfreeOutcome> {
   if (!isCashfreeAvailable()) {
     return Promise.reject(new Error("CASHFREE_UNAVAILABLE"));
   }
+  if (open) return open;
   const { sdk, contract } = loadSdk();
   markPaymentStage("sdkReady");
 
-  return new Promise<CashfreeOutcome>((resolve, reject) => {
+  const started = new Promise<CashfreeOutcome>((resolve, reject) => {
     const service = sdk.CFPaymentGatewayService;
+    let settled = false;
     const finish = (outcome: CashfreeOutcome) => {
+      if (settled) return;
+      settled = true;
       service.removeCallback();
       resolve(outcome);
     };
@@ -98,8 +107,13 @@ export function openCashfreeCheckout(checkout: CashfreeCheckout): Promise<Cashfr
       service.doWebPayment(session);
       markPaymentStage("checkoutInvoked");
     } catch (error) {
+      settled = true;
       service.removeCallback();
       reject(error instanceof Error ? error : new Error(String(error)));
     }
+  }).finally(() => {
+    if (open === started) open = null;
   });
+  open = started;
+  return started;
 }

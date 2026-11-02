@@ -34,6 +34,7 @@ import { moduleLogger } from '../../common/logger';
 import { prisma, runInTransaction, type Tx } from '../../infra/db/prisma';
 import { buildRefundEvidenceKey, privateDocuments } from '../../infra/storage/private-documents';
 import * as notificationService from '../notifications/notification.service';
+import { CUSTOMER_REFUND_REQUESTS_ENABLED } from './refund-requests-availability';
 import { customerRefundStatus } from './refund-group-status';
 import {
   MAX_EVIDENCE_BYTES,
@@ -272,6 +273,8 @@ export { refundableItems };
 
 async function requestEligibility(order: OrderForRequest): Promise<OrderRefundsDto['request']> {
   const base = { windowEndsAt: null as string | null, refundableItemIds: [] as string[], photoRequiredCategories: [...PHOTO_REQUIRED_CATEGORIES] as RefundRequestCategory[] };
+  // Customer requests are switched off for now: never offered.
+  if (!CUSTOMER_REFUND_REQUESTS_ENABLED) return { eligible: false, reason: null, ...base };
   if (order.status !== OrderStatus.DELIVERED) return { eligible: false, reason: null, ...base };
   const deliveredAt = order.deliveredAt ?? null;
   const windowEnds = deliveredAt ? new Date(deliveredAt.getTime() + REFUND_REQUEST_WINDOW_MS) : null;
@@ -322,6 +325,9 @@ export async function createRefundRequest(
     if (!contentType) throw new AppError(ErrorCode.UNSUPPORTED_FILE_TYPE, { message: 'Photos must be JPEG, PNG or WebP images.' });
     return { ...photo, contentType };
   });
+
+  // Switched off for now (also refused by the route, before any upload).
+  if (!CUSTOMER_REFUND_REQUESTS_ENABLED) throw new AppError(ErrorCode.REFUND_REQUESTS_DISABLED);
 
   // Cheap eligibility first, so nothing is written to storage for a request
   // that is refused anyway (re-checked under the order lock below).

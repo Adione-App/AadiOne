@@ -40,7 +40,6 @@ function run(): void {
     ["platform-availability"],
     ["checkout-quote"],
     ["product"],
-    ["products"],
     ["rail"],
     ["stores"],
     ["store"],

@@ -15,10 +15,12 @@
 import { memo, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { Image } from "expo-image";
+import type { SharedValue } from "react-native-reanimated";
 import { ChevronRight, Clock, UtensilsCrossed } from "lucide-react-native";
 import { prepTimeRange, restaurantDietOf, type FoodDiet, type RestaurantSummaryDto } from "@shared";
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { AppText } from "@/components/ui";
+import { Bone } from "@/components/Skeleton";
 import { resolveImageUrl } from "@/lib/api";
 import { restaurantListImage } from "@/lib/restaurantImages";
 
@@ -144,6 +146,33 @@ function FoodRestaurantCardImpl({
 
 export const FoodRestaurantCard = memo(FoodRestaurantCardImpl);
 
+/**
+ * A restaurant card still loading — the card's own frame and photo size with
+ * the shared skeleton bones (components/Skeleton.tsx) for its photo, name,
+ * status, tags and time, so the real card takes its place without a jump.
+ */
+export function FoodRestaurantCardSkeleton({ progress }: { progress: SharedValue<number> }) {
+  return (
+    <View style={styles.card}>
+      <Bone progress={progress} width={PHOTO_WIDTH} height={PHOTO_HEIGHT} rounded={radius.md} />
+      <View style={styles.body}>
+        <View style={[styles.titleRow, styles.skeletonTitleRow]}>
+          <Bone progress={progress} width="62%" height={14} />
+          <Bone progress={progress} width={44} height={19} rounded={radius.pill} />
+        </View>
+        <View style={styles.tags}>
+          <Bone progress={progress} width={58} height={19} />
+          <Bone progress={progress} width={46} height={19} />
+        </View>
+        <View style={styles.footer}>
+          <Bone progress={progress} width={72} height={14} />
+          <Bone progress={progress} width={28} height={28} rounded={14} />
+        </View>
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   card: {
     flexDirection: "row",
@@ -198,6 +227,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: spacing.xs,
+  },
+  // The skeleton's title row: one name line's height, its bones centred in it.
+  skeletonTitleRow: {
+    height: 20,
+    alignItems: "center",
+    justifyContent: "space-between",
   },
   name: {
     flex: 1,

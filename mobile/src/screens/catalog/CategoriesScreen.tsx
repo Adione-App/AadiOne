@@ -32,14 +32,17 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { CategoryDto, ProductSummaryDto } from '@shared';
-import { colors, radius, spacing } from '@shared/theme';
+import { colors, fontSize, lineHeight, radius, spacing } from '@shared/theme';
 import { useQueryClient } from '@tanstack/react-query';
-import { prefetchProducts, useCategories, useCategoryListing, useProducts } from '@/lib/queries';
+import { CATEGORY_PAGE_SIZE, prefetchCategoryListing, useCategories, useCategoryListing } from '@/lib/queries';
+import { uniqueListingItems } from '@/lib/listingPages';
 import { useCartActions } from '@/lib/useCartActions';
 import { useGridColumns } from '@/lib/useGridColumns';
 import { useTabBarClearance } from '@/lib/tabBarVisibility';
-import { AppText, EmptyState, ErrorState, Loading, NoticeStrip, Screen } from '@/components/ui';
+import { AppText, EmptyState, ErrorState, NoticeStrip, Screen } from '@/components/ui';
 import { ProductCard } from '@/components/ProductCard';
+import { ProductGridSkeleton } from '@/components/ProductCardSkeleton';
+import { Bone, SkeletonGroup, useSkeletonPulse } from '@/components/Skeleton';
 import CategoryIcon from '@/components/CategoryIcon';
 import { buildCategoryTree, searchCategories } from './categorySections';
 import { PromoSlot } from '@/components/PromoBanner';
@@ -164,17 +167,35 @@ export default function CategoriesScreen({
   useEffect(() => {
     if (drill.level !== 'category') return;
     for (const child of (drill.parent.children ?? []).slice(0, 8)) {
-      if (child.id !== drill.selectedChildId) prefetchProducts(queryClient, child.id);
+      if (child.id !== drill.selectedChildId) prefetchCategoryListing(queryClient, child.id);
     }
     // Only when a different category is opened — not on every sidebar tap.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sidebarParentId, queryClient]);
 
-  const products = useProducts(
-    activeCategoryId ? { categoryId: activeCategoryId, enabled: true } : { enabled: false },
+  // Every page of the selected subcategory / leaf category — loaded as the
+  // grid scrolls, never just the first one.
+  const products = useCategoryListing(activeCategoryId ?? '', {
+    pageSize: CATEGORY_PAGE_SIZE,
+    enabled: activeCategoryId !== undefined,
+  });
+  const productItems = useMemo(
+    () => (products.data ? uniqueListingItems(products.data.pages) : undefined),
+    [products.data],
   );
 
-  if (categories.isLoading) return <Loading label="Loading categories…" />;
+  if (categories.isLoading) {
+    return (
+      <Screen>
+        <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
+          <AppText variant="h1" numberOfLines={1} style={{ flex: 1 }}>
+            Categories
+          </AppText>
+        </View>
+        <CategoryLandingSkeleton />
+      </Screen>
+    );
+  }
   if (categories.isError || !categories.data) {
     return (
       <ErrorState
@@ -229,14 +250,16 @@ export default function CategoriesScreen({
   // the cross-fade wrappers that used to (Reanimated `entering`/`exiting`
   // around the skeleton and the grid) could leave the old skeleton on
   // screen or the new grid at zero opacity — the stuck / blank pane.
-  const productItems = products.data?.items;
   const productPane =
     productItems ? (
       productItems.length === 0 ? (
         <EmptyState title="Nothing here yet" hint="Try another category." />
       ) : (
         <FlatList
-          key={`grid-${productGridColumns}`}
+          // Per category too: a different subcategory starts at its own top,
+          // never at the previous one's scroll offset (which, past the new
+          // list's end, would also fire an unneeded next-page request).
+          key={`grid-${productGridColumns}-${activeCategoryId}`}
           data={productItems}
           keyExtractor={(item) => item.id}
           renderItem={renderProduct}
@@ -256,9 +279,13 @@ export default function CategoriesScreen({
             paddingBottom: tabBarClearance + spacing.xxl,
           }}
           showsVerticalScrollIndicator={false}
+          // The next page as the end comes near, until the server has no more.
+          onEndReached={() => loadNextPage(products)}
+          onEndReachedThreshold={0.6}
+          ListFooterComponent={<ListingFooter listing={products} />}
           // No `removeClippedSubviews`: on Android it can leave rows blank
-          // after a layout change (sidebar switch, column change) — the page
-          // is capped at 30 products, so the windowing below is enough.
+          // after a layout change (sidebar switch, column change) — the
+          // windowing below is enough.
           initialNumToRender={8}
           maxToRenderPerBatch={8}
           windowSize={7}
@@ -399,10 +426,7 @@ function MainCategoryListing({
   const listing = useCategoryListing(category.id);
   const children = category.children ?? [];
   // Once each, even if a product moves between pages while scrolling.
-  const items = useMemo(() => {
-    const seen = new Set<string>();
-    return (listing.data?.pages ?? []).flatMap((page) => page.items).filter((item) => (seen.has(item.id) ? false : (seen.add(item.id), true)));
-  }, [listing.data]);
+  const items = useMemo(() => uniqueListingItems(listing.data?.pages), [listing.data]);
 
   const header = (
     <View>
@@ -442,7 +466,7 @@ function MainCategoryListing({
 
   return (
     <FlatList
-      key={`main-${columns}`}
+      key={`main-${columns}-${category.id}`}
       data={items}
       keyExtractor={(item) => item.id}
       renderItem={renderProduct}
@@ -456,16 +480,15 @@ function MainCategoryListing({
             onRetry={() => void listing.refetch()}
           />
         ) : listing.isPending ? (
-          <ProductsPlaceholder columns={columns} />
+          // Inside the list, whose own padding already insets it.
+          <ProductsPlaceholder columns={columns} inset={false} />
         ) : (
           <EmptyState title="Nothing here yet" hint="No products in this category right now." />
         )
       }
-      onEndReached={() => {
-        if (listing.hasNextPage && !listing.isFetchingNextPage) void listing.fetchNextPage();
-      }}
+      onEndReached={() => loadNextPage(listing)}
       onEndReachedThreshold={0.6}
-      ListFooterComponent={listing.isFetchingNextPage ? <ActivityIndicator color={colors.primary} style={{ margin: spacing.base }} /> : undefined}
+      ListFooterComponent={items.length > 0 ? <ListingFooter listing={listing} /> : undefined}
       contentContainerStyle={{ padding: spacing.xs, paddingBottom: tabBarClearance + spacing.xxl }}
       showsVerticalScrollIndicator={false}
       initialNumToRender={8}
@@ -476,36 +499,115 @@ function MainCategoryListing({
 }
 
 /* =====================================================================
-   PRODUCTS PLACEHOLDER — only while a category with nothing cached loads
+   PAGINATION — shared by the main listing and the subcategory pane
+===================================================================== */
+
+interface PagedListing {
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  isFetchNextPageError: boolean;
+  fetchNextPage: () => Promise<unknown>;
+}
+
+/** The next page, unless there is none or one is already on its way. */
+function loadNextPage(listing: PagedListing): void {
+  // A failed page waits for the customer's retry (the footer below) instead
+  // of every further end-reached event re-sending the failing request.
+  if (!listing.hasNextPage || listing.isFetchingNextPage || listing.isFetchNextPageError) return;
+  void listing.fetchNextPage();
+}
+
+/** Under the grid: a spinner while the next page loads, a retry if it failed. */
+function ListingFooter({ listing }: { listing: PagedListing }) {
+  if (listing.isFetchingNextPage) {
+    return <ActivityIndicator color={colors.primary} style={{ margin: spacing.base }} />;
+  }
+  if (listing.isFetchNextPageError && listing.hasNextPage) {
+    return (
+      <Pressable
+        onPress={() => void listing.fetchNextPage()}
+        style={styles.loadMoreRetry}
+        accessibilityRole="button"
+        accessibilityLabel="Load more products"
+      >
+        <AppText variant="caption" color={colors.textSecondary}>
+          Couldn't load more products.{' '}
+          <AppText variant="caption" color={colors.primary}>
+            Tap to retry
+          </AppText>
+        </AppText>
+      </Pressable>
+    );
+  }
+  return null;
+}
+
+/* =====================================================================
+   PLACEHOLDERS — only while something with nothing cached loads
 ===================================================================== */
 
 /**
- * Soft light-green card shapes in the product pane only (the header,
- * sidebar and tab bar stay as they are). Static on purpose: no shimmer, no
- * entrance animation, nothing that can outlive the data — it is simply
- * replaced by the grid the moment the category's products arrive. Sized
- * like a ProductCard (image area, price, two name lines, size) so the grid
- * does not jump when it takes over.
+ * Product-card skeletons in the product pane only (the header, sidebar and
+ * tab bar stay as they are) — the app's shared light-green skeleton
+ * (components/Skeleton.tsx), in this grid's own padding, so the grid does
+ * not jump when it takes over. No entrance/exit animation around the swap.
  */
-function ProductsPlaceholder({ columns }: { columns: number }) {
+function ProductsPlaceholder({ columns, inset = true }: { columns: number; inset?: boolean }) {
   return (
-    <View
-      style={styles.placeholderGrid}
-      pointerEvents="none"
-      accessible
-      accessibilityRole="progressbar"
-      accessibilityLabel="Loading products"
-    >
-      {Array.from({ length: columns * 3 }, (_, index) => (
-        <View key={index} style={[styles.productCell, { width: `${100 / columns}%` }]}>
-          <View style={styles.placeholderImage} />
-          <View style={[styles.placeholderLine, { width: '40%', height: 14, marginTop: 24 }]} />
-          <View style={[styles.placeholderLine, { width: '90%', marginTop: 26 }]} />
-          <View style={[styles.placeholderLine, { width: '60%', marginTop: 6 }]} />
-          <View style={[styles.placeholderLine, { width: '35%', height: 10, marginTop: 10 }]} />
+    <ProductGridSkeleton
+      columns={columns}
+      count={columns * 3}
+      style={inset ? styles.placeholderGrid : styles.placeholderGridInList}
+    />
+  );
+}
+
+/**
+ * The landing view while the category tree loads for the very first time
+ * (it is cached afterwards): the search bar's place, the root strip and two
+ * section cards of tiles, at the landing's own sizes.
+ */
+function CategoryLandingSkeleton() {
+  const progress = useSkeletonPulse();
+  const { width } = useWindowDimensions();
+  const innerWidth = width - SECTION_MARGIN * 2 - SECTION_PADDING * 2 - 2;
+  const columns = tileColumns(innerWidth);
+  const tileWidth = Math.floor((innerWidth - TILE_GAP * (columns - 1)) / columns);
+  // A tile: its padding, the square image box, the label's gap and two lines.
+  const tileHeight = TILE_PADDING * 2 + 6 + (tileWidth - TILE_PADDING * 2) + spacing.xs + 2 + 32;
+  return (
+    <SkeletonGroup label="Loading categories" style={{ flex: 1 }}>
+      <View style={styles.searchWrap}>
+        <Bone progress={progress} width="100%" height={44} rounded={radius.lg} />
+      </View>
+      <View style={[styles.rootStrip, { flexDirection: 'row', overflow: 'hidden' }]}>
+        {Array.from({ length: 5 }, (_, index) => (
+          <View key={index} style={styles.rootItem}>
+            <Bone progress={progress} width={64} height={64} rounded={radius.lg} />
+            {/* The label's two caption lines. */}
+            <View style={{ marginTop: spacing.xs, height: ROOT_LABEL_HEIGHT, alignItems: 'center' }}>
+              <Bone progress={progress} width={48} height={10} style={{ marginTop: 3 }} />
+            </View>
+          </View>
+        ))}
+      </View>
+      {Array.from({ length: 2 }, (_, sectionIndex) => (
+        <View key={sectionIndex} style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Bone progress={progress} width={44} height={44} rounded={22} />
+            <View style={{ flex: 1, gap: spacing.xs }}>
+              <Bone progress={progress} width="55%" height={16} />
+              <Bone progress={progress} width="35%" height={10} />
+            </View>
+          </View>
+          <View style={styles.tileGrid}>
+            {Array.from({ length: columns * 2 }, (_, index) => (
+              <Bone key={index} progress={progress} width={tileWidth} height={tileHeight} rounded={radius.md} />
+            ))}
+          </View>
         </View>
       ))}
-    </View>
+    </SkeletonGroup>
   );
 }
 
@@ -738,6 +840,8 @@ const TILE_IMAGE_MARGIN = 6;
 const TILE_IMAGE_MAX = 62;
 /** Narrowest a tile may get before a column is dropped. */
 const MIN_TILE_WIDTH = 68;
+/** A root strip label: two caption lines (12 px type at the snug line height). */
+const ROOT_LABEL_HEIGHT = 2 * fontSize.xs * lineHeight.snug;
 
 const styles = StyleSheet.create({
   // Wraps the skeleton/FlatList swap (see `productPane`'s own comments) —
@@ -943,20 +1047,16 @@ const styles = StyleSheet.create({
     borderLeftColor: colors.primary,
   },
 
-  /* Products placeholder — the theme's light green (`primarySurface`). */
+  loadMoreRetry: {
+    alignItems: 'center',
+    paddingVertical: spacing.base,
+  },
+
+  /* Products placeholder — the product grid's own container padding. */
   placeholderGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
     padding: spacing.xs,
   },
-  placeholderImage: {
-    height: 110,
-    borderRadius: radius.md,
-    backgroundColor: colors.primarySurface,
-  },
-  placeholderLine: {
-    height: 12,
-    borderRadius: radius.sm,
-    backgroundColor: colors.primarySurface,
+  placeholderGridInList: {
+    padding: 0,
   },
 });

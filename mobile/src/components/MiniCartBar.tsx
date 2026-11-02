@@ -7,7 +7,8 @@
  * 1. First cart item:
  *    Mini Cart smoothly enters from below.
  *
- * 2. New (or re-incremented) product:
+ * 2. New (or re-incremented) product — grocery cards, Product Detail and
+ *    Food menu rows alike; every accepted add / + is its own flight:
  *    - flyToCart()'s overlay drops the product's image into the thumbnail
  *      slot (see @/lib/flyToCart) while the slot keeps showing whatever
  *      it was already showing.
@@ -58,7 +59,7 @@ import { colors, layout, radius, shadow, spacing } from "@shared/theme";
 
 import { resolveImageUrl } from "@/lib/api";
 import { cartUnitCount, useCartActions } from "@/lib/useCartActions";
-import { miniCartSyncRequest } from "@/lib/miniCartImage";
+import { miniCartSyncRequest, slotReadyOnRequest } from "@/lib/miniCartImage";
 
 import { ADD_DURATION, useFlyToCartStore } from "@/lib/flyToCart";
 
@@ -335,6 +336,16 @@ function MiniCartPill({
   const pendingReadyRef = useRef(false);
   const pendingLandedRef = useRef(false);
 
+  /**
+   * The uri each slot's `<Image>` has actually painted (its own onLoad), or
+   * null while it is loading / failed / empty. `requestDisplay` reads it:
+   * re-showing what the hidden slot ALREADY painted (A -> B -> A, the same
+   * product added again) leaves that `<Image>`'s source unchanged, so no
+   * onLoad ever comes — the swap has to count as ready at once instead of
+   * waiting forever (see `slotReadyOnRequest`).
+   */
+  const paintedUriRef = useRef<[string | null, string | null]>([null, null]);
+
   const frontSlot = slots[frontIndex];
 
   // Promotes the pending back slot to front — but only once BOTH gates
@@ -389,14 +400,19 @@ function MiniCartPill({
 
     const backIndex: 0 | 1 = frontIndexRef.current === 0 ? 1 : 0;
     const token = nextTokenRef.current++;
+    const uri = resolveImageUrl(imageUrl);
 
     pendingTokenRef.current = token;
     pendingSlotIndexRef.current = backIndex;
     pendingFlightIdRef.current = options.flightId ?? null;
     // No image at all (e.g. a product with no thumbnail) — there's no
     // `<Image>`/`onLoad` to wait for (the JSX below renders the plain
-    // placeholder View instead in that case), so this gate starts open.
-    pendingReadyRef.current = !resolveImageUrl(imageUrl);
+    // placeholder View instead in that case) — or the back slot already
+    // painted this exact uri (its `<Image>` won't load, or fire onLoad,
+    // again): this gate starts open.
+    pendingReadyRef.current = slotReadyOnRequest(uri, paintedUriRef.current[backIndex]);
+    // Anything else replaces (or, for no image, unmounts) what it painted.
+    if (uri !== paintedUriRef.current[backIndex]) paintedUriRef.current[backIndex] = null;
     pendingLandedRef.current = !options.waitForLanding;
 
     setSlots((prev) => {
@@ -469,6 +485,9 @@ function MiniCartPill({
     const fallback = items[items.length - 1] ?? null;
     const index = frontIndexRef.current;
     const token = nextTokenRef.current++;
+    if (resolveImageUrl(fallback?.imageUrl ?? null) !== paintedUriRef.current[index]) {
+      paintedUriRef.current[index] = null;
+    }
 
     // REMOVE is immediate. Do not send the fallback through requestDisplay(),
     // because that function is intentionally gated for ADD handoffs.
@@ -656,8 +675,14 @@ function MiniCartPill({
                 // a wide or tall product would lose its ends to `cover`.
                 contentFit="contain"
                 cachePolicy="memory-disk"
-                onLoad={() => markReady(slots[0].token)}
-                onError={() => markFailed(slots[0].token)}
+                onLoad={() => {
+                  paintedUriRef.current[0] = slotAUri;
+                  markReady(slots[0].token);
+                }}
+                onError={() => {
+                  paintedUriRef.current[0] = null;
+                  markFailed(slots[0].token);
+                }}
               />
             ) : (
               <View style={styles.imagePlaceholder} />
@@ -683,8 +708,14 @@ function MiniCartPill({
                 style={styles.image}
                 contentFit="contain"
                 cachePolicy="memory-disk"
-                onLoad={() => markReady(slots[1].token)}
-                onError={() => markFailed(slots[1].token)}
+                onLoad={() => {
+                  paintedUriRef.current[1] = slotBUri;
+                  markReady(slots[1].token);
+                }}
+                onError={() => {
+                  paintedUriRef.current[1] = null;
+                  markFailed(slots[1].token);
+                }}
               />
             ) : (
               <View style={styles.imagePlaceholder} />

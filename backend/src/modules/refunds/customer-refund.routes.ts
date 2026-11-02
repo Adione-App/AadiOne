@@ -18,6 +18,7 @@ import { validate } from '../../middleware/validate';
 import { authenticate, requirePermission, requireUser } from '../../middleware/auth';
 import { evidenceUpload } from '../../middleware/evidenceUpload';
 import * as service from './customer-refund.service';
+import { refundRequestsAvailable } from './refund-requests-availability';
 
 const idParams = z.object({ id: z.string().uuid() });
 
@@ -44,6 +45,8 @@ export function registerOrderRefundRoutes(router: Router): void {
   router.post(
     '/:id/refund-requests',
     requirePermission(Permission.ORDER_CANCEL_OWN),
+    // Switched off for now — refused before any photo is uploaded or read.
+    refundRequestsAvailable,
     validate({ params: idParams }),
     evidenceUpload,
     asyncHandler(async (req: Request, res: Response) => {
@@ -79,6 +82,8 @@ customerRefundRequestRouter.use(authenticate);
 customerRefundRequestRouter.get(
   '/:id',
   requirePermission(Permission.ORDER_READ_OWN),
+  // Switched off for now, like creating one (refund-requests-availability.ts).
+  refundRequestsAvailable,
   validate({ params: idParams }),
   asyncHandler(async (req: Request, res: Response) => {
     ok(res, await service.getRefundRequest(requireUser(req).id, req.params['id'] as string));

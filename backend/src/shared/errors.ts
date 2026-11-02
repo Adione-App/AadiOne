@@ -105,6 +105,8 @@ export const ErrorCode = {
   PAYMENT_ALREADY_CAPTURED: 'PAYMENT_ALREADY_CAPTURED',
   WEBHOOK_SIGNATURE_INVALID: 'WEBHOOK_SIGNATURE_INVALID',
   REFUND_FAILED: 'REFUND_FAILED',
+  /** Customer refund requests are switched off for now (refunds/refund-requests-availability.ts). */
+  REFUND_REQUESTS_DISABLED: 'REFUND_REQUESTS_DISABLED',
 
   /* uploads ------------------------------------------------------------- */
   FILE_TOO_LARGE: 'FILE_TOO_LARGE',
@@ -187,6 +189,7 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   PAYMENT_ALREADY_CAPTURED: 409,
   WEBHOOK_SIGNATURE_INVALID: 400,
   REFUND_FAILED: 502,
+  REFUND_REQUESTS_DISABLED: 403,
 
   FILE_TOO_LARGE: 413,
   UNSUPPORTED_FILE_TYPE: 415,
@@ -274,6 +277,8 @@ export const ERROR_DEFAULT_MESSAGE: Readonly<Record<ErrorCode, string>> = {
   PAYMENT_ALREADY_CAPTURED: 'This payment has already been completed.',
   WEBHOOK_SIGNATURE_INVALID: 'Invalid request signature.',
   REFUND_FAILED: 'The refund could not be processed. Our team has been notified.',
+  REFUND_REQUESTS_DISABLED:
+    'Refund requests are not available in the app right now. For help with an order, please contact Aadione support.',
 
   FILE_TOO_LARGE: 'That file is too large.',
   UNSUPPORTED_FILE_TYPE: 'That file type is not supported.',

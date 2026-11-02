@@ -28,7 +28,8 @@ import {
   type RestaurantSummaryDto,
 } from "@shared";
 import { colors, palette, radius, spacing } from "@shared/theme";
-import { FoodRestaurantCard } from "@/components/FoodRestaurantCard";
+import { FoodRestaurantCard, FoodRestaurantCardSkeleton } from "@/components/FoodRestaurantCard";
+import { SkeletonGroup, useSkeletonPulse } from "@/components/Skeleton";
 import { PromoBanners, PromoSlot } from "@/components/PromoBanner";
 import { AppText, EmptyState, ErrorState, Screen } from "@/components/ui";
 import { resolveImageUrl } from "@/lib/api";
@@ -36,7 +37,6 @@ import { useBanners, useRestaurants } from "@/lib/queries";
 import { useLocation } from "@/lib/store";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { useSystemBack } from "@/lib/useSystemBack";
-import { Bone, useShimmer } from "@/screens/home/sections/HomeSkeleton";
 
 /** Room for MiniCartBar, which rests above the tab bar on this screen. */
 const MINI_CART_ROOM = 84;
@@ -95,26 +95,17 @@ function FilterIcon({
   return null;
 }
 
+/** Restaurant cards still loading — the list's own card frames, spaced like the list. */
 function FoodSkeleton() {
-  const progress = useShimmer();
+  const progress = useSkeletonPulse();
   return (
-    <View style={{ paddingHorizontal: spacing.base, gap: spacing.md }}>
+    <SkeletonGroup label="Loading restaurants">
       {Array.from({ length: 4 }, (_, index) => (
-        <View key={index} style={{ flexDirection: "row", gap: spacing.md }}>
-          <Bone
-            progress={progress}
-            width={140}
-            height={106}
-            rounded={radius.lg}
-          />
-          <View style={{ flex: 1, gap: spacing.sm, paddingTop: spacing.xs }}>
-            <Bone progress={progress} width="70%" height={16} />
-            <Bone progress={progress} width="50%" height={12} />
-            <Bone progress={progress} width="80%" height={12} />
-          </View>
+        <View key={index} style={styles.cardWrap}>
+          <FoodRestaurantCardSkeleton progress={progress} />
         </View>
       ))}
-    </View>
+    </SkeletonGroup>
   );
 }
 

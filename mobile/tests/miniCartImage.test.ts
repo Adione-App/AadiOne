@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { miniCartSyncRequest, type ShownSlot } from "../src/lib/miniCartImage.ts";
+import { miniCartSyncRequest, slotReadyOnRequest, type ShownSlot } from "../src/lib/miniCartImage.ts";
 
 const resolve = (url: string | null) => (url ? `https://cdn.test/${url}` : null);
 const EMPTY: ShownSlot = { variantId: null, imageUrl: null, failed: false };
@@ -52,6 +52,22 @@ describe("Mini Cart image follows the cart", () => {
   });
 });
 
+describe("Hidden slot readiness (two-layer swap)", () => {
+  it("a product without an image is ready at once (the placeholder needs no load)", () => {
+    assert.equal(slotReadyOnRequest(null, null), true);
+    assert.equal(slotReadyOnRequest(null, "https://cdn.test/a.webp"), true);
+  });
+
+  it("the hidden slot already painted this exact image (A -> B -> A, same burger again): ready at once", () => {
+    assert.equal(slotReadyOnRequest("https://cdn.test/a.webp", "https://cdn.test/a.webp"), true);
+  });
+
+  it("a different, loading or failed image waits for that slot's own onLoad", () => {
+    assert.equal(slotReadyOnRequest("https://cdn.test/b.webp", "https://cdn.test/a.webp"), false);
+    assert.equal(slotReadyOnRequest("https://cdn.test/b.webp", null), false);
+  });
+});
+
 describe("MiniCartBar wiring", () => {
   const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const src = readFileSync(path.join(ROOT, "src/components/MiniCartBar.tsx"), "utf8").replace(/\r\n/g, "\n");
@@ -62,9 +78,26 @@ describe("MiniCartBar wiring", () => {
   });
 
   it("a failed image shows the placeholder, never a bare white layer; both layers keep their white background", () => {
-    assert.equal(src.match(/onError=\{\(\) => markFailed\(slots\[[01]\]\.token\)\}/g)?.length, 2);
+    assert.equal(src.match(/onError=\{\(\) => \{\n\s*paintedUriRef\.current\[[01]\] = null;\n\s*markFailed\(slots\[[01]\]\.token\);/g)?.length, 2);
     assert.match(src, /slotAUri && !slots\[0\]\.failed \?/);
     assert.match(src, /slotBUri && !slots\[1\]\.failed \?/);
     assert.match(src, /imageLayer: \{[\s\S]*?backgroundColor: colors\.surface,/);
+  });
+
+  it("each slot records what it painted, and a request reads it — never waits for an onLoad that cannot come", () => {
+    assert.match(src, /onLoad=\{\(\) => \{\n\s*paintedUriRef\.current\[0\] = slotAUri;\n\s*markReady\(slots\[0\]\.token\);/);
+    assert.match(src, /onLoad=\{\(\) => \{\n\s*paintedUriRef\.current\[1\] = slotBUri;\n\s*markReady\(slots\[1\]\.token\);/);
+    assert.match(src, /pendingReadyRef\.current = slotReadyOnRequest\(uri, paintedUriRef\.current\[backIndex\]\);/);
+  });
+});
+
+describe("Food menu rows fly into the Mini Cart like grocery cards", () => {
+  const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const menu = readFileSync(path.join(ROOT, "src/screens/food/RestaurantMenuScreen.tsx"), "utf8").replace(/\r\n/g, "\n");
+
+  it("every accepted ADD and + starts its own flight with the row's image; a refused one does not", () => {
+    assert.match(menu, /if \(onAdd\(item\.variantId, snapshotOf\(item\)\)\) flyToCart\(flightImage, item\.variantId\);/);
+    assert.match(menu, /if \(onIncrement\(item\.variantId\)\) flyToCart\(flightImage, item\.variantId\);/);
+    assert.match(menu, /const flightImage = image && image !== failed \? image : null;/);
   });
 });

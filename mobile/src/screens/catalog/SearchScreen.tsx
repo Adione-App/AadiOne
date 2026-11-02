@@ -27,16 +27,17 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Clock, Search as SearchIcon, X } from 'lucide-react-native';
 import type { ProductSummaryDto } from '@shared';
-import { colors, radius, spacing } from '@shared/theme';
+import { colors, fontSize, lineHeight, radius, spacing } from '@shared/theme';
 import { useRailProducts, useSearch } from '@/lib/queries';
 import { useCartActions } from '@/lib/useCartActions';
 import { useGridColumns } from '@/lib/useGridColumns';
 import { useRecentSearches } from '@/lib/recentSearches';
 import { suggestSearchTerms } from '@/lib/searchSuggestions';
 import { useTabBarClearance } from '@/lib/tabBarVisibility';
-import { AppText, EmptyState, Loading, NoticeStrip, Screen } from '@/components/ui';
+import { AppText, EmptyState, NoticeStrip, Screen } from '@/components/ui';
 import { ProductCard } from '@/components/ProductCard';
 import { ProductGridSkeleton } from '@/components/ProductCardSkeleton';
+import { Bone, SkeletonGroup, useSkeletonPulse } from '@/components/Skeleton';
 
 /** Long enough that normal typing never fires a request per letter, short
  * enough that the results still feel immediate once you pause. */
@@ -237,39 +238,35 @@ export default function SearchScreen({
             </AppText>
 
             {popular.isLoading ? (
-              <ProductGridSkeleton columns={columns} count={columns * 2} />
+              <ProductGridSkeleton columns={columns} count={columns * 2} style={styles.popularGridSkeleton} />
             ) : popularItems.length === 0 ? null : (
               renderProductGrid(popularItems)
             )}
           </View>
         </ScrollView>
-      ) : firstLoad ? (
-        <Loading />
+      ) : firstLoad || (items.length === 0 && results.isFetching) ? (
+        <SearchResultsSkeleton columns={columns} />
       ) : items.length === 0 ? (
-        results.isFetching ? (
-          <Loading />
-        ) : (
-          <ScrollView
-            contentContainerStyle={{ paddingBottom: tabBarClearance + spacing.xxl }}
-            showsVerticalScrollIndicator={false}
-          >
-            <EmptyState
-              title={`No products found for "${debouncedTerm}"`}
-              hint="Try a different spelling or a shorter word."
-            />
+        <ScrollView
+          contentContainerStyle={{ paddingBottom: tabBarClearance + spacing.xxl }}
+          showsVerticalScrollIndicator={false}
+        >
+          <EmptyState
+            title={`No products found for "${debouncedTerm}"`}
+            hint="Try a different spelling or a shorter word."
+          />
 
-            {/* Only shown when there's something real to show — never a
-                random fallback grid just to fill the screen. */}
-            {popularItems.length > 0 && (
-              <View style={styles.section}>
-                <AppText variant="h3" style={styles.sectionTitleOnly}>
-                  You may also like
-                </AppText>
-                {renderProductGrid(popularItems)}
-              </View>
-            )}
-          </ScrollView>
-        )
+          {/* Only shown when there's something real to show — never a
+              random fallback grid just to fill the screen. */}
+          {popularItems.length > 0 && (
+            <View style={styles.section}>
+              <AppText variant="h3" style={styles.sectionTitleOnly}>
+                You may also like
+              </AppText>
+              {renderProductGrid(popularItems)}
+            </View>
+          )}
+        </ScrollView>
       ) : (
         <>
           <View style={styles.resultsHeader}>
@@ -304,6 +301,26 @@ export default function SearchScreen({
         </>
       )}
     </Screen>
+  );
+}
+
+/**
+ * Search results still loading: the results line's place, then product-card
+ * skeletons in the results grid's own padding — so the real header and
+ * grid replace it without the grid moving down.
+ */
+function SearchResultsSkeleton({ columns }: { columns: number }) {
+  const progress = useSkeletonPulse();
+  return (
+    <SkeletonGroup label="Loading results">
+      <View style={styles.resultsHeader}>
+        {/* One caption line: 12 px type at the snug line height. */}
+        <View style={{ height: fontSize.xs * lineHeight.snug, justifyContent: 'center' }}>
+          <Bone progress={progress} width={140} height={10} />
+        </View>
+      </View>
+      <ProductGridSkeleton columns={columns} style={styles.resultsGridSkeleton} />
+    </SkeletonGroup>
   );
 }
 
@@ -399,6 +416,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     marginHorizontal: -spacing.xs,
+  },
+  // The skeletons sit where the grids they stand for will: inside the
+  // Popular section's own margins, and in the results list's padding.
+  popularGridSkeleton: {
+    padding: 0,
+    marginHorizontal: -spacing.xs,
+  },
+  resultsGridSkeleton: {
+    paddingVertical: 0,
+    paddingHorizontal: spacing.sm,
   },
   // Bigger vertical than horizontal padding — more breathing room BETWEEN
   // ROWS specifically (matches CategoriesScreen/RailProductsScreen's grids).

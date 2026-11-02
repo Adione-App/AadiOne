@@ -25,6 +25,19 @@ export interface CartLineImage {
 
 export type SyncRequest = { imageUrl: string | null; variantId: string; sameProduct: boolean } | null;
 
+/**
+ * Whether a hidden slot asked to show `requested` (a resolved uri, or null
+ * for a product with no image) is ready at once, without waiting for its
+ * `<Image>`'s onLoad: there is nothing to load, or that slot has already
+ * painted exactly this uri. The second case matters — an `<Image>` whose
+ * source does not change never fires onLoad again, so waiting for it left
+ * the swap pending forever (A → B → A showed B; a re-added product stayed
+ * blank until the Mini Cart remounted).
+ */
+export function slotReadyOnRequest(requested: string | null, painted: string | null): boolean {
+  return requested === null || requested === painted;
+}
+
 export function miniCartSyncRequest(
   front: ShownSlot,
   items: readonly CartLineImage[],

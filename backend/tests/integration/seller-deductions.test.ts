@@ -18,6 +18,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Customer refund requests are switched off in the app for now
+// (refund-requests-availability.ts); the implementation is kept, and these
+// tests exercise it with the switch on.
+vi.mock('../../src/modules/refunds/refund-requests-availability', () => ({
+  CUSTOMER_REFUND_REQUESTS_ENABLED: true,
+  refundRequestsAvailable: (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
+
 vi.mock('../../src/infra/payment', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/infra/payment')>();
   const fake = await import('../helpers/fake-cashfree');

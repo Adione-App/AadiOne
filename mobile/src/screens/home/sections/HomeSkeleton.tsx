@@ -3,61 +3,17 @@
  *
  * Product placeholders are the existing `ProductCardSkeleton` (same box
  * sizes as the real card, so nothing jumps when data lands). Everything
- * else — banner, category circles, store/restaurant cards — uses `Bone`, a
- * soft opacity pulse. Every bone on screen reads ONE shared Reanimated value,
- * so a screenful of placeholders is still a single looping animation on the
- * UI thread.
+ * else — banner, category circles — uses the shared `Bone`. Both come from
+ * components/Skeleton.tsx: the app's one light-green, single-pulse skeleton
+ * style, shared with Categories, Food, menus and search.
  */
 
-import { useEffect } from "react";
-import { StyleSheet, View, type DimensionValue, type StyleProp, type ViewStyle } from "react-native";
-import ReanimatedAnimated, {
-  Easing,
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withTiming,
-  type SharedValue,
-} from "react-native-reanimated";
+import { StyleSheet, View } from "react-native";
+import type { SharedValue } from "react-native-reanimated";
 import { radius, spacing } from "@shared/theme";
 import { ProductCardSkeleton } from "@/components/ProductCardSkeleton";
+import { Bone, SkeletonGroup, useSkeletonPulse } from "@/components/Skeleton";
 import { PANEL_PADDING, SectionPanel } from "./SectionShell";
-
-const BONE_COLOR = "#ECEEED";
-
-/** One looping 0→1→0 driver; share it between every bone of a placeholder. */
-export function useShimmer(): SharedValue<number> {
-  const progress = useSharedValue(0);
-  useEffect(() => {
-    progress.value = withRepeat(
-      withTiming(1, { duration: 900, easing: Easing.inOut(Easing.quad) }),
-      -1,
-      true,
-    );
-  }, [progress]);
-  return progress;
-}
-
-export function Bone({
-  progress,
-  width,
-  height,
-  rounded = radius.sm,
-  style,
-}: {
-  progress: SharedValue<number>;
-  width: DimensionValue;
-  height: number;
-  rounded?: number;
-  style?: StyleProp<ViewStyle>;
-}) {
-  const animated = useAnimatedStyle(() => ({ opacity: 0.55 + progress.value * 0.45 }));
-  return (
-    <ReanimatedAnimated.View
-      style={[{ width, height, borderRadius: rounded, backgroundColor: BONE_COLOR }, animated, style]}
-    />
-  );
-}
 
 /** A shelf still loading: title bone + a row of product-card skeletons. */
 export function ShelfSkeleton({
@@ -78,7 +34,7 @@ export function ShelfSkeleton({
       <View style={styles.cardRow}>
         {Array.from({ length: count }, (_, index) => (
           <View key={index} style={{ width: cardWidth }}>
-            <ProductCardSkeleton progress={progress} index={index} />
+            <ProductCardSkeleton progress={progress} />
           </View>
         ))}
       </View>
@@ -88,10 +44,10 @@ export function ShelfSkeleton({
 
 /** Whole-page placeholder for the very first load (nothing cached yet). */
 export function HomeSkeleton({ cardWidth }: { cardWidth: number }) {
-  const progress = useShimmer();
+  const progress = useSkeletonPulse();
 
   return (
-    <View>
+    <SkeletonGroup label="Loading">
       <View style={styles.bannerWrap}>
         <Bone progress={progress} width="100%" height={150} rounded={radius.xl} />
       </View>
@@ -112,7 +68,7 @@ export function HomeSkeleton({ cardWidth }: { cardWidth: number }) {
 
       <ShelfSkeleton progress={progress} cardWidth={cardWidth} />
       <ShelfSkeleton progress={progress} cardWidth={cardWidth} />
-    </View>
+    </SkeletonGroup>
   );
 }
 

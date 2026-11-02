@@ -70,8 +70,6 @@ const CATALOG_CACHE_VERSION = Constants.expoConfig?.version ?? "1.0.0";
 export const keys = {
   home: ["home"] as const,
   categories: ["categories", CATALOG_CACHE_VERSION] as const,
-  products: (params: string) =>
-    ["products", CATALOG_CACHE_VERSION, params] as const,
   product: (id: string) => ["product", id] as const,
   search: (term: string) => ["search", term] as const,
   rail: (key: string) => ["rail", key] as const,
@@ -79,7 +77,8 @@ export const keys = {
   stores: (near: string) => ["stores", near] as const,
   store: (sellerId: string, near: string) => ["store", sellerId, near] as const,
   storeProducts: (sellerId: string) => ["store-products", sellerId] as const,
-  categoryListing: (categoryId: string) => ["category-listing", categoryId] as const,
+  categoryListing: (categoryId: string, pageSize: number) =>
+    ["category-listing", CATALOG_CACHE_VERSION, categoryId, pageSize] as const,
   restaurants: (near: string, filter = "") => ["restaurants", near, filter] as const,
   banners: (placement: string) => ["banners", placement] as const,
   restaurantMenu: (sellerId: string) => ["restaurant-menu", sellerId] as const,
@@ -167,21 +166,31 @@ export function useCategories() {
     // tabs (Home, Cart, Account, …), which forced a full refetch AND the
     // Categories screen's own full-screen loading state the next time it
     // was opened, even though the tree hadn't changed at all. Matches
-    // `useProducts`' own 30-minute window below for the same reason.
+    // the category product listings' own 30-minute window below for the
+    // same reason.
     gcTime: 30 * 60_000,
   });
 }
 
-/** The first page of products (optionally of one category) — shared by `useProducts` and `prefetchProducts`. */
-function productsQueryOptions(params: { categoryId?: string; inStock?: boolean }) {
-  const query = new URLSearchParams({ limit: "30" });
-  if (params.categoryId) query.set("categoryId", params.categoryId);
-  if (params.inStock) query.set("inStock", "true");
+/**
+ * Products per page of a category listing. The subcategory pane used to
+ * fetch ONE page of 30 and never ask for more, so a subcategory with more
+ * products than that silently showed only its first 30.
+ */
+export const CATEGORY_PAGE_SIZE = 30;
 
+/** A category's listing, page by page — shared by `useCategoryListing` and `prefetchCategoryListing`. */
+function categoryListingOptions(categoryId: string, pageSize: number) {
   return {
-    queryKey: keys.products(query.toString()),
-    queryFn: () =>
-      api.get<CursorPage<ProductSummaryDto>>(`/products?${query.toString()}`),
+    queryKey: keys.categoryListing(categoryId, pageSize),
+    queryFn: ({ pageParam, signal }: { pageParam: string | null; signal: AbortSignal }) => {
+      const query = new URLSearchParams({ categoryId, limit: String(pageSize) });
+      if (pageParam) query.set("cursor", pageParam);
+      return api.get<CursorPage<ProductSummaryDto>>(`/products?${query.toString()}`, { signal });
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (last: CursorPage<ProductSummaryDto>) =>
+      last.hasMore && last.nextCursor ? last.nextCursor : undefined,
     // Each category the customer has opened this session should stay ready
     // to show instantly if they switch back to it — react-query's default
     // 5-minute garbage-collect window is short enough that browsing several
@@ -190,25 +199,17 @@ function productsQueryOptions(params: { categoryId?: string; inStock?: boolean }
   };
 }
 
-export function useProducts(params: {
-  categoryId?: string;
-  inStock?: boolean;
-  /** False skips the request entirely — e.g. while a category grid, not a product list, is on screen. */
-  enabled?: boolean;
-}) {
-  return useQuery({
-    ...productsQueryOptions(params),
-    enabled: params.enabled ?? true,
-  });
-}
-
 /**
- * Warms the cache with a category's first products page (the same entry
- * `useProducts` reads), so opening it next is instant. Skipped while that
- * entry is still fresh; failures are silent — the screen fetches normally.
+ * Warms the cache with a category's first listing page (the same entry
+ * `useCategoryListing` reads), so opening it next is instant. Skipped when
+ * that entry already holds pages: opening it shows them at once and its own
+ * mount refetch refreshes them — prefetching too would re-request every page
+ * already scrolled through. Failures are silent — the screen fetches normally.
  */
-export function prefetchProducts(queryClient: QueryClient, categoryId: string): void {
-  void queryClient.prefetchQuery(productsQueryOptions({ categoryId }));
+export function prefetchCategoryListing(queryClient: QueryClient, categoryId: string): void {
+  const options = categoryListingOptions(categoryId, CATEGORY_PAGE_SIZE);
+  if (queryClient.getQueryData(options.queryKey) !== undefined) return;
+  void queryClient.prefetchInfiniteQuery(options);
 }
 
 export function useProduct(id: string) {
@@ -279,19 +280,17 @@ export function useStoreProducts(sellerId: string, pageSize = 20) {
  * A category's full product listing, page by page (GET /products?categoryId=):
  * for a main category that is its own products AND every product in its
  * subcategories — the server matches the category's whole path, merged
- * across sellers. Used by the Categories screen's main-category listing.
+ * across sellers. Used by every product grid of the Categories screen (the
+ * main-category listing and the subcategory / leaf-category pane).
+ * `enabled: false` skips the request — e.g. while no category is selected.
  */
-export function useCategoryListing(categoryId: string, pageSize = 20) {
+export function useCategoryListing(
+  categoryId: string,
+  { pageSize = 20, enabled = true }: { pageSize?: number; enabled?: boolean } = {},
+) {
   return useInfiniteQuery({
-    queryKey: keys.categoryListing(categoryId),
-    queryFn: ({ pageParam, signal }) => {
-      const query = new URLSearchParams({ categoryId, limit: String(pageSize) });
-      if (pageParam) query.set("cursor", pageParam);
-      return api.get<CursorPage<ProductSummaryDto>>(`/products?${query.toString()}`, { signal });
-    },
-    initialPageParam: null as string | null,
-    getNextPageParam: (last) => (last.hasMore && last.nextCursor ? last.nextCursor : undefined),
-    gcTime: 30 * 60_000,
+    ...categoryListingOptions(categoryId, pageSize),
+    enabled,
   });
 }
 
@@ -374,7 +373,7 @@ export function useRailProducts(key: HomeFeedDto["rails"][number]["key"]) {
       api.get<{ title: string; products: ProductSummaryDto[] }>(
         `/products/rail/${key}?limit=60`,
       ),
-    // Same reasoning as useProducts — keep a rail's "See All" page ready
+    // Same reasoning as the category listings — keep a rail's "See All" page ready
     // for the rest of the session instead of evicting it after 5 minutes.
     gcTime: 30 * 60_000,
   });

@@ -42,7 +42,8 @@ import { orderAddressText } from "@/lib/addressDisplay";
 import { colors, radius, spacing } from "@shared/theme";
 
 import { keys, useOrder, useOrderRefunds } from "@/lib/queries";
-import { showRefundsCard } from "@/lib/refunds";
+import { CUSTOMER_REFUNDS_ENABLED, showRefundsCard } from "@/lib/refunds";
+import { OrderSupportCard } from "@/components/orders/OrderSupportCard";
 import { RefundSummaryCard } from "./RefundSummaryCard";
 import { RefundRequestModal } from "./RefundRequestModal";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
@@ -165,7 +166,11 @@ export default function OrderTrackingScreen({
 
   // The order's refunds (one line per refund) and the "Request a refund"
   // entry point — not asked for an online order still awaiting payment.
-  const { data: refunds } = useOrderRefunds(orderId, !!order && order.status !== OrderStatus.PENDING_PAYMENT);
+  // Customer refunds are switched off for now (lib/refunds.ts): not asked at all.
+  const { data: refunds } = useOrderRefunds(
+    orderId,
+    CUSTOMER_REFUNDS_ENABLED && !!order && order.status !== OrderStatus.PENDING_PAYMENT,
+  );
   const [requestOpen, setRequestOpen] = useState(false);
 
   /*
@@ -969,7 +974,8 @@ export default function OrderTrackingScreen({
             REFUNDS
         ==================================================== */}
 
-        {refunds && showRefundsCard(refunds) && (
+        {/* Switched off for now (lib/refunds.ts CUSTOMER_REFUNDS_ENABLED) — nothing rendered, no space left. */}
+        {CUSTOMER_REFUNDS_ENABLED && refunds && showRefundsCard(refunds) && (
           <RefundSummaryCard data={refunds} onRequestRefund={() => setRequestOpen(true)} />
         )}
 
@@ -1038,9 +1044,15 @@ export default function OrderTrackingScreen({
             <NoticeStrip message={cancelError} />
           </View>
         )}
+
+        {/* ====================================================
+            HELP & SUPPORT — the configured email / phone
+        ==================================================== */}
+
+        <OrderSupportCard />
       </ScrollView>
 
-      {refunds?.request.eligible && (
+      {CUSTOMER_REFUNDS_ENABLED && refunds?.request.eligible && (
         <RefundRequestModal
           visible={requestOpen}
           orderId={orderId}

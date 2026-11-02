@@ -8,6 +8,15 @@
 import type { CustomerRefundStatus, OrderRefundsDto } from "@shared";
 import { colors } from "@shared/theme";
 
+/**
+ * Customer refunds on the order screen — TEMPORARILY SWITCHED OFF: no
+ * Refunds card, no "Request a refund", no request form (the order screen
+ * shows the support contacts instead). The server refuses requests too
+ * (backend refunds/refund-requests-availability.ts). Everything below is kept
+ * for when this is switched back on.
+ */
+export const CUSTOMER_REFUNDS_ENABLED: boolean = false;
+
 export type RefundTone = { fg: string; bg: string };
 
 /** Green for done, amber while it moves, red only for "not approved". */

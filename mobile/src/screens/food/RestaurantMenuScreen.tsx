@@ -24,11 +24,12 @@ import { DietBadge } from "@/components/FoodRestaurantCard";
 import { QuantityStepper } from "@/components/ProductCard";
 import { AppText, EmptyState, ErrorState, NoticeStrip, Screen } from "@/components/ui";
 import { resolveImageUrl } from "@/lib/api";
+import { flyToCart } from "@/lib/flyToCart";
 import { useRestaurantMenu } from "@/lib/queries";
 import { menuItemImage, restaurantMenuCoverImage } from "@/lib/restaurantImages";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { useCartActions, type CartItemSnapshot } from "@/lib/useCartActions";
-import { Bone, useShimmer } from "@/screens/home/sections/HomeSkeleton";
+import { Bone, SkeletonGroup, useSkeletonPulse } from "@/components/Skeleton";
 
 /** Room for MiniCartBar, which rests above the tab bar on this screen. */
 const MINI_CART_ROOM = 84;
@@ -46,7 +47,7 @@ function snapshotOf(item: RestaurantMenuItemDto): CartItemSnapshot {
     productName: item.name,
     variantName: item.variantName,
     brandName: null,
-    imageUrl: item.imageUrl,
+    imageUrl: menuItemImage(item),
     mrpPaise: Math.max(item.mrpPaise, item.pricePaise),
     unitPricePaise: item.pricePaise,
     inStock: item.inStock,
@@ -84,6 +85,9 @@ const MenuItemRow = memo(function MenuItemRow({
   const image = resolveImageUrl(menuItemImage(item));
   const [failed, setFailed] = useState<string | null>(null);
   const discounted = item.mrpPaise > item.pricePaise;
+  // The image that drops into the Mini Cart — the row's own photo, or the
+  // flight's plain fallback when it has none (or it failed to load here).
+  const flightImage = image && image !== failed ? image : null;
 
   return (
     <View style={styles.item}>
@@ -139,7 +143,11 @@ const MenuItemRow = memo(function MenuItemRow({
             <QuantityStepper
               qty={qty}
               max={item.maxQtyPerOrder}
-              onIncrement={() => onIncrement(item.variantId)}
+              // Every accepted step flies into the Mini Cart, like the
+              // grocery ProductCard's (a refused one — limit, login — doesn't).
+              onIncrement={() => {
+                if (onIncrement(item.variantId)) flyToCart(flightImage, item.variantId);
+              }}
               onDecrement={() => onDecrement(item.variantId)}
               // The shared control, sized like this menu's ADD button so the swap never shifts the row.
               style={styles.stepperSize}
@@ -150,7 +158,9 @@ const MenuItemRow = memo(function MenuItemRow({
             // a time and send this add after it (never twice), the same as the
             // grocery ProductCard's add.
             <Pressable
-              onPress={() => onAdd(item.variantId, snapshotOf(item))}
+              onPress={() => {
+                if (onAdd(item.variantId, snapshotOf(item))) flyToCart(flightImage, item.variantId);
+              }}
               style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}
               accessibilityRole="button"
               accessibilityLabel={`Add ${item.name}${showVariant ? `, ${item.variantName}` : ""}`}
@@ -319,26 +329,52 @@ function SectionTabs({ tabs, active, onPress }: { tabs: Tab[]; active: string | 
   );
 }
 
-function MenuSkeleton() {
-  const progress = useShimmer();
+/**
+ * The menu still loading, laid out like the loaded page: the hero at its real
+ * height, the info card over it, the tab strip, a section header and item
+ * rows with the item photo's real size.
+ */
+function MenuSkeleton({ topInset }: { topInset: number }) {
+  const progress = useSkeletonPulse();
+  const { width } = useWindowDimensions();
+  const heroHeight = Math.round(Math.min(HERO_MAX, Math.max(HERO_MIN, width * 0.56)));
   return (
-    <View style={{ gap: spacing.base }}>
-      <Bone progress={progress} width="100%" height={HERO_MIN} rounded={0} />
-      <View style={{ paddingHorizontal: spacing.base, gap: spacing.base }}>
-        <Bone progress={progress} width="60%" height={22} />
-        <Bone progress={progress} width="40%" height={14} />
-        {Array.from({ length: 3 }, (_, index) => (
-          <View key={index} style={{ flexDirection: "row", gap: spacing.md, marginTop: spacing.sm }}>
-            <View style={{ flex: 1, gap: spacing.sm }}>
+    <SkeletonGroup label="Loading menu">
+      <Bone progress={progress} width="100%" height={heroHeight + topInset} rounded={0} />
+      <View style={styles.infoCard}>
+        <Bone progress={progress} width={60} height={60} rounded={30} />
+        <View style={[styles.infoBody, { gap: spacing.sm, paddingTop: spacing.xs }]}>
+          <Bone progress={progress} width="65%" height={18} />
+          <Bone progress={progress} width="45%" height={12} />
+          <Bone progress={progress} width={72} height={20} rounded={radius.pill} />
+        </View>
+      </View>
+      <View style={[styles.tabs, { flexDirection: "row" }]}>
+        {[96, 80, 104].map((tabWidth, index) => (
+          <Bone key={index} progress={progress} width={tabWidth} height={36} rounded={radius.pill} />
+        ))}
+      </View>
+      <View style={styles.sectionWrap}>
+        <Bone progress={progress} width="100%" height={44} rounded={radius.md} />
+      </View>
+      {Array.from({ length: 3 }, (_, index) => (
+        <View key={index}>
+          {index > 0 ? <View style={styles.separator} /> : null}
+          <View style={styles.item}>
+            <View style={[styles.itemCopy, { gap: spacing.sm, paddingTop: 2 }]}>
               <Bone progress={progress} width="70%" height={14} />
               <Bone progress={progress} width="30%" height={14} />
               <Bone progress={progress} width="90%" height={10} />
             </View>
-            <Bone progress={progress} width={128} height={108} rounded={radius.lg} />
+            <View style={styles.itemSide}>
+              <Bone progress={progress} width={112} height={96} rounded={radius.md} />
+              {/* The ADD button's room: it overhangs the photo's bottom edge. */}
+              <View style={[styles.action, styles.stepperSize]} />
+            </View>
           </View>
-        ))}
-      </View>
-    </View>
+        </View>
+      ))}
+    </SkeletonGroup>
   );
 }
 
@@ -469,7 +505,7 @@ export default function RestaurantMenuScreen({
   if (menu.isLoading) {
     return (
       <Screen style={styles.screen}>
-        <MenuSkeleton />
+        <MenuSkeleton topInset={insets.top} />
       </Screen>
     );
   }

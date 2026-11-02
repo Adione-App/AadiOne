@@ -28,7 +28,6 @@ import {
   adminSellerKeys,
   formatCommissionBp,
   sellerErrorMessage,
-  useAdminSellerDeliveryArea,
   useSellerDetail,
   useSellerPermissions,
 } from '@/lib/sellers';
@@ -629,7 +628,6 @@ function AdminStoreLocation({ sellerId }: { sellerId: string }) {
   const { canManage } = useSellerPermissions();
   const queryClient = useQueryClient();
   const [notice, setNotice] = useState<string | null>(null);
-  const area = useAdminSellerDeliveryArea(sellerId, canManage);
   if (!canManage) return null;
   const source: StoreLocationSource = {
     queryKey: ['admin', 'sellers', sellerId, 'location'],
@@ -640,7 +638,9 @@ function AdminStoreLocation({ sellerId }: { sellerId: string }) {
     deviceLocationLabel: "Use this device's location — only when you are standing at the storefront",
     nameEditable: true,
     map: true,
-    radiusKm: area.data?.effectiveRadiusKm ?? null,
+    // No circle around the store: delivery is measured from the admin's
+    // service location, not from the store (see Delivery area below).
+    radiusKm: null,
   };
   return (
     <div className="space-y-2">
@@ -650,7 +650,7 @@ function AdminStoreLocation({ sellerId }: { sellerId: string }) {
         onSaved={() => {
           void queryClient.invalidateQueries({ queryKey: adminSellerKeys.detail(sellerId) });
           void queryClient.invalidateQueries({ queryKey: adminSellerKeys.deliveryArea(sellerId) });
-          setNotice('Store details saved. Distances, delivery fees and serviceability now use this point.');
+          setNotice('Store details saved.');
         }}
       />
     </div>

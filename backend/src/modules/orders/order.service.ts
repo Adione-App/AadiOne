@@ -24,6 +24,7 @@ import {
   OrderPaymentStatus,
   OrderStatus,
   PaymentMethod,
+  PaymentStatus,
   SellerOrderStatus,
   STATUS_PROGRESSION,
   CUSTOMER_TIMELINE_LABELS,
@@ -61,6 +62,8 @@ import { cartLineEligibility } from "../cart/eligibility";
 import { trackedAvailableQty } from "../inventory/stock-rules";
 import { assertOrderingEnabled, statusOf, storeStatuses, type StoreStatus } from "../sellers/store-availability";
 import { restoreUnpaidOrderLines } from "./unpaid-order-guard";
+import { CART_RETAINED_METADATA } from "./cart-retention";
+import { assertNoConcurrentCheckout, settleOpenCheckouts } from "./open-checkout";
 import { resolveDestination, type DestinationInput } from "./delivery-destination";
 import { allocateProportionally } from "./coupon-allocation";
 import * as pricingService from "../pricing/pricing.service";
@@ -596,22 +599,25 @@ async function notifyOrderPlaced(created: {
   paymentMethod: PaymentMethod;
   sellerOrders: { id: string; sellerId: string; subtotalPaise: number }[];
 }): Promise<void> {
-  const jobs: Promise<unknown>[] = [
-    notificationService.notify({
-      userId: created.userId,
-      type: NotificationType.ORDER_PLACED,
-      dedupeKey: `order:${created.id}:placed`,
-      orderId: created.id,
-      context: {
-        orderNumber: created.orderNumber,
-        totalPaise: created.totalPaise,
-      },
-    }),
-  ];
-  // COD is payable at the door, so sellers can start at once. An ONLINE
-  // order reaches its sellers only when payment is confirmed (see
-  // order-state.service.ts's dispatchOrderSideEffects).
+  const jobs: Promise<unknown>[] = [];
+  // COD is payable at the door, so the order is placed now: the customer is
+  // told, and sellers can start at once. An ONLINE checkout is not an order
+  // until its payment is confirmed — the customer hears "payment received"
+  // and the sellers "new order" then (order-state.service.ts's
+  // dispatchOrderSideEffects), never "order placed" before paying.
   if (created.paymentMethod === PaymentMethod.COD) {
+    jobs.push(
+      notificationService.notify({
+        userId: created.userId,
+        type: NotificationType.ORDER_PLACED,
+        dedupeKey: `order:${created.id}:placed`,
+        orderId: created.id,
+        context: {
+          orderNumber: created.orderNumber,
+          totalPaise: created.totalPaise,
+        },
+      }),
+    );
     for (const so of created.sellerOrders) {
       jobs.push(
         notificationService.notifySeller(so.sellerId, {
@@ -707,6 +713,30 @@ export async function placeOrder(
   const serviceability = delivery.check;
   const servingSellerIds = new Set(delivery.sellers.map((seller) => seller.id));
 
+  // An unpaid online checkout of this customer still open (its lines are
+  // still in the cart): the same checkout is reused — no second order —
+  // and anything else replaces it (open-checkout.ts).
+  const reusable = await settleOpenCheckouts(input.userId, {
+    paymentMethod: input.paymentMethod,
+    destination: {
+      mode: address.mode,
+      addressId: address.addressId,
+      latitude: address.latitude,
+      longitude: address.longitude,
+    },
+    lines: preloadedLines.map((line) => ({
+      sellerId: line.sellerListing.sellerId,
+      variantId: line.sellerListing.variantId,
+      qty: line.qty,
+    })),
+    couponCode: input.couponCode ?? preloaded.couponCode ?? null,
+    expectedTotalPaise: input.expectedTotalPaise,
+  });
+  if (reusable) {
+    log.info({ orderId: reusable }, "open unpaid checkout reused for the same order request");
+    return { order: await getOrderDetail(input.userId, reusable), requiresPayment: true };
+  }
+
   const preloadedSignature = cartSignature(preloaded.items);
   const [eta, preloadedCommissionRates] = await Promise.all([
     sellerService.estimateEta({
@@ -740,6 +770,12 @@ export async function placeOrder(
 
       if (!current || current.items.length === 0)
         throw new AppError(ErrorCode.CART_EMPTY);
+
+      // One checkout of this cart at a time: a second request (another key,
+      // another device) waits here, then finds the unpaid checkout the first
+      // one placed — whose lines stay in the cart — and is refused.
+      await tx.$queryRaw`SELECT id FROM carts WHERE id = ${current.id}::uuid FOR UPDATE`;
+      await assertNoConcurrentCheckout(tx, input.userId);
 
       // `cart.items` = the lines being ordered (see selectOrderLines).
       let cart: CartForOrder = { ...preloaded, items: preloadedLines, couponCode: current.couponCode };
@@ -1223,6 +1259,9 @@ export async function placeOrder(
               actorType: ActorType.CUSTOMER,
               actorUserId: input.userId,
               reason: "Order created",
+              // ONLINE: a checkout awaiting payment — its lines stay in the
+              // cart until the payment is confirmed (cart-retention.ts).
+              ...(isCod ? {} : { metadata: CART_RETAINED_METADATA }),
             },
           },
         },
@@ -1281,13 +1320,18 @@ export async function placeOrder(
         });
       }
 
-      // Only the ordered lines leave the cart; unavailable ones kept by the
-      // customer stay (the cart is converted when nothing is left).
-      await cartService.consumeOrderedLines(
-        cart.id,
-        cart.items.map((line) => line.sellerListingId),
-        tx,
-      );
+      // Cash on delivery: the order is placed, so the ordered lines leave the
+      // cart now; unavailable ones kept by the customer stay (the cart is
+      // converted when nothing is left). ONLINE: nothing leaves the cart
+      // until the payment is confirmed — an unpaid checkout is not an order
+      // (cart-retention.ts consumePaidOrderLines).
+      if (isCod) {
+        await cartService.consumeOrderedLines(
+          cart.id,
+          cart.items.map((line) => line.sellerListingId),
+          tx,
+        );
+      }
 
       return order;
     },
@@ -1626,6 +1670,15 @@ export async function listOrders(
     where: {
       userId,
       ...(options.status ? { status: options.status } : {}),
+      // An online checkout that was never paid is not an order: still
+      // awaiting payment, or ended unpaid (cancelled / expired) before it was
+      // ever placed — unless money was taken for it (a late payment being
+      // refunded is shown). Its record stays for audit and reconciliation.
+      NOT: {
+        paymentMethod: PaymentMethod.ONLINE,
+        placedAt: null,
+        payments: { none: { status: { in: [PaymentStatus.CAPTURED, PaymentStatus.PARTIALLY_REFUNDED, PaymentStatus.REFUNDED] } } },
+      },
       ...(options.cursor
         ? { createdAt: { lt: new Date(options.cursor) } }
         : {}),

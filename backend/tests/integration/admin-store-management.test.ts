@@ -7,10 +7,10 @@
  *     switch > closure > hours), under the app-wide ordering pause;
  *   - identity and location: store name, address and map point saved and
  *     read back together, validated, audited, with the last change shown;
- *   - delivery area: a per-seller radius (or the app-wide default), the
- *     admin's straight-line delivery check (inside / boundary / outside), and
- *     checkout rejecting an address outside it — including with partial
- *     checkout, where a closed store's lines do not count;
+ *   - delivery area: the admin's one area (service location PLATFORM_LOCATION
+ *     + radius MAX_SERVICE_RADIUS_KM) shown on a seller's page, no per-store
+ *     radius, the straight-line delivery check (inside / boundary / outside),
+ *     and checkout rejecting an address outside it;
  *   - authorization: SELLER_MANAGE for every write and check.
  */
 
@@ -57,6 +57,7 @@ interface Availability {
 interface DeliveryArea {
   latitude: number;
   longitude: number;
+  areaConfigured: boolean;
   storeLocationSet: boolean;
   maxServiceRadiusKm: number | null;
   defaultRadiusKm: number;
@@ -65,6 +66,7 @@ interface DeliveryArea {
 }
 
 interface DeliveryCheck {
+  store: { latitude: number; longitude: number };
   distanceKm: number;
   effectiveRadiusKm: number;
   deliverable: boolean;
@@ -357,61 +359,55 @@ describe('store name, address and map point', () => {
 /* delivery area                                                              */
 /* -------------------------------------------------------------------------- */
 
-describe('delivery radius', () => {
-  it('defaults to MAX_SERVICE_RADIUS_KM; a seller radius overrides it, within 0–50 km; null restores it', async () => {
-    const sellerId = await seedSeller();
+describe('delivery area — the admin service location and radius', () => {
+  const setRadius = (token: string, km: number) => as(token).patch('/admin/config', { key: ConfigKey.MAX_SERVICE_RADIUS_KM, value: km }).expect(200);
+
+  it("shows the admin area (service location + MAX_SERVICE_RADIUS_KM) on every seller's page; a per-store radius can no longer be set", async () => {
+    const sellerId = await seedSeller('Elsewhere Kirana', EIGHT_KM);
     const admin = await panelUser(UserRole.ADMIN);
 
     expect(data<DeliveryArea>(await as(admin.token).get(`/admin/sellers/${sellerId}/delivery-area`).expect(200))).toMatchObject({
+      // The service location (tests start with it at STORE_COORDS) — not the store's own point.
       ...STORE_COORDS,
+      areaConfigured: true,
       storeLocationSet: true,
-      maxServiceRadiusKm: null,
       defaultRadiusKm: 12,
       effectiveRadiusKm: 12,
       radiusLimitKm: 50,
     });
 
-    const ten = data<DeliveryArea>(await as(admin.token).patch(`/admin/sellers/${sellerId}/delivery-area`, { maxServiceRadiusKm: 10.5 }).expect(200));
-    expect(ten).toMatchObject({ maxServiceRadiusKm: 10.5, effectiveRadiusKm: 10.5, defaultRadiusKm: 12 });
-    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: 'seller.update_delivery_radius', entityId: sellerId } });
-    expect(audit).toMatchObject({ actorUserId: admin.userId, before: { maxServiceRadiusKm: null }, after: { maxServiceRadiusKm: 10.5 } });
+    const refused = await as(admin.token).patch(`/admin/sellers/${sellerId}/delivery-area`, { maxServiceRadiusKm: 10.5 });
+    expect(refused.status).toBe(422);
+    expect(expectError(refused.body).message).toMatch(/no longer have their own delivery radius/);
+    expect((await prisma.seller.findUniqueOrThrow({ where: { id: sellerId } })).maxServiceRadiusKm).toBeNull();
 
-    for (const bad of [0, -3, 50.01, 120]) {
-      await as(admin.token).patch(`/admin/sellers/${sellerId}/delivery-area`, { maxServiceRadiusKm: bad }).expect(400);
-    }
-    await as(admin.token).patch(`/admin/sellers/${sellerId}/delivery-area`, { maxServiceRadiusKm: '12' }).expect(400);
-    expect((await prisma.seller.findUniqueOrThrow({ where: { id: sellerId } })).maxServiceRadiusKm).toBe(10.5);
-
-    const cleared = data<DeliveryArea>(await as(admin.token).patch(`/admin/sellers/${sellerId}/delivery-area`, { maxServiceRadiusKm: null }).expect(200));
-    expect(cleared).toMatchObject({ maxServiceRadiusKm: null, effectiveRadiusKm: 12 });
-
-    // The app-wide value has the same limit.
+    // The admin radius has its limits, and is what every store shows.
     await as(admin.token).patch('/admin/config', { key: ConfigKey.MAX_SERVICE_RADIUS_KM, value: 120 }).expect(400);
     await as(admin.token).patch('/admin/config', { key: ConfigKey.MAX_SERVICE_RADIUS_KM, value: 0 }).expect(400);
-    await as(admin.token).patch('/admin/config', { key: ConfigKey.MAX_SERVICE_RADIUS_KM, value: 11 }).expect(200);
+    await setRadius(admin.token, 11);
     expect(data<DeliveryArea>(await as(admin.token).get(`/admin/sellers/${sellerId}/delivery-area`).expect(200)).effectiveRadiusKm).toBe(11);
   });
 
-  it('the delivery check: inside, exactly on the boundary, and outside the radius (straight line)', async () => {
+  it('the delivery check: inside, exactly on the boundary, and outside the admin radius (straight line from the service location)', async () => {
     const sellerId = await seedSeller();
     const admin = await panelUser(UserRole.ADMIN);
     const check = async (point: { latitude: number; longitude: number }) =>
       data<DeliveryCheck>(await as(admin.token).get(`/admin/sellers/${sellerId}/delivery-check?lat=${point.latitude}&lng=${point.longitude}`).expect(200));
 
     const near = await check(NEARBY);
-    expect(near).toMatchObject({ deliverable: true, insideRadius: true, insideServiceState: true, effectiveRadiusKm: 12, reason: null });
+    expect(near).toMatchObject({ deliverable: true, insideRadius: true, effectiveRadiusKm: 12, reason: null, store: STORE_COORDS });
     expect(near.distanceKm).toBeGreaterThan(2.9);
     expect(near.distanceKm).toBeLessThan(3.1);
     expect(near.estimatedRoadDistanceKm).toBeGreaterThan(near.distanceKm);
 
     // A radius of exactly the exact distance includes the point; a hair less excludes it.
     const exact = distanceKmExact(STORE_COORDS.latitude, STORE_COORDS.longitude, EIGHT_KM.latitude, EIGHT_KM.longitude);
-    await as(admin.token).patch(`/admin/sellers/${sellerId}/delivery-area`, { maxServiceRadiusKm: exact }).expect(200);
+    await setRadius(admin.token, exact);
     expect(await check(EIGHT_KM)).toMatchObject({ deliverable: true, insideRadius: true });
-    await as(admin.token).patch(`/admin/sellers/${sellerId}/delivery-area`, { maxServiceRadiusKm: exact - 0.001 }).expect(200);
+    await setRadius(admin.token, exact - 0.001);
     const outside = await check(EIGHT_KM);
     expect(outside).toMatchObject({ deliverable: false, insideRadius: false });
-    expect(outside.reason).toMatch(/beyond this store's .* km radius/);
+    expect(outside.reason).toMatch(/beyond the .* km delivery radius/);
 
     // Invalid destinations are refused.
     for (const [lat, lng] of [
@@ -425,28 +421,30 @@ describe('delivery radius', () => {
     await as(admin.token).get(`/admin/sellers/${sellerId}/delivery-check?lat=abc&lng=75`).expect(400);
   });
 
-  it('a store with no map point cannot be measured from, and does not deliver', async () => {
+  it("a store's own map point does not matter (even none); without a service location orders still go to approved villages (fee: first slab)", async () => {
     const sellerId = await seedSeller('Pinless Store', { latitude: 0, longitude: 0 });
     const admin = await panelUser(UserRole.ADMIN);
-    expect(data<DeliveryArea>(await as(admin.token).get(`/admin/sellers/${sellerId}/delivery-area`).expect(200)).storeLocationSet).toBe(false);
-    await as(admin.token).get(`/admin/sellers/${sellerId}/delivery-check?lat=${NEARBY.latitude}&lng=${NEARBY.longitude}`).expect(422);
+    await as(admin.token).get(`/admin/sellers/${sellerId}/delivery-check?lat=${NEARBY.latitude}&lng=${NEARBY.longitude}`).expect(200);
 
     const product = await seedProduct(sellerId, { pricePaise: 20000, stockQty: 10 });
     await otpService.clearOtpState('9400004004');
     const shopper = await loginAs('9400004004');
     const addressId = await seedAddress(shopper.userId);
     await as(shopper.accessToken).post('/cart/items', { sellerListingId: product.storeVariantId, qty: 1 }).expect(200);
-    const quote = await as(shopper.accessToken).post('/checkout/quote', { addressId });
-    expect(expectError(quote.body)).toMatchObject({
-      code: ErrorCode.OUT_OF_SERVICE_AREA,
-      message: 'Sorry, Pinless Store is not delivering yet — its store location has not been set.',
-    });
+    await as(shopper.accessToken).post('/checkout/quote', { addressId }).expect(200);
+
+    // The admin clears the service location: no distance to measure, but the
+    // approved village still decides — the fee falls back to the first slab.
+    await configService.set({ key: ConfigKey.PLATFORM_LOCATION, value: {} as never });
+    expect(data<DeliveryArea>(await as(admin.token).get(`/admin/sellers/${sellerId}/delivery-area`).expect(200)).areaConfigured).toBe(false);
+    await as(admin.token).get(`/admin/sellers/${sellerId}/delivery-check?lat=${NEARBY.latitude}&lng=${NEARBY.longitude}`).expect(422);
+    await as(shopper.accessToken).post('/checkout/quote', { addressId }).expect(200);
   });
 
-  it('checkout rejects an address outside the seller\'s radius, with the reason; closed stores do not count', async () => {
+  it('the radius never refuses an approved village; disabling its pair does — the same for every store in the cart', async () => {
     await configureTestMerchantUpi();
     const near = await seedSeller('Near Store');
-    const second = await seedSeller('Second Store');
+    const second = await seedSeller('Second Store', EIGHT_KM);
     const admin = await panelUser(UserRole.ADMIN);
     const [p1, p2] = [
       await seedProduct(near, { pricePaise: 20000, stockQty: 10 }),
@@ -459,15 +457,21 @@ describe('delivery radius', () => {
       await as(shopper.accessToken).post('/cart/items', { sellerListingId: p.storeVariantId, qty: 1 }).expect(200);
     }
 
-    // 8 km away, both stores at the default 12 km: the quote goes through.
+    // 8 km from the service location, radius 12 km: the quote goes through.
     await as(shopper.accessToken).post('/checkout/quote', { addressId }).expect(200);
 
-    // The second store now delivers only within 5 km: checkout names it.
-    await as(admin.token).patch(`/admin/sellers/${second}/delivery-area`, { maxServiceRadiusKm: 5 }).expect(200);
+    // The admin shrinks the radius to 5 km: still delivered to — the village + PIN decide.
+    await setRadius(admin.token, 5);
+    await as(shopper.accessToken).post('/checkout/quote', { addressId }).expect(200);
+
+    // The admin disables the address's village + PIN (Sikar 332001): refused.
+    await as(admin.token)
+      .patch('/admin/config', { key: ConfigKey.DELIVERY_LOCATIONS, value: [{ id: 'sikar', village: 'Sikar', pincode: '332001', active: false }] })
+      .expect(200);
     const refused = await as(shopper.accessToken).post('/checkout/quote', { addressId });
     expect(expectError(refused.body)).toMatchObject({
       code: ErrorCode.OUT_OF_SERVICE_AREA,
-      message: 'Sorry, Second Store does not deliver to this location yet. It delivers up to 5 km from its store.',
+      message: 'Sorry! Aadione is not delivering to Sikar 332001 yet. We are working to expand our service area.',
     });
     const order = await api()
       .post('/api/v1/orders')
@@ -477,11 +481,9 @@ describe('delivery radius', () => {
     expect(expectError(order.body).code).toBe(ErrorCode.OUT_OF_SERVICE_AREA);
     expect(await prisma.order.count()).toBe(0);
 
-    // Closed, its line is kept but left out of the order — so its radius no
-    // longer blocks the other store's items (partial checkout).
-    await as(admin.token).patch(`/admin/sellers/${second}/availability`, { isAcceptingOrders: false }).expect(200);
-    const cart = data<CartDto>(await as(shopper.accessToken).get('/cart').expect(200));
-    expect(cart.items.find((item) => item.sellerListingId === p2!.storeVariantId)).toMatchObject({ available: false, unavailableReason: 'STORE_CLOSED' });
+    await as(admin.token)
+      .patch('/admin/config', { key: ConfigKey.DELIVERY_LOCATIONS, value: [{ id: 'sikar', village: 'Sikar', pincode: '332001', active: true }] })
+      .expect(200);
     await as(shopper.accessToken).post('/checkout/quote', { addressId }).expect(200);
   });
 });

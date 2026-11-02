@@ -103,3 +103,86 @@ export function formatAddressOneLine(address: StructuredAddress): string {
   const { line1, line2, landmark } = formatAddressLines(address);
   return [line1, landmark ? landmarkPhrase(landmark) : null, line2].filter(Boolean).join(', ');
 }
+
+/* -------------------------------------------------------------------------- */
+/* Approved delivery villages (Configuration DELIVERY_LOCATIONS)              */
+/* -------------------------------------------------------------------------- */
+
+/** The fields of an approved pair these rules read (config-keys DeliveryLocationPair). */
+export interface DeliveryPairLike {
+  village: string;
+  pincode: string;
+  active: boolean;
+}
+
+/** "  kuraj " / "KURAJ" / "Kuraj" → "kuraj": how two village names are compared. */
+export function normalizeVillageName(name: string | null | undefined): string {
+  return (name ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export type DeliveryPairVerdict =
+  /** The exact village with its PIN, active: delivered to. */
+  | 'APPROVED'
+  /** Village or PIN not given. */
+  | 'MISSING'
+  /** No approved pair has this village. */
+  | 'VILLAGE_NOT_APPROVED'
+  /** The village is approved, but not with this PIN. */
+  | 'PIN_MISMATCH'
+  /** This exact pair exists but is switched off. */
+  | 'DISABLED';
+
+/**
+ * Is (village, PIN) an active approved pair? Exact village name (case and
+ * spacing aside) AND its PIN — never a village from another PIN, never a
+ * "nearby" one. `pair` is the matching admin entry (its spelling is the one
+ * to store).
+ */
+export function deliveryPairVerdict<T extends DeliveryPairLike>(
+  pairs: readonly T[],
+  village: string | null | undefined,
+  pincode: string | null | undefined,
+): { verdict: DeliveryPairVerdict; pair: T | null } {
+  const name = normalizeVillageName(village);
+  const pin = (pincode ?? '').trim();
+  if (!name || !pin) return { verdict: 'MISSING', pair: null };
+  const sameVillage = pairs.filter((p) => normalizeVillageName(p.village) === name);
+  if (sameVillage.length === 0) return { verdict: 'VILLAGE_NOT_APPROVED', pair: null };
+  const exact = sameVillage.filter((p) => p.pincode === pin);
+  const active = exact.find((p) => p.active);
+  if (active) return { verdict: 'APPROVED', pair: active };
+  if (exact.length > 0) return { verdict: 'DISABLED', pair: exact[0]! };
+  return { verdict: 'PIN_MISMATCH', pair: null };
+}
+
+/** The villages a customer can choose: active pairs only, one entry per village (admin spelling), A–Z. */
+export function activeVillages(pairs: readonly DeliveryPairLike[]): string[] {
+  const byName = new Map<string, string>();
+  for (const p of pairs) {
+    if (!p.active) continue;
+    const key = normalizeVillageName(p.village);
+    if (!byName.has(key)) byName.set(key, p.village.trim().replace(/\s+/g, ' '));
+  }
+  return [...byName.values()].sort((a, b) => a.localeCompare(b));
+}
+
+/** The PIN codes approved (and active) for this village. */
+export function activePincodesFor(pairs: readonly DeliveryPairLike[], village: string | null | undefined): string[] {
+  const name = normalizeVillageName(village);
+  return [...new Set(pairs.filter((p) => p.active && normalizeVillageName(p.village) === name).map((p) => p.pincode))].sort();
+}
+
+/** The customer-facing reason for a verdict that is not APPROVED. */
+export function deliveryPairMessage(verdict: DeliveryPairVerdict, village: string | null | undefined, pincode: string | null | undefined): string {
+  const place = [village?.trim(), pincode?.trim()].filter(Boolean).join(' ');
+  switch (verdict) {
+    case 'MISSING':
+      return 'Choose your village / town and its PIN code to check delivery.';
+    case 'PIN_MISMATCH':
+      return `Sorry! ${village?.trim() ?? 'This village'} is delivered to only with its own PIN code — ${pincode?.trim() ?? 'this PIN'} is not one of them.`;
+    case 'VILLAGE_NOT_APPROVED':
+    case 'DISABLED':
+    default:
+      return `Sorry! Aadione is not delivering to ${place || 'this location'} yet. We are working to expand our service area.`;
+  }
+}

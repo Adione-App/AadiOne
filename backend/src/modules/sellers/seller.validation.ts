@@ -20,6 +20,11 @@ export const serviceabilityQuerySchema = z.object({
     .refine(Number.isFinite, 'Longitude must be a number')
     .refine((v) => v >= -180 && v <= 180, 'Longitude is out of range')
     .refine((v) => v !== 0, 'Could not read your location. Please try again.'),
+  // The confirmed village and PIN of the location, when the app has them (a
+  // saved address, a confirmed live location): then the approved pair
+  // decides (addresses/delivery-locations.ts). Optional — older apps send none.
+  village: z.string().trim().max(80).optional(),
+  pincode: z.string().trim().regex(/^[0-9]{6}$/, 'Enter a valid 6-digit PIN code').optional(),
 }).superRefine(refineQueryCoordinates);
 
 export type ServiceabilityQuery = z.infer<typeof serviceabilityQuerySchema>;

@@ -442,8 +442,8 @@ export function CartStack() {
           <RequireAccount reason="checkout" title="Your Cart">
             <CartScreen
               onAddAddress={() => navigation.navigate("AddressForm")}
-              onChangeLocation={() => navigation.navigate("SelectLocation")}
-              // The selected live location still lacks a detail the order needs.
+              // A live location to confirm (after "Use Current Location"), or
+              // one that still lacks a detail the order needs.
               onCompleteLiveDetails={(live) => navigation.navigate("AddressForm", { live })}
               onBrowse={() => navigation.getParent()?.navigate("Home")}
               onOpenSearch={() =>
@@ -568,6 +568,8 @@ export function CartStack() {
               onBack={() => navigation.goBack()}
               // Straight back to checkout with the live location selected.
               onLiveConfirmed={() => navigation.popTo("CartHome")}
+              // A new address saved from checkout is the one the order goes to.
+              selectWhenSaved
             />
           </RequireAccount>
         )}

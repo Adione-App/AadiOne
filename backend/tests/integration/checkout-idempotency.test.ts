@@ -107,14 +107,16 @@ describe('POST /orders idempotency', () => {
     const key = randomUUID();
     await place(key).expect(201);
     // The app kept the previous order's key for the next checkout (the bug).
-    await addToCart(3);
+    await addToCart(1);
     const res = await place(key, { paymentMethod: PaymentMethod.COD, openPayment: undefined });
     expect(res.status).toBe(409);
     const error = expectError(res.body);
     expect(error.code).toBe(ErrorCode.IDEMPOTENCY_KEY_REUSED);
     expect(error.message).toBe('This request was already used for a different order.');
     expect(await prisma.order.count()).toBe(1);
-    // The new lines are untouched in the cart, ready for a request with a new key.
+    // The cart is untouched — the unpaid checkout's 2 never left it, plus the
+    // 1 added — ready for a request with a new key (which replaces the unpaid
+    // checkout: one live order).
     const lines = await prisma.cartItem.findMany({ where: { cart: { userId, status: 'ACTIVE' } } });
     expect(lines.map((l) => [l.sellerListingId, l.qty])).toEqual([[listingId, 3]]);
     expect((await place(randomUUID(), { paymentMethod: PaymentMethod.COD, openPayment: undefined })).status).toBe(201);

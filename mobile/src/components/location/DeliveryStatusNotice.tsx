@@ -1,8 +1,9 @@
 /**
  * The delivery status of the chosen location (lib/deliveryArea.ts
- * deliveryView) with its way forward — refresh the location, allow it, open
- * Settings, turn GPS on, choose a saved address, or check again. Shown on
- * Home and Cart; renders nothing while delivery is available.
+ * deliveryView) with its way forward — refresh the location, turn GPS on,
+ * choose a saved address, or check again. Shown on Home and Cart; renders
+ * nothing while delivery is available, and never for the location
+ * permission (Android's own dialog is the only ask).
  */
 
 import { useState } from "react";
@@ -11,14 +12,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing } from "@shared/theme";
 import { AppText, Button } from "@/components/ui";
 import type { DeliveryAction, DeliveryView } from "@/lib/deliveryArea";
-import { enableLocationServices, openLocationSettings } from "@/lib/deviceLocation";
+import { enableLocationServices } from "@/lib/deviceLocation";
 import { refreshCurrentLocation } from "@/lib/locationService";
 import { useLocation } from "@/lib/store";
 
 const ACTION_LABEL: Record<DeliveryAction, string> = {
   REFRESH: "Refresh location",
-  ALLOW_LOCATION: "Allow location",
-  OPEN_SETTINGS: "Open Settings",
   ENABLE_GPS: "Turn on location",
   CHOOSE_ADDRESS: "Choose saved address",
   RETRY_CHECK: "Try again",
@@ -58,11 +57,9 @@ export function DeliveryStatusNotice({
 
   async function act(action: DeliveryAction): Promise<void> {
     if (action === "CHOOSE_ADDRESS") return onChooseAddress();
-    if (action === "OPEN_SETTINGS") return openLocationSettings(); // read again on return (App's resume refresh)
     setBusy(action);
     try {
       if (action === "RETRY_CHECK") await useLocation.getState().refresh();
-      else if (action === "ALLOW_LOCATION") await refreshCurrentLocation("user", { prompt: true });
       else if (action === "ENABLE_GPS") {
         if (await enableLocationServices()) await refreshCurrentLocation("user");
       } else await refreshCurrentLocation("user");

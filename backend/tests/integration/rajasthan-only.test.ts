@@ -1,22 +1,24 @@
 /**
- * Rajasthan-only operation, end to end (real app and database).
+ * No hardcoded state for CUSTOMER delivery, end to end (real app and
+ * database): live locations, saved addresses (new, edited and old ones),
+ * checkout quotes and order creation are decided by the admin-approved
+ * village + PIN pairs (DELIVERY_LOCATIONS) alone — an approved village across
+ * a state border is delivered to; an unapproved "Rajasthan" one is not. The
+ * state is address text, normalised ("राजस्थान" → "Rajasthan"), never a gate.
  *
- * The rule is checked on the POINT against Rajasthan's boundary — never on
- * the state text alone — for live locations, saved addresses (new, edited
- * and old ones), checkout quotes, order creation, the location lookup and
- * sellers' store points. The seller radius still applies inside Rajasthan.
- * Old out-of-state records are refused, never rewritten.
+ * SELLERS are different and unchanged: a store's own address / point must
+ * still be in Rajasthan (seller onboarding rule) — last block below.
  *
  * Border fixture (Bhiwadi, RJ / Haryana): the boundary along 76.86° E is at
- * ≈28.22° N. A store at 28.205 (inside) is 3.3 km from 28.235 (Haryana) —
- * well within the 12 km radius, so only the state rule can refuse it.
+ * ≈28.22° N. With the service location at 28.205 (inside), 28.235 (Haryana)
+ * is 3.3 km away — inside the 12 km radius.
  */
 
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ApprovalStatus, ErrorCode, PaymentMethod, UserRole, type AddressDto, type ServiceabilityResult } from '../../src/shared';
+import { ApprovalStatus, ConfigKey, ErrorCode, PaymentMethod, UserRole, type AddressDto, type ServiceabilityResult } from '../../src/shared';
 import { api, bearer, expectError, expectSuccess, loginAs } from '../helpers/api';
-import { prisma, truncateAll } from '../helpers/db';
+import { TEST_DELIVERY_LOCATIONS, prisma, truncateAll } from '../helpers/db';
 import { hashPassword } from '../../src/common/crypto';
 import { cache } from '../../src/infra/cache';
 import * as configService from '../../src/modules/configuration/configuration.service';
@@ -36,6 +38,7 @@ const live = (point: { latitude: number; longitude: number }, overrides: Record<
   mobile: '9829012345',
   city: 'Bhiwadi',
   state: 'Rajasthan',
+  pincode: '301019',
   ...overrides,
 });
 
@@ -54,10 +57,16 @@ const savedBody = (point: { latitude: number; longitude: number }, overrides: Re
   ...overrides,
 });
 
-/** A store (with one product in the customer's cart) at `storePoint`. */
+/** A store (with one product in the customer's cart) at `storePoint` — the admin service location is put there too. */
 async function setup(storePoint: { latitude: number; longitude: number } = { latitude: 27.6094, longitude: 75.1399 }) {
   const storeId = await seedStore();
   await prisma.seller.update({ where: { id: storeId }, data: storePoint });
+  await configService.set({ key: ConfigKey.PLATFORM_LOCATION, value: { name: 'Service location', addressLine: 'Main Road', landmark: null, ...storePoint } as never });
+  // Bhiwadi (on the Rajasthan / Haryana border) is an approved village too.
+  await configService.set({
+    key: ConfigKey.DELIVERY_LOCATIONS,
+    value: [...TEST_DELIVERY_LOCATIONS, { id: 'bhiwadi', village: 'Bhiwadi', pincode: '301019', active: true }] as never,
+  });
   const product = await seedProduct(storeId, { pricePaise: 20000, mrpPaise: 24000, stockQty: 10 });
   const session = await loginAs(MOBILE);
   await api()
@@ -90,46 +99,45 @@ beforeEach(async () => {
 });
 
 describe('live GPS locations', () => {
-  it('a Rajasthan point inside the seller radius is accepted', async () => {
+  it('an approved village + PIN is accepted', async () => {
     const { session } = await setup(BHIWADI_STORE);
     const res = await order(session.accessToken, { liveLocation: live(BHIWADI_STORE) });
     expect(res.status).toBe(201);
     expect(await prisma.order.count()).toBe(1);
   });
 
-  it('a point across the border is refused even though a seller 3 km away would deliver there', async () => {
+  it('an approved village across the state border is delivered to — quote, order and lookup agree', async () => {
     const { session } = await setup(BHIWADI_STORE);
-    // The seller radius alone would allow it…
     const lookup = await serviceability(ACROSS_IN_HARYANA);
     expect(lookup.distanceKm).toBeLessThan(lookup.maxRadiusKm);
-    // …but Aadione does not operate in Haryana.
-    expect(lookup.serviceable).toBe(false);
+    expect(lookup.serviceable).toBe(true);
+    await quote(session.accessToken, { liveLocation: live(ACROSS_IN_HARYANA, { state: 'Haryana' }) }).expect(200);
+    await order(session.accessToken, { liveLocation: live(ACROSS_IN_HARYANA, { state: 'Haryana' }) }).expect(201);
+    expect((await prisma.order.findFirstOrThrow()).deliveryState).toBe('Haryana');
+  });
 
-    expectOutsideState(await quote(session.accessToken, { liveLocation: live(ACROSS_IN_HARYANA) }), 'OUTSIDE_STATE');
-    expectOutsideState(await order(session.accessToken, { liveLocation: live(ACROSS_IN_HARYANA) }), 'OUTSIDE_STATE');
+  it('the state text decides nothing: "Rajasthan" with an unapproved village is refused', async () => {
+    const { session } = await setup();
+    const res = await order(session.accessToken, { liveLocation: live(AHMEDABAD, { city: 'Ahmedabad' }) });
+    expect(res.status).toBe(422);
+    expect(expectError(res.body).code).toBe(ErrorCode.OUT_OF_SERVICE_AREA);
     expect(await prisma.order.count()).toBe(0);
   });
 
-  it('the state text is not trusted: "Rajasthan" with an out-of-state point is refused', async () => {
+  it('an approved village sent with another state text is accepted', async () => {
     const { session } = await setup();
-    expectOutsideState(await order(session.accessToken, { liveLocation: live(AHMEDABAD, { city: 'Ahmedabad' }) }), 'OUTSIDE_STATE');
-    expect(await prisma.order.count()).toBe(0);
+    await order(session.accessToken, { liveLocation: live(NEARBY, { state: 'Gujarat', city: 'Sikar', pincode: '332001' }) }).expect(201);
   });
 
-  it('a Rajasthan point sent with another state is refused', async () => {
-    const { session } = await setup();
-    expectOutsideState(await order(session.accessToken, { liveLocation: live(NEARBY, { state: 'Gujarat', city: 'Sikar' }) }), 'STATE_NOT_SERVED');
-  });
-
-  it('a point too close to the border to confirm fails safe', async () => {
+  it('a point right at the state border, with an approved village, is accepted (no border margin for customers)', async () => {
     const { session } = await setup(BHIWADI_STORE);
-    expectOutsideState(await order(session.accessToken, { liveLocation: live(JUST_INSIDE_BORDER) }), 'NEAR_BORDER');
-    expect((await serviceability(JUST_INSIDE_BORDER)).serviceable).toBe(false);
+    await order(session.accessToken, { liveLocation: live(JUST_INSIDE_BORDER) }).expect(201);
+    expect((await serviceability(JUST_INSIDE_BORDER)).serviceable).toBe(true);
   });
 
-  it('a Rajasthan point beyond the seller radius is still refused by the radius rule', async () => {
-    const { session } = await setup(); // store at Sikar; FAR = Jaipur, ~100 km, in Rajasthan
-    const res = await order(session.accessToken, { liveLocation: live(FAR, { city: 'Jaipur' }) });
+  it('an unapproved village is refused, wherever the point is', async () => {
+    const { session } = await setup();
+    const res = await order(session.accessToken, { liveLocation: live(NEARBY, { city: 'Laxmangarh', pincode: '332311' }) });
     expect(res.status).toBe(422);
     expect(expectError(res.body).code).toBe(ErrorCode.OUT_OF_SERVICE_AREA);
   });
@@ -142,21 +150,21 @@ describe('live GPS locations', () => {
 });
 
 describe('saved addresses', () => {
-  it('new addresses must be in Rajasthan — state AND point', async () => {
+  it('an unapproved village is refused on save whatever the state; an approved pair is saved with any state text', async () => {
     await setup();
     const session = await loginAs(MOBILE);
     const post = (body: object) => api().post('/api/v1/addresses').set('Authorization', bearer(session.accessToken)).send(body);
 
-    expectOutsideState(await post(savedBody(AHMEDABAD, { state: 'Gujarat', city: 'Ahmedabad', pincode: '380001' })));
-    expectOutsideState(await post(savedBody(AHMEDABAD, { city: 'Ahmedabad', pincode: '380001' })), 'OUTSIDE_STATE');
-    expectOutsideState(await post(savedBody(NEARBY, { state: 'Gujarat' })), 'STATE_NOT_SERVED');
-    expect(await prisma.address.count()).toBe(0);
-
-    const ok = expectSuccess<AddressDto>((await post(savedBody(NEARBY, { state: 'rajasthan' })).expect(201)).body).data;
-    expect(ok).toMatchObject({ state: 'Rajasthan', isServiceable: true });
+    const far = await post(savedBody(AHMEDABAD, { state: 'Gujarat', city: 'Ahmedabad', pincode: '380001' }));
+    expect(far.status).toBe(422);
+    expect(expectError(far.body).code).toBe(ErrorCode.OUT_OF_SERVICE_AREA);
+    const near = expectSuccess<AddressDto>((await post(savedBody(NEARBY, { state: 'Gujarat' })).expect(201)).body).data;
+    expect(near).toMatchObject({ state: 'Gujarat', isServiceable: true });
+    const spelled = expectSuccess<AddressDto>((await post(savedBody(NEARBY, { state: 'rajasthan' })).expect(201)).body).data;
+    expect(spelled).toMatchObject({ state: 'Rajasthan', isServiceable: true });
   });
 
-  it('an older out-of-state address is refused for quotes, orders and edits — and never rewritten', async () => {
+  it('an address outside the area is listed as not deliverable and refused for quotes and orders — it can still be edited and deleted', async () => {
     const { session } = await setup();
     const legacy = await prisma.address.create({
       data: {
@@ -170,30 +178,25 @@ describe('saved addresses', () => {
         pincode: '380009',
         ...AHMEDABAD,
         isDefault: true,
-        // Cached before the rule existed.
+        // A stored answer from before — the list evaluates it again.
         isServiceable: true,
       },
     });
-    const before = await prisma.address.findUniqueOrThrow({ where: { id: legacy.id } });
 
-    // Listed, but never as deliverable.
     const listed = expectSuccess<AddressDto[]>((await api().get('/api/v1/addresses').set('Authorization', bearer(session.accessToken)).expect(200)).body).data;
     expect(listed[0]).toMatchObject({ id: legacy.id, state: 'Gujarat', isServiceable: false });
 
-    expectOutsideState(await quote(session.accessToken, { addressId: legacy.id }));
-    expectOutsideState(await order(session.accessToken, { addressId: legacy.id }));
-    expectOutsideState(
-      await api().patch(`/api/v1/addresses/${legacy.id}`).set('Authorization', bearer(session.accessToken)).send({ label: 'Mummy-Papa' }),
-    );
-
+    for (const res of [await quote(session.accessToken, { addressId: legacy.id }), await order(session.accessToken, { addressId: legacy.id })]) {
+      expect(res.status).toBe(422);
+      expect(expectError(res.body).code).toBe(ErrorCode.OUT_OF_SERVICE_AREA);
+    }
     expect(await prisma.order.count()).toBe(0);
-    expect(await prisma.address.findUniqueOrThrow({ where: { id: legacy.id } })).toEqual(before);
 
-    // It can still be deleted.
+    await api().patch(`/api/v1/addresses/${legacy.id}`).set('Authorization', bearer(session.accessToken)).send({ label: 'Mummy-Papa' }).expect(200);
     await api().delete(`/api/v1/addresses/${legacy.id}`).set('Authorization', bearer(session.accessToken)).expect(204);
   });
 
-  it('a Rajasthan saved address inside the radius orders as before', async () => {
+  it('a saved address inside the area orders as before', async () => {
     const { session } = await setup();
     const created = expectSuccess<AddressDto>(
       (await api().post('/api/v1/addresses').set('Authorization', bearer(session.accessToken)).send(savedBody(NEARBY)).expect(201)).body,

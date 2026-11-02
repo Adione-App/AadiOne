@@ -31,7 +31,7 @@
 import type { LiveLocationInput } from '@shared';
 import type { AddressSuggestion, DetectStatus } from '@shared/location';
 import { distanceKmExact } from '@shared/distance';
-import { buildLiveDestination, isHomeState, liveLocationLabel } from './liveLocation';
+import { buildLiveDestination, liveLocationLabel } from './liveLocation';
 
 /** Why there is no current reading. PERMISSION_BLOCKED: denied and the OS will not ask again (Settings only). */
 export type GpsFailure = Exclude<DetectStatus, 'OK'> | 'PERMISSION_BLOCKED';
@@ -55,6 +55,9 @@ export interface CurrentPoint {
   accuracyM?: number | null;
   /** When the reading was taken (epoch ms), GPS only. Absent: never confirmed fresh. */
   fixedAt?: number | null;
+  /** The village + PIN the customer confirmed for this point (kept while they stay put). */
+  village?: string | null;
+  pincode?: string | null;
 }
 
 export interface GpsStatus {
@@ -116,10 +119,9 @@ export function isFresh(fixedAt: number | null | undefined, now: number, maxAgeM
 
 /** What to tell the customer for each failure — every one leaves a way forward. */
 export const GPS_FAILURE_MESSAGE: Record<GpsFailure, string> = {
-  PERMISSION_DENIED:
-    'Allow location access so we can check whether Aadione delivers where you are. You can also choose a saved address.',
+  PERMISSION_DENIED: 'Location permission is off, so your current location is not available. Choose a saved address instead.',
   PERMISSION_BLOCKED:
-    'Location access is turned off for Aadione. Open Settings and allow location "While using the app", or choose a saved address.',
+    "Location permission is off for Aadione, so your current location is not available. Choose a saved address, or allow location in your phone's settings.",
   SERVICES_DISABLED: 'Your phone\'s location (GPS) is switched off. Turn it on to check delivery where you are, or choose a saved address.',
   TIMEOUT: 'We could not find your location in time. Move near a window or outdoors and refresh, or choose a saved address.',
   UNAVAILABLE: 'Your phone could not determine its location. Refresh to try again, or choose a saved address.',
@@ -156,9 +158,9 @@ export function createCurrentLocation(deps: CurrentLocationDeps) {
     }
 
     if (!prompt) {
-      // Never a dialog here. Nothing chosen yet and never asked: the first-launch
-      // explanation asks (LocationPermissionIntro). Otherwise a missing
-      // permission means the current location is unknown — say so.
+      // Never a dialog here. Nothing chosen yet and never asked: the
+      // first-launch request asks (lib/firstLaunchLocation.ts). Otherwise a
+      // missing permission means the current location is unknown — say so.
       const permission = await deps.permission().catch((): PermissionState => ({ granted: false, canAskAgain: true }));
       if (!permission.granted) {
         if (!location && permission.canAskAgain) return { kind: 'SKIPPED', why: 'NOT_ASKED_YET' };
@@ -199,9 +201,9 @@ export function createCurrentLocation(deps: CurrentLocationDeps) {
       fullName: built.fullName || earlier?.fullName || '',
       mobile: built.mobile || earlier?.mobile || '',
     };
-    // Outside the state it is still shown — as a place we do not deliver to
-    // (the server says so) — but it is never an order destination.
-    const live = isHomeState(destination.state) ? destination : null;
+    // Where it is, whatever state: the server decides from the admin's
+    // delivery area whether it can be delivered to (no state is hardcoded).
+    const live = destination;
     const next: CurrentPoint = {
       latitude: fix.latitude,
       longitude: fix.longitude,

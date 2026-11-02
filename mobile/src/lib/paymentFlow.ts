@@ -1,29 +1,33 @@
 /**
  * "Pay Online" from the cart — Cashfree's checkout opens straight away (no
- * Aadione payment screen before or after it), and when the customer is back
- * the SERVER is asked, quietly, what happened. Pure (the SDK, the API and the
- * clock come in as `PaymentFlowDeps`), so every way back is unit-tested
+ * Aadione screen before it), and when the customer is back the SERVER is
+ * asked what happened. Pure (the SDK, the API and the clock come in as
+ * `PaymentFlowDeps`), so every way back is unit-tested
  * (tests/paymentFlow.test.ts); lib/pendingPayment.ts wires it to the app.
  *
- *   paid          only the server's answer (`POST /payments/:id/refresh` —
- *                 which asks Cashfree itself, as does the webhook) is
- *                 payment. The SDK's success callback never is.
- *   back without paying / checkout closed
- *                 never "failed": the order stays payable and unconfirmed,
- *                 and the customer can continue when ready (the server reuses
- *                 the same Cashfree order — no second order, no second
- *                 payment). Nothing is cancelled.
- *   pending       the bank has not answered: checked again quietly; paying
- *                 again asks first (it could charge twice).
- *   failed        only when Cashfree says the attempt failed — still a calm
- *                 message: the order can be paid again.
- *   late success  a payment confirmed after the customer was told "not
- *                 completed" (webhook, bank answer) is picked up by the next
- *                 check — on return to the app, the background checks, or
- *                 opening the cart — and shown as the confirmed order.
+ * Only the server's answer (`POST /payments/:id/refresh`, which asks Cashfree
+ * itself, as does the webhook) decides — never the SDK's callback:
  *
- * One checkout at a time; a second tap while one is starting or open does
- * nothing. A callback after the checkout closed is ignored (lib/cashfree.ts).
+ *   verifying     back from the checkout: "Please wait while your payment is
+ *                 being verified" while the server is asked;
+ *   paid          the server verified the payment: the order is confirmed
+ *                 (the server takes the paid lines out of the cart then —
+ *                 never before);
+ *   failed        the server says the newest attempt failed / was cancelled,
+ *                 or that nothing was paid and nothing is in progress after
+ *                 the checkout closed (asked twice): the failed-payment
+ *                 sheet. The cart was never touched; retrying pays for the
+ *                 SAME order (no second order);
+ *   pending       the bank / UPI app has not answered, Cashfree's success
+ *                 callback is not yet confirmed, or the server could not be
+ *                 asked: NEVER "failed", never "paid" — checked again
+ *                 quietly; a delayed webhook is picked up by those checks;
+ *   ended         the order no longer awaits payment (its time ran out /
+ *                 replaced), or a late payment is being refunded.
+ *
+ * A timeout, an app return, a UPI app's "cancelled", a missing callback or a
+ * network error is never evidence of failure. One checkout at a time; a
+ * callback after the checkout closed is ignored (lib/cashfree.ts).
  */
 
 import type { CashfreeCheckout, CreatePaymentResult, PaymentRefreshResult } from "./payments";
@@ -52,38 +56,44 @@ export type LaunchFailure =
   /** Cashfree refused the session at once (its onError arrived before anyone could have paid). */
   | "GATEWAY_REJECTED";
 
-export type NotCompletedReason =
-  /** Back without paying, checkout closed, nothing in progress. */
-  | "NOT_COMPLETED"
-  /** The bank is still answering. */
+/** Why the payment is not settled yet — never a failure. */
+export type PendingReason =
+  /** The bank / UPI app is still answering. */
   | "PENDING"
   /** Cashfree's success callback, but the server has not seen the payment yet. */
   | "CONFIRMING"
-  /** Cashfree says the attempt failed (no money taken for it). */
-  | "FAILED"
   /** The server could not be asked (network). */
   | "CHECK_FAILED";
 
+/** Why the failed-payment sheet is shown — both server-verified. */
+export type FailedReason =
+  /** Cashfree says the newest attempt failed / was cancelled / declined. */
+  | "FAILED"
+  /** The checkout closed, and Cashfree has no payment and none in progress. */
+  | "NOT_PAID";
+
 export type PaymentState =
   | { phase: "idle" }
-  /** Getting the session / opening Cashfree's checkout. */
+  /** Getting the session / opening Cashfree's checkout (the Pay button's spinner — no screen). */
   | { phase: "opening"; order: PendingOrder }
   /** Cashfree's checkout (or a UPI app it opened) is open. */
   | { phase: "paying"; order: PendingOrder }
-  /** Quietly asking the server what happened (a subtle indicator, never a screen). */
-  | { phase: "checking"; order: PendingOrder }
-  /** Not paid yet — the order can be paid when the customer is ready. */
-  | { phase: "waiting"; order: PendingOrder; reason: NotCompletedReason; message: string }
+  /** Back from the checkout: the server is being asked ("Please wait while your payment is being verified"). */
+  | { phase: "verifying"; order: PendingOrder }
+  /** Not settled yet — neither failed nor paid; checked again quietly. */
+  | { phase: "pending"; order: PendingOrder; reason: PendingReason; message: string }
+  /** The server says it was not paid: the failed-payment sheet (cart untouched, retry pays the same order). */
+  | { phase: "failed"; order: PendingOrder; reason: FailedReason; message: string }
   /** Paid and confirmed by the server. */
   | { phase: "paid"; orderId: string }
-  /** The order can no longer be paid (window closed / cancelled), or a late payment is being refunded. */
+  /** The order can no longer be paid (time ran out / replaced), or a late payment is being refunded. */
   | { phase: "ended"; orderId: string; reason: "CLOSED" | "LATE_REFUND"; message: string }
   /** This build cannot open Cashfree's checkout. */
   | { phase: "unavailable"; order: PendingOrder; message: string }
   /**
-   * Cashfree's checkout could not be opened — never shown as "payment not
-   * completed": nothing was paid. `detail` is the actual error (server or
-   * Cashfree), shown small so it can be reported.
+   * Cashfree's checkout could not be opened — never "payment failed":
+   * nothing was paid. `detail` is the actual error (server or Cashfree),
+   * shown small so it can be reported.
    */
   | { phase: "launch_failed"; order: PendingOrder; reason: LaunchFailure; message: string; detail: string };
 
@@ -96,7 +106,7 @@ export interface PaymentFlowDeps {
   /** `POST /payments/:orderId/refresh` — the server asks Cashfree. */
   refresh(orderId: string): Promise<PaymentRefreshResult>;
   sleep(ms: number): Promise<void>;
-  /** Remembers the unpaid order across restarts (null = nothing pending). */
+  /** Remembers the unpaid order across restarts (null = nothing to watch). */
   persist(order: PendingOrder | null): void;
   onChange(state: PaymentState): void;
   /** Diagnostics for every launch stage (logcat in release builds). Never given secrets. */
@@ -106,13 +116,14 @@ export interface PaymentFlowDeps {
 }
 
 export const MESSAGES = {
-  NOT_COMPLETED: "Payment wasn't completed. You can continue when you're ready.",
+  VERIFYING: "Please wait while your payment is being verified.",
+  FAILED: "Your payment could not be completed. Your cart is safe. You can try again or choose another payment method.",
   PENDING:
-    "Your bank is still processing a payment for this order. If money was deducted, the order is confirmed automatically — there's no need to pay again.",
-  CONFIRMING: "We're confirming your payment with Cashfree. Your order is confirmed automatically once it's verified.",
-  FAILED: "The last payment attempt didn't go through, and no money was taken for it. You can continue when you're ready.",
-  CHECK_FAILED: "We couldn't check your payment just now. If money was deducted, your order is confirmed automatically.",
-  CLOSED: "The payment time for this order ended, so it wasn't placed. Its items are back in your cart.",
+    "Your bank is still confirming this payment. Please don't pay again — if money was deducted, your order is confirmed automatically. Your cart is safe.",
+  CONFIRMING: "We're confirming your payment with Cashfree. Your order is confirmed automatically once it's verified. Your cart is safe.",
+  CHECK_FAILED:
+    "We couldn't reach the server to verify your payment. Please check your internet connection. If money was deducted, your order is confirmed automatically. Your cart is safe.",
+  CLOSED: "The payment time for this checkout ended, so no order was placed and nothing was charged. Your cart is unchanged.",
   LATE_REFUND:
     "Your payment arrived after the payment time ended, so this order wasn't placed. The money is being refunded to the same account (usually 3–5 working days).",
   UNAVAILABLE: "Online payment isn't available in this version of the app. Please update Aadione, or pay by cash on delivery.",
@@ -162,25 +173,33 @@ export const CLOSED_INTERVAL_MS = 2_000;
 export const BACKGROUND_POLL_MS = 5_000;
 export const BACKGROUND_POLL_LIMIT = 36;
 
-type Verdict =
-  | { kind: "PAID" }
-  | { kind: "CLOSED" }
-  | { kind: "LATE_REFUND" }
-  | { kind: "UNPAID"; pending: boolean; failed: boolean };
+/** The server's verdict (`outcome`; derived the same way for an older server that does not send it). */
+export type Verdict = "PAID" | "PENDING" | "FAILED" | "NOT_PAID" | "CLOSED" | "LATE_REFUND";
 
-/** The server's answer, in the only terms that matter here. */
 export function verdictOf(result: PaymentRefreshResult): Verdict {
+  if (result.outcome) return result.outcome;
   // Paid only when the server says so (or the order has moved past payment
   // because it was paid). An SDK callback never enters this.
-  if (result.paymentStatus === "PAID" || result.paymentStatus === "PARTIALLY_REFUNDED") return { kind: "PAID" };
-  if (result.latePaymentRefund) return { kind: "LATE_REFUND" };
-  if (result.status !== "PENDING_PAYMENT") return { kind: "CLOSED" };
-  return { kind: "UNPAID", pending: result.attemptPending === true, failed: result.lastAttemptFailed };
+  if (result.paymentStatus === "PAID" || result.paymentStatus === "PARTIALLY_REFUNDED") return "PAID";
+  if (result.latePaymentRefund) return "LATE_REFUND";
+  if (result.status !== "PENDING_PAYMENT") return "CLOSED";
+  if (result.attemptPending === true) return "PENDING";
+  if (result.lastAttemptFailed) return "FAILED";
+  return "NOT_PAID";
 }
+
+/** Verdicts after which asking again right away cannot change the answer. */
+const SETTLED: ReadonlySet<Verdict> = new Set(["PAID", "CLOSED", "LATE_REFUND", "FAILED"]);
 
 export function createPaymentFlow(deps: PaymentFlowDeps) {
   let state: PaymentState = { phase: "idle" };
-  /** Bumped by every new start / continue / reset — older loops stop. */
+  /**
+   * The unpaid order still watched quietly after the failed sheet was closed
+   * (or after a restart): a late success is picked up and shown; nothing
+   * else is shown for it.
+   */
+  let watched: PendingOrder | null = null;
+  /** Bumped by every new start / retry / check — older loops stop. */
   let generation = 0;
   let busy = false;
 
@@ -189,34 +208,34 @@ export function createPaymentFlow(deps: PaymentFlowDeps) {
     deps.onChange(next);
   };
 
-  /** One server answer applied; returns true when it is final (nothing more to check). */
-  function apply(order: PendingOrder, result: PaymentRefreshResult, closedWith: CheckoutClosed["kind"] | null): { final: boolean; poll: boolean } {
+  function settleFinal(next: PaymentState): void {
+    watched = null;
+    deps.persist(null);
+    set(next);
+  }
+
+  /** One server answer applied; `poll` = keep checking quietly. */
+  function apply(order: PendingOrder, result: PaymentRefreshResult, closedWith: CheckoutClosed["kind"] | null): { poll: boolean } {
     const verdict = verdictOf(result);
-    if (verdict.kind === "PAID") {
-      deps.persist(null);
-      set({ phase: "paid", orderId: order.orderId });
-      return { final: true, poll: false };
+    if (verdict === "PAID") {
+      settleFinal({ phase: "paid", orderId: order.orderId });
+      return { poll: false };
     }
-    if (verdict.kind === "LATE_REFUND" || verdict.kind === "CLOSED") {
-      deps.persist(null);
-      set({ phase: "ended", orderId: order.orderId, reason: verdict.kind, message: MESSAGES[verdict.kind] });
-      return { final: true, poll: false };
+    if (verdict === "LATE_REFUND" || verdict === "CLOSED") {
+      settleFinal({ phase: "ended", orderId: order.orderId, reason: verdict, message: MESSAGES[verdict] });
+      return { poll: false };
     }
-    if (verdict.pending) {
-      set({ phase: "waiting", order, reason: "PENDING", message: MESSAGES.PENDING });
-      return { final: false, poll: true };
+    if (verdict === "PENDING") {
+      set({ phase: "pending", order, reason: "PENDING", message: MESSAGES.PENDING });
+      return { poll: true };
     }
-    if (verdict.failed) {
-      set({ phase: "waiting", order, reason: "FAILED", message: MESSAGES.FAILED });
-      return { final: false, poll: false };
-    }
-    if (closedWith === "verify") {
+    if (verdict === "NOT_PAID" && closedWith === "verify") {
       // Cashfree said success; the server has not seen it yet (webhook late).
-      set({ phase: "waiting", order, reason: "CONFIRMING", message: MESSAGES.CONFIRMING });
-      return { final: false, poll: true };
+      set({ phase: "pending", order, reason: "CONFIRMING", message: MESSAGES.CONFIRMING });
+      return { poll: true };
     }
-    set({ phase: "waiting", order, reason: "NOT_COMPLETED", message: MESSAGES.NOT_COMPLETED });
-    return { final: false, poll: false };
+    set({ phase: "failed", order, reason: verdict === "FAILED" ? "FAILED" : "NOT_PAID", message: MESSAGES.FAILED });
+    return { poll: false };
   }
 
   async function ask(orderId: string): Promise<PaymentRefreshResult | null> {
@@ -231,19 +250,18 @@ export function createPaymentFlow(deps: PaymentFlowDeps) {
   async function poll(order: PendingOrder, closedWith: CheckoutClosed["kind"] | null, mine: number): Promise<void> {
     for (let i = 0; i < BACKGROUND_POLL_LIMIT; i += 1) {
       await deps.sleep(BACKGROUND_POLL_MS);
-      // A newer start / continue / check bumped the generation: this loop is stale.
+      // A newer start / retry / check bumped the generation: this loop is stale.
       if (mine !== generation) return;
       const result = await ask(order.orderId);
       if (mine !== generation) return;
       if (!result) continue;
-      const step = apply(order, result, closedWith);
-      if (!step.poll) return;
+      if (!apply(order, result, closedWith).poll) return;
     }
   }
 
-  /** After the checkout closed: ask the server, briefly, then settle into a calm state. */
+  /** Back from the checkout: "verifying" while the server is asked, briefly, then its answer. */
   async function reconcile(order: PendingOrder, closedWith: CheckoutClosed["kind"] | null, mine: number): Promise<void> {
-    set({ phase: "checking", order });
+    set({ phase: "verifying", order });
     const attempts = closedWith === "verify" ? VERIFY_ATTEMPTS : CLOSED_ATTEMPTS;
     const interval = closedWith === "verify" ? VERIFY_INTERVAL_MS : CLOSED_INTERVAL_MS;
     let last: PaymentRefreshResult | null = null;
@@ -252,17 +270,15 @@ export function createPaymentFlow(deps: PaymentFlowDeps) {
       if (mine !== generation) return;
       last = (await ask(order.orderId)) ?? last;
       if (mine !== generation) return;
-      if (last) {
-        const verdict = verdictOf(last);
-        if (verdict.kind !== "UNPAID" || verdict.failed) break;
-      }
+      if (last && SETTLED.has(verdictOf(last))) break;
     }
     if (!last) {
-      set({ phase: "waiting", order, reason: "CHECK_FAILED", message: MESSAGES.CHECK_FAILED });
+      // Unknown — never "failed": checked again quietly.
+      set({ phase: "pending", order, reason: "CHECK_FAILED", message: MESSAGES.CHECK_FAILED });
+      void poll(order, closedWith, mine);
       return;
     }
-    const step = apply(order, last, closedWith);
-    if (step.poll) void poll(order, closedWith, mine);
+    if (apply(order, last, closedWith).poll) void poll(order, closedWith, mine);
   }
 
   const log = (event: string, data: Record<string, unknown>) => {
@@ -300,12 +316,12 @@ export function createPaymentFlow(deps: PaymentFlowDeps) {
         log("session_error", { orderId: order.orderId, ...e });
         if (mine !== generation) return;
         if (e.code && ORDER_MAY_HAVE_CHANGED.has(e.code)) {
-          // Already paid meanwhile, the window closed, or a store closed and
+          // Already paid meanwhile, the time ran out, or a store closed and
           // the unpaid order was cancelled: the server's state decides.
           const result = await ask(order.orderId);
           if (mine !== generation) return;
           const verdict = result ? verdictOf(result) : null;
-          if (result && verdict && verdict.kind !== "UNPAID") {
+          if (result && (verdict === "PAID" || verdict === "CLOSED" || verdict === "LATE_REFUND")) {
             apply(order, result, null);
             if (state.phase === "ended" && state.reason === "CLOSED" && e.status !== null && e.status >= 400 && e.status < 500) {
               set({ ...state, message: e.message });
@@ -343,8 +359,8 @@ export function createPaymentFlow(deps: PaymentFlowDeps) {
     // Cashfree refused the session at once (invalid / expired session, app not
     // allowed for this account, environment mismatch…): its checkout never
     // became payable. Shown as what it is — with Cashfree's own reason — and
-    // never as "payment not completed". One quiet server check still runs in
-    // case the order was paid by another route.
+    // never as a failed payment. One quiet server check still runs in case
+    // the order was paid by another route.
     if (
       closed.kind === "error" &&
       typeof closed.elapsedMs === "number" &&
@@ -353,7 +369,7 @@ export function createPaymentFlow(deps: PaymentFlowDeps) {
     ) {
       launchFailed(order, "GATEWAY_REJECTED", `Cashfree: ${closed.message ?? "error"}${closed.code ? ` (${closed.code})` : ""}`);
       const result = await ask(order.orderId);
-      if (mine === generation && result && verdictOf(result).kind === "PAID") apply(order, result, null);
+      if (mine === generation && result && verdictOf(result) === "PAID") apply(order, result, null);
       return;
     }
 
@@ -369,6 +385,7 @@ export function createPaymentFlow(deps: PaymentFlowDeps) {
     if (busy) return state;
     busy = true;
     const mine = ++generation;
+    watched = null;
     deps.persist(order);
     try {
       await openWith(order, session, mine);
@@ -378,12 +395,21 @@ export function createPaymentFlow(deps: PaymentFlowDeps) {
     return state;
   }
 
-  /** "Continue payment" for the unpaid order: the server's current session (the same Cashfree order while valid). */
+  /** The unpaid order the flow knows about (on screen, or watched quietly). */
+  function pendingOrder(): PendingOrder | null {
+    return "order" in state ? state.order : watched;
+  }
+
+  /**
+   * "Retry payment" — the SAME order: the server's current session (the same
+   * Cashfree order while it is valid). Never a new order.
+   */
   async function resume(): Promise<PaymentState> {
     const order = pendingOrder();
     if (!order || busy) return state;
     busy = true;
     const mine = ++generation;
+    watched = null;
     try {
       await openWith(order, null, mine);
     } finally {
@@ -395,42 +421,63 @@ export function createPaymentFlow(deps: PaymentFlowDeps) {
   /**
    * A quiet check of the unpaid order — on return to the app, opening the
    * cart, or after a restart. Never while a checkout is starting or open:
-   * that one reconciles itself when it closes.
+   * that one reconciles itself when it closes. A success always wins (also
+   * over a failed sheet); nothing is ever turned into "failed" by it.
    */
   async function check(order: PendingOrder | null = pendingOrder()): Promise<PaymentState> {
     if (!order || busy) return state;
-    // A launch that failed is not "waiting for a payment": nothing was opened.
-    // Only a confirmed payment (another route) changes what is shown.
-    if (state.phase === "launch_failed") {
-      const mineCheck = ++generation;
-      const result = await ask(order.orderId);
-      if (mineCheck === generation && !busy && result && verdictOf(result).kind !== "UNPAID") apply(order, result, null);
-      return state;
-    }
     const mine = ++generation;
+    const before = state.phase;
     const result = await ask(order.orderId);
     if (mine !== generation || busy) return state;
+    const verdict = result ? verdictOf(result) : null;
+
+    // On screen as failed, or no longer on screen (sheet closed / restart):
+    // only a settled outcome is shown — a success (or a refund) above all.
+    // A launch that failed stays as it is unless the order turned out paid.
+    if (before === "failed" || before === "idle" || before === "launch_failed") {
+      if (!result) return state;
+      if (verdict === "PAID" || verdict === "LATE_REFUND") apply(order, result, null);
+      else if (verdict === "CLOSED") {
+        if (before === "failed") apply(order, result, null);
+        else {
+          watched = null;
+          deps.persist(null);
+        }
+      } else if (verdict === "PENDING" && before !== "launch_failed") {
+        if (apply(order, result, null).poll) void poll(order, null, mine);
+      }
+      return state;
+    }
+
     if (!result) {
       // Unknown: keep what the customer was told; never claim a failure.
-      if (state.phase !== "waiting") set({ phase: "waiting", order, reason: "CHECK_FAILED", message: MESSAGES.CHECK_FAILED });
+      if (state.phase !== "pending") set({ phase: "pending", order, reason: "CHECK_FAILED", message: MESSAGES.CHECK_FAILED });
       return state;
     }
     // A success callback the server has not seen yet stays "confirming".
-    const closedWith = state.phase === "waiting" && state.reason === "CONFIRMING" ? "verify" : null;
-    const step = apply(order, result, closedWith);
-    if (step.poll) void poll(order, closedWith, mine);
+    const closedWith = state.phase === "pending" && state.reason === "CONFIRMING" ? "verify" : null;
+    if (apply(order, result, closedWith).poll) void poll(order, closedWith, mine);
     return state;
   }
 
-  /** The unpaid order the flow knows about (after a restart: restored by `restore`). */
-  function pendingOrder(): PendingOrder | null {
-    return "order" in state ? state.order : null;
+  /** After a restart: the unpaid order remembered on disk, checked quietly (nothing shown unless it settled). */
+  function restore(order: PendingOrder): Promise<PaymentState> {
+    if (state.phase !== "idle") return Promise.resolve(state);
+    watched = order;
+    return check(order);
   }
 
-  /** After a restart: the unpaid order remembered on disk, checked quietly. */
-  function restore(order: PendingOrder): Promise<PaymentState> {
-    if (state.phase === "idle") set({ phase: "waiting", order, reason: "NOT_COMPLETED", message: MESSAGES.NOT_COMPLETED });
-    return check(order);
+  /**
+   * The failed sheet's Close / "Try another payment method": back to the
+   * normal cart. The order is still watched quietly (a late success is
+   * shown); the next checkout reuses it or replaces it on the server.
+   */
+  function dismissFailure(): void {
+    if (state.phase !== "failed") return;
+    watched = state.order;
+    generation += 1;
+    set({ phase: "idle" });
   }
 
   /** The customer has seen the outcome (confirmed order opened, ended notice dismissed). */
@@ -441,14 +488,26 @@ export function createPaymentFlow(deps: PaymentFlowDeps) {
     }
   }
 
-  /** Forget everything (sign-out, or the order was cancelled by the customer). */
+  /** Forget everything (sign-out, or another order replaced this checkout). */
   function reset(): void {
     generation += 1;
+    watched = null;
     deps.persist(null);
     set({ phase: "idle" });
   }
 
-  return { start, resume, check, restore, dismiss, reset, state: () => state, isBusy: () => busy };
+  return {
+    start,
+    resume,
+    check,
+    restore,
+    dismissFailure,
+    dismiss,
+    reset,
+    state: () => state,
+    watched: () => watched,
+    isBusy: () => busy,
+  };
 }
 
 export type PaymentFlow = ReturnType<typeof createPaymentFlow>;

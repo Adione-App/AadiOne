@@ -149,10 +149,15 @@ export interface AdminSellerAvailability {
 export interface AdminSellerDeliveryArea {
   sellerId: string;
   sellerName: string;
+  /** The admin's service location — the origin of every delivery distance. */
   latitude: number;
   longitude: number;
+  /** Its name (Global Availability), when given. Absent from older servers. */
+  originName?: string | null;
+  /** False while no service location is set (nobody can order). Absent from older servers. */
+  areaConfigured?: boolean;
   storeLocationSet: boolean;
-  /** This store's own radius; null = the app-wide default. */
+  /** This store's old own radius — stored, no longer applied. */
   maxServiceRadiusKm: number | null;
   defaultRadiusKm: number;
   effectiveRadiusKm: number;

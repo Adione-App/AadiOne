@@ -21,6 +21,7 @@ import { moduleLogger } from '../../common/logger';
 import { prisma } from '../../infra/db/prisma';
 import * as cartService from '../cart/cart.service';
 import { orderingState, statusOf, storeStatuses } from '../sellers/store-availability';
+import { orderRetainsCart } from './cart-retention';
 import { transitionOrder } from './order-state.service';
 
 const log = moduleLogger('unpaid-order-guard');
@@ -73,8 +74,9 @@ export async function assertUnpaidOrderStillOrderable(order: { id: string; userI
  * An unpaid online order that ended WITHOUT payment — cancelled before any
  * payment (above), cancelled by the customer, or its payment window expired
  * (jobs releaseExpiredReservations) — gives its lines back to the customer's
- * cart: ordering took them out of the cart, but only a paid order uses them
- * up. Call it only from the call that actually moved the order (its
+ * cart — when ordering took them out (orders placed before cart-retention.ts).
+ * An order placed since never took them: its lines are still in the cart, and
+ * nothing is added a second time. Call it only from the call that actually moved the order (its
  * transition reported `changed`), so the lines come back once.
  *
  * Best effort: the order's state is already final and nothing was paid;
@@ -82,6 +84,7 @@ export async function assertUnpaidOrderStillOrderable(order: { id: string; userI
  */
 export async function restoreUnpaidOrderLines(orderId: string): Promise<void> {
   try {
+    if (await orderRetainsCart(orderId)) return;
     const order = await prisma.order.findUnique({
       where: { id: orderId },
       select: {

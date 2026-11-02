@@ -8,14 +8,17 @@
  *   3. Operating Mode             Fixed Timing / Always Open (PLATFORM_OPERATING_MODE)
  *   4. Temporary Pause & Scheduled Closure
  *   5. Holidays & Emergency Closure
- *   6. Aadione Main Store Location (PLATFORM_LOCATION — informational)
- *   7. Global Default Delivery Radius (MAX_SERVICE_RADIUS_KM)
+ *   6. Aadione Service Location (PLATFORM_LOCATION — the centre of the delivery area)
+ *   7. Delivery Radius (MAX_SERVICE_RADIUS_KM — around that location)
  *   8. Effective App Status & Customer Message Preview
  *
  * The page never decides availability: the status figures come from
  * GET /admin/platform-availability (the backend's one rule), recomputed after
- * every change. Sellers keep their own availability, hours, location and
- * radius on their own pages — nothing here edits them. Reads need
+ * every change. Sections 6 and 7 measure the distance (from the service
+ * location) that prices the delivery fee and time; WHERE Aadione delivers is
+ * the Approved Delivery Villages list (DeliveryVillages.tsx). Sellers keep
+ * their own availability, hours and store address on their own pages —
+ * nothing here edits them. Reads need
  * CONFIG_READ; changes need CONFIG_WRITE (controls are disabled without it,
  * and the API refuses them anyway).
  */
@@ -1040,8 +1043,8 @@ function MainStoreLocation({ data, canWrite, onNotice }: SectionProps) {
           <p className="text-gray-500">Not set yet.</p>
         )}
         <p className="text-xs text-gray-500">
-          Aadione’s own business location — not a seller’s. Informational: whether a customer is served is still measured from each seller’s own
-          location and radius (Sellers → a seller → Delivery area).
+          The point every delivery distance is measured from (straight line) — it prices the delivery fee and time; a seller’s own location is not
+          used. Where Aadione delivers is the Approved Delivery Villages list below. While it is not set, the first delivery-fee slab applies.
         </p>
 
         <div className="grid gap-3 lg:grid-cols-2">
@@ -1145,8 +1148,8 @@ function DefaultRadius({ data, canWrite, onNotice }: SectionProps) {
           </Button>
         </div>
         <p className="text-xs text-gray-500">
-          The default for every seller without its own radius — straight-line distance from each seller’s own location (not the road route, and not
-          from the main store location). A seller’s own radius (Sellers → a seller → Delivery area) always overrides it.
+          The nearby area around the service location (straight line): used to tell a customer whose village is not known yet (only a GPS point)
+          whether Aadione is likely to deliver, and which stores to list for them. It never refuses an approved village — that list decides orders.
         </p>
         <ErrorBanner message={problem ?? (write.isError ? errorText(write.error, 'Could not save the radius.') : null)} />
       </div>

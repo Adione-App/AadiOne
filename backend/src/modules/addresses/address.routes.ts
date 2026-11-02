@@ -40,7 +40,9 @@ const addressFields = z.object({
   mobile,
   houseNo: z.string().trim().max(80).nullable().optional(),
   street: z.string().trim().max(160).nullable().optional(),
-  area: z.string().trim().min(2, 'Enter your locality, mohalla or colony').max(160),
+  // Optional: the village / town + PIN pair is what places an address; a
+  // locality / mohalla / colony helps the rider when the customer knows one.
+  area: z.string().trim().max(160).optional(),
   city: z.string().trim().min(2, 'Enter the village, city or town').max(80),
   // Optional at the API so older app versions keep working; the current
   // forms require it.
@@ -51,8 +53,10 @@ const addressFields = z.object({
     .trim()
     .refine(isValidPincode, 'Enter a valid 6-digit PIN code'),
   landmark: z.string().trim().max(160).nullable().optional(),
-  latitude: z.number(),
-  longitude: z.number(),
+  // Optional: a typed address the map could not place is saved with the admin
+  // service location as an approximate point (address.service fallbackPoint).
+  latitude: z.number().optional(),
+  longitude: z.number().optional(),
   locationSource: z.enum(LOCATION_SOURCES).nullable().optional(),
   locationAccuracyM: z.number().finite().nonnegative().max(100_000).nullable().optional(),
   isDefault: z.boolean().optional(),
@@ -67,25 +71,12 @@ function checkCoordinates(body: { latitude?: number; longitude?: number }, ctx: 
 
 const addressBody = addressFields.superRefine(checkCoordinates);
 
-/** Parts of the address that say WHERE it is. */
-const LOCATION_TEXT_FIELDS = ['houseNo', 'street', 'area', 'city', 'district', 'state', 'pincode'] as const;
-
 /**
- * An edit that changes where the address is must send the matching
- * coordinates too — otherwise the old point (and its serviceability) would
- * silently stay attached to a different address. The apps always send both.
+ * An edit that changes where the address is may come without coordinates:
+ * the old point then never stays attached to the new place — the server
+ * replaces it with the approximate stand-in (address.service updateAddress).
  */
-const addressPatchBody = addressFields.partial().superRefine((body, ctx) => {
-  checkCoordinates(body, ctx);
-  const movesText = LOCATION_TEXT_FIELDS.some((key) => body[key] !== undefined);
-  if (movesText && (body.latitude === undefined || body.longitude === undefined)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['latitude'],
-      message: 'When you change the address, confirm its location on the map too.',
-    });
-  }
-});
+const addressPatchBody = addressFields.partial().superRefine(checkCoordinates);
 
 export const addressRouter: Router = Router();
 

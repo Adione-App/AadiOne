@@ -1,8 +1,9 @@
 /**
  * The app's one payment flow (lib/paymentFlow.ts) wired to the Cashfree SDK,
  * the API and the phone's storage. The Cart starts it the moment the order is
- * placed and shows its state in place (PendingPaymentPanel) — there is no
- * Aadione payment screen before or after Cashfree's checkout.
+ * placed — no Aadione screen before Cashfree's checkout — and shows what the
+ * server says afterwards: the verification screen, the failed-payment sheet,
+ * or the confirmed order (components/payment/).
  *
  * The unpaid order is remembered on disk, so an app killed while a UPI app
  * was open picks it up again at the next launch (checked quietly with the
@@ -109,7 +110,7 @@ export function startPayment(order: PendingOrder, session: CashfreeCheckout | nu
   return flow.start(order, session);
 }
 
-/** "Continue payment" — the same Cashfree order while it is valid. */
+/** "Retry payment" — the SAME order (the same Cashfree order while it is valid). */
 export function resumePayment(): Promise<PaymentState> {
   usePayment.setState({ announce: true });
   return flow.resume();
@@ -129,7 +130,12 @@ export function dismissPaymentOutcome(): void {
   flow.dismiss();
 }
 
-/** The unpaid order was cancelled by the customer, or they signed out. */
+/** The failed sheet was closed: back to the normal cart (a late success is still picked up). */
+export function dismissPaymentFailure(): void {
+  flow.dismissFailure();
+}
+
+/** Another order replaced this checkout (e.g. cash on delivery), or the customer signed out. */
 export function forgetPendingPayment(): void {
   flow.reset();
 }

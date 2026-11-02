@@ -2,10 +2,10 @@
  * Store location — the seller's own address and map point
  * (GET/PATCH /seller/location).
  *
- * The point is where every distance to a customer is measured from: whether
- * this seller delivers to an address, the delivery fee and the ETA. Every
- * seller — Aadione included — sets its own here; there is no central store
- * location. Changes are audited on the server.
+ * The point shows where the shop is (delivery partners, the admin map). It
+ * does NOT decide delivery: whether a customer can order, the delivery fee
+ * and the ETA are measured from Aadione's service location (Global
+ * Availability). Changes are audited on the server.
  *
  * Address (Indian structure, @shared/address): shop / building & street,
  * locality, village / city / town, district, state, PIN, landmark — the map
@@ -174,7 +174,7 @@ export default function StoreLocationPanel({
             </a>
           </p>
           <p className="text-xs text-gray-500">
-            Whether you deliver to a customer, the delivery fee and the delivery time are all measured from this point (straight-line distance).
+            Shows where your shop is. Who can order, the delivery fee and the delivery time are measured from Aadione’s service location, not from this point.
           </p>
           {data.lastChange && (
             <p className="text-xs text-gray-500">

@@ -125,6 +125,8 @@ beforeEach(async () => {
 
 describe('defaults and the public status', () => {
   it('unconfigured: open, no hours, no location, radius 12 — production behaviour unchanged; guests can read it', async () => {
+    // Nothing configured (the test helper seeds a service location — cleared here).
+    await configService.set({ key: ConfigKey.PLATFORM_LOCATION, value: {} as never });
     const a = await availability();
     expect(a).toMatchObject({
       acceptingOrders: true,
@@ -357,7 +359,7 @@ describe('holidays and emergency closures', () => {
 });
 
 describe('main location and radius', () => {
-  it('saved and reloaded, validated, informational only — sellers keep their own points and radius', async () => {
+  it('saved and reloaded, validated; it is the centre of the delivery area, and a seller\'s own radius no longer applies — sellers keep their own points and radius', async () => {
     const admin = await panelUser(UserRole.ADMIN);
     const sellerId = await seedSeller('Radius Shop');
     const location = { addressLine: 'Aadione HQ, Station Road, Sikar', landmark: 'Near clock tower', latitude: 27.6094, longitude: 75.1399 };
@@ -372,15 +374,20 @@ describe('main location and radius', () => {
     await as(admin.token).patch('/admin/config', { key: ConfigKey.MAX_SERVICE_RADIUS_KM, value: -1 }).expect(400);
     expect((await availability()).globalLocation).toEqual({ ...location, name: null });
 
-    // Seller untouched; its own radius still decides its delivery area.
+    // The seller row is untouched (its old radius stays stored), but the
+    // delivery area is the admin's: this location and the admin radius.
     const seller = await prisma.seller.findUniqueOrThrow({ where: { id: sellerId }, include: { hours: true } });
     expect(seller).toMatchObject({ maxServiceRadiusKm: 9, ...STORE_COORDS });
     expect(seller.hours).toHaveLength(7);
-    const area = await as(admin.token).get(`/admin/sellers/${sellerId}/delivery-area`).expect(200);
-    expect(data<{ effectiveRadiusKm: number }>(area).effectiveRadiusKm).toBe(9);
+    const area = data<{ effectiveRadiusKm: number; latitude: number; areaConfigured: boolean }>(
+      await as(admin.token).get(`/admin/sellers/${sellerId}/delivery-area`).expect(200),
+    );
+    expect(area).toMatchObject({ effectiveRadiusKm: 12, latitude: location.latitude, areaConfigured: true });
 
     await as(admin.token).put(`${BASE}/location`, { location: null }).expect(200);
     expect((await availability()).globalLocation).toBeNull();
+    // No location: no delivery area.
+    expect(data<{ areaConfigured: boolean }>(await as(admin.token).get(`/admin/sellers/${sellerId}/delivery-area`).expect(200)).areaConfigured).toBe(false);
   });
 });
 

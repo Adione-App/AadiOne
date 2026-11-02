@@ -314,10 +314,12 @@ describe('order-time re-validation', () => {
     expect(online.status).toBe(201);
   });
 
-  it('rejects an address outside the delivery area', async () => {
+  it('rejects an address whose village + PIN is not an approved pair (wherever its point is)', async () => {
     const { session, storeId } = await setup();
     const product = await seedProduct(storeId, {});
     const addressId = await seedAddress(session.userId, FAR);
+    // An older saved address in a village that is not approved.
+    await prisma.address.update({ where: { id: addressId }, data: { city: 'Laxmangarh', pincode: '332311' } });
     await addToCart(session.accessToken, product.storeVariantId, 1);
 
     const res = await placeOrder(session.accessToken, {

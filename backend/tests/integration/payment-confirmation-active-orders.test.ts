@@ -116,9 +116,11 @@ describe('GET /orders/active', () => {
     const pending = cashfree.attempt(cfOrder, 'PENDING');
     await api().post(`/api/v1/payments/${orderId}/refresh`).set('Authorization', bearer(me.token)).expect(200);
     expect(await active(me)).toEqual([]); // pending / being verified
-    // Still kept (My Orders, retry, reconciliation) — just not an active order.
+    // An unpaid checkout is not an order: not in My Orders either — its record
+    // is kept (retry, reconciliation, audit).
     const listed = await api().get('/api/v1/orders').set('Authorization', bearer(me.token)).expect(200);
-    expect(expectSuccess<{ items: OrderSummaryDto[] }>(listed.body).data.items[0]).toMatchObject({ id: orderId, status: OrderStatus.PENDING_PAYMENT });
+    expect(expectSuccess<{ items: OrderSummaryDto[] }>(listed.body).data.items).toEqual([]);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(OrderStatus.PENDING_PAYMENT);
 
     cashfree.finish(cfOrder, pending.cf_payment_id, 'SUCCESS');
     expect((await deliver(cashfree.paymentWebhook('PAYMENT_SUCCESS_WEBHOOK', cfOrder, { ...pending, payment_status: 'SUCCESS' }))).status).toBe(200);
@@ -154,8 +156,10 @@ describe('GET /orders/active', () => {
     const me = await customer('9400006004');
     const delivered = await placeOrder(me, PaymentMethod.COD);
     const cancelled = await placeOrder(me, PaymentMethod.COD);
-    const unpaid = await placeOrder(me, PaymentMethod.ONLINE);
     const kept = await placeOrder(me, PaymentMethod.COD);
+    // Last: an unpaid checkout keeps its lines in the cart, so an order placed
+    // after it would replace it (open-checkout.ts).
+    const unpaid = await placeOrder(me, PaymentMethod.ONLINE);
 
     await prisma.order.update({ where: { id: delivered.orderId }, data: { status: OrderStatus.DELIVERED } });
     await api().post(`/api/v1/orders/${cancelled.orderId}/cancel`).set('Authorization', bearer(me.token)).send({ reason: 'Ordered by mistake' }).expect(200);

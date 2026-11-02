@@ -46,6 +46,37 @@ export async function truncateAll(): Promise<void> {
 
   const list = tables.map((t) => `"public"."${t.tablename}"`).join(', ');
   await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE`);
+
+  // The admin's service location — the centre of the delivery area
+  // (seller.service checkServiceability) — at the point the tests' stores
+  // use (fixtures STORE_COORDS), so customer distances keep their meaning.
+  // Tests about the area itself change or clear it.
+  await prisma.configuration.create({
+    data: { key: 'PLATFORM_LOCATION', value: TEST_SERVICE_LOCATION },
+  });
+  // The admin-approved delivery villages (village + its PIN) the tests'
+  // addresses use. Tests about the list itself change it.
+  await prisma.configuration.create({
+    data: { key: 'DELIVERY_LOCATIONS', value: TEST_DELIVERY_LOCATIONS },
+  });
 }
+
+/** The approved village + PIN pairs every test starts with. */
+export const TEST_DELIVERY_LOCATIONS = [
+  { id: 'sikar', village: 'Sikar', pincode: '332001', active: true },
+  { id: 'palsana', village: 'Palsana', pincode: '332402', active: true },
+  { id: 'kuraj', village: 'Kuraj', pincode: '313328', active: true },
+  { id: 'railmagra', village: 'Railmagra', pincode: '313329', active: true },
+  { id: 'jaipur', village: 'Jaipur', pincode: '302017', active: true },
+];
+
+/** The service location every test starts with (Sikar — fixtures STORE_COORDS). */
+export const TEST_SERVICE_LOCATION = {
+  name: 'Test service location',
+  addressLine: 'Main Road, Sikar',
+  landmark: null,
+  latitude: 27.6094,
+  longitude: 75.1399,
+};
 
 export { prisma };

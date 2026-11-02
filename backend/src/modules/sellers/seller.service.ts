@@ -6,15 +6,22 @@
  * every decision that gates an order is made here and re-made at order
  * creation. A client's answer is display, never permission.
  *
- * `MAX_SERVICE_RADIUS_KM` is read from Configuration on every evaluation, so
- * changing the radius in the admin panel takes effect without a redeploy and
- * without a literal `10` anywhere in this file.
+ * WHERE AADIONE DELIVERS is the admin's list of approved village + PIN code
+ * pairs (Configuration DELIVERY_LOCATIONS — addresses/delivery-locations.ts):
+ * every saved address, quote and order is checked against it. That list is
+ * the eligibility authority.
  *
- * There is no special "platform store": every distance is measured from the
- * seller's OWN location (Seller.latitude/longitude, set by the seller in the
- * Seller Panel or by admin). "Can I order here?" means "does at least one live
- * seller deliver here"; checkout then requires EVERY seller in the cart to
- * deliver to the address.
+ * The admin's service location (PLATFORM_LOCATION) and radius
+ * (MAX_SERVICE_RADIUS_KM) are kept and used for what a village name cannot
+ * give: the DISTANCE that prices the delivery fee and the ETA (straight line
+ * from the service location, never from a seller's own map point), and a
+ * hint for a bare GPS point whose village is not known yet (Home on an older
+ * app, store and restaurant lists). They never refuse an order whose village
+ * and PIN are approved. Both are read on every evaluation.
+ *
+ * "Can I order here?" = an approved, active village + PIN and at least one
+ * live seller; checkout then requires every seller in the cart to be open
+ * and taking orders (order.service).
  */
 
 import { ConfigKey, ErrorCode, type ServiceabilityResult } from '../../shared';
@@ -36,8 +43,9 @@ import {
 } from '../../shared/datetime';
 import { AppError } from '../../common/errors';
 import * as configService from '../configuration/configuration.service';
-import { pointInServiceState } from '../addresses/service-state';
 import * as repository from './seller.repository';
+import { checkDeliveryPair } from '../addresses/delivery-locations';
+import { deliveryPairMessage } from '../../shared/address';
 import type { SellerWithHours } from './seller.repository';
 
 export type { SellerWithHours };
@@ -262,44 +270,69 @@ export interface ServiceabilityCheckResult {
   deliveryFeePaise: number;
 }
 
+/** The admin-configured delivery origin (PLATFORM_LOCATION), or null when not set / unusable. */
+export interface DeliveryOrigin {
+  latitude: number;
+  longitude: number;
+  name: string | null;
+}
+
+export async function deliveryOrigin(): Promise<DeliveryOrigin | null> {
+  const location = await configService.get(ConfigKey.PLATFORM_LOCATION);
+  if (!location || typeof location !== 'object' || !('latitude' in location)) return null;
+  const { latitude, longitude } = location as { latitude: unknown; longitude: unknown };
+  if (typeof latitude !== 'number' || typeof longitude !== 'number') return null;
+  if (coordinateProblem(latitude, longitude) !== null) return null;
+  const name = (location as { name?: unknown }).name;
+  return { latitude, longitude, name: typeof name === 'string' && name.trim() ? name.trim() : null };
+}
+
 /**
- * The reusable check required by the spec, wired to configuration.
+ * How far is this point from the admin service location (the distance that
+ * prices the delivery fee and the ETA), and is it inside the admin radius
+ * (a HINT for a point whose village is not known — never an order's
+ * eligibility, which is the approved village + PIN)? `configured` false: no
+ * service location — distance 0 (the first fee slab), never inside.
  *
- * A per-seller `maxServiceRadiusKm` overrides the global config when set.
+ * The `seller` argument is accepted for the existing callers and IGNORED: a
+ * seller's own coordinates and radius never take part.
  */
 export async function checkServiceability(
   latitude: number,
   longitude: number,
-  seller: SellerWithHours,
-): Promise<ServiceabilityCheckResult> {
+  _seller?: unknown,
+): Promise<ServiceabilityCheckResult & { configured: boolean }> {
   if (!isValidCoordinates(latitude, longitude)) {
     throw new AppError(ErrorCode.INVALID_COORDINATES, {
       internalMessage: `invalid coordinates: ${latitude}, ${longitude}`,
     });
   }
 
-  const { MAX_SERVICE_RADIUS_KM, ROAD_DISTANCE_FACTOR, DELIVERY_FEE_SLABS } =
-    await configService.getMany([
-      ConfigKey.MAX_SERVICE_RADIUS_KM,
-      ConfigKey.ROAD_DISTANCE_FACTOR,
-      ConfigKey.DELIVERY_FEE_SLABS,
-    ]);
+  const [origin, { MAX_SERVICE_RADIUS_KM, ROAD_DISTANCE_FACTOR, DELIVERY_FEE_SLABS }] = await Promise.all([
+    deliveryOrigin(),
+    configService.getMany([ConfigKey.MAX_SERVICE_RADIUS_KM, ConfigKey.ROAD_DISTANCE_FACTOR, ConfigKey.DELIVERY_FEE_SLABS]),
+  ]);
+  const maxRadiusKm = MAX_SERVICE_RADIUS_KM;
 
-  const maxRadiusKm = seller.maxServiceRadiusKm ?? MAX_SERVICE_RADIUS_KM;
+  if (!origin) {
+    return {
+      configured: false,
+      serviceable: false,
+      distanceKm: 0,
+      maxRadiusKm,
+      roadDistanceKm: 0,
+      deliveryFeePaise: resolveDeliveryFeePaise(0, DELIVERY_FEE_SLABS),
+    };
+  }
 
-  const { serviceable, distanceKm } = checkServiceabilityPure(
-    latitude,
-    longitude,
-    seller.latitude,
-    seller.longitude,
-    maxRadiusKm,
-  );
+  const { serviceable, distanceKm } = checkServiceabilityPure(latitude, longitude, origin.latitude, origin.longitude, maxRadiusKm);
 
   // Straight line decides serviceability (it matches the promise we make);
   // the road factor prices the actual ride.
   const roadDistanceKm = toRoadDistanceKm(distanceKm, ROAD_DISTANCE_FACTOR);
 
   return {
+    configured: true,
     serviceable,
     distanceKm,
     maxRadiusKm,
@@ -308,42 +341,31 @@ export async function checkServiceability(
   };
 }
 
-/** Throws unless the coordinates are inside THIS seller's delivery area. */
+/**
+ * The delivery pricing for a destination already found eligible (its village
+ * + PIN approved — orders/delivery-destination.ts). Never refuses: the
+ * distance from the service location only prices the fee and the ETA.
+ */
 export async function assertServiceable(
   latitude: number,
   longitude: number,
-  seller: SellerWithHours,
+  _seller?: unknown,
 ): Promise<ServiceabilityCheckResult> {
-  const result = await checkServiceability(latitude, longitude, seller);
-  // A store with no usable map point (never set, or (0, 0)) is thousands of
-  // km from everyone — say so, instead of quoting that distance.
-  if (coordinateProblem(seller.latitude, seller.longitude) !== null) {
-    throw new AppError(ErrorCode.OUT_OF_SERVICE_AREA, {
-      message: `Sorry, ${seller.name} is not delivering yet — its store location has not been set.`,
-      internalMessage: `seller ${seller.id}: no store point (${seller.latitude}, ${seller.longitude})`,
-    });
-  }
-  if (!result.serviceable) {
-    throw new AppError(ErrorCode.OUT_OF_SERVICE_AREA, {
-      message: `Sorry, ${seller.name} does not deliver to this location yet. It delivers up to ${result.maxRadiusKm} km from its store.`,
-      internalMessage: `seller ${seller.id}: distance ${result.distanceKm}km exceeds ${result.maxRadiusKm}km`,
-    });
-  }
-  return result;
+  return checkServiceability(latitude, longitude);
 }
 
 export interface CartDelivery {
-  /** The seller farthest from the address — it sets the delivery fee and ETA. */
+  /** The cart seller whose load the ETA counts (distance is the same for every seller). */
   farthest: SellerWithHours;
   check: ServiceabilityCheckResult;
   sellers: SellerWithHours[];
 }
 
 /**
- * Checkout's rule: EVERY seller in the cart must deliver to the address. The
- * delivery fee and ETA are priced on the farthest of them (one run that has to
- * reach the farthest pickup). Throws OUT_OF_SERVICE_AREA naming the seller
- * that does not deliver there.
+ * Checkout's pricing: the destination's eligibility (approved village + PIN)
+ * is decided before this (orders/delivery-destination.ts resolveDestination);
+ * here the delivery fee and ETA are priced on the distance from the admin
+ * service location — the same for every seller in the cart.
  */
 export async function assertSellersServe(
   latitude: number,
@@ -362,12 +384,8 @@ export async function assertLoadedSellersServe(
   const sellers = [...new Map(loaded.map((seller) => [seller.id, seller])).values()];
   if (sellers.length === 0) throw new AppError(ErrorCode.CART_EMPTY);
 
-  let farthest: { seller: SellerWithHours; check: ServiceabilityCheckResult } | null = null;
-  for (const seller of sellers) {
-    const check = await assertServiceable(latitude, longitude, seller);
-    if (!farthest || check.distanceKm > farthest.check.distanceKm) farthest = { seller, check };
-  }
-  return { farthest: farthest!.seller, check: farthest!.check, sellers };
+  const check = await assertServiceable(latitude, longitude);
+  return { farthest: sellers[0]!, check, sellers };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -413,10 +431,10 @@ export async function estimateEta(input: {
  * Everything the app needs on open: may I order here, how far am I, how long
  * will it take, what will delivery cost, and is anyone open.
  *
- * "Here" is serviceable when at least one live seller delivers to it; the
- * distance, fee and ETA are those of the NEAREST such seller. With no seller
- * at all (a fresh install) the answer is simply "not serviceable" — never a
- * 503, there is no special store whose absence breaks the app.
+ * "Here" is serviceable when it is inside the admin-configured delivery area
+ * and at least one live seller exists; the distance, fee and ETA are measured
+ * from the admin location. With no seller at all (a fresh install) or no
+ * configured area the answer is simply "not serviceable" — never a 503.
  *
  * One round trip, because on rural 3G each additional call is a visible pause.
  */
@@ -424,52 +442,55 @@ export async function getServiceability(latitude: number, longitude: number): Pr
   return (await evaluateLocation(latitude, longitude)).result;
 }
 
+/** The confirmed village and PIN of a location, when known. */
+export interface KnownPlace {
+  village: string | null;
+  pincode: string | null;
+}
+
 /** Why no store serves a point (null: at least one does). */
 export type LocationOutsideReason = 'OUTSIDE_SERVICE_STATE' | 'NO_ELIGIBLE_STORE' | 'OUTSIDE_RADIUS';
 
 export interface LocationEvaluation {
   result: ServiceabilityResult;
-  /** The live sellers whose own radius covers the point, nearest first. */
+  /** The live sellers that deliver to the point (all of them, when it is eligible). */
   serving: SellerWithHours[];
   outsideReason: LocationOutsideReason | null;
+  /** Why not, in words, when the village + PIN decided it (else the generic sentence). */
+  outsideMessage?: string;
 }
 
 /**
  * `getServiceability` plus WHICH sellers serve the point and, when none
  * does, why — for the location check's status (location-serviceability.ts).
  *
- * The radius is each seller's own (`maxServiceRadiusKm`, else the
- * MAX_SERVICE_RADIUS_KM configuration — `checkServiceability`), inclusive at
- * the boundary. A seller without a usable map point (never set, or (0, 0))
- * serves nobody and is not a candidate: its "distance" is meaningless.
+ * With the location's village + PIN (`place` — a saved address or a
+ * confirmed live location): the approved pair decides. Without them (a bare
+ * GPS point): the admin radius around the service location is the hint.
+ * Eligible: every live seller serves the point. Sellers' own map points play
+ * no part.
  */
-export async function evaluateLocation(latitude: number, longitude: number): Promise<LocationEvaluation> {
+export async function evaluateLocation(latitude: number, longitude: number, place: KnownPlace | null = null): Promise<LocationEvaluation> {
   if (!isValidCoordinates(latitude, longitude)) {
     throw new AppError(ErrorCode.INVALID_COORDINATES, {
       internalMessage: `invalid coordinates: ${latitude}, ${longitude}`,
     });
   }
 
-  const sellers = (await repository.findLiveSellers()).filter(
-    (seller) => coordinateProblem(seller.latitude, seller.longitude) === null,
-  );
-  const checks = await Promise.all(
-    sellers.map(async (seller) => ({ seller, check: await checkServiceability(latitude, longitude, seller) })),
-  );
-  const byDistance = [...checks].sort((a, b) => a.check.distanceKm - b.check.distanceKm);
-  // Rajasthan only: a point outside it (or too near its border to confirm)
-  // is served by nobody, however near a seller is.
-  const inServiceState = pointInServiceState(latitude, longitude);
-  const serving = inServiceState ? byDistance.filter((entry) => entry.check.serviceable) : [];
-  const nearest = serving[0] ?? byDistance[0] ?? null;
+  const [check, sellers, pair] = await Promise.all([
+    checkServiceability(latitude, longitude),
+    repository.findLiveSellers(),
+    place ? checkDeliveryPair(place.village, place.pincode) : Promise.resolve(null),
+  ]);
 
-  if (!nearest || serving.length === 0) {
-    const { MAX_SERVICE_RADIUS_KM } = await configService.getMany([ConfigKey.MAX_SERVICE_RADIUS_KM]);
+  // The village + PIN decide when known (an older app's bare point: the radius hint).
+  if (pair && pair.verdict !== 'APPROVED') {
     return {
       result: {
         serviceable: false,
-        distanceKm: nearest?.check.distanceKm ?? 0,
-        maxRadiusKm: nearest?.check.maxRadiusKm ?? MAX_SERVICE_RADIUS_KM,
+        // No distance sentence: the place, not the distance, is the reason.
+        distanceKm: 0,
+        maxRadiusKm: check.maxRadiusKm,
         etaMinutes: null,
         etaMinMinutes: null,
         etaMaxMinutes: null,
@@ -477,27 +498,48 @@ export async function evaluateLocation(latitude: number, longitude: number): Pro
         sellerOpen: false,
       },
       serving: [],
-      outsideReason: !inServiceState ? 'OUTSIDE_SERVICE_STATE' : !nearest ? 'NO_ELIGIBLE_STORE' : 'OUTSIDE_RADIUS',
+      outsideReason: 'OUTSIDE_RADIUS',
+      outsideMessage: deliveryPairMessage(pair.verdict, place?.village, place?.pincode),
+    };
+  }
+  const eligible = pair ? true : check.configured && check.serviceable;
+
+  if (!eligible || sellers.length === 0) {
+    return {
+      result: {
+        serviceable: false,
+        distanceKm: check.distanceKm,
+        maxRadiusKm: check.maxRadiusKm,
+        etaMinutes: null,
+        etaMinMinutes: null,
+        etaMaxMinutes: null,
+        deliveryFeePaise: null,
+        sellerOpen: false,
+      },
+      serving: [],
+      // A bare point outside the radius hint; no live store at all (or no
+      // service location for a bare point).
+      outsideReason: !eligible && check.configured ? 'OUTSIDE_RADIUS' : 'NO_ELIGIBLE_STORE',
     };
   }
 
   const [eta, openStates] = await Promise.all([
-    estimateEta({ distanceKm: nearest.check.distanceKm, itemCount: 0, sellerId: nearest.seller.id }),
-    Promise.all(serving.map((entry) => getSellerOpenState(entry.seller))),
+    estimateEta({ distanceKm: check.distanceKm, itemCount: 0, sellerId: sellers[0]!.id }),
+    Promise.all(sellers.map((seller) => getSellerOpenState(seller))),
   ]);
 
   return {
     result: {
       serviceable: true,
-      distanceKm: nearest.check.distanceKm,
-      maxRadiusKm: nearest.check.maxRadiusKm,
+      distanceKm: check.distanceKm,
+      maxRadiusKm: check.maxRadiusKm,
       etaMinutes: eta.etaMinutes,
       etaMinMinutes: eta.etaMinMinutes,
       etaMaxMinutes: eta.etaMaxMinutes,
-      deliveryFeePaise: nearest.check.deliveryFeePaise,
+      deliveryFeePaise: check.deliveryFeePaise,
       sellerOpen: openStates.some((state) => state.isOpen),
     },
-    serving: serving.map((entry) => entry.seller),
+    serving: sellers,
     outsideReason: null,
   };
 }

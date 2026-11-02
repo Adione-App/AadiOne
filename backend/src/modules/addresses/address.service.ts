@@ -1,21 +1,32 @@
 /**
  * Addresses (Phase 7).
  *
- * Serviceability is cached on the row so the address list renders without N
- * distance calculations — but it is ALWAYS recomputed at checkout and again at
- * order creation. The cached flag is display; the live check is authority.
+ * Serviceability: the address's village / town / city and PIN code must be
+ * an ACTIVE admin-approved pair (Configuration DELIVERY_LOCATIONS —
+ * delivery-locations.ts). A new address, or an edit that changes the village
+ * or PIN, is refused otherwise. The flag is stored on the row and evaluated
+ * again whenever addresses are read (a pair the admin disables shows at
+ * once) — display only: checkout and order creation check again, and that is
+ * the authority. The distance (from the admin service location) only prices
+ * the delivery fee and ETA.
+ *
+ * The point: the app's coordinates when it sends them (GPS, or the typed
+ * village placed on the map); otherwise the admin service location stands in
+ * as an approximate point (locationSource null) — there is no map step.
  */
 
 import type { Address } from '@prisma/client';
 import { ConfigKey, ErrorCode, type AddressDto } from '../../shared';
-import { LOCATION_SOURCES, pincodeAllowed, placeChanged, type LocationSource } from '../../shared/location';
+import { LOCATION_SOURCES, placeChanged, type LocationSource } from '../../shared/location';
 import { AppError } from '../../common/errors';
 import { prisma, runInTransaction } from '../../infra/db/prisma';
 import * as configService from '../configuration/configuration.service';
 import * as sellerService from '../sellers/seller.service';
-import { assertServiceState, normalizeServiceState, serviceStateProblem } from './service-state';
+import { normalizeServiceState } from './service-state';
+import { assertDeliveryPair, checkDeliveryPair } from './delivery-locations';
 
-export function toAddressDto(address: Address): AddressDto {
+/** `current`: serviceability evaluated now (address lists); otherwise the row's stored answer. */
+export function toAddressDto(address: Address, current?: { isServiceable: boolean; distanceKm: number }): AddressDto {
   return {
     id: address.id,
     label: address.label,
@@ -37,13 +48,8 @@ export function toAddressDto(address: Address): AddressDto {
       : null,
     locationAccuracyM: address.locationAccuracyM,
     isDefault: address.isDefault,
-    // The cached radius answer AND Rajasthan-only, evaluated on read: an
-    // older out-of-state address (cached before the rule) is never offered as
-    // deliverable — and its row is left exactly as it is.
-    isServiceable:
-      address.isServiceable &&
-      serviceStateProblem({ state: address.state, latitude: address.latitude, longitude: address.longitude }) === null,
-    distanceKm: address.distanceKm,
+    isServiceable: current?.isServiceable ?? address.isServiceable,
+    distanceKm: current?.distanceKm ?? address.distanceKm,
     createdAt: address.createdAt.toISOString(),
   };
 }
@@ -54,14 +60,16 @@ export interface UpsertAddressInput {
   mobile: string;
   houseNo?: string | null;
   street?: string | null;
-  area: string;
+  /** Locality / mohalla / colony — optional ('' when not given). */
+  area?: string;
   city: string;
   district?: string | null;
   state: string;
   pincode: string;
   landmark?: string | null;
-  latitude: number;
-  longitude: number;
+  /** Optional: without them the admin service location stands in (approximate). */
+  latitude?: number;
+  longitude?: number;
   locationSource?: LocationSource | null;
   locationAccuracyM?: number | null;
   isDefault?: boolean;
@@ -72,7 +80,13 @@ export async function listAddresses(userId: string): Promise<AddressDto[]> {
     where: { userId, deletedAt: null },
     orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
   });
-  return addresses.map(toAddressDto);
+  // Against the admin's approved villages as they are NOW (a stored answer
+  // may be from before a pair was added or disabled).
+  return Promise.all(
+    addresses.map(async (address) =>
+      toAddressDto(address, await evaluateServiceability(address.city, address.pincode, address.latitude, address.longitude)),
+    ),
+  );
 }
 
 /**
@@ -91,26 +105,42 @@ export async function getOwnedAddress(userId: string, addressId: string): Promis
 }
 
 /**
- * Task 7.2 — serviceability is evaluated on every save: serviceable when at
- * least one live seller delivers there (distance to the nearest such seller).
- * Checkout re-checks every cart seller against the address.
+ * Task 7.2 — serviceability is evaluated on every save (and on every read):
+ * serviceable when (village, PIN) is an active approved pair. The distance
+ * from the admin service location is kept for the fee / ETA display.
+ * Checkout checks the address again.
  */
 async function evaluateServiceability(
+  city: string,
+  pincode: string,
   latitude: number,
   longitude: number,
-  state: string,
-  pincode: string,
 ): Promise<{ isServiceable: boolean; distanceKm: number }> {
-  const [result, approvedPins] = await Promise.all([
-    sellerService.getServiceability(latitude, longitude),
-    configService.get(ConfigKey.SERVICEABLE_PINCODES),
+  const [pair, distanceKm] = await Promise.all([
+    checkDeliveryPair(city, pincode),
+    sellerService
+      .checkServiceability(latitude, longitude)
+      .then((check) => check.distanceKm)
+      .catch(() => 0),
   ]);
-  // getServiceability already refuses a point outside Rajasthan; the state
-  // TEXT counts too, so an older out-of-state address never shows as deliverable.
-  const inState = serviceStateProblem({ state, latitude, longitude }) === null;
-  // The approved PIN list can only rule an address out — never in.
-  const pinOk = pincodeAllowed(pincode, approvedPins);
-  return { isServiceable: result.serviceable && inState && pinOk, distanceKm: result.distanceKm };
+  return { isServiceable: pair.verdict === 'APPROVED', distanceKm };
+}
+
+/**
+ * The point for an address the app sent without coordinates (a typed address
+ * the map could not place): the admin service location, as an approximate
+ * point. Refused when even that is not set.
+ */
+async function fallbackPoint(): Promise<{ latitude: number; longitude: number }> {
+  const origin = await sellerService.deliveryOrigin();
+  if (!origin) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, {
+      status: 422,
+      message: 'We could not place this address on the map. Please try again, or use your current location.',
+      internalMessage: 'address without coordinates and no PLATFORM_LOCATION to stand in',
+    });
+  }
+  return { latitude: origin.latitude, longitude: origin.longitude };
 }
 
 export async function createAddress(
@@ -126,17 +156,19 @@ export async function createAddress(
     });
   }
 
-  // Rajasthan only — the state AND the point. Unlike being beyond a seller's
-  // radius (saved below, ordering blocked), an address outside Rajasthan can
-  // never be delivered to, so it is not stored at all.
-  assertServiceState(input, 'destination');
+  // "rajasthan" / "राजस्थान" → "Rajasthan"; any other state is kept as given.
   const state = normalizeServiceState(input.state) ?? input.state;
 
-  const serviceability = await evaluateServiceability(input.latitude, input.longitude, state, input.pincode);
+  // Only an active admin-approved village + PIN pair is saved — whatever the
+  // app sends — under the admin's own spelling of the village.
+  const place = await assertDeliveryPair(input.city, input.pincode);
 
-  // An out-of-area address is SAVED rather than rejected: the customer may be
-  // adding their parents' address for later, and refusing to store it teaches
-  // them the app is broken. Ordering to it is what gets blocked.
+  const hasPoint = typeof input.latitude === 'number' && typeof input.longitude === 'number';
+  const point = hasPoint ? { latitude: input.latitude!, longitude: input.longitude! } : await fallbackPoint();
+  const locationSource = hasPoint ? (input.locationSource ?? null) : null;
+
+  const serviceability = await evaluateServiceability(place.village, place.pincode, point.latitude, point.longitude);
+
   const address = await runInTransaction(async (tx) => {
     // First address is always the default; otherwise honour the request.
     const shouldBeDefault = input.isDefault === true || count === 0;
@@ -158,17 +190,17 @@ export async function createAddress(
         mobile: input.mobile,
         houseNo: input.houseNo ?? null,
         street: input.street ?? null,
-        area: input.area,
-        city: input.city,
+        area: input.area ?? '',
+        city: place.village,
         district: input.district ?? null,
         state,
-        pincode: input.pincode,
+        pincode: place.pincode,
         landmark: input.landmark ?? null,
-        latitude: input.latitude,
-        longitude: input.longitude,
-        locationSource: input.locationSource ?? null,
+        latitude: point.latitude,
+        longitude: point.longitude,
+        locationSource,
         // An accuracy only means something for a device fix.
-        locationAccuracyM: input.locationSource === 'GPS' ? (input.locationAccuracyM ?? null) : null,
+        locationAccuracyM: locationSource === 'GPS' ? (input.locationAccuracyM ?? null) : null,
         isDefault: shouldBeDefault,
         isServiceable: serviceability.isServiceable,
         distanceKm: serviceability.distanceKm,
@@ -186,41 +218,44 @@ export async function updateAddress(
 ): Promise<AddressDto> {
   const existing = await getOwnedAddress(userId, addressId);
 
-  const latitude = input.latitude ?? existing.latitude;
-  const longitude = input.longitude ?? existing.longitude;
-  const pinMoved = latitude !== existing.latitude || longitude !== existing.longitude;
+  // A changed village or PIN must be an active approved pair (the admin's
+  // spelling is stored). An edit that leaves them alone is allowed even for
+  // an older address that is not (it stays undeliverable until changed).
+  const villageOrPinChanged = input.city !== undefined || input.pincode !== undefined;
+  const place = villageOrPinChanged
+    ? await assertDeliveryPair(input.city ?? existing.city, input.pincode ?? existing.pincode)
+    : { village: existing.city, pincode: existing.pincode };
 
-  // The address now names a different village / district / state / PIN, but
-  // the point is the OLD one, echoed back unchanged: that point was confirmed
-  // for the old place, so keeping it would quietly attach the wrong
-  // coordinates (and serviceability) to the new address. A point is only
-  // carried over when the place is the same (house / street edits).
-  if (
-    !pinMoved &&
-    placeChanged(existing, {
-      city: input.city ?? existing.city,
-      district: input.district !== undefined ? input.district : existing.district,
-      state: input.state ?? existing.state,
-      pincode: input.pincode ?? existing.pincode,
-    })
-  ) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message:
-        'This address now names a different place. Confirm where it is again — use your current location there, or find the address — before saving.',
-      details: [{ field: 'latitude', message: 'The location must be confirmed again for the changed village, district, state or PIN.' }],
-      internalMessage: `address ${addressId}: place changed with an unchanged point`,
-    });
-  }
+  const sentPoint = typeof input.latitude === 'number' && typeof input.longitude === 'number';
+  // The address now names a different village / district / state / PIN and
+  // the app sent no new point (or echoed the old one): the old point belongs
+  // to the old place, so it is replaced by the approximate stand-in.
+  const placeMoved = placeChanged(existing, {
+    city: place.village,
+    district: input.district !== undefined ? input.district : existing.district,
+    state: input.state ?? existing.state,
+    pincode: place.pincode,
+  });
+  const echoedOldPoint = sentPoint && input.latitude === existing.latitude && input.longitude === existing.longitude;
+  const replacePoint = placeMoved && (!sentPoint || echoedOldPoint);
+  const point = replacePoint
+    ? await fallbackPoint()
+    : sentPoint
+      ? { latitude: input.latitude!, longitude: input.longitude! }
+      : { latitude: existing.latitude, longitude: existing.longitude };
+  const latitude = point.latitude;
+  const longitude = point.longitude;
+  const pinMoved = replacePoint || latitude !== existing.latitude || longitude !== existing.longitude;
 
-  // The address as it would be after this edit must be in Rajasthan. An older
-  // out-of-state address is refused with a clear reason — never quietly
-  // rewritten as Rajasthan; the customer can delete it or add a new one.
   const resultingState = input.state ?? existing.state;
-  assertServiceState({ state: resultingState, latitude, longitude }, 'destination');
   const state = normalizeServiceState(resultingState) ?? resultingState;
   // A moved point carries its new origin (unrecorded if the client did not say);
   // an unmoved point keeps its own unless the client confirms a new one.
-  const locationSource = pinMoved || input.locationSource !== undefined ? (input.locationSource ?? null) : existing.locationSource;
+  const locationSource = replacePoint
+    ? null
+    : pinMoved || input.locationSource !== undefined
+      ? (input.locationSource ?? null)
+      : existing.locationSource;
   const locationAccuracyM =
     locationSource === 'GPS'
       ? pinMoved || input.locationAccuracyM !== undefined
@@ -228,13 +263,10 @@ export async function updateAddress(
         : existing.locationAccuracyM
       : null;
 
-  // Recompute whenever the pin moved — an edited address that keeps a stale
-  // "serviceable" flag is how an undeliverable order gets accepted.
-  const pincode = input.pincode ?? existing.pincode;
-  const serviceability =
-    pinMoved || state !== existing.state || pincode !== existing.pincode
-      ? await evaluateServiceability(latitude, longitude, state, pincode)
-      : { isServiceable: existing.isServiceable, distanceKm: existing.distanceKm ?? 0 };
+  // Recomputed on every edit, against the approved villages as they are now
+  // — an edited address that keeps a stale "serviceable" flag is how an
+  // undeliverable order gets accepted.
+  const serviceability = await evaluateServiceability(place.village, place.pincode, latitude, longitude);
 
   const address = await runInTransaction(async (tx) => {
     if (input.isDefault === true) {
@@ -253,10 +285,10 @@ export async function updateAddress(
         ...(input.houseNo !== undefined ? { houseNo: input.houseNo } : {}),
         ...(input.street !== undefined ? { street: input.street } : {}),
         ...(input.area !== undefined ? { area: input.area } : {}),
-        ...(input.city !== undefined ? { city: input.city } : {}),
+        ...(villageOrPinChanged ? { city: place.village } : {}),
         ...(input.district !== undefined ? { district: input.district } : {}),
         ...(input.state !== undefined ? { state } : {}),
-        ...(input.pincode !== undefined ? { pincode: input.pincode } : {}),
+        ...(villageOrPinChanged ? { pincode: place.pincode } : {}),
         ...(input.landmark !== undefined ? { landmark: input.landmark } : {}),
         ...(input.isDefault !== undefined ? { isDefault: input.isDefault } : {}),
         latitude,
@@ -327,7 +359,7 @@ export async function setDefaultAddress(
 export async function refreshServiceability(userId: string): Promise<void> {
   const addresses = await prisma.address.findMany({ where: { userId, deletedAt: null } });
   for (const address of addresses) {
-    const result = await evaluateServiceability(address.latitude, address.longitude, address.state, address.pincode);
+    const result = await evaluateServiceability(address.city, address.pincode, address.latitude, address.longitude);
     await prisma.address.update({
       where: { id: address.id },
       data: { isServiceable: result.isServiceable, distanceKm: result.distanceKm },

@@ -32,6 +32,7 @@ import * as repository from './configuration.repository';
 import { DELIVERY_RADIUS_LIMIT_KM, isValidDeliveryRadiusKm } from '../sellers/delivery-radius-limit';
 import { weeklyHoursProblems } from '../platform/platform-schedule';
 import { COORDINATE_PROBLEM_MESSAGE, coordinateProblem } from '../../shared/distance';
+import { normalizeVillageName } from '../../shared/address';
 
 const log = moduleLogger('configuration');
 
@@ -236,6 +237,7 @@ const NON_NEGATIVE_NUMBER_KEYS: readonly (keyof ConfigValues)[] = [
 ];
 
 const MAX_SERVICEABLE_PINCODES = 2000;
+const MAX_DELIVERY_LOCATIONS = 2000;
 
 /** HOME_CATEGORY_ORDER holds top-level category paths — one slug, no "/". */
 const CATEGORY_PATH_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -291,6 +293,30 @@ function validateValue(key: keyof ConfigValues, value: unknown): void {
       if (typeof pin !== 'string' || !/^[1-9][0-9]{5}$/.test(pin)) fail('each entry must be a 6-digit PIN code such as "313328"');
     }
     if (new Set(pins).size !== pins.length) fail('a PIN code can be listed only once');
+  }
+
+  // Approved delivery villages: village + ITS PIN, as pairs (address.ts deliveryPairVerdict).
+  if (key === ConfigKey.DELIVERY_LOCATIONS) {
+    if (!Array.isArray(value)) fail('must be a list of { id, village, pincode, active }');
+    const list = value as unknown[];
+    if (list.length > MAX_DELIVERY_LOCATIONS) fail(`can list at most ${MAX_DELIVERY_LOCATIONS} villages`);
+    const ids = new Set<string>();
+    const pairs = new Set<string>();
+    for (const entry of list) {
+      const e = (entry ?? {}) as { id?: unknown; village?: unknown; pincode?: unknown; active?: unknown };
+      if (typeof e.id !== 'string' || e.id.trim().length === 0 || e.id.length > 60) fail('each entry needs an id');
+      if (typeof e.village !== 'string' || e.village.trim().length < 2 || e.village.trim().length > 80) {
+        fail('each village / town / city must be 2 to 80 characters');
+      }
+      if (typeof e.pincode !== 'string' || !/^[1-9][0-9]{5}$/.test(e.pincode)) fail('each PIN code must be 6 digits, such as "313328"');
+      if (typeof e.active !== 'boolean') fail('each entry must be active (true) or not (false)');
+      const id = e.id as string;
+      if (ids.has(id)) fail('each entry needs its own id');
+      ids.add(id);
+      const pair = `${normalizeVillageName(e.village as string)}|${e.pincode as string}`;
+      if (pairs.has(pair)) fail(`${(e.village as string).trim()} with PIN ${e.pincode as string} is listed twice`);
+      pairs.add(pair);
+    }
   }
 
   if (key === ConfigKey.HOME_CATEGORY_ORDER) {

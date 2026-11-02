@@ -46,6 +46,7 @@ import * as notificationService from '../notifications/notification.service';
 import * as referralService from '../referrals/referral.service';
 import * as deliveryService from '../delivery/delivery.service';
 import { releaseCouponRedemptions } from './coupon-release';
+import { consumePaidOrderLines } from './cart-retention';
 import { customerPaidPaise } from './coupon-allocation';
 import {
   emitAdminOrderStatus,
@@ -794,6 +795,10 @@ export async function transitionOrder(input: OrderTransitionInput): Promise<Orde
   });
 
   if (result.changed) {
+    // Paid: the checkout's lines leave the cart now — never before (an
+    // unpaid order keeps them there; cart-retention.ts). Once: only the
+    // transition that confirmed the payment gets here.
+    if (input.toStatus === OrderStatus.PAYMENT_CONFIRMED) await consumePaidOrderLines(result.order.id);
     await dispatchOrderSideEffects(result, input);
   }
 

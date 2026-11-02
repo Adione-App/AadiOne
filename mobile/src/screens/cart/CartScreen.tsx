@@ -74,8 +74,19 @@ import { showCartNotice } from "@/lib/cartNotice";
 import { checkoutPaymentState } from "@/lib/paymentOptions";
 import { preloadCashfreeSdk } from "@/lib/cashfree";
 import { PAYMENT_INTENT_KEY, sessionFromOrderResponse, type CreatePaymentResult } from "@/lib/payments";
-import { checkPendingPayment, dismissPaymentOutcome, logPaymentLaunch, startPayment, usePayment } from "@/lib/pendingPayment";
-import { PendingPaymentPanel, paymentPanelShown } from "@/components/payment/PendingPaymentPanel";
+import {
+  checkPendingPayment,
+  dismissPaymentFailure,
+  dismissPaymentOutcome,
+  forgetPendingPayment,
+  logPaymentLaunch,
+  resumePayment,
+  startPayment,
+  usePayment,
+} from "@/lib/pendingPayment";
+import { PaymentStatusStrip, paymentStripShown } from "@/components/payment/PaymentStatusStrip";
+import { PaymentVerificationScreen } from "@/components/payment/PaymentVerificationScreen";
+import { PaymentFailedSheet } from "@/components/payment/PaymentFailedSheet";
 import { PaymentDiagnosticsPanel } from "@/components/payment/PaymentDiagnosticsPanel";
 import { PAYMENT_DIAGNOSTICS } from "@/lib/paymentDiagnostics";
 import { createCheckoutIntents } from "@/lib/checkoutIntent";
@@ -105,7 +116,7 @@ import {
 import { isCheckingLine, isOrderableLine, orderedLines, partialOrderNotice, unavailableLabel } from "@/lib/cartAvailability";
 import { NOT_DELIVERING_MESSAGE, deliveryView, outOfAreaDetail } from "@/lib/deliveryArea";
 import { GPS_FAILURE_MESSAGE } from "@/lib/currentLocation";
-import { ensureFreshCurrentLocation } from "@/lib/locationService";
+import { ensureFreshCurrentLocation, refreshCurrentLocation } from "@/lib/locationService";
 import { DeliveryStatusNotice } from "@/components/location/DeliveryStatusNotice";
 import {
   cartUnitCount,
@@ -202,7 +213,6 @@ export default function CartScreen({
   onPlaced,
   onOpenOrder,
   onAddAddress,
-  onChangeLocation,
   onCompleteLiveDetails,
   onBrowse,
   onOpenSearch,
@@ -211,10 +221,9 @@ export default function CartScreen({
   onPlaced: (order: OrderDetailDto, requiresPayment: boolean) => void;
   /** An online order the server confirmed as paid: its normal confirmation (tracking). */
   onOpenOrder: (orderId: string) => void;
+  /** "Enter Address Manually" — the address form. */
   onAddAddress: () => void;
-  /** Select Location: a saved address, or the live (current) location. */
-  onChangeLocation: () => void;
-  /** The details form for the selected live location (name / phone / town missing). */
+  /** "Confirm your address" for a live location (after Use Current Location, or name / phone / town missing). */
   onCompleteLiveDetails: (live: LiveFixParams) => void;
   onBrowse: () => void;
   onOpenSearch: () => void;
@@ -330,41 +339,77 @@ export default function CartScreen({
       // last answer: ask the server again — a store may have opened or
       // closed since (the current lines stay on screen meanwhile).
       void refetch();
-      // An unpaid online order may have been paid meanwhile (a late webhook,
-      // the bank answering): ask quietly — never while a checkout is open.
-      if (usePayment.getState().state.phase === "waiting") void checkPendingPayment();
+      // The last online payment may have settled meanwhile (a late webhook,
+      // the bank answering): ask quietly — never while a checkout is open
+      // (a no-op when nothing is being watched).
+      void checkPendingPayment();
     }, [refetch]),
   );
 
   /**
-   * The online payment, in place: Cashfree's checkout opens from here and
-   * whatever happens is shown in this screen (PendingPaymentPanel) — no
-   * Aadione payment screen. A payment the SERVER confirmed opens the order's
-   * normal confirmation.
+   * The online payment, from here: Cashfree's checkout opens straight from
+   * Pay Online; back from it, the verification screen while the SERVER is
+   * asked, then its answer — the confirmed order (only a payment the server
+   * verified), the failed-payment sheet (cart untouched), or a neutral
+   * "confirming" state. The cart itself is never emptied by any of it: the
+   * server takes the paid lines out only once the payment is confirmed.
    */
   const onlinePayment = usePayment((s) => s.state);
   const announcePayment = usePayment((s) => s.announce);
   useEffect(() => {
-    if (onlinePayment.phase !== "paid" || !announcePayment) return;
+    if (onlinePayment.phase !== "paid") return;
+    // The paid lines left the server's cart with the confirmation.
+    void refetch();
+    if (!announcePayment) return;
     const orderId = onlinePayment.orderId;
     dismissPaymentOutcome();
     onOpenOrder(orderId);
-  }, [onlinePayment, announcePayment, onOpenOrder]);
-  // While a payment is starting, open or being checked, nothing else is paid for.
+  }, [onlinePayment, announcePayment, onOpenOrder, refetch]);
+  // "Back to cart" from a payment still being confirmed: the screen gives way
+  // to a small note in the cart (the checks go on). A new payment state shows
+  // the screen again.
+  const [verificationMinimized, setVerificationMinimized] = useState(false);
+  useEffect(() => {
+    if (onlinePayment.phase !== "pending") setVerificationMinimized(false);
+  }, [onlinePayment.phase]);
+  const [retryingPayment, setRetryingPayment] = useState(false);
+  // While a payment is starting, open or being verified, nothing else is paid for.
   const paymentInProgress =
-    onlinePayment.phase === "opening" || onlinePayment.phase === "paying" || onlinePayment.phase === "checking";
-  const paymentPanel = paymentPanelShown(onlinePayment) ? (
+    onlinePayment.phase === "opening" || onlinePayment.phase === "paying" || onlinePayment.phase === "verifying";
+  // A payment found pending after a restart (not started in this session) is a quiet note, not a screen.
+  const verificationShown = announcePayment && !verificationMinimized;
+  const paymentPanel = paymentStripShown(onlinePayment, verificationMinimized || !announcePayment) ? (
     <View style={styles.noticeContainer}>
-      <PendingPaymentPanel
-        state={onlinePayment}
-        // The unpaid order was cancelled: its items are back in the cart.
-        onCancelled={() => {
-          void refetch();
-          void queryClient.invalidateQueries({ queryKey: keys.orders });
-        }}
-      />
+      <PaymentStatusStrip state={onlinePayment} minimized={verificationMinimized || !announcePayment} />
     </View>
   ) : null;
+  const paymentOverlays = (
+    <>
+      <PaymentVerificationScreen
+        state={onlinePayment}
+        visible={verificationShown}
+        onBackToCart={() => setVerificationMinimized(true)}
+      />
+      <PaymentFailedSheet
+        state={onlinePayment}
+        visible={announcePayment}
+        retrying={retryingPayment}
+        // Close: the normal cart, exactly as it was.
+        onClose={dismissPaymentFailure}
+        // Retry: the SAME order through Cashfree again — never a new order.
+        onRetry={() => {
+          setRetryingPayment(true);
+          void resumePayment().finally(() => setRetryingPayment(false));
+        }}
+        // Another way to pay: the cart's payment choices, cart unchanged. The
+        // server reuses or replaces the unpaid checkout — never a duplicate.
+        onAnotherMethod={() => {
+          dismissPaymentFailure();
+          showCartNotice("Choose how you'd like to pay: Pay Cash, or Pay Online to use another UPI app, card or wallet.");
+        }}
+      />
+    </>
+  );
   // Internal diagnostic build only: the launch log on screen (no adb needed).
   const diagnosticsPanel = PAYMENT_DIAGNOSTICS ? (
     <View style={styles.noticeContainer}>
@@ -377,6 +422,39 @@ export default function CartScreen({
     queryKey: ["addresses"],
     queryFn: () => api.get<AddressDto[]>("/addresses"),
   });
+
+  /**
+   * "Use Current Location" from the address sheet: the phone's location
+   * (Android's own permission dialog, when it may still ask), then straight
+   * to "Confirm your address" — the address read from it, with name and
+   * phone, to check and complete. No intermediate screen. A failure says
+   * why, with "Enter Address Manually" right below it in the sheet.
+   */
+  const [locating, setLocating] = useState(false);
+  const [locateError, setLocateError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!addressPickerOpen) setLocateError(null);
+  }, [addressPickerOpen]);
+  const useCurrentLocationForCheckout = useCallback(async () => {
+    setLocating(true);
+    setLocateError(null);
+    try {
+      const outcome = await refreshCurrentLocation("user", { prompt: true });
+      if (outcome.kind === "FAILED") {
+        setLocateError(GPS_FAILURE_MESSAGE[outcome.failure]);
+        return;
+      }
+      const current = useLocation.getState();
+      if (!isActiveLiveDestination(current.liveDestination, current.location)) {
+        setLocateError("We couldn't use your current location. Please try again.");
+        return;
+      }
+      setAddressPickerOpen(false);
+      onCompleteLiveDetails(liveFixParams(current.liveDestination));
+    } finally {
+      setLocating(false);
+    }
+  }, [onCompleteLiveDetails]);
 
   /**
    * The address the customer CHOSE (Select Location) is the one checkout
@@ -596,34 +674,41 @@ export default function CartScreen({
           result = await api.post<PlacedOrder>("/orders", orderBody, await checkoutIntents.keyFor(orderBody));
         }
         // The order exists: this checkout is finished. The next one — even
-        // for the very same items — is a new order with a new key.
+        // for the very same items — is a new request with a new key (the
+        // server reuses an unpaid checkout that is exactly the same).
         await checkoutIntents.completed();
 
-        // The order transaction already marked the cart CONVERTED server-side,
-        // so this is a known-correct state, not an optimistic guess — write it
-        // directly instead of only invalidating, so the badge and every
-        // cart-reading screen update in this same tick. `resetPendingCartAfterOrder`
-        // right alongside it is what actually fixes the just-placed order's
-        // items lingering in the Mini Cart/badge — see its own doc comment
-        // for why `clearCartAfterOrder` alone was never enough.
-        clearCartAfterOrder(queryClient);
-        resetPendingCartAfterOrder();
-        // The response already IS the placed order's full detail: seed it so
-        // the next screen (tracking or payment) shows the order at once
-        // instead of fetching it again, and refresh the orders list in the
-        // background — awaiting that refetch here used to hold the customer on
-        // this screen for a whole extra round trip after the order existed.
-        queryClient.setQueryData(keys.order(result.order.id), result.order);
-        void queryClient.invalidateQueries({ queryKey: keys.cart });
-        void queryClient.invalidateQueries({ queryKey: keys.orders });
-        void queryClient.invalidateQueries({
-          queryKey: keys.previouslyOrdered,
-        });
-
         if (!result.requiresPayment) {
+          // Cash on delivery: the order IS placed. The order transaction
+          // already took its lines out of the cart server-side, so this is a
+          // known-correct state, not an optimistic guess — write it directly
+          // instead of only invalidating, so the badge and every
+          // cart-reading screen update in this same tick.
+          // `resetPendingCartAfterOrder` right alongside it is what actually
+          // fixes the just-placed order's items lingering in the Mini
+          // Cart/badge — see its own doc comment for why
+          // `clearCartAfterOrder` alone was never enough. An unpaid online
+          // checkout it replaced is no longer watched.
+          clearCartAfterOrder(queryClient);
+          resetPendingCartAfterOrder();
+          forgetPendingPayment();
+          // The response already IS the placed order's full detail: seed it so
+          // the next screen shows the order at once, and refresh the orders
+          // list in the background.
+          queryClient.setQueryData(keys.order(result.order.id), result.order);
+          void queryClient.invalidateQueries({ queryKey: keys.cart });
+          void queryClient.invalidateQueries({ queryKey: keys.orders });
+          void queryClient.invalidateQueries({
+            queryKey: keys.previouslyOrdered,
+          });
           onPlaced(result.order, false);
           return;
         }
+
+        // ONLINE: an unpaid checkout, not an order — the cart is NOT cleared
+        // (here or on the server). Its lines leave the cart only when the
+        // server confirms the payment; until then the cart stays exactly as
+        // it is, whatever happens in Cashfree's checkout.
 
         // ONLINE: Cashfree's checkout opens right here, straight away — no
         // Aadione payment screen in between. The order stays unconfirmed
@@ -694,6 +779,17 @@ export default function CartScreen({
             showCartNotice(err.message);
             void checkoutIntents.abandon();
             void quote.refetch();
+          } else if (err.code === ErrorCode.PAYMENT_ALREADY_CAPTURED || err.code === ErrorCode.ORDER_IN_PROGRESS) {
+            // An earlier payment of this customer went through (that order is
+            // confirmed and its lines left the cart), or is still being
+            // processed (paying again could charge twice). Nothing new was
+            // ordered: the server's sentence, the current cart, and the last
+            // payment checked quietly.
+            await Promise.all([refetch(), quote.refetch()]);
+            void queryClient.invalidateQueries({ queryKey: keys.orders });
+            void checkPendingPayment();
+            void checkoutIntents.abandon();
+            setCheckoutError(err.message);
           } else if (
             err.code === ErrorCode.SELLER_CLOSED ||
             err.code === ErrorCode.CART_CHANGED ||
@@ -843,6 +939,7 @@ export default function CartScreen({
 
         {paymentPanel}
         {diagnosticsPanel}
+        {paymentOverlays}
 
         <EmptyState
           icon={
@@ -1262,28 +1359,11 @@ export default function CartScreen({
           loading={addresses.isLoading && !live}
           hasAny={live !== null || (addresses.data?.length ?? 0) > 0}
           onChange={() => setAddressPickerOpen(true)}
-          // Select Location offers both: the current location or a new address.
-          onAdd={onChangeLocation}
+          // No address yet: the same two clear choices (current location /
+          // enter manually) as "Change".
+          onAdd={() => setAddressPickerOpen(true)}
           onCompleteLive={() => {
-            if (!live) return;
-            const accuracy = live.accuracyM ?? null;
-            onCompleteLiveDetails({
-              latitude: live.latitude,
-              longitude: live.longitude,
-              accuracyM: accuracy,
-              quality:
-                accuracy === null || accuracy > FIX_ACCURACY.USABLE_M ? "POOR" : accuracy > FIX_ACCURACY.GOOD_M ? "FAIR" : "GOOD",
-              // What the geocoder already read — the form fills only these.
-              suggestion: {
-                houseNo: null,
-                street: live.street ?? null,
-                area: live.area ?? null,
-                city: live.city || null,
-                district: live.district ?? null,
-                state: live.state || null,
-                pincode: live.pincode ?? null,
-              },
-            });
+            if (live) onCompleteLiveDetails(liveFixParams(live));
           }}
         />
         <View style={styles.bottomDivider} />
@@ -1357,10 +1437,9 @@ export default function CartScreen({
         // While delivering to the live location, no saved address is chosen.
         selectedId={live ? null : addressId}
         live={live}
-        onUseCurrentLocation={() => {
-          setAddressPickerOpen(false);
-          onChangeLocation();
-        }}
+        locating={locating}
+        locateError={locateError}
+        onUseCurrentLocation={() => void useCurrentLocationForCheckout()}
         onSelect={(id) => {
           setAddressId(id);
           setAddressPickerOpen(false);
@@ -1375,6 +1454,9 @@ export default function CartScreen({
                 .filter(Boolean)
                 .join(", "),
               source: "ADDRESS",
+              // The approved village + PIN decide delivery for it (Home check).
+              village: picked.city,
+              pincode: picked.pincode,
             });
           }
         }}
@@ -1397,6 +1479,8 @@ export default function CartScreen({
         onCancel={() => setConfirmOrderOpen(false)}
         onConfirm={() => void placeOrder(PaymentMethod.COD)}
       />
+
+      {paymentOverlays}
     </Screen>
   );
 }
@@ -1579,7 +1663,7 @@ function DeliveryAddressSection({
           </AppText>
           {!complete && (
             <AppText variant="caption" color={colors.warning} numberOfLines={2}>
-              Tap to add your name, phone and village / town before ordering here.
+              Tap to add your name, phone, village / town and PIN code before ordering here.
             </AppText>
           )}
         </Pressable>
@@ -1742,11 +1826,34 @@ function PaymentBarButton({
  * sheet, so a stray tap can't silently swap the delivery address.
  * ================================================================ */
 
+/** The details form's input for a live location: its point and what the geocoder read. */
+function liveFixParams(live: LiveLocationInput): LiveFixParams {
+  const accuracy = live.accuracyM ?? null;
+  return {
+    latitude: live.latitude,
+    longitude: live.longitude,
+    accuracyM: accuracy,
+    quality: accuracy === null || accuracy > FIX_ACCURACY.USABLE_M ? "POOR" : accuracy > FIX_ACCURACY.GOOD_M ? "FAIR" : "GOOD",
+    // What the geocoder already read — the form fills only these.
+    suggestion: {
+      houseNo: live.houseNo ?? null,
+      street: live.street ?? null,
+      area: live.area ?? null,
+      city: live.city || null,
+      district: live.district ?? null,
+      state: live.state || null,
+      pincode: live.pincode ?? null,
+    },
+  };
+}
+
 function AddressPickerModal({
   visible,
   addresses,
   selectedId,
   live,
+  locating,
+  locateError,
   onUseCurrentLocation,
   onSelect,
   onAdd,
@@ -1757,7 +1864,11 @@ function AddressPickerModal({
   selectedId: string | null;
   /** The live location currently selected, if any (shown at the top). */
   live: LiveLocationInput | null;
-  /** Select Location's GPS flow → delivery details → back here. */
+  /** The phone's location is being read for "Use Current Location". */
+  locating: boolean;
+  /** Why the current location could not be used (the manual option stays right below). */
+  locateError: string | null;
+  /** GPS → "Confirm your address" (the details form) → back here. */
   onUseCurrentLocation: () => void;
   onSelect: (id: string) => void;
   onAdd: () => void;
@@ -1812,50 +1923,71 @@ function AddressPickerModal({
             ListHeaderComponent={
               <View>
               {/* Deliver to where the customer is now — no saved address needed. */}
+              <AppText variant="caption" color={colors.textSecondary} style={{ marginBottom: spacing.sm }}>
+                Choose how to give your delivery address:
+              </AppText>
+              {/* Option A — the phone's location, then "Confirm your address". */}
               <Pressable
                 style={[styles.addAddressPrompt, styles.currentLocationPrompt, { marginBottom: spacing.md }]}
                 onPress={onUseCurrentLocation}
+                disabled={locating}
                 accessibilityRole="button"
+                accessibilityLabel="Use Current Location"
               >
                 <View style={styles.addAddressPromptIcon}>
-                  <Ionicons name="navigate" size={20} color={colors.primary} />
+                  {locating ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : (
+                    <Ionicons name="navigate" size={20} color={colors.primary} />
+                  )}
                 </View>
                 <View style={{ flex: 1, minWidth: 0 }}>
-                  {live ? (
-                    <>
+                  <AppText variant="bodyStrong" color={colors.primary}>
+                    Use Current Location
+                  </AppText>
+                  <AppText variant="caption" color={colors.textSecondary}>
+                    {locating
+                      ? "Finding your location…"
+                      : "Uses your phone's GPS — allow location permission when asked. Next, you check the address and add your name and phone."}
+                  </AppText>
+                  {live && !locating ? (
+                    <View style={{ marginTop: spacing.xs }}>
                       <LiveLocationBadge />
                       <AddressDetails address={live} />
                       <AppText variant="caption" color={colors.primary} style={{ marginTop: 2 }}>
-                        Selected · tap to use a new current location
+                        Selected · tap to find your location again
                       </AppText>
-                    </>
-                  ) : (
-                    <>
-                      <AppText variant="bodyStrong" color={colors.primary}>
-                        Use current location
-                      </AppText>
-                      <AppText variant="caption" color={colors.textSecondary}>
-                        Deliver to where you are now — no need to save it
-                      </AppText>
-                    </>
-                  )}
+                    </View>
+                  ) : null}
                 </View>
                 <Ionicons name="chevron-forward" size={20} color={colors.primary} />
               </Pressable>
+              {locateError && !locating ? (
+                <View style={{ marginTop: -spacing.xs, marginBottom: spacing.md }}>
+                  <AppText variant="caption" color={colors.danger}>
+                    {locateError}
+                  </AppText>
+                  <AppText variant="caption" color={colors.textSecondary} style={{ marginTop: 2 }}>
+                    You can enter your address manually instead.
+                  </AppText>
+                </View>
+              ) : null}
+              {/* Option B — type the address. */}
               <Pressable
                 style={[styles.addAddressPrompt, { marginBottom: spacing.md }]}
                 onPress={onAdd}
                 accessibilityRole="button"
+                accessibilityLabel="Enter Address Manually"
               >
                 <View style={styles.addAddressPromptIcon}>
-                  <Ionicons name="add" size={22} color={colors.primary} />
+                  <Ionicons name="create-outline" size={22} color={colors.primary} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <AppText variant="bodyStrong" color={colors.primary}>
-                    Add New Address
+                    Enter Address Manually
                   </AppText>
                   <AppText variant="caption" color={colors.textSecondary}>
-                    Save a new address for faster checkout
+                    Type your name, phone, house and street, village or town, and PIN code
                   </AppText>
                 </View>
                 <Ionicons

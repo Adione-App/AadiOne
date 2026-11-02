@@ -378,11 +378,12 @@ describe('E2E — cash on delivery', () => {
 });
 
 describe('E2E — rejection paths', () => {
-  it('refuses an order to an address outside the delivery area', async () => {
+  it('refuses an order to an address whose village + PIN is not an approved pair', async () => {
     const storeId = await seedStore();
     const product = await seedProduct(storeId, {});
     const customer = await loginAs(CUSTOMER_MOBILE);
     const farAddressId = await seedAddress(customer.userId, FAR);
+    await prisma.address.update({ where: { id: farAddressId }, data: { city: 'Laxmangarh', pincode: '332311' } });
 
     await api()
       .post('/api/v1/cart/items')

@@ -8,7 +8,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ApprovalStatus, PaymentMethod, UserRole, type AddressDto, type ServiceabilityResult } from '../../src/shared';
+import { ApprovalStatus, ErrorCode, PaymentMethod, UserRole, type AddressDto, type ServiceabilityResult } from '../../src/shared';
 import { api, bearer, expectError, expectSuccess, loginAs } from '../helpers/api';
 import { prisma, truncateAll } from '../helpers/db';
 import { NEARBY, STORE_COORDS, seedProduct, seedStore, sellerLifecycleFields } from '../helpers/fixtures';
@@ -65,7 +65,7 @@ describe('structured addresses', () => {
     const urban = expectSuccess<AddressDto>(
       (
         await as(session.accessToken)
-          .post('/addresses', { ...RURAL, label: 'Work', houseNo: '12', street: 'Station Road', area: 'Shastri Nagar', city: 'Sikar', district: 'Sikar', locationSource: 'GEOCODED', locationAccuracyM: 40 })
+          .post('/addresses', { ...RURAL, label: 'Work', houseNo: '12', street: 'Station Road', area: 'Shastri Nagar', city: 'Sikar', district: 'Sikar', pincode: '332001', locationSource: 'GEOCODED', locationAccuracyM: 40 })
           .expect(201)
       ).body,
     ).data;
@@ -92,23 +92,29 @@ describe('structured addresses', () => {
     expect(await prisma.address.count()).toBe(0);
   });
 
-  it('an edit that moves the address must bring its coordinates; the new point recomputes serviceability and its origin', async () => {
+  it('an edit that moves the address: an unapproved village + PIN is refused; without a new point the old one never stays with the new place', async () => {
     await seedStore();
     const session = await customer('9400002003');
     const created = expectSuccess<AddressDto>((await as(session.accessToken).post('/addresses', RURAL).expect(201)).body).data;
 
-    // Text moved, point not sent: refused, nothing changed.
+    // Palsana with Sikar's PIN: not an approved pair — refused, nothing changed.
     const refused = await as(session.accessToken).patch(`/addresses/${created.id}`, { area: 'Another Colony', pincode: '332001' });
-    expect(refused.status).toBe(400);
-    expect(JSON.stringify(expectError(refused.body))).toMatch(/confirm its location/);
+    expect(refused.status).toBe(422);
+    expect(expectError(refused.body).code).toBe(ErrorCode.OUT_OF_SERVICE_AREA);
     expect((await prisma.address.findUniqueOrThrow({ where: { id: created.id } })).area).toBe('Gujar Mohalla');
 
-    // Moved with a new (far) point: re-evaluated, origin replaced.
+    // A new approved place, no point sent: the service location stands in (approximate).
+    const sikar = expectSuccess<AddressDto>(
+      (await as(session.accessToken).patch(`/addresses/${created.id}`, { city: 'Sikar', pincode: '332001' }).expect(200)).body,
+    ).data;
+    expect(sikar).toMatchObject({ city: 'Sikar', pincode: '332001', ...STORE_COORDS, locationSource: null, isServiceable: true });
+
+    // Moved with a new (far) point: re-evaluated, origin replaced — the pair, not the distance, decides.
     const far = northOfStore(60);
     const moved = expectSuccess<AddressDto>(
       (await as(session.accessToken).patch(`/addresses/${created.id}`, { area: 'Another Colony', ...far, locationSource: 'GEOCODED' }).expect(200)).body,
     ).data;
-    expect(moved).toMatchObject({ area: 'Another Colony', latitude: far.latitude, isServiceable: false, locationSource: 'GEOCODED', locationAccuracyM: null });
+    expect(moved).toMatchObject({ area: 'Another Colony', latitude: far.latitude, isServiceable: true, locationSource: 'GEOCODED', locationAccuracyM: null });
     expect(moved.distanceKm).toBeGreaterThan(59);
 
     // A label-only edit keeps the point and where it came from.
@@ -213,7 +219,7 @@ describe('checkout', () => {
     await as(session.accessToken).post('/addresses', { ...RURAL, isDefault: true }).expect(201);
     const pickedPoint = northOfStore(2);
     const picked = expectSuccess<AddressDto>(
-      (await as(session.accessToken).post('/addresses', { ...RURAL, label: 'Work', area: 'Industrial Area', city: 'Sikar', district: 'Sikar', ...pickedPoint, isDefault: false }).expect(201)).body,
+      (await as(session.accessToken).post('/addresses', { ...RURAL, label: 'Work', area: 'Industrial Area', city: 'Sikar', district: 'Sikar', pincode: '332001', ...pickedPoint, isDefault: false }).expect(201)).body,
     ).data;
 
     await api().post('/api/v1/cart/items').set('Authorization', bearer(session.accessToken)).send({ sellerListingId: product.storeVariantId, qty: 1 }).expect(200);
@@ -226,7 +232,7 @@ describe('checkout', () => {
     const orderId = expectSuccess<{ order: { id: string } }>(placed.body).data.order.id;
 
     const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-    expect(order).toMatchObject({ addressId: picked.id, deliveryCity: 'Sikar', deliveryDistrict: 'Sikar', deliveryPincode: '332402', deliveryLatitude: picked.latitude, deliveryLongitude: picked.longitude });
+    expect(order).toMatchObject({ addressId: picked.id, deliveryCity: 'Sikar', deliveryDistrict: 'Sikar', deliveryPincode: '332001', deliveryLatitude: picked.latitude, deliveryLongitude: picked.longitude });
     expect(order.distanceKm).toBeGreaterThanOrEqual(2);
     expect(order.distanceKm).toBeLessThan(2.05);
 

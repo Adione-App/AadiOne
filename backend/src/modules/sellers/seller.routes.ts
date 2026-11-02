@@ -14,3 +14,6 @@ sellerRouter.get(
   validate({ query: serviceabilityQuerySchema }),
   asyncHandler(controller.getServiceability),
 );
+
+// Public too: the approved villages + PIN codes the address forms offer.
+sellerRouter.get('/delivery-locations', asyncHandler(controller.getDeliveryLocations));

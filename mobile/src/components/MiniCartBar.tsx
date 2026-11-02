@@ -58,6 +58,7 @@ import { colors, layout, radius, shadow, spacing } from "@shared/theme";
 
 import { resolveImageUrl } from "@/lib/api";
 import { cartUnitCount, useCartActions } from "@/lib/useCartActions";
+import { miniCartSyncRequest } from "@/lib/miniCartImage";
 
 import { ADD_DURATION, useFlyToCartStore } from "@/lib/flyToCart";
 
@@ -301,6 +302,12 @@ function MiniCartPill({
     token: number;
     imageUrl: string | null;
     variantId: string | null;
+    /**
+     * This slot's image failed to load: the placeholder is shown instead —
+     * never the layer's bare white background (which looked like a blank
+     * square for as long as the slot stayed in front).
+     */
+    failed: boolean;
   }
 
   const [slots, setSlots] = useState<[Slot, Slot]>(() => [
@@ -308,8 +315,9 @@ function MiniCartPill({
       token: 0,
       imageUrl: latestItem?.imageUrl ?? null,
       variantId: latestItem?.variantId ?? null,
+      failed: false,
     },
-    { token: -1, imageUrl: null, variantId: null },
+    { token: -1, imageUrl: null, variantId: null, failed: false },
   ]);
   const [frontIndex, setFrontIndex] = useState<0 | 1>(0);
   // Mirrors `frontIndex` for `requestDisplay` below, which needs "which
@@ -362,16 +370,19 @@ function MiniCartPill({
   const requestDisplay = (
     imageUrl: string | null,
     variantId: string | null,
-    options: { flightId?: number; waitForLanding?: boolean } = {},
+    options: { flightId?: number; waitForLanding?: boolean; sameProduct?: boolean } = {},
   ) => {
     // For a real add flight, even if the same product is already visible
     // (quantity re-increment), we still need to register the flight so the
     // landing signal stays synchronized with the flying image. For non-flight
-    // fallbacks, the same-product request is still a no-op.
+    // fallbacks, the same-product request is still a no-op — unless the
+    // cart sync below is replacing a missing / failed image of the product
+    // already shown (`sameProduct`).
     if (
       variantId !== null &&
       variantId === frontSlot.variantId &&
-      options.flightId == null
+      options.flightId == null &&
+      !options.sameProduct
     ) {
       return;
     }
@@ -390,11 +401,24 @@ function MiniCartPill({
 
     setSlots((prev) => {
       const next = [...prev] as [Slot, Slot];
-      next[backIndex] = { token, imageUrl, variantId };
+      next[backIndex] = { token, imageUrl, variantId, failed: false };
       return next;
     });
 
     maybePromote(token);
+  };
+
+  // The slot's own `<Image>` failed: it shows the placeholder from now on
+  // (still counts as "ready" — a promotion never waits forever for it).
+  const markFailed = (token: number) => {
+    setSlots((prev) => {
+      const index = prev[0].token === token ? 0 : prev[1].token === token ? 1 : -1;
+      if (index === -1 || prev[index].failed) return prev;
+      const next = [...prev] as [Slot, Slot];
+      next[index] = { ...prev[index], failed: true };
+      return next;
+    });
+    markReady(token);
   };
 
   // The back slot's own `<Image>` (see the JSX below) has fired its own
@@ -454,6 +478,7 @@ function MiniCartPill({
         token,
         imageUrl: fallback?.imageUrl ?? null,
         variantId: fallback?.variantId ?? null,
+        failed: false,
       };
       return next;
     });
@@ -463,6 +488,44 @@ function MiniCartPill({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, frontSlot.variantId]);
 
+  // The add flight the effect further down last handled (read by the cart
+  // sync too, so it never pre-empts a flight requested in the same update).
+  const prevLatestAddFlightIdRef = useRef(latestAddFlightId);
+
+  /**
+   * CART SYNC — the cart changing WITHOUT an add flight.
+   *
+   * The slot used to be seeded only once, when this component mounted
+   * (the lazy `useState` above), and then changed only by add flights and
+   * removals. But this component stays mounted on Home while the cart
+   * itself arrives or changes underneath it with no flight at all: the
+   * cart loading after the app opens, the server's cart after login, the
+   * cart emptied at logout and filled again, a restored line whose image
+   * comes later. The slot then kept showing nothing (or the stale /
+   * missing image) — until opening the Cart unmounted this component
+   * (`screen === "none"`) and coming back re-seeded it. That is why the
+   * image "fixed itself" after visiting the Cart.
+   *
+   * Now, whenever nothing else is in progress (no pending add or sync):
+   *   - nothing shown, and the cart has items -> the latest product;
+   *   - the shown product's image is missing / failed, and the cart now
+   *     has a (different) image for it -> that image.
+   * Through `requestDisplay`, so the new image loads in the hidden back
+   * slot and only replaces the front one once it has painted (no blank
+   * frame, no double image). Each image is requested once: a failed url
+   * is never retried in a loop.
+   */
+  useEffect(() => {
+    if (!latestItem) return;
+    if (pendingTokenRef.current !== null) return;
+    // An add flight requested in this same update (the add and flyToCart()
+    // happen in one tap): the flight effect below shows it — when it lands.
+    if (useFlyToCartStore.getState().latestAddFlightId !== prevLatestAddFlightIdRef.current) return;
+    const request = miniCartSyncRequest(slots[frontIndexRef.current], items, resolveImageUrl);
+    if (request) requestDisplay(request.imageUrl, request.variantId, { sameProduct: request.sameProduct });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, slots, frontIndex]);
+
   const revealTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearRevealTimeout = () => {
@@ -471,8 +534,6 @@ function MiniCartPill({
       revealTimeoutRef.current = null;
     }
   };
-
-  const prevLatestAddFlightIdRef = useRef(latestAddFlightId);
 
   /**
    * A NEW add flight was just REQUESTED (flyToCart() was actually called
@@ -587,7 +648,7 @@ function MiniCartPill({
               },
             ]}
           >
-            {slotAUri ? (
+            {slotAUri && !slots[0].failed ? (
               <Image
                 source={{ uri: slotAUri }}
                 style={styles.image}
@@ -596,7 +657,7 @@ function MiniCartPill({
                 contentFit="contain"
                 cachePolicy="memory-disk"
                 onLoad={() => markReady(slots[0].token)}
-                onError={() => markReady(slots[0].token)}
+                onError={() => markFailed(slots[0].token)}
               />
             ) : (
               <View style={styles.imagePlaceholder} />
@@ -616,14 +677,14 @@ function MiniCartPill({
               },
             ]}
           >
-            {slotBUri ? (
+            {slotBUri && !slots[1].failed ? (
               <Image
                 source={{ uri: slotBUri }}
                 style={styles.image}
                 contentFit="contain"
                 cachePolicy="memory-disk"
                 onLoad={() => markReady(slots[1].token)}
-                onError={() => markReady(slots[1].token)}
+                onError={() => markFailed(slots[1].token)}
               />
             ) : (
               <View style={styles.imagePlaceholder} />

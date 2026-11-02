@@ -15,7 +15,7 @@ import { formatIndianMobile } from "@shared/phone";
 import { addressSummary } from "@/lib/addressDisplay";
 import { isActiveLiveDestination } from "@/lib/liveLocation";
 import { GPS_FAILURE_MESSAGE, type GpsFailure } from "@/lib/currentLocation";
-import { enableLocationServices, openLocationSettings } from "@/lib/deviceLocation";
+import { enableLocationServices } from "@/lib/deviceLocation";
 import { refreshCurrentLocation } from "@/lib/locationService";
 import { api } from "@/lib/api";
 import { useLocation, useSignedIn } from "@/lib/store";
@@ -96,6 +96,9 @@ export default function SelectLocationScreen({
       longitude: address.longitude,
       label: [lines.line1, address.city, address.pincode].filter(Boolean).join(", "),
       source: "ADDRESS",
+      // The approved village + PIN decide delivery for it (Home check).
+      village: address.city,
+      pincode: address.pincode,
     });
 
     onBack();
@@ -149,7 +152,7 @@ export default function SelectLocationScreen({
 
           <View style={styles.currentLocationContent}>
             <AppText variant="bodyStrong" color={colors.primary}>
-              Use current location
+              Use Current Location
             </AppText>
 
             <AppText
@@ -159,7 +162,7 @@ export default function SelectLocationScreen({
             >
               {detecting === "gps"
                 ? "Finding your location…"
-                : "Deliver to where you are now — selected at once"}
+                : "Uses your phone's GPS — allow location permission when asked"}
             </AppText>
           </View>
 
@@ -173,24 +176,24 @@ export default function SelectLocationScreen({
             <AppText variant="body" color={colors.danger}>
               {detectError.message}
             </AppText>
-            {detectError.status === "PERMISSION_BLOCKED" ? (
-              // The OS will not ask again: only Settings can allow it.
-              <Button label="Open Settings" onPress={openLocationSettings} style={{ marginTop: spacing.md }} />
-            ) : detectError.status === "SERVICES_DISABLED" ? (
+            {/* A denied permission gets no button of Aadione's: the saved
+                addresses below, or "Use current location" again (Android's
+                own dialog, when it still asks). */}
+            {detectError.status === "SERVICES_DISABLED" ? (
               <Button
                 label="Turn on location"
                 onPress={() => void turnOnLocation()}
                 loading={detecting !== null}
                 style={{ marginTop: spacing.md }}
               />
-            ) : (
+            ) : detectError.status !== "PERMISSION_DENIED" && detectError.status !== "PERMISSION_BLOCKED" ? (
               <Button
-                label={detectError.status === "PERMISSION_DENIED" ? "Allow location" : "Try again"}
+                label="Try again"
                 onPress={() => void useCurrentLocation()}
                 loading={detecting !== null}
                 style={{ marginTop: spacing.md }}
               />
-            )}
+            ) : null}
           </Card>
         )}
 
@@ -293,7 +296,7 @@ export default function SelectLocationScreen({
 
           <View style={{ flex: 1 }}>
             <AppText variant="bodyStrong" color={colors.primary}>
-              Add new address
+              Enter Address Manually
             </AppText>
 
             <AppText
@@ -301,7 +304,7 @@ export default function SelectLocationScreen({
               color={colors.textSecondary}
               style={{ marginTop: 2 }}
             >
-              Save another delivery address
+              Type your name, phone, house and street, village or town, and PIN code
             </AppText>
           </View>
 

@@ -5,8 +5,9 @@
  *     same distance and serviceability;
  *   - a geocoded point is stored as approximate (source GEOCODED, no accuracy);
  *   - an edit that names a different place cannot keep the old point;
- *   - store distance uses the store's real point, which an admin can correct
- *     (audited, validated).
+ *   - distance is measured from the admin service location (PLATFORM_LOCATION,
+ *     at the Railmagra shop here); an admin correcting a store's pin
+ *     (audited, validated) does not move the delivery area.
  * Fixture points: Railmagra (Rajsamand) shop area 25.0290, 74.1096; Kuraj
  * village (PIN 313328) ~5 km north at 25.0745, 74.1010.
  */
@@ -91,6 +92,8 @@ beforeEach(async () => {
   await configService.invalidateAll();
   await cache.clear();
   await configService.set({ key: ConfigKey.MAX_SERVICE_RADIUS_KM, value: 12 as never });
+  // The delivery area's centre: the Railmagra shop's point.
+  await configService.set({ key: ConfigKey.PLATFORM_LOCATION, value: { name: 'Aadione Railmagra', addressLine: 'Railmagra', landmark: null, ...SHOP } as never });
 });
 
 describe('GPS and a confirmed geocoded address for the same point', () => {
@@ -111,7 +114,7 @@ describe('GPS and a confirmed geocoded address for the same point', () => {
 
     expect([typed.isServiceable, typed.distanceKm]).toEqual([gps.isServiceable, gps.distanceKm]);
     expect(gps.isServiceable).toBe(true);
-    // The distance is the real Haversine distance to the shop's point (rounded up to 10 m).
+    // The distance is the real Haversine distance to the service location (rounded up to 10 m).
     const exact = distanceKmExact(point.latitude, point.longitude, SHOP.latitude, SHOP.longitude);
     expect(gps.distanceKm).toBeGreaterThanOrEqual(exact);
     expect(gps.distanceKm).toBeLessThan(exact + 0.011);
@@ -122,33 +125,35 @@ describe('GPS and a confirmed geocoded address for the same point', () => {
     expect(typed).toMatchObject({ locationSource: 'GEOCODED', locationAccuracyM: null });
   });
 
-  it('missing or invalid coordinates never produce a saved, serviceable address', async () => {
+  it('invalid coordinates are refused; missing ones get the service location as an approximate point', async () => {
     await railmagraShop();
     const session = await customer();
-    const { latitude: _lat, longitude: _lng, ...noPoint } = { ...ADDRESS, ...SHOP };
-    expect((await as(session.accessToken).post('/addresses', noPoint)).status).toBe(400);
     for (const bad of [{ latitude: 0, longitude: 0 }, { latitude: 74.1096, longitude: 25.029 }, { latitude: 125, longitude: 74 }]) {
       expect((await as(session.accessToken).post('/addresses', { ...ADDRESS, ...bad, locationSource: 'GEOCODED' })).status).toBe(400);
     }
     expect(await prisma.address.count()).toBe(0);
+    const { latitude: _lat, longitude: _lng, ...noPoint } = { ...ADDRESS, ...SHOP };
+    const saved = expectSuccess<AddressDto>((await as(session.accessToken).post('/addresses', noPoint).expect(201)).body).data;
+    expect(saved).toMatchObject({ ...SHOP, locationSource: null, locationAccuracyM: null });
   });
 });
 
 describe('editing an address', () => {
-  it('cannot keep the old point when the village, district, state or PIN changes — the place must be confirmed again', async () => {
+  it('never keeps the old point when the village, district, state or PIN changes; the village + PIN must be an approved pair', async () => {
     await railmagraShop();
     const session = await customer();
     const saved = expectSuccess<AddressDto>(
       (await as(session.accessToken).post('/addresses', { ...ADDRESS, ...SHOP, locationSource: 'GPS', locationAccuracyM: 9 }).expect(201)).body,
     ).data;
 
-    // The app echoes the old point with a new village: refused, nothing changes.
-    for (const change of [{ city: 'Kuraj' }, { pincode: '313328' }, { district: 'Bhilwara' }]) {
+    // A village with another village's PIN (or the reverse): not an approved pair — refused, nothing changes.
+    for (const change of [{ city: 'Kuraj' }, { pincode: '313328' }]) {
       const res = await as(session.accessToken).patch(`/addresses/${saved.id}`, { ...change, latitude: saved.latitude, longitude: saved.longitude });
-      expect(res.status, JSON.stringify(change)).toBe(400);
-      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(res.status, JSON.stringify(change)).toBe(422);
+      expect(res.body.error.code).toBe('OUT_OF_SERVICE_AREA');
     }
     expect(await prisma.address.findUniqueOrThrow({ where: { id: saved.id } })).toMatchObject({ city: 'Railmagra', pincode: '313329' });
+
 
     // House / street edits keep the point; spelling / spacing of the same village is no change.
     const street = await as(session.accessToken).patch(`/addresses/${saved.id}`, { street: 'Station Road', latitude: saved.latitude, longitude: saved.longitude });
@@ -168,16 +173,23 @@ describe('editing an address', () => {
     expect(moved).toMatchObject({ city: 'Kuraj', pincode: '313328', latitude: KURAJ.latitude, locationSource: 'GEOCODED', locationAccuracyM: null });
     expect(moved.distanceKm).toBeGreaterThan(5);
     expect(moved.distanceKm).toBeLessThan(5.2);
+
+    // A new district with the old point echoed back: that point does not stay
+    // with the new place — the service location stands in (approximate).
+    const district = expectSuccess<AddressDto>(
+      (await as(session.accessToken).patch(`/addresses/${saved.id}`, { district: 'Bhilwara', latitude: moved.latitude, longitude: moved.longitude }).expect(200)).body,
+    ).data;
+    expect(district).toMatchObject({ district: 'Bhilwara', ...SHOP, locationSource: null });
   });
 });
 
 describe('the store point', () => {
-  it('distance is measured to the store\'s own point; an admin can correct it — validated and audited', async () => {
+  it('distance is measured from the service location, not the store\'s point; an admin can correct the pin — validated and audited', async () => {
     const shopId = await railmagraShop();
     const admin = await panelUser(UserRole.ADMIN);
     const staff = await panelUser(UserRole.STAFF);
 
-    // From Kuraj the shop is ~5 km away; within the 12 km radius.
+    // From Kuraj the service location is ~5 km away; within the 12 km radius.
     const before = await serviceability(KURAJ);
     expect(before.serviceable).toBe(true);
     expect(before.distanceKm).toBeGreaterThan(5);
@@ -187,13 +199,13 @@ describe('the store point', () => {
     expect((await as(admin.token).patch(`/admin/sellers/${shopId}/location`, { latitude: 0, longitude: 0 })).status).toBe(400);
     expect((await as(admin.token).patch(`/admin/sellers/${shopId}/location`, { latitude: 74.11, longitude: 25.03 })).status).toBe(400);
 
-    // The admin moves the pin to where the shop really is: distance follows the new point.
+    // The admin moves the store's pin: the delivery area and the distance stay with the service location.
     const corrected = expectSuccess<{ latitude: number; longitude: number }>(
       (await as(admin.token).patch(`/admin/sellers/${shopId}/location`, { ...KURAJ, city: 'Kuraj', pincode: '313328' }).expect(200)).body,
     ).data;
     expect(corrected).toMatchObject(KURAJ);
     const after = await serviceability(KURAJ);
-    expect(after.distanceKm).toBeLessThan(0.02);
+    expect(after.distanceKm).toBe(before.distanceKm);
     const fetched = expectSuccess<{ latitude: number }>((await as(admin.token).get(`/admin/sellers/${shopId}/location`).expect(200)).body).data;
     expect(fetched.latitude).toBe(KURAJ.latitude);
 

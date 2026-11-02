@@ -135,7 +135,7 @@ describe('GET /store/serviceability', () => {
       .toMatchObject({ serviceable: false, maxRadiusKm: 1 });
   });
 
-  it('lets a per-store radius override the global configuration', async () => {
+  it('ignores a per-store radius: the admin configuration applies to every store', async () => {
     await createStore({ maxServiceRadiusKm: 2 });
     await setConfig(ConfigKey.MAX_SERVICE_RADIUS_KM, 10 as never);
 
@@ -145,7 +145,7 @@ describe('GET /store/serviceability', () => {
       .expect(200);
 
     expect(expectSuccess<{ serviceable: boolean; maxRadiusKm: number }>(res.body).data)
-      .toMatchObject({ serviceable: false, maxRadiusKm: 2 });
+      .toMatchObject({ serviceable: true, maxRadiusKm: 10 });
   });
 
   it('prices delivery from the ROAD distance, not the straight line', async () => {

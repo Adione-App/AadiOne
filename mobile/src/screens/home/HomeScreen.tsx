@@ -44,7 +44,7 @@ import {
 import { formatUnreadBadge } from "@/lib/notifications";
 import { deliveryHeadline, deliveryView } from "@/lib/deliveryArea";
 import { DeliveryStatusNotice, deliveryNoticeShown } from "@/components/location/DeliveryStatusNotice";
-import { LocationPermissionIntro } from "@/components/location/LocationPermissionIntro";
+import { requestLocationOnFirstLaunch } from "@/lib/locationService";
 import { globalClosedNotice } from "@/lib/platformAvailability";
 import { ActiveOrdersCarousel } from "./sections/ActiveOrdersCarousel";
 import { useCartError } from "@/lib/useCartActions";
@@ -239,6 +239,12 @@ export default function HomeScreen({
   const isFocused = useIsFocused();
   const unreadNotifications =
     useNotificationUnreadCount({ poll: isFocused }).data ?? 0;
+
+  // First launch only: Android's own location dialog, asked directly — no
+  // screen of Aadione's before or after it (lib/firstLaunchLocation.ts).
+  useEffect(() => {
+    if (isFocused) void requestLocationOnFirstLaunch();
+  }, [isFocused]);
 
   const feed = useHomeFeed();
   // App-wide availability (server-decided: master switch, emergency, pauses,
@@ -1062,8 +1068,8 @@ export default function HomeScreen({
               </View>
             )}
 
-            {/* No delivery location chosen yet (and no failed attempt to
-                explain): ask here. The first-launch explanation asks once. */}
+            {/* No delivery location chosen yet (also after the location
+                permission was denied): the way into the location selector. */}
             {delivery.state === "NO_LOCATION" && (
               <Pressable
                 onPress={onOpenLocation}
@@ -1080,7 +1086,8 @@ export default function HomeScreen({
 
             {/* Delivery at the chosen location: outside the area, stores
                 closed / not taking orders, the current location unavailable
-                (permission, GPS off, timeout) or the check failing — each
+                (GPS off, timeout — never a permission prompt: Android's own
+                dialog is the only ask) or the check failing — each
                 with its own way forward. App-wide pauses have their own
                 notice above. Browsing always continues. */}
             {deliveryNoticeShown(delivery) &&
@@ -1124,9 +1131,6 @@ export default function HomeScreen({
           </>
         }
       />
-
-      {/* First launch only: why the location is needed, then the system dialog. */}
-      <LocationPermissionIntro enabled={isFocused} />
     </Screen>
   );
 }

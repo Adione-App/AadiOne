@@ -18,6 +18,7 @@ import sharp from 'sharp';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   ApprovalStatus,
+  ConfigKey,
   ProductStatus,
   UnitType,
   UserRole,
@@ -189,6 +190,8 @@ describe('GET /restaurants — Food filters and card data', () => {
 
   it('gives the real delivery fee and time only for a location it delivers to', async () => {
     await kitchen('Ha Hokam Food', 'RESTAURANT', { items: [{ name: 'Burger', diet: 'VEG' }] });
+    // The delivery area's centre (admin service location) at the kitchen's Railmagra point.
+    await configService.set({ key: ConfigKey.PLATFORM_LOCATION, value: { name: 'Railmagra', addressLine: 'Railmagra', landmark: null, latitude: 25.029, longitude: 74.11 } as never });
 
     const anywhere = (await list())[0]!;
     expect(anywhere).toMatchObject({ distanceKm: null, deliveryFeePaise: null, etaMinMinutes: null, etaMaxMinutes: null });

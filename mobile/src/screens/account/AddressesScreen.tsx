@@ -15,7 +15,6 @@ import { formatIndianMobile } from "@shared/phone";
 import { landmarkPhrase } from "@shared/address";
 import { addressDetailLines, distinctLandmark } from "@/lib/addressDisplay";
 import { useSystemBack } from "@/lib/useSystemBack";
-import { isHomeState } from "@/lib/liveLocation";
 import { colors, radius, shadow, spacing } from "@shared/theme";
 import { api } from "@/lib/api";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
@@ -285,17 +284,11 @@ function AddressCard({
         {formatIndianMobile(address.mobile)}
       </AppText>
 
-      {!isHomeState(address.state) ? (
-        // An older address outside Rajasthan: kept as saved, never ordered to.
+      {/* The server's answer, from the admin's delivery area. */}
+      {!address.isServiceable && (
         <AppText variant="caption" color={colors.danger} style={styles.serviceability}>
-          Outside Rajasthan — Aadione delivers only in Rajasthan
+          We don't deliver to this address yet
         </AppText>
-      ) : (
-        !address.isServiceable && (
-          <AppText variant="caption" color={colors.danger} style={styles.serviceability}>
-            We don't deliver to this address yet
-          </AppText>
-        )
       )}
 
       {!address.isDefault && (

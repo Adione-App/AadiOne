@@ -188,9 +188,9 @@ describe('pending, failure and late success', () => {
 });
 
 describe('the cart is used up only by a paid order', () => {
-  it('placing takes the lines out (reserved on the unpaid order); cancelling the unpaid order puts them back — once', async () => {
+  it('placing an online order leaves the lines in the cart (reserved on the unpaid order); cancelling it never adds them again', async () => {
     const o = await placedOnline();
-    expect(await cartLines(o.userId)).toEqual([]);
+    expect(await cartLines(o.userId)).toEqual([{ sellerListingId: o.listingId, qty: 2 }]);
     await api().post(`/api/v1/orders/${o.orderId}/cancel`).set(o.auth).send({ reason: 'Changed my mind' }).expect(200);
     expect(await cartLines(o.userId)).toEqual([{ sellerListingId: o.listingId, qty: 2 }]);
     // A second cancel is refused / a no-op: never doubled.
@@ -198,7 +198,7 @@ describe('the cart is used up only by a paid order', () => {
     expect(await cartLines(o.userId)).toEqual([{ sellerListingId: o.listingId, qty: 2 }]);
   });
 
-  it('the payment window expiring puts the lines back — once, however often the job runs', async () => {
+  it('the payment window expiring leaves the cart as it is — never doubled, however often the job runs', async () => {
     const o = await placedOnline();
     await prisma.order.update({ where: { id: o.orderId }, data: { reservationExpiresAt: new Date(Date.now() - 1000) } });
     await releaseExpiredReservations();

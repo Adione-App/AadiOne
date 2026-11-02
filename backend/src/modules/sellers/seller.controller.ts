@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { ok } from '../../common/response';
 import { validatedQuery } from '../../middleware/validate';
 import { getLocationServiceability } from './location-serviceability.service';
+import { listActiveDeliveryLocations } from '../addresses/delivery-locations';
 import type { ServiceabilityQuery } from './seller.validation';
 
 /**
@@ -14,6 +15,16 @@ import type { ServiceabilityQuery } from './seller.validation';
  * `/store` prefix for the shipped app; there is no single store behind it.)
  */
 export async function getServiceability(req: Request, res: Response): Promise<void> {
-  const { lat, lng } = validatedQuery<ServiceabilityQuery>(req);
-  ok(res, await getLocationServiceability(lat, lng));
+  const { lat, lng, village, pincode } = validatedQuery<ServiceabilityQuery>(req);
+  const place = village || pincode ? { village: village ?? null, pincode: pincode ?? null } : null;
+  ok(res, await getLocationServiceability(lat, lng, new Date(), place));
+}
+
+/**
+ * GET /store/delivery-locations — the admin-approved villages and each one's
+ * PIN codes (active pairs only), for the app's address dropdowns. Public: a
+ * guest's live location is matched against it too.
+ */
+export async function getDeliveryLocations(_req: Request, res: Response): Promise<void> {
+  ok(res, await listActiveDeliveryLocations());
 }

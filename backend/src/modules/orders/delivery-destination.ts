@@ -17,14 +17,13 @@
  */
 
 import { z } from 'zod';
-import { ConfigKey, DeliveryMode, ErrorCode, type LiveLocationInput } from '../../shared';
-import { pincodeAllowed } from '../../shared/location';
-import * as configService from '../configuration/configuration.service';
+import { DeliveryMode, ErrorCode, type LiveLocationInput } from '../../shared';
 import { COORDINATE_PROBLEM_MESSAGE, coordinateProblem } from '../../shared/distance';
 import { isValidPincode, normalizeIndianMobile } from '../../shared/phone';
 import { AppError } from '../../common/errors';
 import * as addressService from '../addresses/address.service';
-import { assertServiceState, normalizeServiceState } from '../addresses/service-state';
+import { normalizeServiceState } from '../addresses/service-state';
+import { assertDeliveryPair } from '../addresses/delivery-locations';
 
 /** Blank text → null, so "not given" has one representation. */
 const optionalText = (max: number) =>
@@ -125,24 +124,19 @@ export interface DeliveryDestination {
 }
 
 /**
- * The destination for a quote or an order — ALWAYS in Rajasthan (state AND
- * point, see service-state.ts). An older saved address outside Rajasthan is
- * refused here, and left exactly as it is.
+ * The destination for a quote or an order — a saved address or a live GPS
+ * point, checked the same way: its village / town / city and PIN code must
+ * be an ACTIVE admin-approved pair (addresses/delivery-locations.ts), whatever
+ * the app sends. A live point without a PIN cannot be checked, so it is
+ * refused with a request to choose the village and PIN. The point itself
+ * only prices the delivery fee and ETA (seller.service). No state and no
+ * seller location decides delivery.
  */
 export async function resolveDestination(userId: string, input: DestinationInput): Promise<DeliveryDestination> {
   const destination = await readDestination(userId, input);
-  assertServiceState(destination, 'destination');
-  // The admin's approved PIN list (empty = none). It only rules a PIN out; a
-  // live GPS point without a PIN is decided by its distance alone.
-  if (destination.pincode) {
-    const approved = await configService.get(ConfigKey.SERVICEABLE_PINCODES);
-    if (!pincodeAllowed(destination.pincode, approved)) {
-      throw new AppError(ErrorCode.OUT_OF_SERVICE_AREA, {
-        message: `Sorry, we do not deliver to PIN code ${destination.pincode} yet.`,
-      });
-    }
-  }
-  return destination;
+  const place = await assertDeliveryPair(destination.city, destination.pincode);
+  // The admin's spelling of the village goes into the order's snapshot.
+  return { ...destination, city: place.village, pincode: place.pincode };
 }
 
 async function readDestination(userId: string, input: DestinationInput): Promise<DeliveryDestination> {
@@ -189,7 +183,7 @@ async function readDestination(userId: string, input: DestinationInput): Promise
     landmark: null,
     city: live.city,
     district: live.district,
-    // "rajasthan" / "राजस्थान" → "Rajasthan"; anything else is refused by the caller.
+    // "rajasthan" / "राजस्थान" → "Rajasthan"; any other state is kept as given.
     state: normalizeServiceState(live.state) ?? live.state,
     pincode: live.pincode ?? '',
     latitude: live.latitude,

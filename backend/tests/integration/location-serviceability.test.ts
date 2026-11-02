@@ -1,15 +1,18 @@
 /**
  * Live-location delivery eligibility (GET /store/serviceability + order
- * placement): the CURRENT point decides, by the admin-configured radius of
- * each live store, with one status per reason — and placement checks it all
- * again for the exact destination the order uses.
+ * placement): the CURRENT point decides, by the admin-configured delivery
+ * area — the service location (PLATFORM_LOCATION; the tests start with it at
+ * STORE_COORDS, helpers/db.ts) and the radius (MAX_SERVICE_RADIUS_KM) — with
+ * one status per reason, and placement checks it all again for the exact
+ * destination the order uses.
  *
  * Covers: Home inside / Office outside (the same customer, a day apart), the
- * inclusive boundary, the radius coming from configuration or the store's own
- * setting (never hardcoded), the nearest store, store closed, store not
- * accepting, app-wide ordering off, no eligible store, outside Rajasthan,
- * invalid coordinates, client-sent eligibility ignored, placement
- * revalidation, and the immutable delivery snapshot + serving store.
+ * inclusive boundary, the radius coming from configuration (never hardcoded,
+ * never a store's own), distance measured from the service location (never a
+ * seller's point), no area configured, store closed, store not accepting,
+ * app-wide ordering off, no eligible store, no hardcoded state, invalid
+ * coordinates, client-sent eligibility ignored, placement revalidation, and
+ * the immutable delivery snapshot + serving store.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -92,9 +95,12 @@ beforeEach(async () => {
   await cache.clear();
 });
 
+const setRadius = (km: number) => setConfig(ConfigKey.MAX_SERVICE_RADIUS_KM, km);
+
 describe('the current point decides — Home inside, Office outside', () => {
   it('Day 1 at Home: available; Day 2 at the Office (5 km away): not delivering, with the expansion message', async () => {
-    await createSeller({ radiusKm: 3 });
+    await setRadius(3);
+    await createSeller();
 
     const home = await serviceability(HOME);
     expect(home).toMatchObject({ serviceable: true, status: 'AVAILABLE', canOrder: true, message: null, maxRadiusKm: 3 });
@@ -123,10 +129,10 @@ describe('the radius is the admin configuration — never hardcoded', () => {
     expect(await serviceability(point)).toMatchObject({ status: 'AVAILABLE', maxRadiusKm: 8 });
   });
 
-  it("a store's own radius overrides the configuration", async () => {
+  it("a store's own (old) radius is ignored — the admin radius applies to every store", async () => {
     await setConfig(ConfigKey.MAX_SERVICE_RADIUS_KM, 20);
     await createSeller({ radiusKm: 2 });
-    expect(await serviceability(north(3))).toMatchObject({ status: 'OUTSIDE_RADIUS', maxRadiusKm: 2 });
+    expect(await serviceability(north(3))).toMatchObject({ status: 'AVAILABLE', maxRadiusKm: 20 });
   });
 
   it('the boundary is inclusive: distance == radius is inside, just beyond is outside', async () => {
@@ -135,27 +141,43 @@ describe('the radius is the admin configuration — never hardcoded', () => {
     expect(checkServiceability(point.latitude, point.longitude, STORE_COORDS.latitude, STORE_COORDS.longitude, exact).serviceable).toBe(true);
     expect(checkServiceability(point.latitude, point.longitude, STORE_COORDS.latitude, STORE_COORDS.longitude, exact - 0.001).serviceable).toBe(false);
 
-    await createSeller({ radiusKm: 4 });
+    await setRadius(4);
+    await createSeller();
     expect((await serviceability(north(3.999))).status).toBe('AVAILABLE');
     expect((await serviceability(north(4.02))).status).toBe('OUTSIDE_RADIUS');
   });
 });
 
-describe('the nearest eligible store', () => {
-  it('the distance, fee and ETA are those of the nearest store that delivers here', async () => {
-    await createSeller({ radiusKm: 10, name: 'Near' });
-    await createSeller({ at: north(4), radiusKm: 10, name: 'Nearer' });
+describe('the admin service location is the centre — never a seller\'s point', () => {
+  it('the distance (and so the fee and ETA) is measured from the service location, wherever the stores are', async () => {
+    await setRadius(10);
+    await createSeller({ at: north(4), name: 'Store 4 km north' });
     const result = await serviceability(north(5));
     expect(result.status).toBe('AVAILABLE');
-    expect(result.distanceKm).toBeLessThanOrEqual(1.1); // 1 km from "Nearer", 5 km from "Near"
+    expect(result.distanceKm).toBeGreaterThan(4.9); // 5 km from the service location, 1 km from the store
+    expect(result.distanceKm).toBeLessThanOrEqual(5.01);
   });
 
-  it('a nearer store that does not reach the point does not hide a farther one that does', async () => {
-    await createSeller({ at: north(4), radiusKm: 0.5, name: 'Small radius' });
-    await createSeller({ radiusKm: 6, name: 'Big radius' });
-    const result = await serviceability(north(5));
-    expect(result).toMatchObject({ status: 'AVAILABLE', maxRadiusKm: 6 });
-    expect(result.distanceKm).toBeGreaterThan(4.9);
+  it('a point next to a store but outside the admin area is not served', async () => {
+    await setRadius(3);
+    await createSeller({ at: north(10), name: 'Store 10 km north' });
+    expect((await serviceability(north(10))).status).toBe('OUTSIDE_RADIUS');
+  });
+
+  it('moving the service location moves the area', async () => {
+    await setRadius(10);
+    await createSeller();
+    expect((await serviceability(north(5))).status).toBe('AVAILABLE');
+    await setConfig(ConfigKey.PLATFORM_LOCATION, { name: 'New centre', addressLine: 'Far away', landmark: null, ...north(20) });
+    const moved = await serviceability(north(5));
+    expect(moved.status).toBe('OUTSIDE_RADIUS');
+    expect(moved.distanceKm).toBeGreaterThan(14.9);
+  });
+
+  it('no service location set: nowhere is served, whatever stores exist', async () => {
+    await createSeller();
+    await setConfig(ConfigKey.PLATFORM_LOCATION, {});
+    expect(await serviceability(HOME)).toMatchObject({ serviceable: false, status: 'NO_ELIGIBLE_STORE', canOrder: false });
   });
 });
 
@@ -181,7 +203,8 @@ describe('store and app-wide state', () => {
   });
 
   it('app-wide ordering off: ORDERING_DISABLED in range; outside the area still says outside', async () => {
-    await createSeller({ radiusKm: 3 });
+    await setRadius(3);
+    await createSeller();
     await setConfig(ConfigKey.ORDERING_ENABLED, false);
     const home = await serviceability(HOME);
     expect(home).toMatchObject({ serviceable: true, status: 'ORDERING_DISABLED', canOrder: false });
@@ -189,23 +212,21 @@ describe('store and app-wide state', () => {
     expect((await serviceability(OFFICE)).status).toBe('OUTSIDE_RADIUS');
   });
 
-  it('no live store with a usable map point: NO_ELIGIBLE_STORE (an inactive or pin-less store does not count)', async () => {
+  it('no live store: NO_ELIGIBLE_STORE (an inactive store does not count; a store without a map point does — its point is not used)', async () => {
     expect(await serviceability(HOME)).toMatchObject({ serviceable: false, status: 'NO_ELIGIBLE_STORE', canOrder: false, message: NOT_DELIVERING_MESSAGE });
-    const inactive = await createSeller({ radiusKm: 3 });
+    const inactive = await createSeller();
     await prisma.seller.update({ where: { id: inactive }, data: { isActive: false } });
-    await createSeller({ at: { latitude: 0, longitude: 0 }, radiusKm: 50 });
     expect((await serviceability(HOME)).status).toBe('NO_ELIGIBLE_STORE');
+    await createSeller({ at: { latitude: 0, longitude: 0 } });
+    expect((await serviceability(HOME)).status).toBe('AVAILABLE');
   });
 
-  it('a point outside Rajasthan is served by nobody, however large a radius', async () => {
-    // Alwar-side store with a huge radius; Delhi is ~150 km away and outside the state.
-    await createSeller({ at: { latitude: 27.5530, longitude: 76.6346 }, radiusKm: 400 });
-    expect(await serviceability({ latitude: 28.6139, longitude: 77.209 })).toMatchObject({
-      serviceable: false,
-      status: 'OUTSIDE_SERVICE_STATE',
-      canOrder: false,
-      message: NOT_DELIVERING_MESSAGE,
-    });
+  it('no state is hardcoded: a point across the state border, inside the admin area, is served', async () => {
+    // Service location in Bhiwadi (Rajasthan); Dharuhera (Haryana) is ~6.5 km away.
+    await setConfig(ConfigKey.PLATFORM_LOCATION, { name: 'Bhiwadi', addressLine: 'Bhiwadi', landmark: null, latitude: 28.2104, longitude: 76.8606 });
+    await setRadius(10);
+    await createSeller({ at: { latitude: 28.2104, longitude: 76.8606 } });
+    expect(await serviceability({ latitude: 28.2062, longitude: 76.7953 })).toMatchObject({ serviceable: true, status: 'AVAILABLE' });
   });
 });
 
@@ -219,7 +240,8 @@ describe('coordinates and client input', () => {
   });
 
   it('ignores any distance or eligibility the client sends', async () => {
-    await createSeller({ radiusKm: 3 });
+    await setRadius(3);
+    await createSeller();
     const result = await serviceability(OFFICE, { distanceKm: 0.1, serviceable: 'true', canOrder: 'true', radiusKm: 50 });
     expect(result).toMatchObject({ serviceable: false, status: 'OUTSIDE_RADIUS', canOrder: false });
   });
@@ -246,11 +268,12 @@ describe('order placement checks the destination again', () => {
     return { session, place };
   }
 
-  it('an order to the Office point is refused although Home was available — the stale answer is never trusted', async () => {
-    const sellerId = await createSeller({ radiusKm: 3 });
+  it('an order is decided by its village + PIN, never by a stale answer or what the client claims', async () => {
+    await setRadius(3);
+    const sellerId = await createSeller();
     expect((await serviceability(HOME)).canOrder).toBe(true);
     const { place } = await cartAt(sellerId);
-    const res = await place({ liveLocation: { ...LIVE, ...OFFICE, serviceable: true, distanceKm: 0.5 } });
+    const res = await place({ liveLocation: { ...LIVE, ...HOME, city: 'Laxmangarh', pincode: '332311', serviceable: true, distanceKm: 0.5 } });
     expect(res.status).toBe(422);
     expect(expectError(res.body).code).toBe(ErrorCode.OUT_OF_SERVICE_AREA);
     expect(await prisma.order.count()).toBe(0);
@@ -277,7 +300,8 @@ describe('order placement checks the destination again', () => {
   });
 
   it('the placed order keeps its delivery point, address and serving store — moving or editing later changes nothing', async () => {
-    const sellerId = await createSeller({ radiusKm: 3 });
+    await setRadius(3);
+    const sellerId = await createSeller();
     const { session, place } = await cartAt(sellerId);
     const placed = expectSuccess<{ order: { id: string } }>((await place({ liveLocation: { ...LIVE, ...HOME } }).expect(201)).body).data.order;
 
@@ -285,13 +309,13 @@ describe('order placement checks the destination again', () => {
     expect(before).toMatchObject({ deliveryMode: 'LIVE_LOCATION', deliveryLatitude: HOME.latitude, deliveryLongitude: HOME.longitude, deliveryCity: 'Sikar' });
     expect(before.sellerOrders.map((so) => so.sellerId)).toEqual([sellerId]);
 
-    // The customer moves to the Office and saves an address there; the store's radius shrinks.
+    // The customer moves to the Office and saves an address there; the delivery radius shrinks.
     expect((await serviceability(OFFICE)).status).toBe('OUTSIDE_RADIUS');
     await api()
       .post('/api/v1/addresses')
       .set('Authorization', bearer(session.accessToken))
       .send({ label: 'Office', fullName: 'Ramesh Jat', mobile: '9829012345', area: 'Industrial Area', city: 'Sikar', state: 'Rajasthan', pincode: '332001', ...OFFICE });
-    await prisma.seller.update({ where: { id: sellerId }, data: { maxServiceRadiusKm: 0.5 } });
+    await setRadius(0.5);
 
     const after = await prisma.order.findUniqueOrThrow({ where: { id: placed.id }, include: { sellerOrders: true } });
     expect(after.deliveryLatitude).toBe(before.deliveryLatitude);

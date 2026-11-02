@@ -46,10 +46,6 @@ export const NOT_DELIVERING_MESSAGE =
 export type DeliveryAction =
   /** Ask the GPS again (no dialog). */
   | "REFRESH"
-  /** Ask for the permission (the system dialog — only while the OS still allows asking). */
-  | "ALLOW_LOCATION"
-  /** Permission denied for good: the app's settings. */
-  | "OPEN_SETTINGS"
   /** Location services off: the system's turn-on dialog (Android) / Settings (iOS). */
   | "ENABLE_GPS"
   | "CHOOSE_ADDRESS"
@@ -91,9 +87,17 @@ export const SHOWN_WHILE_REFRESHING_MS = 10 * 60_000;
 
 const OUTSIDE: ReadonlySet<ServiceabilityStatus> = new Set(["OUTSIDE_RADIUS", "OUTSIDE_SERVICE_STATE", "NO_ELIGIBLE_STORE"]);
 
-const GPS_FAILURE_VIEW: Record<GpsFailure, { title: string; actions: DeliveryAction[] }> = {
-  PERMISSION_DENIED: { title: "Allow location access", actions: ["ALLOW_LOCATION", "CHOOSE_ADDRESS"] },
-  PERMISSION_BLOCKED: { title: "Location access is off", actions: ["OPEN_SETTINGS", "CHOOSE_ADDRESS"] },
+/**
+ * The location permission is never asked for by a screen of Aadione's:
+ * Android's own dialog on first launch is the only ask, and a denial shows
+ * no card or button. The customer chooses an address through the normal
+ * location selector (which can also use the current location again).
+ */
+const PERMISSION_FAILURES: ReadonlySet<GpsFailure> = new Set(["PERMISSION_DENIED", "PERMISSION_BLOCKED"]);
+
+type ShownGpsFailure = Exclude<GpsFailure, "PERMISSION_DENIED" | "PERMISSION_BLOCKED">;
+
+const GPS_FAILURE_VIEW: Record<ShownGpsFailure, { title: string; actions: DeliveryAction[] }> = {
   SERVICES_DISABLED: { title: "Location (GPS) is off", actions: ["ENABLE_GPS", "CHOOSE_ADDRESS"] },
   TIMEOUT: { title: "Couldn't find your location", actions: ["REFRESH", "CHOOSE_ADDRESS"] },
   UNAVAILABLE: { title: "Couldn't find your location", actions: ["REFRESH", "CHOOSE_ADDRESS"] },
@@ -120,7 +124,13 @@ export function deliveryView(input: DeliveryInputs): DeliveryView {
   const base = { canOrder: false, title: null, message: null, actions: [] as DeliveryAction[], source };
 
   if (source !== "ADDRESS" && gps.phase === "failed" && gps.failure) {
-    const view = GPS_FAILURE_VIEW[gps.failure];
+    if (PERMISSION_FAILURES.has(gps.failure)) {
+      // No notice (no message, no actions). Nothing chosen: Home's ordinary
+      // "set your delivery location" entry. An earlier GPS point is not where
+      // the phone is now: never orderable, and the header says so.
+      return { ...base, state: location ? "GPS_FAILED" : "NO_LOCATION", gpsFailure: gps.failure };
+    }
+    const view = GPS_FAILURE_VIEW[gps.failure as ShownGpsFailure];
     return { ...base, state: "GPS_FAILED", title: view.title, message: GPS_FAILURE_MESSAGE[gps.failure], actions: view.actions, gpsFailure: gps.failure };
   }
 

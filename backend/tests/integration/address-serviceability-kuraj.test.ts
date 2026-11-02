@@ -1,6 +1,9 @@
 /**
- * Regression, server side — the Kuraj / Railmagra case end to end through
- * the real app: a store at production's Railmagra point (25.029, 74.11), the
+ * Regression, server side (updated for approved village + PIN pairs: the
+ * pair decides delivery; the point and the radius only price the fee and
+ * show the distance) — the Kuraj / Railmagra case end to end through
+ * the real app: the admin service location (PLATFORM_LOCATION) at
+ * production's Railmagra point (25.029, 74.11) — a store there too — the
  * configured radius (12 km by default — never a hard-coded one here), and
  * addresses saved with:
  *   - the real Kuraj point (~5 km away)      → deliverable
@@ -54,6 +57,8 @@ beforeEach(async () => {
   await cache.clear();
   const storeId = await seedStore();
   await prisma.seller.update({ where: { id: storeId }, data: { ...STORE, city: 'Railmagra', district: 'Rajsamand', pincode: '313329' } });
+  // The delivery area's centre — distances are measured from here, not from the store.
+  await configService.set({ key: ConfigKey.PLATFORM_LOCATION, value: { name: 'Aadione Railmagra', addressLine: 'Railmagra', landmark: null, ...STORE } as never });
   listingId = (await seedProduct(storeId, { pricePaise: 20000, mrpPaise: 24000, stockQty: 10 })).storeVariantId;
   await otpService.clearOtpState(MOBILE);
   token = (await loginAs(MOBILE)).accessToken;
@@ -73,55 +78,88 @@ describe('Kuraj, ~5 km from the Railmagra store', () => {
     expect(address).toMatchObject({ ...KURAJ, locationSource: 'GEOCODED', locationAccuracyM: null });
   });
 
-  it('a wrong, district-level point (~22 km) is saved but not deliverable — the radius was never the problem', async () => {
+  it('the point does not decide: a far, district-level point with the approved Kuraj 313328 is deliverable — the distance still prices the fee', async () => {
     const address = await save({ ...KURAJ_ADDRESS, ...RAJSAMAND_TOWN });
-    expect(address.isServiceable).toBe(false);
+    expect(address.isServiceable).toBe(true);
     expect(address.distanceKm!).toBeGreaterThan(20);
   });
 
-  it('an address without usable coordinates is refused — nothing is saved, no default point is used', async () => {
+  it('without coordinates the service location stands in (approximate); (0, 0) and swapped points are still refused', async () => {
     const { latitude: _lat, longitude: _lng, ...noPoint } = KURAJ_ADDRESS;
-    await as(token).post('/addresses', noPoint).expect(400);
+    const saved = expectSuccess<AddressDto>((await as(token).post('/addresses', noPoint).expect(201)).body).data;
+    expect(saved).toMatchObject({ ...STORE, locationSource: null, isServiceable: true });
     expect(expectError((await as(token).post('/addresses', { ...KURAJ_ADDRESS, latitude: 0, longitude: 0 }).expect(400)).body).code).toBe(ErrorCode.VALIDATION_ERROR);
     await as(token).post('/addresses', { ...KURAJ_ADDRESS, latitude: KURAJ.longitude, longitude: KURAJ.latitude }).expect(400);
-    expect(await prisma.address.count()).toBe(0);
+    expect(await prisma.address.count()).toBe(1);
   });
 
-  it('radius boundary: just inside is deliverable, just outside is not; the shown km agrees', async () => {
+  it('the radius does not refuse an approved address: just inside and just outside are both deliverable; the shown km agrees', async () => {
     const radius = await configService.get(ConfigKey.MAX_SERVICE_RADIUS_KM);
     const inside = await save({ ...KURAJ_ADDRESS, ...north(radius - 0.005) });
     const outside = await save({ ...KURAJ_ADDRESS, label: 'Other', ...north(radius + 0.02) });
     expect(inside.isServiceable).toBe(true);
     expect(inside.distanceKm!).toBeLessThanOrEqual(radius);
-    expect(outside.isServiceable).toBe(false);
+    expect(outside.isServiceable).toBe(true);
     expect(outside.distanceKm!).toBeGreaterThan(radius);
   });
 });
 
-describe('approved PIN codes (SERVICEABLE_PINCODES)', () => {
-  it('empty by default: the radius alone decides', async () => {
-    expect(await configService.get(ConfigKey.SERVICEABLE_PINCODES)).toEqual([]);
-    expect((await save(KURAJ_ADDRESS)).isServiceable).toBe(true);
+describe('approved village + PIN pairs (DELIVERY_LOCATIONS)', () => {
+  const setPairs = (value: unknown) => configService.set({ key: ConfigKey.DELIVERY_LOCATIONS, value: value as never });
+
+  it('Kuraj with a PIN that is not its own is refused on save, with the reason; nothing is saved', async () => {
+    const res = await as(token).post('/addresses', { ...KURAJ_ADDRESS, pincode: '313329' });
+    expect(res.status).toBe(422);
+    expect(expectError(res.body).code).toBe(ErrorCode.OUT_OF_SERVICE_AREA);
+    expect(expectError(res.body).message).toMatch(/Kuraj is delivered to only with its own PIN code/);
+    expect(await prisma.address.count()).toBe(0);
   });
 
-  it('a PIN not on the list is not delivered to — on save and at checkout — even 5 km from a store', async () => {
-    await configService.set({ key: ConfigKey.SERVICEABLE_PINCODES, value: ['313329'] });
+  it('a disabled pair: saved addresses there show as not deliverable and checkout refuses them', async () => {
     const address = await save(KURAJ_ADDRESS);
-    expect(address.isServiceable).toBe(false);
+    await setPairs([{ id: 'kuraj', village: 'Kuraj', pincode: '313328', active: false }]);
+    const listed = expectSuccess<AddressDto[]>((await api().get('/api/v1/addresses').set('Authorization', bearer(token)).expect(200)).body).data;
+    expect(listed[0]).toMatchObject({ id: address.id, isServiceable: false });
 
     await api().post('/api/v1/cart/items').set('Authorization', bearer(token)).send({ sellerListingId: listingId, qty: 1 }).expect(200);
     const quote = await as(token).post('/checkout/quote', { addressId: address.id });
     expect(quote.status).toBe(422);
-    expect(expectError(quote.body)).toMatchObject({ code: ErrorCode.OUT_OF_SERVICE_AREA, message: 'Sorry, we do not deliver to PIN code 313328 yet.' });
+    expect(expectError(quote.body)).toMatchObject({ code: ErrorCode.OUT_OF_SERVICE_AREA });
+    expect(expectError(quote.body).message).toMatch(/not delivering to Kuraj 313328/);
   });
 
-  it('a listed PIN never makes a far address deliverable — the point and the radius still decide', async () => {
-    await configService.set({ key: ConfigKey.SERVICEABLE_PINCODES, value: ['313328'] });
+  it('the old PIN list (SERVICEABLE_PINCODES) no longer decides anything', async () => {
+    await configService.set({ key: ConfigKey.SERVICEABLE_PINCODES, value: ['313329'] });
     expect((await save(KURAJ_ADDRESS)).isServiceable).toBe(true);
-    expect((await save({ ...KURAJ_ADDRESS, label: 'Far', ...RAJSAMAND_TOWN })).isServiceable).toBe(false);
   });
 
-  it('only a list of distinct 6-digit PIN codes can be configured', async () => {
+  it('only a list of { id, village, pincode, active } pairs — each pair once — can be configured', async () => {
+    for (const bad of [
+      'Kuraj',
+      [{ id: 'a', village: 'Kuraj', pincode: '31332', active: true }],
+      [{ id: 'a', village: 'K', pincode: '313328', active: true }],
+      [{ village: 'Kuraj', pincode: '313328', active: true }],
+      [{ id: 'a', village: 'Kuraj', pincode: '313328', active: 'yes' }],
+      [
+        { id: 'a', village: 'Kuraj', pincode: '313328', active: true },
+        { id: 'b', village: ' kuraj ', pincode: '313328', active: false },
+      ],
+      [
+        { id: 'a', village: 'Kuraj', pincode: '313328', active: true },
+        { id: 'a', village: 'Amet', pincode: '313332', active: true },
+      ],
+    ]) {
+      await expect(setPairs(bad)).rejects.toThrow();
+    }
+    // The same village with two PIN codes, and two villages, are fine.
+    await setPairs([
+      { id: 'a', village: 'Kuraj', pincode: '313328', active: true },
+      { id: 'b', village: 'Kuraj', pincode: '313301', active: true },
+      { id: 'c', village: 'Amet', pincode: '313332', active: false },
+    ]);
+  });
+
+  it('only a list of distinct 6-digit PIN codes can be configured as the old PIN list (kept, unused)', async () => {
     for (const bad of ['313328', ['31332'], ['313328', '313328'], [313328]]) {
       await expect(configService.set({ key: ConfigKey.SERVICEABLE_PINCODES, value: bad as never })).rejects.toThrow();
     }

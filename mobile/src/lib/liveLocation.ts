@@ -3,16 +3,14 @@
  * saving an address): the state rules and display text shared by the
  * delivery-details form, Select Location and checkout.
  *
- * STATE. Aadione operates only in Rajasthan. A live point's state is never
- * silently rewritten:
- *   - the geocoder named a state → that state; anything but Rajasthan is
- *     refused in the app with a clear message;
+ * STATE is address text only — it never decides delivery. A live point's
+ * state is never silently rewritten:
+ *   - the geocoder named a state → that state;
  *   - it named none, and the point is inside Rajasthan's bounding box →
- *     Rajasthan (provisionally);
- *   - it named none, and the point is outside that box → no state: refused.
- * The SERVER is the authority: it checks the point against Rajasthan's
- * actual boundary (backend service-state.ts) and the seller radius, whatever
- * the app sends. This file only spares the customer a doomed attempt.
+ *     Rajasthan, as a prefilled suggestion the customer can change;
+ *   - otherwise empty, for the customer to fill in.
+ * Whether Aadione delivers to the point is decided by the SERVER alone, from
+ * the admin-configured delivery area (service location + radius).
  */
 
 import { INDIAN_STATES } from '@shared/address';
@@ -92,13 +90,18 @@ export function buildLiveDestination(
   };
 }
 
-/** What the server requires of a live destination: who, a valid mobile, the village / town, Rajasthan. */
+/**
+ * What the server requires of a live destination: who, a valid mobile, the
+ * village / town with its PIN code (an admin-approved pair — the server
+ * checks which) and a state.
+ */
 export function isLiveDestinationComplete(live: LiveLocationInput): boolean {
   return (
     live.fullName.trim().length >= 2 &&
     normalizeIndianMobile(live.mobile) !== null &&
     live.city.trim().length >= 2 &&
-    isHomeState(live.state)
+    /^[1-9][0-9]{5}$/.test((live.pincode ?? '').trim()) &&
+    live.state.trim().length >= 2
   );
 }
 

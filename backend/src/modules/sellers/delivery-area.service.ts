@@ -1,42 +1,45 @@
 /**
- * A seller's delivery area, for admin: the radius it delivers within and a
- * "would this point be delivered to?" check.
+ * The delivery area, as admin sees it on a seller's page — and a "would this
+ * point be delivered to?" check.
  *
- * ONE source of truth. The radius a customer is held to is
- * `Seller.maxServiceRadiusKm ?? MAX_SERVICE_RADIUS_KM` — exactly what
- * seller.service.ts `checkServiceability` applies at Home, quote and order
- * placement. This module only reads and writes the per-seller override and
- * runs that same check; it never decides serviceability on its own.
+ * ONE source of truth, the same for every seller: the admin-configured
+ * location (Configuration PLATFORM_LOCATION — App Settings → Global
+ * Availability) with the admin's radius (Configuration MAX_SERVICE_RADIUS_KM),
+ * straight line, inclusive — exactly what seller.service.ts
+ * `checkServiceability` applies at Home, quote and order placement. A
+ * seller's own map point and its old per-seller radius (Seller.maxServiceRadiusKm,
+ * kept in the database, no longer applied) never decide delivery.
  *
- * Distances are straight-line (great-circle, Haversine) from the seller's own
- * map point. A 12 km radius is 12 km as the crow flies: the road trip can be
+ * Distances are straight-line (great-circle, Haversine) from the admin
+ * location. A 12 km radius is 12 km as the crow flies: the road trip can be
  * longer, which is why the delivery fee and ETA use ROAD_DISTANCE_FACTOR.
  */
 
 import { ConfigKey, ErrorCode } from '../../shared';
 import { COORDINATE_PROBLEM_MESSAGE, coordinateProblem } from '../../shared/distance';
 import { AppError } from '../../common/errors';
-import { prisma } from '../../infra/db/prisma';
-import { emitStoreAvailabilityChanged } from '../../realtime/socket';
 import * as configService from '../configuration/configuration.service';
-import { pointInServiceState } from '../addresses/service-state';
 import * as sellerRepository from './seller.repository';
 import * as sellerService from './seller.service';
-import { DELIVERY_RADIUS_LIMIT_KM, isValidDeliveryRadiusKm } from './delivery-radius-limit';
+import { DELIVERY_RADIUS_LIMIT_KM } from './delivery-radius-limit';
 
 export interface SellerDeliveryAreaDto {
   sellerId: string;
   sellerName: string;
-  /** The store's map point — the origin of every distance. */
+  /** The admin-configured location — the origin of every distance ((0, 0) while not set). */
   latitude: number;
   longitude: number;
-  /** False while the store has no usable point (never set, or (0, 0)). */
+  /** The admin location's name (Global Availability), when given. */
+  originName: string | null;
+  /** False while no admin location is set: nobody can order. */
+  areaConfigured: boolean;
+  /** Same as `areaConfigured` (kept for older admin panels). */
   storeLocationSet: boolean;
-  /** This seller's own radius; null = the app-wide default applies. */
+  /** This seller's old own radius — stored, no longer applied. */
   maxServiceRadiusKm: number | null;
-  /** MAX_SERVICE_RADIUS_KM — the app-wide default. */
+  /** MAX_SERVICE_RADIUS_KM — the delivery radius. */
   defaultRadiusKm: number;
-  /** What customers are held to right now. */
+  /** What customers are held to right now (= MAX_SERVICE_RADIUS_KM). */
   effectiveRadiusKm: number;
   radiusLimitKm: number;
   /** ROAD_DISTANCE_FACTOR — how the fee and ETA estimate the road trip. */
@@ -44,14 +47,16 @@ export interface SellerDeliveryAreaDto {
 }
 
 export interface DeliveryPointCheckDto {
+  /** The admin location the distance is measured from (kept as `store` for older admin panels). */
   store: { latitude: number; longitude: number };
   destination: { latitude: number; longitude: number };
   /** Straight-line km, rounded UP to 10 m (the same figure customers see). */
   distanceKm: number;
   effectiveRadiusKm: number;
-  /** Inside the radius AND inside the service state — what checkout requires. */
+  /** Inside the admin's delivery area — what checkout requires. */
   deliverable: boolean;
   insideRadius: boolean;
+  /** Always true: no state is hardcoded (kept for older admin panels). */
   insideServiceState: boolean;
   /** Straight line × ROAD_DISTANCE_FACTOR — an estimate, not a route. */
   estimatedRoadDistanceKm: number;
@@ -66,69 +71,54 @@ async function loadSeller(sellerId: string) {
   return seller;
 }
 
-const hasPoint = (latitude: number, longitude: number): boolean => coordinateProblem(latitude, longitude) === null;
+const AREA_NOT_SET =
+  'No delivery area is set: nobody can order. Set the service location in App Settings → Global Availability.';
 
 export async function getDeliveryArea(sellerId: string): Promise<SellerDeliveryAreaDto> {
   const seller = await loadSeller(sellerId);
-  const { MAX_SERVICE_RADIUS_KM, ROAD_DISTANCE_FACTOR } = await configService.getMany([
-    ConfigKey.MAX_SERVICE_RADIUS_KM,
-    ConfigKey.ROAD_DISTANCE_FACTOR,
+  const [origin, { MAX_SERVICE_RADIUS_KM, ROAD_DISTANCE_FACTOR }] = await Promise.all([
+    sellerService.deliveryOrigin(),
+    configService.getMany([ConfigKey.MAX_SERVICE_RADIUS_KM, ConfigKey.ROAD_DISTANCE_FACTOR]),
   ]);
   return {
     sellerId: seller.id,
     sellerName: seller.name,
-    latitude: seller.latitude,
-    longitude: seller.longitude,
-    storeLocationSet: hasPoint(seller.latitude, seller.longitude),
+    latitude: origin?.latitude ?? 0,
+    longitude: origin?.longitude ?? 0,
+    originName: origin?.name ?? null,
+    areaConfigured: origin !== null,
+    storeLocationSet: origin !== null,
     maxServiceRadiusKm: seller.maxServiceRadiusKm,
     defaultRadiusKm: MAX_SERVICE_RADIUS_KM,
-    effectiveRadiusKm: seller.maxServiceRadiusKm ?? MAX_SERVICE_RADIUS_KM,
+    effectiveRadiusKm: MAX_SERVICE_RADIUS_KM,
     radiusLimitKm: DELIVERY_RADIUS_LIMIT_KM,
     roadDistanceFactor: ROAD_DISTANCE_FACTOR,
   };
 }
 
 /**
- * Sets (a number of km) or clears (null — back to the app-wide default) this
- * seller's radius. Audited; takes effect on the very next request (nothing
- * caches the seller row).
+ * A per-seller radius no longer exists: the delivery area is the admin's one
+ * area (Global Availability location + its radius). Refused with where to
+ * change it instead — never silently stored as if it did something.
  */
 export async function setDeliveryRadius(
   sellerId: string,
-  maxServiceRadiusKm: number | null,
-  actorUserId: string,
+  _maxServiceRadiusKm: number | null,
+  _actorUserId: string,
 ): Promise<SellerDeliveryAreaDto> {
-  if (maxServiceRadiusKm !== null && !isValidDeliveryRadiusKm(maxServiceRadiusKm)) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message: `The delivery radius must be more than 0 and at most ${DELIVERY_RADIUS_LIMIT_KM} km.`,
-      internalMessage: `bad radius ${maxServiceRadiusKm}`,
-    });
-  }
-  const seller = await loadSeller(sellerId);
-  if (seller.maxServiceRadiusKm !== maxServiceRadiusKm) {
-    await prisma.$transaction([
-      prisma.seller.update({ where: { id: sellerId }, data: { maxServiceRadiusKm } }),
-      prisma.auditLog.create({
-        data: {
-          actorUserId,
-          action: 'seller.update_delivery_radius',
-          entityType: 'Seller',
-          entityId: sellerId,
-          before: { maxServiceRadiusKm: seller.maxServiceRadiusKm },
-          after: { maxServiceRadiusKm },
-        },
-      }),
-    ]);
-    // Who can order from this store just changed: open apps re-check.
-    emitStoreAvailabilityChanged(sellerId);
-  }
-  return getDeliveryArea(sellerId);
+  await loadSeller(sellerId);
+  throw new AppError(ErrorCode.VALIDATION_ERROR, {
+    status: 422,
+    message:
+      'Stores no longer have their own delivery radius. Delivery is decided by the service location and delivery radius in App Settings → Global Availability, the same for every store.',
+    internalMessage: `per-seller radius change refused for ${sellerId}`,
+  });
 }
 
 /**
- * Would an order from this seller be delivered to this point? The same rule
- * checkout applies (radius from the store's point + the service state), for
- * an admin to verify a store's pin and radius against a real address.
+ * Would an order be delivered to this point? The same rule checkout applies
+ * (inside the admin's delivery area), for an admin to verify a real address.
+ * The seller does not change the answer.
  */
 export async function checkDeliveryPoint(sellerId: string, latitude: number, longitude: number): Promise<DeliveryPointCheckDto> {
   const problem = coordinateProblem(latitude, longitude);
@@ -138,32 +128,25 @@ export async function checkDeliveryPoint(sellerId: string, latitude: number, lon
       internalMessage: `delivery check: ${latitude},${longitude} (${problem})`,
     });
   }
-  const seller = await loadSeller(sellerId);
-  if (!hasPoint(seller.latitude, seller.longitude)) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      status: 422,
-      message: `${seller.name} has no store location yet, so no distance can be measured. Set its map point first.`,
-    });
+  await loadSeller(sellerId);
+  const origin = await sellerService.deliveryOrigin();
+  if (!origin) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, { status: 422, message: AREA_NOT_SET });
   }
 
-  const check = await sellerService.checkServiceability(latitude, longitude, seller);
-  const insideServiceState = pointInServiceState(latitude, longitude);
-  const reason = !check.serviceable
-    ? `${check.distanceKm} km in a straight line — beyond this store's ${check.maxRadiusKm} km radius.`
-    : !insideServiceState
-      ? 'Outside Rajasthan (or too near its border to confirm) — Aadione delivers only in Rajasthan.'
-      : null;
-
+  const check = await sellerService.checkServiceability(latitude, longitude);
   return {
-    store: { latitude: seller.latitude, longitude: seller.longitude },
+    store: { latitude: origin.latitude, longitude: origin.longitude },
     destination: { latitude, longitude },
     distanceKm: check.distanceKm,
     effectiveRadiusKm: check.maxRadiusKm,
-    deliverable: check.serviceable && insideServiceState,
+    deliverable: check.serviceable,
     insideRadius: check.serviceable,
-    insideServiceState,
+    insideServiceState: true,
     estimatedRoadDistanceKm: Math.round(check.roadDistanceKm * 100) / 100,
     deliveryFeePaise: check.deliveryFeePaise,
-    reason,
+    reason: check.serviceable
+      ? null
+      : `${check.distanceKm} km in a straight line from the service location — beyond the ${check.maxRadiusKm} km delivery radius.`,
   };
 }

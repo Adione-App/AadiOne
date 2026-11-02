@@ -166,6 +166,14 @@ export interface ChosenLocation {
   /** The fix's reported accuracy radius (metres), GPS only. */
   accuracyM?: number | null;
   /**
+   * The village / town and PIN code this location was CONFIRMED with (a saved
+   * address, or a live location whose details the customer confirmed). With
+   * them the server decides delivery by the admin-approved pair; without
+   * them (a bare GPS point) it can only give a hint.
+   */
+  village?: string | null;
+  pincode?: string | null;
+  /**
    * When that fix was taken (epoch ms), GPS only. A GPS location is the
    * phone's CURRENT position only while this is recent — it is read again on
    * launch, on return to the app and before an order (lib/currentLocation.ts).
@@ -347,8 +355,12 @@ export const useLocation = create<LocationState>((set, get) => ({
     try {
       // THE SERVER DECIDES. The app only displays the answer — it never
       // computes serviceability itself and never acts on a cached verdict.
+      const place =
+        location.village && location.pincode
+          ? `&village=${encodeURIComponent(location.village)}&pincode=${encodeURIComponent(location.pincode)}`
+          : '';
       const result = await api.get<ServiceabilityResult>(
-        `/store/serviceability?lat=${location.latitude}&lng=${location.longitude}`,
+        `/store/serviceability?lat=${location.latitude}&lng=${location.longitude}${place}`,
       );
       // A slower answer for a location the customer has since changed is stale.
       if (check !== latestCheck) return;

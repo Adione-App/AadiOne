@@ -104,7 +104,20 @@ describe("first launch and permission", () => {
     assert.deepEqual(state.gps, { phase: "ok", failure: null });
   });
 
-  it("never asked yet: the silent launch check shows no dialog and does nothing (the explanation asks)", async () => {
+  it("first launch: the request goes straight to the system dialog, then reads the GPS and selects the point (its serviceability follows)", async () => {
+    const { state, controller } = phone({ permission: { granted: false, canAskAgain: true }, readings: [ok(HOME)] });
+    // App.tsx's silent launch check and Home's first-launch request run together.
+    const [silent, asked] = await Promise.all([controller.refresh("launch"), controller.refresh("launch", { prompt: true })]);
+    assert.equal(silent.kind, "SKIPPED");
+    assert.equal(asked.kind, "UPDATED");
+    // Exactly one read, and it is the one that may show the dialog.
+    assert.deepEqual(state.reads, [{ prompt: true }]);
+    assert.equal(state.applied, 1);
+    assert.equal(state.location?.source, "GPS");
+    assert.deepEqual(state.gps, { phase: "ok", failure: null });
+  });
+
+  it("never asked yet: the silent launch check shows no dialog and does nothing (the first-launch request asks)", async () => {
     const { state, controller } = phone({ permission: { granted: false, canAskAgain: true } });
     const outcome = await controller.refresh("launch");
     assert.deepEqual(outcome, { kind: "SKIPPED", why: "NOT_ASKED_YET" });
@@ -123,6 +136,25 @@ describe("first launch and permission", () => {
     state.permission = { granted: false, canAskAgain: true };
     await controller.refresh("resume");
     assert.equal(state.reads.length, 1);
+  });
+
+  it("allowed later in Android's Settings: the next resume reads the GPS — without a dialog", async () => {
+    const { state, controller } = phone({ readings: [{ status: "PERMISSION_DENIED" }, ok(HOME)] });
+    await controller.refresh("launch", { prompt: true });
+    assert.equal(state.applied, 0);
+    state.permission = { granted: true, canAskAgain: true }; // switched on in Settings
+    const outcome = await controller.refresh("resume");
+    assert.equal(outcome.kind, "UPDATED");
+    assert.deepEqual(state.reads, [{ prompt: true }, { prompt: false }]);
+    assert.equal(state.location?.latitude, HOME.latitude);
+    assert.deepEqual(state.gps, { phase: "ok", failure: null });
+  });
+
+  it("'Only this time' expired after a restart: the launch check never prompts; the earlier point is marked not current", async () => {
+    const earlier: CurrentPoint = { ...HOME, label: "Home", source: "GPS", fixedAt: 1 };
+    const { state, controller } = phone({ permission: { granted: false, canAskAgain: true }, location: earlier });
+    assert.deepEqual(await controller.refresh("launch"), { kind: "FAILED", failure: "PERMISSION_DENIED" });
+    assert.equal(state.reads.length, 0);
   });
 
   it("permanently denied: PERMISSION_BLOCKED (Settings is the only way), and silent checks report it without reading", async () => {
@@ -224,7 +256,7 @@ describe("the current location follows the phone", () => {
     assert.equal(state.liveDestination?.mobile, "9829012345");
   });
 
-  it("a point outside Rajasthan is shown (the server says it is not served) but is never an order destination", async () => {
+  it("a point in another state is a live destination like any other — no state is hardcoded; the server decides from the admin's delivery area", async () => {
     const delhi = { latitude: 28.6139, longitude: 77.209 };
     const { state, controller } = phone({
       readings: [ok(delhi)],
@@ -232,7 +264,8 @@ describe("the current location follows the phone", () => {
     });
     await controller.refresh("user", { prompt: true });
     assert.equal(state.location?.latitude, delhi.latitude);
-    assert.equal(state.liveDestination, null);
+    assert.equal(state.liveDestination?.state, "Delhi");
+    assert.equal(state.liveDestination?.latitude, delhi.latitude);
   });
 
   it("an old saved Home never overrides the GPS: a GPS location is replaced by the reading, not by an address", async () => {

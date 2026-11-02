@@ -68,4 +68,11 @@ export interface PaymentRefreshResult {
   payBy: string | null;
   /** Money arrived after the payment window closed and is being refunded. */
   latePaymentRefund: boolean;
+  /**
+   * The server's verdict, from what Cashfree told it (never the SDK): PAID,
+   * PENDING (in progress — never failed), FAILED (newest attempt failed /
+   * cancelled), NOT_PAID (nothing paid, nothing in progress), CLOSED (no
+   * longer payable), LATE_REFUND. Absent from older servers (derived then).
+   */
+  outcome?: "PAID" | "PENDING" | "FAILED" | "NOT_PAID" | "CLOSED" | "LATE_REFUND";
 }

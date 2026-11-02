@@ -2845,6 +2845,37 @@ export interface PaymentRefreshResult {
   payBy: string | null;
   /** Money arrived after the order stopped awaiting it and is being refunded. */
   latePaymentRefund: boolean;
+  /**
+   * The verdict, in one word — derived ONLY from what Cashfree said to this
+   * server (never from the app's SDK callback):
+   *   PAID         payment verified (the order is confirmed);
+   *   PENDING      an attempt is still in progress at the gateway — neither
+   *                failed nor paid: keep checking, never offer a second payment;
+   *   FAILED       the newest attempt definitively failed / was cancelled;
+   *   NOT_PAID     no payment and none in progress (the checkout was closed
+   *                without paying — nothing can still arrive from it);
+   *   CLOSED       the order no longer awaits payment (expired / cancelled);
+   *   LATE_REFUND  money arrived after that and is being refunded.
+   */
+  outcome: PaymentOutcome;
+}
+
+export type PaymentOutcome = "PAID" | "PENDING" | "FAILED" | "NOT_PAID" | "CLOSED" | "LATE_REFUND";
+
+/** The one-word verdict for a refresh answer. Pure — unit-tested. */
+export function paymentOutcomeOf(input: {
+  status: OrderStatus;
+  paymentStatus: OrderPaymentStatus;
+  attemptPending: boolean;
+  lastAttemptFailed: boolean;
+  latePaymentRefund: boolean;
+}): PaymentOutcome {
+  if (input.paymentStatus === OrderPaymentStatus.PAID || input.paymentStatus === OrderPaymentStatus.PARTIALLY_REFUNDED) return "PAID";
+  if (input.latePaymentRefund) return "LATE_REFUND";
+  if (input.status !== OrderStatus.PENDING_PAYMENT) return "CLOSED";
+  if (input.attemptPending) return "PENDING";
+  if (input.lastAttemptFailed) return "FAILED";
+  return "NOT_PAID";
 }
 
 /**
@@ -2949,18 +2980,26 @@ export async function refreshPayment(
           select: { id: true },
         });
 
+  const pending = attemptPending && updated.status === OrderStatus.PENDING_PAYMENT;
   return {
     orderId: updated.id,
     status: updated.status,
     paymentStatus: updated.paymentStatus,
     totalPaise: updated.totalPaise,
     lastAttemptFailed,
-    attemptPending: attemptPending && updated.status === OrderStatus.PENDING_PAYMENT,
+    attemptPending: pending,
     payBy:
       updated.status === OrderStatus.PENDING_PAYMENT && updated.reservationExpiresAt
         ? updated.reservationExpiresAt.toISOString()
         : null,
     latePaymentRefund: lateRefund !== null,
+    outcome: paymentOutcomeOf({
+      status: updated.status,
+      paymentStatus: updated.paymentStatus,
+      attemptPending: pending,
+      lastAttemptFailed,
+      latePaymentRefund: lateRefund !== null,
+    }),
   };
 }
 

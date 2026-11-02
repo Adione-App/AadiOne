@@ -7,6 +7,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createCurrentLocation, type RefreshReason } from './currentLocation';
+import { createFirstLaunchLocation } from './firstLaunchLocation';
 import { getLocationPermission, readDeviceLocation, suggestAddressFor } from './deviceLocation';
 import { useAuth, useLocation } from './store';
 
@@ -37,37 +38,34 @@ export function ensureFreshCurrentLocation() {
 }
 
 /* -------------------------------------------------------------------------- */
-/* First launch: the explanation before the system's permission dialog        */
+/* First launch: the system's location dialog, asked directly, once           */
 /* -------------------------------------------------------------------------- */
 
-const INTRO_SHOWN_KEY = 'adione.location-intro-shown';
+// The key the earlier explanation screen used: installs that already saw it
+// were asked then, and are not asked again.
+const ASKED_KEY = 'adione.location-intro-shown';
 
-/** True once the explanation has been shown on this install (it is shown once, ever). */
-export async function locationIntroShown(): Promise<boolean> {
-  try {
-    return (await AsyncStorage.getItem(INTRO_SHOWN_KEY)) === '1';
-  } catch {
-    // Unreadable storage: never nag — treat it as shown.
-    return true;
-  }
-}
+const firstLaunch = createFirstLaunchLocation({
+  async asked() {
+    try {
+      return (await AsyncStorage.getItem(ASKED_KEY)) === '1';
+    } catch {
+      // Unreadable storage: never risk asking twice — treat it as asked.
+      return true;
+    }
+  },
+  async markAsked() {
+    await AsyncStorage.setItem(ASKED_KEY, '1');
+  },
+  permission: getLocationPermission,
+  hasLocation: () => useLocation.getState().location !== null,
+  // Android's own dialog (while using the app / only this time / don't
+  // allow, precise or approximate), then a fresh reading and the server's
+  // serviceability check for it.
+  request: () => controller.refresh('launch', { prompt: true }),
+});
 
-export async function markLocationIntroShown(): Promise<void> {
-  try {
-    await AsyncStorage.setItem(INTRO_SHOWN_KEY, '1');
-  } catch {
-    // Best effort.
-  }
-}
-
-/** Should the first-launch explanation appear now? Never asked, nothing chosen, not shown before. */
-export async function shouldShowLocationIntro(): Promise<boolean> {
-  if (useLocation.getState().location) return false;
-  if (await locationIntroShown()) return false;
-  try {
-    const permission = await getLocationPermission();
-    return !permission.granted && permission.canAskAgain;
-  } catch {
-    return false;
-  }
+/** First launch only: the system's location dialog, with no screen of Aadione's before or after it. */
+export function requestLocationOnFirstLaunch() {
+  return firstLaunch.run();
 }

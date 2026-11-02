@@ -26,6 +26,7 @@ export const ConfigKey = {
   /* serviceability */
   MAX_SERVICE_RADIUS_KM: "MAX_SERVICE_RADIUS_KM",
   SERVICEABLE_PINCODES: "SERVICEABLE_PINCODES",
+  DELIVERY_LOCATIONS: "DELIVERY_LOCATIONS",
   ROAD_DISTANCE_FACTOR: "ROAD_DISTANCE_FACTOR",
 
   /* store */
@@ -125,7 +126,7 @@ export interface PlatformDayHours {
  */
 export type PlatformOperatingMode = "FIXED_TIMING" | "ALWAYS_OPEN";
 
-/** Aadione's main address / service location (PLATFORM_LOCATION) — informational; never a delivery origin. */
+/** Aadione's service location (PLATFORM_LOCATION) — the centre of the delivery area: every delivery distance is measured from it. */
 export interface PlatformLocation {
   /** Display name, e.g. "Aadione Main Store"; optional (older saved locations have none). */
   name?: string | null;
@@ -133,6 +134,21 @@ export interface PlatformLocation {
   landmark: string | null;
   latitude: number;
   longitude: number;
+}
+
+/**
+ * One admin-approved delivery location (DELIVERY_LOCATIONS): a village /
+ * town / city together with ITS PIN code — a pair, never two independent
+ * lists. Only an active pair is delivered to.
+ */
+export interface DeliveryLocationPair {
+  /** Stable id for editing (the admin panel assigns it). */
+  id: string;
+  /** Village / town / city as customers see it, e.g. "Kuraj". */
+  village: string;
+  /** Its 6-digit PIN code, e.g. "313328". */
+  pincode: string;
+  active: boolean;
 }
 
 /** A delivery-fee band. The first slab whose `maxKm` covers the distance wins. */
@@ -149,6 +165,7 @@ export interface ConfigValues {
    * — the verified point and each store's radius still decide (location.ts pincodeAllowed).
    */
   SERVICEABLE_PINCODES: string[];
+  DELIVERY_LOCATIONS: DeliveryLocationPair[];
   ROAD_DISTANCE_FACTOR: number;
 
   STORE_TIMEZONE: string;
@@ -242,6 +259,7 @@ export const CONFIG_DEFAULTS: ConfigValues = {
   MAX_SERVICE_RADIUS_KM: 12,
   // No list until an admin provides one: the radius alone decides.
   SERVICEABLE_PINCODES: [],
+  DELIVERY_LOCATIONS: [],
 
   ROAD_DISTANCE_FACTOR: 1.3,
 
@@ -365,10 +383,13 @@ export type PublicConfig = Pick<
 /** Human-readable descriptions rendered on the admin Configuration screen. */
 export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
   MAX_SERVICE_RADIUS_KM:
-    "Maximum straight-line delivery distance from the store, in km.",
+    "Delivery radius, in km: customers within this straight-line distance of the service location (PLATFORM_LOCATION) can order.",
 
   SERVICEABLE_PINCODES:
-    "Approved delivery PIN codes. Empty = no PIN restriction. An address whose PIN is not listed is not delivered to; a listed PIN still needs the address to be within a store's radius.",
+    "Superseded by Approved Delivery Villages (DELIVERY_LOCATIONS) and no longer used for delivery; kept as stored.",
+
+  DELIVERY_LOCATIONS:
+    "Approved delivery villages: each village / town / city with its own PIN code, active or not. Delivery is allowed only to an active approved pair (the exact village with its PIN).",
 
   ROAD_DISTANCE_FACTOR:
     "Multiplier converting straight-line distance to road distance, used for ETA and delivery fee (typically 1.2–1.4).",
@@ -407,7 +428,7 @@ export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
     "Fixed Timing (the weekly hours decide) or Always Open (no hour restriction). Empty = follows whether weekly hours are saved.",
 
   PLATFORM_LOCATION:
-    "Aadione's main address and map point (App Settings → Global Availability). Informational: delivery is measured from each seller's own location.",
+    "Aadione's service location and map point (App Settings → Global Availability) — the centre of the delivery area. Eligibility, delivery fee and ETA are measured from it; not set = no delivery.",
 
   PAYMENT_ONLINE_ENABLED:
     "Accept Online Payment for new orders. Off: the app shows it as unavailable and the server refuses new online orders and payments; payments already in progress still complete.",

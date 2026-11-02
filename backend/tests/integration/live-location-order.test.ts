@@ -56,7 +56,7 @@ const LIVE_COMPLETE = {
   pincode: '332001',
 };
 
-/** The customer did not know the house number, locality, district or PIN. */
+/** The customer did not know the house number, locality or district (village + PIN are required: the approved pair). */
 const LIVE_MINIMAL = {
   ...NEARBY,
   accuracyM: 35,
@@ -64,6 +64,7 @@ const LIVE_MINIMAL = {
   mobile: '9414000001',
   city: 'Palsana',
   state: 'Rajasthan',
+  pincode: '332402',
 };
 
 async function setup(stockQty = 10) {
@@ -136,12 +137,17 @@ describe('live-location orders', () => {
     expect(await prisma.address.count()).toBe(0);
   });
 
-  it('accepts a live location whose house, locality, district and PIN the customer did not know', async () => {
+  it('accepts a live location whose house, locality and district the customer did not know — but never one without its PIN', async () => {
     const { session } = await setup();
+    const { pincode: _pin, ...noPin } = LIVE_MINIMAL;
+    const refused = await placeOrder(session.accessToken, { liveLocation: noPin, paymentMethod: PaymentMethod.COD });
+    expect(refused.status).toBe(422);
+    expect(expectError(refused.body).message).toMatch(/Choose your village/);
+
     const res = await placeOrder(session.accessToken, { liveLocation: LIVE_MINIMAL, paymentMethod: PaymentMethod.COD });
     expect(res.status).toBe(201);
     const order = expectSuccess<{ order: OrderDetailDto }>(res.body).data.order;
-    expect(order.deliveryAddress).toMatchObject({ fullName: 'Sita Devi', mobile: '9414000001', city: 'Palsana', district: null, pincode: '' });
+    expect(order.deliveryAddress).toMatchObject({ fullName: 'Sita Devi', mobile: '9414000001', city: 'Palsana', district: null, pincode: '332402' });
     // Nothing invented for the missing parts.
     const row = await prisma.order.findFirstOrThrow();
     // No house / street / locality: the line is empty, the town and state
@@ -150,7 +156,7 @@ describe('live-location orders', () => {
       deliveryAddressLine: '',
       deliveryCity: 'Palsana',
       deliveryState: 'Rajasthan',
-      deliveryPincode: '',
+      deliveryPincode: '332402',
       deliveryDistrict: null,
       deliveryLandmark: null,
       deliveryLatitude: NEARBY.latitude,
@@ -188,22 +194,25 @@ describe('live-location orders', () => {
     expect(await prisma.order.count()).toBe(0);
   });
 
-  it('refuses an out-of-range live point with the seller radius rule — client-sent distance or eligibility is ignored', async () => {
+  it('refuses a live location whose village + PIN is not approved — client-sent distance or eligibility is ignored', async () => {
     const { session, listingId } = await setup();
     const res = await placeOrder(session.accessToken, {
-      liveLocation: { ...LIVE_COMPLETE, ...FAR, distanceKm: 0.2, serviceable: true, sellerId: randomUUID() },
+      liveLocation: { ...LIVE_COMPLETE, city: 'Fatehpur', pincode: '332301', distanceKm: 0.2, serviceable: true, sellerId: randomUUID() },
       paymentMethod: PaymentMethod.COD,
     });
     expect(res.status).toBe(422);
     const error = expectError(res.body);
     expect(error.code).toBe(ErrorCode.OUT_OF_SERVICE_AREA);
-    expect(error.message).toMatch(/does not deliver to this location/);
+    expect(error.message).toMatch(/not delivering to Fatehpur 332301/);
     expect(await prisma.order.count()).toBe(0);
     expect((await prisma.sellerListing.findUniqueOrThrow({ where: { id: listingId } })).reservedQty).toBe(0);
 
     // The quote gives the same answer before the customer ever taps Pay.
-    const quoted = await quote(session.accessToken, { liveLocation: { ...LIVE_COMPLETE, ...FAR } });
+    const quoted = await quote(session.accessToken, { liveLocation: { ...LIVE_COMPLETE, city: 'Fatehpur', pincode: '332301' } });
     expect(quoted.status).toBe(422);
+
+    // Far away, but an approved village + PIN: delivered to (the point only prices the fee).
+    await quote(session.accessToken, { liveLocation: { ...LIVE_COMPLETE, ...FAR } }).expect(200);
     expect(expectError(quoted.body).code).toBe(ErrorCode.OUT_OF_SERVICE_AREA);
   });
 
@@ -300,7 +309,7 @@ describe('saved-address orders alongside live ones', () => {
     await api()
       .patch(`/api/v1/addresses/${addressId}`)
       .set('Authorization', bearer(session.accessToken))
-      .send({ label: 'Parents', fullName: 'Someone Else', mobile: '9000000009', area: 'Another Colony', city: 'Fatehpur', ...FAR })
+      .send({ label: 'Parents', fullName: 'Someone Else', mobile: '9000000009', area: 'Another Colony', city: 'Palsana', pincode: '332402', ...FAR })
       .expect(200);
     await api().patch('/api/v1/auth/me').set('Authorization', bearer(session.accessToken)).send({ fullName: 'Renamed Customer' }).expect(200);
 

@@ -5,19 +5,19 @@
  * THE SERVER DECIDES, from the point alone (nothing the app says about
  * distance or eligibility is read), with the existing sources of truth only:
  *
- *   radius              each seller's own map point and `maxServiceRadiusKm`,
- *                       else Configuration MAX_SERVICE_RADIUS_KM — inclusive
- *                       (distance <= radius), straight line
- *                       (seller.service `evaluateLocation`)
- *   state               Rajasthan only (addresses/service-state.ts)
+ *   delivery area       with the location's village + PIN (a saved address
+ *                       or a confirmed live location): an ACTIVE admin-
+ *                       approved pair (Configuration DELIVERY_LOCATIONS).
+ *                       A bare GPS point (village unknown): the admin radius
+ *                       around the service location, as a hint only
+ *                       (seller.service `evaluateLocation`).
  *   store open / taking orders
  *                       each serving seller's availability (store-availability.ts)
  *   app-wide ordering   ORDERING_ENABLED, pauses, holidays, hours
  *                       (platform-availability via store-availability.ts)
  *
- * PLATFORM_LOCATION (Aadione's main address) is informational and never a
- * delivery origin, so it plays no part here. A PIN code match alone never
- * makes a point serviceable.
+ * Sellers' own map points play no part, and no state is hardcoded. A PIN
+ * code match alone never makes a point serviceable.
  *
  * The answer is DISPLAY: quote and order placement check the radius, every
  * cart seller's availability and app-wide ordering again for the exact
@@ -25,7 +25,7 @@
  */
 
 import type { ServiceabilityResult, ServiceabilityStatus } from '../../shared';
-import { evaluateLocation } from './seller.service';
+import { evaluateLocation, type KnownPlace } from './seller.service';
 import { orderingState, storeStatuses } from './store-availability';
 
 /** The one sentence for a location Aadione does not deliver to (all three "outside" reasons). */
@@ -38,11 +38,12 @@ export async function getLocationServiceability(
   latitude: number,
   longitude: number,
   now: Date = new Date(),
+  place: KnownPlace | null = null,
 ): Promise<ServiceabilityResult> {
-  const { result, serving, outsideReason } = await evaluateLocation(latitude, longitude);
+  const { result, serving, outsideReason, outsideMessage } = await evaluateLocation(latitude, longitude, place);
 
   if (outsideReason) {
-    return { ...result, status: outsideReason, message: NOT_DELIVERING_MESSAGE, canOrder: false };
+    return { ...result, status: outsideReason, message: outsideMessage ?? NOT_DELIVERING_MESSAGE, canOrder: false };
   }
 
   // In range. App-wide ordering first: while it is off nobody can order,

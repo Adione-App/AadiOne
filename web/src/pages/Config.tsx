@@ -21,6 +21,8 @@ import type { ConfigKey } from "@shared";
 import { api } from "@/lib/api";
 import { Card, ErrorBanner, Spinner } from "@/components/ui";
 import GlobalAvailabilitySettings from "@/pages/GlobalAvailability";
+import DeliveryVillages from "@/pages/DeliveryVillages";
+import type { DeliveryLocationPair } from "@shared";
 
 interface ConfigEntry {
   key: ConfigKey;
@@ -487,6 +489,10 @@ export default function ConfigPage() {
     "PLATFORM_LOCATION",
     "STORE_TIMEZONE",
     "MAX_SERVICE_RADIUS_KM",
+    // Approved Delivery Villages has its own editor below; the old bare PIN
+    // list it replaces is no longer used and not shown.
+    "DELIVERY_LOCATIONS",
+    "SERVICEABLE_PINCODES",
   ]);
   const entries = config.data.filter((entry) => !OWN_PAGE_KEYS.has(entry.key));
 
@@ -643,6 +649,13 @@ export default function ConfigPage() {
       {/* The Aadione app's availability and main store location — first, in a fixed order. */}
       <GlobalAvailabilitySettings />
 
+      {/* Where Aadione delivers: approved village + PIN pairs. */}
+      <DeliveryVillages
+        saved={
+          (config.data.find((entry) => entry.key === "DELIVERY_LOCATIONS")?.value as DeliveryLocationPair[] | undefined) ?? []
+        }
+      />
+
       <h2 className="pt-2 text-lg font-semibold text-gray-900">Other settings</h2>
       <ErrorBanner message={error} />
 
@@ -669,9 +682,12 @@ export default function ConfigPage() {
             )}
           {group.title === "Delivery" && (
             <p className="mb-3 rounded-xl bg-info-50 px-3.5 py-2.5 text-sm text-gray-700">
-              The default delivery radius is set at the top of this page. It is measured in a straight line from each seller&apos;s own map point, which the seller sets in the Seller Panel
-              (Profile → Store location) and an admin can correct on the seller&apos;s page (Overview → Store location, Delivery area — with a map and a
-              distance check). Checkout needs every seller in the order to deliver to the address.
+              Where Aadione delivers is the{" "}
+              <a href="#delivery-villages" className="font-semibold text-brand-600 hover:underline">
+                Approved Delivery Villages
+              </a>{" "}
+              list above (each village with its own PIN code). The service location and delivery radius at the top of this page measure the distance
+              (straight line) that prices the delivery fee and time — never from a seller&apos;s own map point.
             </p>
           )}
           {group.note && (

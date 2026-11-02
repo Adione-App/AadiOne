@@ -109,8 +109,6 @@ describe("the current location must be current", () => {
 
   it("GPS failures override an earlier GPS point's answer — each with its own way forward", () => {
     const cases = [
-      ["PERMISSION_DENIED", ["ALLOW_LOCATION", "CHOOSE_ADDRESS"]],
-      ["PERMISSION_BLOCKED", ["OPEN_SETTINGS", "CHOOSE_ADDRESS"]],
       ["SERVICES_DISABLED", ["ENABLE_GPS", "CHOOSE_ADDRESS"]],
       ["TIMEOUT", ["REFRESH", "CHOOSE_ADDRESS"]],
       ["UNAVAILABLE", ["REFRESH", "CHOOSE_ADDRESS"]],
@@ -122,6 +120,28 @@ describe("the current location must be current", () => {
       assert.equal(view.canOrder, false);
       assert.deepEqual(view.actions, actions);
       assert.ok(view.message && view.message.length > 20);
+    }
+  });
+
+  it("a denied permission (once or for good) shows no card, message or button of Aadione's", () => {
+    for (const failure of ["PERMISSION_DENIED", "PERMISSION_BLOCKED"] as const) {
+      // Nothing chosen yet: only Home's ordinary "set your delivery location" entry.
+      const fresh = deliveryView(inputs({ location: null, serviceability: null, gps: { phase: "failed", failure } }));
+      assert.equal(fresh.state, "NO_LOCATION", failure);
+      assert.equal(fresh.title, null);
+      assert.equal(fresh.message, null);
+      assert.deepEqual(fresh.actions, []);
+      assert.equal(fresh.canOrder, false);
+
+      // An earlier GPS point: not where the phone is now — never orderable,
+      // the header says so, and still no notice.
+      const stale = deliveryView(inputs({ gps: { phase: "failed", failure } }));
+      assert.equal(stale.state, "GPS_FAILED", failure);
+      assert.equal(stale.canOrder, false);
+      assert.equal(stale.title, null);
+      assert.equal(stale.message, null);
+      assert.deepEqual(stale.actions, []);
+      assert.equal(deliveryHeadline(stale).text, "Current location unavailable");
     }
   });
 
@@ -145,6 +165,7 @@ describe("the current location must be current", () => {
   it("nothing chosen yet: NO_LOCATION (Home asks); locating on first launch: LOCATING", () => {
     assert.equal(deliveryView(inputs({ location: null, serviceability: null, gps: { phase: "idle", failure: null } })).state, "NO_LOCATION");
     assert.equal(deliveryView(inputs({ location: null, serviceability: null, gps: { phase: "locating", failure: null } })).state, "LOCATING");
-    assert.equal(deliveryView(inputs({ location: null, serviceability: null, gps: { phase: "failed", failure: "PERMISSION_DENIED" } })).state, "GPS_FAILED");
+    assert.equal(deliveryView(inputs({ location: null, serviceability: null, gps: { phase: "failed", failure: "PERMISSION_DENIED" } })).state, "NO_LOCATION");
+    assert.equal(deliveryView(inputs({ location: null, serviceability: null, gps: { phase: "failed", failure: "TIMEOUT" } })).state, "GPS_FAILED");
   });
 });

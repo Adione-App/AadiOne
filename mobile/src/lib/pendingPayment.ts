@@ -15,6 +15,7 @@ import * as Crypto from "expo-crypto";
 import type { QueryClient } from "@tanstack/react-query";
 import { create } from "zustand";
 import { api } from "./api";
+import { homeShelvesQueryKey } from "./homeLayoutQuery";
 import { isCashfreeAvailable, openCashfreeCheckout } from "./cashfree";
 import { createPaymentFlow, maskId, type PaymentState, type PendingOrder } from "./paymentFlow";
 import { PAYMENT_DIAGNOSTICS, recordDiagnostic, sanitizeDiagnostic } from "./paymentDiagnostics";
@@ -42,11 +43,31 @@ export function setPaymentQueryClient(client: QueryClient): void {
   queryClient = client;
 }
 
+/**
+ * Product lists whose stock a payment's end changes: paid = the held units
+ * are sold; ended unpaid = they are back on sale. Only what is on screen is
+ * fetched again (the rest is marked stale for its next use).
+ */
+const CATALOGUE_STOCK_QUERIES: readonly (readonly string[])[] = [
+  ["home"],
+  homeShelvesQueryKey,
+  ["category-listing"],
+  ["rail"],
+  ["search"],
+  ["store-products"],
+  ["product"],
+];
+
 function invalidateAfterOutcome(): void {
   if (!queryClient) return;
   // The order list / Home carousel (a confirmed order) and the cart (an
   // unpaid order that ended gives its items back).
   for (const key of [["orders"], ["order"], ["cart"]] as const) {
+    void queryClient.invalidateQueries({ queryKey: [...key] });
+  }
+  // The customer's own hold no longer covers these cards (ownHolds.ts): they
+  // show the catalogue's answer again, so it must be the current one.
+  for (const key of CATALOGUE_STOCK_QUERIES) {
     void queryClient.invalidateQueries({ queryKey: [...key] });
   }
 }
@@ -86,12 +107,19 @@ const flow = createPaymentFlow({
   now: () => Date.now(),
   onChange: (state) => {
     logPaymentLaunch("state", { phase: state.phase, ...("reason" in state ? { reason: state.reason } : {}) });
+    const previousPhase = usePayment.getState().state.phase;
     usePayment.setState({ state });
     if (state.phase === "paid" || state.phase === "ended") {
       // The detail cached at placement still says "awaiting payment": the
       // confirmation screen must load the server's confirmed order instead.
       queryClient?.removeQueries({ queryKey: ["order", state.orderId] });
       invalidateAfterOutcome();
+    } else if ((state.phase === "failed" || state.phase === "pending") && previousPhase !== state.phase) {
+      // Back from Cashfree without a confirmed payment: the cart shows the
+      // server's availability again (the customer's own unpaid hold counts as
+      // theirs there) instead of whatever it showed before paying. Once per
+      // change into these phases — a pending poll does not refetch each time.
+      void queryClient?.invalidateQueries({ queryKey: ["cart"] });
     }
   },
 });

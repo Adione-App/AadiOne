@@ -33,6 +33,26 @@ export function trackedAvailableQty(listing: StockFields): number | null {
   return listing.tracksStock ? Math.max(0, listing.stockQty - listing.reservedQty) : null;
 }
 
+/**
+ * Units of a TRACKED listing ONE customer can have, given what their own
+ * unpaid online checkout already holds of it (`ownHeldQty`, from
+ * orders/own-checkout-holds.ts). Those units are reserved FOR this customer
+ * — still theirs to pay for, not sold — so their own cart must never call
+ * them "out of stock": that was the last-unit bug (Pay Online, return from
+ * Cashfree without paying, the cart says OUT OF STOCK). Everyone else's
+ * holds still count, so no one else can take a unit that is held.
+ *
+ * Only for cart / checkout decisions about the customer's own lines. The
+ * order transaction itself never uses this: it re-checks plain
+ * `stock − reserved` under the row lock, after the customer's open checkout
+ * was reused or released (orders/open-checkout.ts).
+ */
+export function trackedAvailableQtyFor(listing: StockFields, ownHeldQty: number): number | null {
+  if (!listing.tracksStock) return null;
+  const heldByOthers = Math.max(0, listing.reservedQty - Math.max(0, ownHeldQty));
+  return Math.max(0, listing.stockQty - heldByOthers);
+}
+
 /** Whether stock allows a sale at all (availability switch and seller state are separate checks). */
 export function hasStockToSell(listing: StockFields): boolean {
   return !listing.tracksStock || listing.stockQty - listing.reservedQty > 0;

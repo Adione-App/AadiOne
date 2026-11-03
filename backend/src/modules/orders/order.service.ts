@@ -59,7 +59,8 @@ import * as configService from "../configuration/configuration.service";
 import * as sellerService from "../sellers/seller.service";
 import { unorderableMessage, unorderableReason } from "../cart/orderability";
 import { cartLineEligibility } from "../cart/eligibility";
-import { trackedAvailableQty } from "../inventory/stock-rules";
+import { trackedAvailableQtyFor } from "../inventory/stock-rules";
+import { heldFor, ownCheckoutHolds, type OwnCheckoutHolds } from "./own-checkout-holds";
 import { assertOrderingEnabled, statusOf, storeStatuses, type StoreStatus } from "../sellers/store-availability";
 import { restoreUnpaidOrderLines } from "./unpaid-order-guard";
 import { CART_RETAINED_METADATA } from "./cart-retention";
@@ -177,8 +178,10 @@ async function buildCheckoutContext(
 ): Promise<CheckoutContext> {
   // Independent reads — together, not one after the other (each is a round
   // trip to the database).
-  const [address, cart] = await Promise.all([
+  const [address, holds, cart] = await Promise.all([
     resolveDestination(userId, destination),
+    // The customer's own unpaid checkout holds count as theirs (own-checkout-holds.ts).
+    ownCheckoutHolds(userId),
     prisma.cart.findFirst({
       where: { userId, status: "ACTIVE" },
       include: {
@@ -218,7 +221,7 @@ async function buildCheckoutContext(
         product: item.sellerListing.variant.product,
         variant: item.sellerListing.variant,
         listing: item.sellerListing,
-        availableQty: trackedAvailableQty(item.sellerListing),
+        availableQty: trackedAvailableQtyFor(item.sellerListing, heldFor(holds, item.sellerListing.id)),
         store: statusOf(statuses, item.sellerListing.seller.id),
         displayName: item.sellerListing.variant.product.name,
       }).orderable,
@@ -528,6 +531,7 @@ function selectOrderLines(
   lines: CartLine[],
   expectedItems: PlaceOrderInput["expectedItems"],
   statuses: ReadonlyMap<string, StoreStatus>,
+  holds: OwnCheckoutHolds,
 ): CartLine[] {
   if (!expectedItems) return lines;
   const confirmed = new Set(expectedItems.map((entry) => entry.sellerListingId));
@@ -545,7 +549,9 @@ function selectOrderLines(
       product: offer.variant.product,
       variant: offer.variant,
       listing: offer,
-      availableQty: trackedAvailableQty(offer),
+      // The same rule as the cart the customer confirmed: their own unpaid
+      // checkout's hold is theirs (own-checkout-holds.ts).
+      availableQty: trackedAvailableQtyFor(offer, heldFor(holds, offer.id)),
       store: statusOf(statuses, offer.seller.id),
       displayName: offer.variant.product.name,
     });
@@ -671,7 +677,7 @@ export async function placeOrder(
   // here too: the transaction below only re-checks WHICH lines and
   // quantities are being ordered (see its cart step), while prices and
   // stock always come from the rows it locks.
-  const [address, preloaded, config, categories, user, deliveredCount] =
+  const [address, preloaded, config, categories, user, deliveredCount, holds] =
     await Promise.all([
       resolveDestination(input.userId, input.destination),
       loadCartForOrder(prisma, input.userId),
@@ -688,6 +694,7 @@ export async function placeOrder(
       prisma.order.count({
         where: { userId: input.userId, status: OrderStatus.DELIVERED },
       }),
+      ownCheckoutHolds(input.userId),
     ]);
   if (!preloaded || preloaded.items.length === 0) {
     throw new AppError(ErrorCode.CART_EMPTY);
@@ -703,6 +710,7 @@ export async function placeOrder(
     preloaded.items,
     input.expectedItems,
     await storeStatuses(preloaded.items.map((line) => line.sellerListing.seller)),
+    holds,
   );
 
   const delivery = await sellerService.assertLoadedSellersServe(
@@ -791,6 +799,8 @@ export async function placeOrder(
           fresh.items,
           input.expectedItems,
           await storeStatuses(fresh.items.map((line) => line.sellerListing.seller)),
+          // Read again here: the open checkout may have been released above.
+          await ownCheckoutHolds(input.userId, tx),
         );
         await assertCartSellersOpen(freshLines, address, servingSellerIds);
         cart = { ...fresh, items: freshLines };

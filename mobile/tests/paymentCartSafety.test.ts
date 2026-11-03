@@ -76,4 +76,16 @@ describe("an unpaid checkout is not shown as an order", () => {
     assert.match(cart, /onAnotherMethod=\{\(\) => \{\n\s*dismissPaymentFailure\(\);/);
     assert.match(cart, /void resumePayment\(\)/);
   });
+
+  it("back from Cashfree failed or pending: the cart is fetched again from the server (once per change, not per poll)", () => {
+    const pending = read("src/lib/pendingPayment.ts");
+    assert.match(
+      pending,
+      /\(state\.phase === "failed" \|\| state\.phase === "pending"\) && previousPhase !== state\.phase\) \{[\s\S]*?invalidateQueries\(\{ queryKey: \["cart"\] \}\)/,
+    );
+    // Read BEFORE the new state is stored, or every change would look like "no change".
+    assert.ok(
+      pending.indexOf("const previousPhase = usePayment.getState().state.phase;") < pending.indexOf("usePayment.setState({ state });"),
+    );
+  });
 });

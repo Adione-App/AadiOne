@@ -147,7 +147,8 @@ function SheetContent({
   const detail = useProduct(product.id);
   const cart = useCartActions();
   const data = detail.data;
-  const variants = useMemo(() => data?.variants ?? [], [data]);
+  // Units the customer's own unpaid checkout holds count as theirs (lib/ownHolds.ts).
+  const variants = useMemo(() => (data?.variants ?? []).map((item) => cart.withOwnHold(item)), [data, cart.withOwnHold]);
   const options = useMemo(() => (data ? variantOptions(data) : null), [data]);
   const [selection, setSelection] = useState<Selection | null>(null);
 

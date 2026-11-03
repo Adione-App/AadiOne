@@ -92,6 +92,7 @@ import { useCart, useCartMutations } from "./queries";
 import { singleCartVariantOf } from "./cartVariant";
 import { requireAuth } from "./authGate";
 import { deferredAddDecision, type DeferredCartAdd } from "./guestAccess";
+import { ownAvailableQty, ownHoldsFromCart, withOwnHold as applyOwnHold } from "./ownHolds";
 import { useAuth, useLocation, useSignedIn } from "@/lib/store";
 
 const isSignedIn = (): boolean => useAuth.getState().status === "authenticated";
@@ -966,6 +967,27 @@ export function useCartActions() {
   );
 
   /**
+   * Stock this customer's OWN unpaid online checkout holds for them — shown
+   * on product cards instead of the shared catalogue's "sold out" (see
+   * ownHolds.ts). From the server-confirmed `cart` only: never the
+   * disk-restored or optimistic one. Empty for a guest (no cart).
+   */
+  const ownHolds = useMemo(() => ownHoldsFromCart(cart?.items), [cart]);
+
+  /** A card's availability override: units this customer may have, or null (use the catalogue's). */
+  const ownAvailableQtyFor = useCallback(
+    (product: Pick<ProductSummaryDto, "defaultVariant">): number | null =>
+      ownAvailableQty(ownHolds, product.defaultVariant?.sellerListingId),
+    [ownHolds],
+  );
+
+  /** One catalogue variant as this customer sees it (product page, size sheet). */
+  const withOwnHold = useCallback(
+    <V extends VariantDto>(variant: V): V => applyOwnHold(variant, ownHolds),
+    [ownHolds],
+  );
+
+  /**
    * The most this variant may hold, for an instant answer to a tap — the
    * server re-checks every change. From the server's own cart line when there
    * is one (fresh per-order limit AND stock); otherwise only the per-order
@@ -1166,6 +1188,8 @@ export function useCartActions() {
     qtyForProduct,
     qtyForCard,
     cartVariantForCard,
+    ownAvailableQtyFor,
+    withOwnHold,
     isBusy,
 
     add,

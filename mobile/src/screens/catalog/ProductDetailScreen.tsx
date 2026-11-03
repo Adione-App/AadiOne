@@ -11,7 +11,7 @@
  * lowest in-stock size. A simple item works exactly as before.
  */
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View, type ViewInstance } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
@@ -77,7 +77,12 @@ export default function ProductDetailScreen({
   // `product.data` exists — no hook depends on it, but keeping the shape
   // consistent with the rest of this file's "every value is optional-chained
   // until after the loading/error guards" convention.
-  const allVariants = product.data?.variants ?? [];
+  // Each size as THIS customer sees it: units their own unpaid checkout
+  // holds count as theirs (lib/ownHolds.ts); the catalogue answer otherwise.
+  const allVariants = useMemo(
+    () => (product.data?.variants ?? []).map((item) => cart.withOwnHold(item)),
+    [product.data, cart.withOwnHold],
+  );
   const needsChoice = allVariants.length > 1;
   // What Add / the stepper act on: the only variant, or the size the customer chose.
   const chosen: VariantDto | undefined = needsChoice
@@ -345,6 +350,7 @@ export default function ProductDetailScreen({
                       product={item}
                       qtyInCart={cart.qtyForCard(item)}
                       cartVariantId={cart.cartVariantForCard(item)}
+                      ownAvailableQty={cart.ownAvailableQtyFor(item)}
                       busy={
                         item.defaultVariant
                           ? cart.isBusy(item.defaultVariant.id)

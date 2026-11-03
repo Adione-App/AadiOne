@@ -271,6 +271,7 @@ function ProductCardImpl({
   product,
   qtyInCart,
   cartVariantId = null,
+  ownAvailableQty = null,
   onPress,
   onAdd,
   onIncrement,
@@ -285,6 +286,13 @@ function ProductCardImpl({
    * it directly; null (none, or several in the cart) means the variant sheet.
    */
   cartVariantId?: string | null;
+  /**
+   * What THIS customer may have of the default variant when their own unpaid
+   * online checkout holds some of it (`useCartActions().ownAvailableQtyFor`,
+   * lib/ownHolds.ts) — the shared catalogue counts that hold as taken. Null
+   * (the default, and always for a guest): the catalogue's own availability.
+   */
+  ownAvailableQty?: number | null;
   /** Called with the PRODUCT id — from the image, or the More Details icon. */
   onPress: (productId: string) => void;
   
@@ -294,7 +302,13 @@ function ProductCardImpl({
   onDecrement: (variantId: string) => void;
   busy?: boolean;
 }) {
-  const variant = product.defaultVariant;
+  // Their own held units count as theirs (badge, + limit and the cart
+  // snapshot alike); everyone else sees the catalogue's answer unchanged.
+  const catalogueVariant = product.defaultVariant;
+  const variant =
+    catalogueVariant && ownAvailableQty !== null
+      ? { ...catalogueVariant, availableQty: ownAvailableQty, inStock: ownAvailableQty > 0 }
+      : catalogueVariant;
 
   const outOfStock = !variant?.inStock;
   // The listing's store is not taking orders (closed, outside hours, admin):

@@ -1605,6 +1605,14 @@ export interface CartItemDto {
   /** Set when `unavailableReason` is STORE_CLOSED. */
   storeClosedReason: StoreClosedReason | null;
   unavailableMessage: string | null;
+  /**
+   * Units of this line that THIS customer's own unpaid online checkout is
+   * holding for them (0 when none). When above 0, `availableQty` / `inStock`
+   * already count those units as theirs, and the app shows that availability
+   * on this listing's product cards instead of the shared catalogue's (which
+   * counts every hold as taken). Absent (older server) = 0.
+   */
+  heldForYouQty?: number;
 }
 
 export type CartLineUnavailableReason = 'STORE_CLOSED' | 'PRODUCT_UNAVAILABLE' | 'OUT_OF_STOCK';

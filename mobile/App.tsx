@@ -219,7 +219,14 @@ export default function App() {
   useEffect(
     () =>
       useAuth.subscribe((state, previous) => {
-        if (state.status === "anonymous" && previous.status !== "anonymous") {
+        // Also one account replaced by another without passing through
+        // "signed out": nothing of the first — its cart, and the stock its
+        // unpaid checkout holds (lib/ownHolds.ts) — may show for the second.
+        const accountReplaced =
+          state.status === "authenticated" &&
+          previous.status === "authenticated" &&
+          state.user?.id !== previous.user?.id;
+        if ((state.status === "anonymous" && previous.status !== "anonymous") || accountReplaced) {
           forgetPrivateQueries(queryClient);
           forgetCartAfterSignOut();
         }

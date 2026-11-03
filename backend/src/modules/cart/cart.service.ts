@@ -38,7 +38,8 @@ import * as pricingService from "../pricing/pricing.service";
 import { moduleLogger } from "../../common/logger";
 import { unorderableMessage, unorderableReason } from "./orderability";
 import { cartLineEligibility, isGone } from "./eligibility";
-import { trackedAvailableQty } from "../inventory/stock-rules";
+import { trackedAvailableQtyFor } from "../inventory/stock-rules";
+import { heldFor, ownCheckoutHolds } from "../orders/own-checkout-holds";
 import * as sellerService from "../sellers/seller.service";
 import { orderingState, statusOf, storeStatuses, type StoreStatus } from "../sellers/store-availability";
 
@@ -120,9 +121,12 @@ interface RevalidationOutcome {
 }
 
 async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
-  const [config, statuses] = await Promise.all([
+  const [config, statuses, holds] = await Promise.all([
     configService.getMany([ConfigKey.DEFAULT_COD_POLICY, ConfigKey.DEFAULT_MAX_QTY_PER_ORDER]),
     storeStatuses(cart.items.map((item) => item.sellerListing.seller)),
+    // What the customer's own unpaid online checkout holds: still theirs, so
+    // it never makes their own line "out of stock" (own-checkout-holds.ts).
+    cart.items.length > 0 ? ownCheckoutHolds(cart.userId) : Promise.resolve(new Map<string, number>()),
   ]);
 
   const items: CartItemDto[] = [];
@@ -153,9 +157,11 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
       continue;
     }
 
-    // Tracked: stock left. Made-to-order food: no stock count — its only
-    // limit is the per-order one (inventory/stock-rules.ts).
-    const trackedQty = trackedAvailableQty(offer);
+    // Tracked: stock left for THIS customer (their own unpaid checkout's
+    // hold included). Made-to-order food: no stock count — its only limit is
+    // the per-order one (inventory/stock-rules.ts).
+    const heldForYouQty = heldFor(holds, offer.id);
+    const trackedQty = trackedAvailableQtyFor(offer, heldForYouQty);
     const availableQty = trackedQty ?? (offer.maxQtyPerOrder || config.DEFAULT_MAX_QTY_PER_ORDER);
     // Not orderable right now (store closed, product off sale, no stock): the
     // line STAYS, marked, outside the bill — it counts again by itself when
@@ -252,6 +258,9 @@ async function revalidate(cart: LoadedCart): Promise<RevalidationOutcome> {
       unavailableReason: eligibility.reason,
       storeClosedReason: eligibility.storeClosedReason,
       unavailableMessage: eligibility.message,
+      // What their own unpaid checkout holds: the app shows this line's
+      // availability on its product cards too (never put in the shared catalogue).
+      heldForYouQty,
     });
 
     if (!eligibility.orderable) continue;
@@ -444,13 +453,16 @@ export async function addItem(
   qty: number,
   distanceKm: number | null = null,
 ): Promise<CartDto> {
-  const offer = await prisma.sellerListing.findUnique({
-    where: { id: sellerListingId },
-    include: {
-      seller: { include: { hours: { orderBy: { dayOfWeek: "asc" } } } },
-      variant: { include: { product: true } },
-    },
-  });
+  const [offer, holds] = await Promise.all([
+    prisma.sellerListing.findUnique({
+      where: { id: sellerListingId },
+      include: {
+        seller: { include: { hours: { orderBy: { dayOfWeek: "asc" } } } },
+        variant: { include: { product: true } },
+      },
+    }),
+    ownCheckoutHolds(userId, prisma, [sellerListingId]),
+  ]);
 
   if (!offer) throw new AppError(ErrorCode.PRODUCT_UNAVAILABLE);
   const unorderable = unorderableReason({
@@ -468,8 +480,9 @@ export async function addItem(
   // same gate checkout applies.
   await sellerService.assertSellerAcceptingOrders(offer.seller);
 
-  // null = made to order (no stock count): only the switch and the per-order limit apply.
-  const availableQty = trackedAvailableQty(offer);
+  // null = made to order (no stock count): only the switch and the per-order
+  // limit apply. A unit the customer's own unpaid checkout holds counts as theirs.
+  const availableQty = trackedAvailableQtyFor(offer, heldFor(holds, sellerListingId));
   if (!offer.isAvailable || (availableQty !== null && availableQty <= 0)) {
     throw new AppError(ErrorCode.ITEM_OUT_OF_STOCK, {
       message: `${offer.variant.product.name} is out of stock.`,
@@ -512,20 +525,23 @@ export async function updateItemQty(
   qty: number,
   distanceKm: number | null = null,
 ): Promise<CartDto> {
-  const item = await prisma.cartItem.findFirst({
-    where: {
-      id: cartItemId,
-      cart: { userId, status: "ACTIVE" },
-    },
-    include: {
-      sellerListing: {
-        include: {
-          seller: { include: { hours: { orderBy: { dayOfWeek: "asc" } } } },
-          variant: { include: { product: true } },
+  const [item, holds] = await Promise.all([
+    prisma.cartItem.findFirst({
+      where: {
+        id: cartItemId,
+        cart: { userId, status: "ACTIVE" },
+      },
+      include: {
+        sellerListing: {
+          include: {
+            seller: { include: { hours: { orderBy: { dayOfWeek: "asc" } } } },
+            variant: { include: { product: true } },
+          },
         },
       },
-    },
-  });
+    }),
+    ownCheckoutHolds(userId),
+  ]);
 
   // Ownership is checked HERE, in the service — the route guard only proves
   // the caller is logged in, not that this cart item is theirs.
@@ -564,7 +580,7 @@ export async function updateItemQty(
     }
   }
 
-  const availableQty = trackedAvailableQty(offer);
+  const availableQty = trackedAvailableQtyFor(offer, heldFor(holds, offer.id));
   if (availableQty !== null && qty > availableQty) {
     throw new AppError(ErrorCode.INSUFFICIENT_STOCK, {
       message: `Only ${availableQty} left in stock.`,

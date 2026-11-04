@@ -1,5 +1,10 @@
 /**
- * About AdiOne (Task 14.14 companion).
+ * About Aadione (Task 14.14 companion).
+ *
+ * The page itself is the admin-published "About Aadione" content (Admin Panel
+ * → Information Pages; GET /legal/about), whose business / contact details
+ * come from Admin Configuration. Until it is published — or while offline
+ * with nothing cached — this screen shows its own built-in introduction.
  *
  * The delivery promise, support email and support numbers come from public
  * configuration, not from constants in the binary. The mockups contradicted
@@ -16,8 +21,10 @@ import type { PublicConfig } from '@shared';
 import { colors, radius, spacing } from '@shared/theme';
 import { api } from '@/lib/api';
 import { useTabBarClearance } from '@/lib/tabBarVisibility';
-import { AppText, Card, Screen } from '@/components/ui';
+import { AppText, Card, Loading, Screen } from '@/components/ui';
 import BrandMark from '@/components/BrandMark';
+import { InfoPageSections } from '@/components/InfoPageView';
+import { useInfoPage } from '@/lib/infoPages';
 
 // Vector icons, not emoji — emoji render inconsistently across Android OEM
 // fonts (the same reason CategoryIcon moved off them); this keeps the About
@@ -56,6 +63,8 @@ export default function AboutScreen({ onBack }: { onBack: () => void }) {
   });
 
   const promise = data?.DELIVERY_PROMISE_TEXT ?? 'fast';
+  const about = useInfoPage('about');
+  const published = about.data ?? null;
   const supportEmail = data?.SUPPORT_EMAIL ?? '';
   const supportPhone = data?.SUPPORT_PHONE ?? '';
 
@@ -65,7 +74,7 @@ export default function AboutScreen({ onBack }: { onBack: () => void }) {
         <Pressable onPress={onBack} hitSlop={12} style={styles.back}>
           <AppText variant="h2">←</AppText>
         </Pressable>
-        <AppText variant="h3">About AdiOne</AppText>
+        <AppText variant="h3">About Aadione</AppText>
       </View>
 
       <ScrollView
@@ -83,52 +92,62 @@ export default function AboutScreen({ onBack }: { onBack: () => void }) {
 
           <AppText variant="displayLarge" style={{ marginTop: spacing.md }}>
             <AppText variant="displayLarge" color="#0E441C">
-              Adi
+              Aadi
             </AppText>
             <AppText variant="displayLarge" color={colors.primary}>
-              One
+              one
             </AppText>
-          </AppText>
-
-          <AppText variant="bodyLarge" style={{ marginTop: spacing.sm, textAlign: 'center' }}>
-            Your daily essentials, delivered{' '}
-            <AppText variant="bodyLarge" color={colors.primary}>
-              {promise}
-            </AppText>
-          </AppText>
-
-          <AppText
-            variant="body"
-            color={colors.textSecondary}
-            style={{ marginTop: spacing.md, textAlign: 'center' }}
-          >
-            AdiOne is your trusted quick delivery app for groceries and daily essentials. We aim
-            to make your shopping experience easy, fast and reliable.
           </AppText>
         </View>
 
-        <Card style={{ marginTop: spacing.lg, padding: 0 }}>
-          {FEATURES.map((feature, index) => (
-            <View
-              key={feature.title}
-              style={[styles.featureRow, index === FEATURES.length - 1 && { borderBottomWidth: 0 }]}
+        {about.isLoading ? (
+          <Loading />
+        ) : published ? (
+          <InfoPageSections page={published} />
+        ) : (
+          <>
+          <View style={{ alignItems: 'center' }}>
+            <AppText variant="bodyLarge" style={{ marginTop: spacing.sm, textAlign: 'center' }}>
+              Your daily essentials, delivered{' '}
+              <AppText variant="bodyLarge" color={colors.primary}>
+                {promise}
+              </AppText>
+            </AppText>
+
+            <AppText
+              variant="body"
+              color={colors.textSecondary}
+              style={{ marginTop: spacing.md, textAlign: 'center' }}
             >
-              <View style={styles.featureIcon}>
-                <feature.icon size={22} color={colors.primary} strokeWidth={2} />
+              Aadione is your trusted quick delivery app for groceries and daily essentials. We aim
+              to make your shopping experience easy, fast and reliable.
+            </AppText>
+          </View>
+
+          <Card style={{ marginTop: spacing.lg, padding: 0 }}>
+            {FEATURES.map((feature, index) => (
+              <View
+                key={feature.title}
+                style={[styles.featureRow, index === FEATURES.length - 1 && { borderBottomWidth: 0 }]}
+              >
+                <View style={styles.featureIcon}>
+                  <feature.icon size={22} color={colors.primary} strokeWidth={2} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <AppText variant="bodyStrong">{feature.title}</AppText>
+                  <AppText
+                    variant="body"
+                    color={colors.textSecondary}
+                    style={{ marginTop: spacing.xxs }}
+                  >
+                    {feature.body(promise)}
+                  </AppText>
+                </View>
               </View>
-              <View style={{ flex: 1 }}>
-                <AppText variant="bodyStrong">{feature.title}</AppText>
-                <AppText
-                  variant="body"
-                  color={colors.textSecondary}
-                  style={{ marginTop: spacing.xxs }}
-                >
-                  {feature.body(promise)}
-                </AppText>
-              </View>
-            </View>
-          ))}
-        </Card>
+            ))}
+          </Card>
+          </>
+        )}
 
         <Card style={{ marginTop: spacing.lg }}>
           <AppText variant="h3">App Information</AppText>
@@ -156,7 +175,7 @@ export default function AboutScreen({ onBack }: { onBack: () => void }) {
         <Card style={{ marginTop: spacing.lg, backgroundColor: colors.primarySurface }}>
           <AppText variant="bodyStrong">Made with care in India</AppText>
           <AppText variant="body" color={colors.textSecondary} style={{ marginTop: spacing.xxs }}>
-            Thank you for choosing AdiOne.
+            Thank you for choosing Aadione.
           </AppText>
         </Card>
       </ScrollView>

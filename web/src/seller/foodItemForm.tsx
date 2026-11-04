@@ -11,6 +11,8 @@
  *   create   POST /seller/products (+ photos)          — a draft, like every new item
  *   edit     PATCH /seller/products/:id                — while not approved / not in review
  *            PATCH /seller/listings/:id                — price and availability, any time
+ *   resubmit POST /seller/approval-batches { productIds } — a Rejected item, after
+ *            its correction ("Save & Resubmit"): back to Pending until Aadione decides
  *
  * Approval is unchanged: new items go to Aadione in a batch ("Submit Selected
  * for Approval" on Products). An approved item keeps its name, description,
@@ -35,7 +37,7 @@ import {
   type SellerProductInventory,
 } from './sellerApi';
 import { sellerKeys } from './sellerQueries';
-import { ImageGallery, isEditable, moved, toPaise, type GalleryItem, type Notice } from './productUi';
+import { ImageGallery, isEditable, moved, rejectionOf, toPaise, type GalleryItem, type Notice } from './productUi';
 import { VariantEditor, editorFromVariants, variantSetFromEditor, type VariantEditorState, type VariantSetRequest } from './variantEditor';
 
 export type FoodItemFormMode = { kind: 'create'; sectionId?: string } | { kind: 'edit'; item: SellerProductInventory };
@@ -196,7 +198,11 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
     }
   }
 
-  async function save(): Promise<void> {
+  /** A Rejected item stays rejected until it is resubmitted — saving alone never sends it back to Aadione. */
+  const rejected = item?.approvalStatus === 'REJECTED';
+  const rejection = item ? rejectionOf(item) : null;
+
+  async function save(resubmit = false): Promise<void> {
     if (!item) return;
     const invalid = check();
     if (invalid) return setProblem(invalid);
@@ -231,9 +237,18 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
       } else if (item.listing && available !== item.listing.isAvailable) {
         await sellerApi.patch(`/seller/listings/${item.listing.id}`, { isAvailable: available });
       }
+      if (resubmit) await sellerApi.post('/seller/approval-batches', { productIds: [item.id] });
       await refresh();
-      onDone({ ok: true, text: `"${name.trim()}" saved.` });
+      onDone({
+        ok: true,
+        text: resubmit
+          ? `"${name.trim()}" was resubmitted for approval.`
+          : rejected
+            ? `"${name.trim()}" saved. It stays rejected until you resubmit it for approval.`
+            : `"${name.trim()}" saved.`,
+      });
     } catch (error) {
+      await refresh();
       setProblem(sellerErrorMessage(error));
     } finally {
       setBusy(false);
@@ -260,9 +275,16 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
             Cancel
           </Button>
           {item ? (
-            <Button onClick={() => void save()} disabled={busy || menu.isPending} className="w-full sm:w-auto">
-              {busy ? 'Saving…' : 'Save changes'}
-            </Button>
+            <>
+              <Button variant={rejected ? 'secondary' : 'primary'} onClick={() => void save()} disabled={busy || menu.isPending} className="w-full sm:w-auto">
+                {busy ? 'Saving…' : 'Save changes'}
+              </Button>
+              {rejected && (
+                <Button onClick={() => void save(true)} disabled={busy || menu.isPending} className="w-full sm:w-auto">
+                  {busy ? 'Saving…' : 'Save & Resubmit for Approval'}
+                </Button>
+              )}
+            </>
           ) : (
             <>
               <Button variant="secondary" onClick={() => void create(true)} disabled={busy || menu.isPending || noSections} className="w-full sm:w-auto">
@@ -286,6 +308,12 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
         {!contentEditable && (
           <p className="rounded-xl bg-gray-50 px-3.5 py-2.5 text-sm text-gray-600">
             This item is in its first review by Aadione. You can change its price and availability now; other details once the review is done.
+          </p>
+        )}
+        {rejected && (
+          <p className="rounded-xl bg-danger-50 px-3.5 py-2.5 text-sm text-danger-600">
+            <span className="font-semibold">Rejected:</span> {rejection ?? 'No reason was given.'} Correct the item, then use “Save &amp; Resubmit
+            for Approval”.
           </p>
         )}
         {item?.approvalStatus === 'APPROVED' && (

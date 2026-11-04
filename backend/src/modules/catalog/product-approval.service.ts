@@ -395,6 +395,15 @@ export async function loadEditableOwnProduct(
   return product;
 }
 
+/**
+ * A seller's own product edit waits for (and blocks) a "Submit for Approval"
+ * of the same seller, which holds this row FOR UPDATE (submitApprovalBatch).
+ * FOR SHARE, so the seller's edits never wait for each other.
+ */
+export async function lockSellerForProductEdit(tx: Tx, sellerId: string): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM sellers WHERE id = ${sellerId}::uuid FOR SHARE`;
+}
+
 /** The same fields `createSellerProduct` accepts — nothing else is editable. */
 export type UpdateSellerProductInput = Partial<CreateSellerProductInput>;
 
@@ -500,7 +509,11 @@ export async function updateSellerProduct(
 
   const renamed = input.name !== undefined && input.name !== current.name;
   await runInTransaction(async (tx) => {
-    // Re-checked inside the write: a submission or review racing this edit wins.
+    // Re-checked inside the write, behind the lock a submission holds: a
+    // submission racing this edit either finishes first (the edit is then
+    // refused — under review) or waits until the edit is saved, so a
+    // reviewer always sees exactly what was submitted.
+    await lockSellerForProductEdit(tx, sellerId);
     await loadEditableOwnProduct(sellerId, productId, tx);
     await tx.product.update({
       where: { id: productId },
@@ -911,8 +924,15 @@ export async function listBatchProducts(
             id: true,
             name: true,
             status: true,
+            approvalStatus: true,
             deletedAt: true,
             optionGroups: true,
+            // Its most recent submission — another batch when this one is old history.
+            approvalBatchItems: {
+              orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+              take: 1,
+              select: { id: true, batchId: true, status: true },
+            },
             brand: { select: { id: true, name: true } },
             category: { select: { name: true, parent: { select: { name: true } } } },
             images: { orderBy: { displayOrder: 'asc' }, take: 1, select: { url: true, thumbUrl: true } },
@@ -947,11 +967,14 @@ export async function listBatchProducts(
       const variant = product.variants[0] ?? null;
       const listing = variant?.sellerListings[0] ?? null;
       const parent = product.category.parent;
+      const newest = product.approvalBatchItems[0];
       return {
         itemId: item.id,
         productId: product.id,
         itemStatus: item.status,
         reviewNote: item.reviewNote,
+        currentApprovalStatus: product.approvalStatus,
+        newerSubmission: newest && newest.id !== item.id ? { batchId: newest.batchId, status: newest.status } : null,
         name: product.name,
         brand: product.brand ? { id: product.brand.id, name: product.brand.name, isNew: newBrands.has(product.brand.id) } : null,
         category: parent ? parent.name : product.category.name,
@@ -1156,6 +1179,13 @@ export async function reviewBatchItem(input: ReviewBatchItemInput) {
   }
 
   await runInTransaction(async (tx) => {
+    // The same batch lock as approveBatch: a per-item decision and "Approve
+    // Batch" (or two clicks on one item) are decided one after the other,
+    // each seeing the other's result — never both from the same PENDING.
+    const [locked] = await tx.$queryRaw<{ id: string }[]>`
+      SELECT id FROM product_approval_batches WHERE id = ${input.batchId}::uuid FOR UPDATE`;
+    if (!locked) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Approval item not found.' });
+
     const item = await tx.productApprovalBatchItem.findUnique({ where: { id: input.itemId } });
     if (!item || item.batchId !== input.batchId) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: 'Approval item not found.' });
@@ -1172,10 +1202,14 @@ export async function reviewBatchItem(input: ReviewBatchItemInput) {
       });
     }
 
-    await tx.productApprovalBatchItem.update({
-      where: { id: item.id },
+    // Conditional on still being PENDING, so a decision can never overwrite another.
+    const decided = await tx.productApprovalBatchItem.updateMany({
+      where: { id: item.id, status: ApprovalStatus.PENDING },
       data: { status: input.status, reviewNote: input.reviewNote?.trim() || null },
     });
+    if (decided.count !== 1) {
+      throw new AppError(ErrorCode.INVALID_STATUS_TRANSITION, { message: 'This item has already been reviewed.' });
+    }
 
     await decideProducts(tx, [item.productId], input.status);
 

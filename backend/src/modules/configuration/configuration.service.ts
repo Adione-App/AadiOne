@@ -243,10 +243,46 @@ const MAX_DELIVERY_LOCATIONS = 2000;
 const CATEGORY_PATH_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_HOME_CATEGORY_ORDER = 50;
 
+/** Customer-visible business / contact settings and their maximum lengths. */
+const CONTACT_TEXT_LIMITS: Partial<Record<keyof ConfigValues, number>> = {
+  [ConfigKey.SUPPORT_EMAIL]: 160,
+  [ConfigKey.SUPPORT_PHONE]: 20,
+  [ConfigKey.SUPPORT_WHATSAPP]: 20,
+  [ConfigKey.SUPPORT_HOURS]: 120,
+  [ConfigKey.STORE_GSTIN]: 15,
+  [ConfigKey.BUSINESS_TRADE_NAME]: 80,
+  [ConfigKey.BUSINESS_LEGAL_NAME]: 160,
+  [ConfigKey.BUSINESS_TYPE]: 80,
+  [ConfigKey.BUSINESS_ADDRESS]: 500,
+  [ConfigKey.GRIEVANCE_OFFICER_NAME]: 120,
+  [ConfigKey.GRIEVANCE_OFFICER_DESIGNATION]: 120,
+  [ConfigKey.GRIEVANCE_OFFICER_EMAIL]: 160,
+  [ConfigKey.GRIEVANCE_OFFICER_PHONE]: 20,
+  [ConfigKey.GRIEVANCE_OFFICER_ADDRESS]: 500,
+};
+const EMAIL_KEYS: readonly (keyof ConfigValues)[] = [ConfigKey.SUPPORT_EMAIL, ConfigKey.GRIEVANCE_OFFICER_EMAIL];
+const PHONE_KEYS: readonly (keyof ConfigValues)[] = [ConfigKey.SUPPORT_PHONE, ConfigKey.SUPPORT_WHATSAPP, ConfigKey.GRIEVANCE_OFFICER_PHONE];
+
 function validateValue(key: keyof ConfigValues, value: unknown): void {
   const fail = (reason: string): never => {
     throw badRequest(`Invalid value for ${String(key)}: ${reason}`);
   };
+
+  // Business, support and grievance details: shown to customers in the legal
+  // pages and on Help, so each is plain text of a sane length, and an email /
+  // phone / GSTIN is either empty (hidden) or well-formed.
+  const textLimit = CONTACT_TEXT_LIMITS[key];
+  if (textLimit !== undefined) {
+    if (typeof value !== 'string') fail('must be text');
+    const text = (value as string).trim();
+    if (text.length > textLimit) fail(`must be at most ${textLimit} characters`);
+    if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(text)) fail('contains characters that are not allowed');
+    if (text && EMAIL_KEYS.includes(key) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) fail('must be an email address, e.g. help@example.com');
+    if (text && PHONE_KEYS.includes(key) && !/^\+?[0-9][0-9 -]{6,18}$/.test(text)) fail('must be a phone number, e.g. +91 98765 43210');
+    if (text && key === ConfigKey.STORE_GSTIN && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(text)) {
+      fail('must be a 15-character GSTIN, e.g. 08ABCDE1234F1Z5');
+    }
+  }
 
   if (POSITIVE_NUMBER_KEYS.includes(key)) {
     if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {

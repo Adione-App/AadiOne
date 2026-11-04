@@ -302,6 +302,15 @@ export async function syncProductVariants(sellerId: string, productId: string, i
   const defaults = product.variants[0] ?? { unit: UnitType.PIECE, unitValue: 1 };
 
   await runInTransaction(async (tx) => {
+    // Re-checked behind the lock a submission holds (product-approval.service
+    // lockSellerForProductEdit): a submission that won the race makes this a
+    // refusal instead of a change under the reviewer's eyes.
+    await tx.$queryRaw`SELECT id FROM sellers WHERE id = ${sellerId}::uuid FOR SHARE`;
+    if ((await tx.productApprovalBatchItem.count({ where: { productId, status: ApprovalStatus.PENDING } })) > 0) {
+      throw new AppError(ErrorCode.INVALID_STATUS_TRANSITION, {
+        message: 'This item is being reviewed by Aadione. Its options can be changed again once the review is done.',
+      });
+    }
     const now = new Date();
     // 1. Removed variants: soft delete (names freed by the live-only unique), listing off.
     if (removed.length > 0) {

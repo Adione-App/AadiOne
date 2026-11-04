@@ -32,6 +32,7 @@ import { formatPaise } from '@shared/money';
 import { api, ApiRequestError } from '@/lib/api';
 import { imageSrc } from '@/lib/image';
 import { approvalKeys, pendingBatchesPath, retryServerErrorsOnce } from '@/lib/productApprovals';
+import { ADMIN_SELLERS_ROOT } from '@/lib/sellers';
 import {
   Button,
   EmptyState,
@@ -226,7 +227,16 @@ function BatchModal({ batchId, onClose }: { batchId: string; onClose: () => void
     retry: retryServerErrorsOnce,
   });
 
-  const refresh = () => queryClient.invalidateQueries({ queryKey: approvalKeys.all });
+  // A decision changes a product's approval everywhere admin shows it — the
+  // Products list and the seller's own Products / Listings tabs too, not just
+  // this queue — so none of them keeps showing the old status.
+  const refresh = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: approvalKeys.all }),
+      queryClient.invalidateQueries({ queryKey: ['admin', 'marketplace'] }),
+      queryClient.invalidateQueries({ queryKey: [ADMIN_SELLERS_ROOT, 'products'] }),
+      queryClient.invalidateQueries({ queryKey: [ADMIN_SELLERS_ROOT, 'listings'] }),
+    ]);
 
   const approve = useMutation({
     mutationFn: () => api.post<ApproveProductBatchResultDto>(`/admin/approval-batches/${batchId}/approve`),
@@ -394,6 +404,12 @@ function BatchModal({ batchId, onClose }: { batchId: string; onClose: () => void
                     <Td>
                       {row.removed ? <Pill tone="gray">Removed by seller</Pill> : <ApprovalPill status={row.itemStatus} />}
                       {row.reviewNote && <p className="mt-0.5 max-w-[12rem] truncate text-xs text-gray-500">{row.reviewNote}</p>}
+                      {/* This batch's decision is history once the seller resubmitted: say what it is now. */}
+                      {row.newerSubmission && !row.removed && (
+                        <p className="mt-1 text-xs font-medium text-gray-700">
+                          Resubmitted · now {(APPROVAL_LOOK[row.currentApprovalStatus]?.label ?? row.currentApprovalStatus).toLowerCase()}
+                        </p>
+                      )}
                     </Td>
                     <Td>
                       <div className="flex justify-end">

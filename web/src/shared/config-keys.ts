@@ -93,7 +93,19 @@ export const ConfigKey = {
   SUPPORT_PHONE: "SUPPORT_PHONE",
   SUPPORT_WHATSAPP: "SUPPORT_WHATSAPP",
   SUPPORT_EMAIL: "SUPPORT_EMAIL",
+  SUPPORT_HOURS: "SUPPORT_HOURS",
   DELIVERY_PROMISE_TEXT: "DELIVERY_PROMISE_TEXT",
+
+  /* business identity & grievance officer (Privacy Policy, Terms, About) */
+  BUSINESS_TRADE_NAME: "BUSINESS_TRADE_NAME",
+  BUSINESS_LEGAL_NAME: "BUSINESS_LEGAL_NAME",
+  BUSINESS_TYPE: "BUSINESS_TYPE",
+  BUSINESS_ADDRESS: "BUSINESS_ADDRESS",
+  GRIEVANCE_OFFICER_NAME: "GRIEVANCE_OFFICER_NAME",
+  GRIEVANCE_OFFICER_DESIGNATION: "GRIEVANCE_OFFICER_DESIGNATION",
+  GRIEVANCE_OFFICER_EMAIL: "GRIEVANCE_OFFICER_EMAIL",
+  GRIEVANCE_OFFICER_PHONE: "GRIEVANCE_OFFICER_PHONE",
+  GRIEVANCE_OFFICER_ADDRESS: "GRIEVANCE_OFFICER_ADDRESS",
 
   /* customer home page */
   HOME_CATEGORY_ORDER: "HOME_CATEGORY_ORDER",
@@ -238,7 +250,18 @@ export interface ConfigValues {
   SUPPORT_PHONE: string;
   SUPPORT_WHATSAPP: string;
   SUPPORT_EMAIL: string;
+  SUPPORT_HOURS: string;
   DELIVERY_PROMISE_TEXT: string;
+
+  BUSINESS_TRADE_NAME: string;
+  BUSINESS_LEGAL_NAME: string;
+  BUSINESS_TYPE: string;
+  BUSINESS_ADDRESS: string;
+  GRIEVANCE_OFFICER_NAME: string;
+  GRIEVANCE_OFFICER_DESIGNATION: string;
+  GRIEVANCE_OFFICER_EMAIL: string;
+  GRIEVANCE_OFFICER_PHONE: string;
+  GRIEVANCE_OFFICER_ADDRESS: string;
 
   /**
    * Top-level category paths (slugs, e.g. "grocery") the customer Home page
@@ -322,8 +345,21 @@ export const CONFIG_DEFAULTS: ConfigValues = {
 
   SUPPORT_PHONE: "",
   SUPPORT_WHATSAPP: "",
-  SUPPORT_EMAIL: "support@adione.in",
+  // No invented contact: an empty value hides the contact everywhere.
+  SUPPORT_EMAIL: "",
+  SUPPORT_HOURS: "",
   DELIVERY_PROMISE_TEXT: "in 30 minutes",
+
+  // The confirmed brand; everything else is entered by the owner.
+  BUSINESS_TRADE_NAME: "Aadione",
+  BUSINESS_LEGAL_NAME: "",
+  BUSINESS_TYPE: "",
+  BUSINESS_ADDRESS: "",
+  GRIEVANCE_OFFICER_NAME: "",
+  GRIEVANCE_OFFICER_DESIGNATION: "",
+  GRIEVANCE_OFFICER_EMAIL: "",
+  GRIEVANCE_OFFICER_PHONE: "",
+  GRIEVANCE_OFFICER_ADDRESS: "",
 
   HOME_CATEGORY_ORDER: [],
 
@@ -498,7 +534,29 @@ export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
 
   SUPPORT_WHATSAPP: "WhatsApp number shown on Help & Support.",
 
-  SUPPORT_EMAIL: "Support email address.",
+  SUPPORT_EMAIL: "Support email address. Leave empty to hide email support.",
+
+  SUPPORT_HOURS: 'When customer support answers, e.g. "8 AM – 10 PM, every day". Shown in the Privacy Policy and Terms; hidden when empty.',
+
+  BUSINESS_TRADE_NAME: 'The brand customers see ("Aadione"). Used in the Privacy Policy, Terms & Conditions and About page.',
+
+  BUSINESS_LEGAL_NAME:
+    "The legal name of the person or entity that runs Aadione, exactly as on PAN / GST registration (for a sole proprietorship, the proprietor's name). Required before the Privacy Policy or Terms can be published.",
+
+  BUSINESS_TYPE: 'The business structure, e.g. "Sole Proprietorship". Shown in the legal pages; hidden when empty.',
+
+  BUSINESS_ADDRESS:
+    "The principal place of business (postal address), as on GST registration. Required before the Privacy Policy or Terms can be published.",
+
+  GRIEVANCE_OFFICER_NAME: "The Grievance Officer's name, shown in the Privacy Policy and Terms. Required before either can be published.",
+
+  GRIEVANCE_OFFICER_DESIGNATION: `The Grievance Officer's designation, e.g. "Proprietor & Grievance Officer". Required before the Privacy Policy or Terms can be published.`,
+
+  GRIEVANCE_OFFICER_EMAIL: "Email address for complaints to the Grievance Officer. Required before the Privacy Policy or Terms can be published.",
+
+  GRIEVANCE_OFFICER_PHONE: "Phone number for the Grievance Officer (optional; hidden when empty).",
+
+  GRIEVANCE_OFFICER_ADDRESS: "Postal address for the Grievance Officer (optional; the business address is shown when this is empty).",
 
   DELIVERY_PROMISE_TEXT:
     'Marketing copy for delivery speed (e.g. "in 30 minutes"). Per-order ETA is always computed separately.',

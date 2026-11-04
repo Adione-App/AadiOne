@@ -53,7 +53,7 @@ const DISPLAY_LABELS: Partial<Record<ConfigKey, string>> = {
 
   STORE_TIMEZONE: "Marketplace Timezone",
   ALLOW_ORDERS_WHEN_CLOSED: "Allow Orders When Closed",
-  STORE_GSTIN: "Store GSTIN",
+  STORE_GSTIN: "Business GSTIN",
 
   MIN_ORDER_VALUE_PAISE: "Minimum Order Value",
   DELIVERY_FEE_SLABS: "Delivery Fee Slabs",
@@ -96,7 +96,18 @@ const DISPLAY_LABELS: Partial<Record<ConfigKey, string>> = {
   SUPPORT_PHONE: "Support Phone",
   SUPPORT_WHATSAPP: "Support WhatsApp",
   SUPPORT_EMAIL: "Support Email",
+  SUPPORT_HOURS: "Support Hours",
   DELIVERY_PROMISE_TEXT: "Delivery Promise",
+
+  BUSINESS_TRADE_NAME: "Brand Name",
+  BUSINESS_LEGAL_NAME: "Legal Name (as on PAN / GST)",
+  BUSINESS_TYPE: "Business Structure",
+  BUSINESS_ADDRESS: "Principal Place of Business",
+  GRIEVANCE_OFFICER_NAME: "Grievance Officer Name",
+  GRIEVANCE_OFFICER_DESIGNATION: "Grievance Officer Designation",
+  GRIEVANCE_OFFICER_EMAIL: "Grievance Officer Email",
+  GRIEVANCE_OFFICER_PHONE: "Grievance Officer Phone",
+  GRIEVANCE_OFFICER_ADDRESS: "Grievance Officer Address",
 };
 
 /**
@@ -137,7 +148,7 @@ const DISPLAY_DESCRIPTIONS: Partial<Record<ConfigKey, string>> = {
     "Allow customers to place orders outside opening hours.",
 
   STORE_GSTIN:
-    "GST registration number. When set, order receipts show a tax invoice breakdown.",
+    "GST registration number (15 characters). Shown in the Privacy Policy, Terms & Conditions and About page when set; hidden when empty.",
 
   ORDERING_ENABLED:
     "Customers can place orders. When disabled, the app keeps browsing and the cart working, shows ordering as paused on Home and Cart, and the server refuses every new order and payment start (COD and online). Each store's own Open/Closed state is not changed.",
@@ -206,7 +217,27 @@ const DISPLAY_DESCRIPTIONS: Partial<Record<ConfigKey, string>> = {
 
   SUPPORT_WHATSAPP: "WhatsApp number shown on Help & Support.",
 
-  SUPPORT_EMAIL: "Support email address.",
+  SUPPORT_EMAIL: "Support email address. Leave empty to hide email support everywhere.",
+
+  SUPPORT_HOURS: 'When customer support answers, e.g. "8 AM – 10 PM, every day". Hidden when empty.',
+
+  BUSINESS_TRADE_NAME: 'The brand customers see ("Aadione").',
+
+  BUSINESS_LEGAL_NAME: "Exactly as on PAN / GST registration (for a sole proprietorship, the proprietor's name). Required to publish the Privacy Policy and Terms.",
+
+  BUSINESS_TYPE: 'e.g. "Sole Proprietorship". Hidden when empty.',
+
+  BUSINESS_ADDRESS: "Postal address of the principal place of business, as on GST registration. Required to publish the Privacy Policy and Terms.",
+
+  GRIEVANCE_OFFICER_NAME: "Required to publish the Privacy Policy and Terms.",
+
+  GRIEVANCE_OFFICER_DESIGNATION: 'e.g. "Proprietor & Grievance Officer". Required to publish the Privacy Policy and Terms.',
+
+  GRIEVANCE_OFFICER_EMAIL: "Where customers send complaints. Required to publish the Privacy Policy and Terms.",
+
+  GRIEVANCE_OFFICER_PHONE: "Optional; hidden when empty.",
+
+  GRIEVANCE_OFFICER_ADDRESS: "Optional; the business address is shown when this is empty.",
 
   DELIVERY_PROMISE_TEXT:
     "Marketing copy for delivery speed. Per-order ETA is computed separately.",
@@ -398,6 +429,27 @@ const GROUPS: {
   {
     title: "Notifications",
     note: { text: "Notifications are sent automatically for orders, approvals, refunds and settlements; there is nothing to configure.", to: "/notifications", link: "Open Notifications" },
+  },
+  {
+    // Everything the Privacy Policy, Terms & Conditions and About pages show
+    // (Information Pages). Changes appear in those pages at once.
+    title: "Business, Support & Grievance Officer",
+    keys: [
+      "BUSINESS_TRADE_NAME",
+      "BUSINESS_LEGAL_NAME",
+      "BUSINESS_TYPE",
+      "BUSINESS_ADDRESS",
+      "STORE_GSTIN",
+      "SUPPORT_EMAIL",
+      "SUPPORT_PHONE",
+      "SUPPORT_WHATSAPP",
+      "SUPPORT_HOURS",
+      "GRIEVANCE_OFFICER_NAME",
+      "GRIEVANCE_OFFICER_DESIGNATION",
+      "GRIEVANCE_OFFICER_EMAIL",
+      "GRIEVANCE_OFFICER_PHONE",
+      "GRIEVANCE_OFFICER_ADDRESS",
+    ],
   },
   {
     title: "Platform",

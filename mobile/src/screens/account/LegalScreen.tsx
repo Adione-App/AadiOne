@@ -1,25 +1,22 @@
 /**
- * Privacy Policy and Terms & Conditions (Task 14.16 companion).
+ * Privacy Policy and Terms & Conditions.
  *
- * Fetched from the server rather than bundled into the app: legal text has to
- * be correctable without a Play Store release, and the same source also serves
- * the public HTML page that Play requires.
+ * Fetched from the server rather than bundled into the app: legal text and
+ * the business / grievance contact details it shows (Admin Configuration)
+ * must be correctable without a store release, and the same source serves
+ * the public HTML page Google Play requires. Works for guests and signed-in
+ * customers alike. The header (and its back button) stays on screen while the
+ * page loads or if it fails.
  */
 
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useQuery } from '@tanstack/react-query';
+import { INFO_PAGE_TITLES } from '@shared';
 import { colors, spacing } from '@shared/theme';
-import { api } from '@/lib/api';
+import { useInfoPage } from '@/lib/infoPages';
 import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, ErrorState, Loading, Screen } from '@/components/ui';
-
-interface LegalDocument {
-  slug: string;
-  title: string;
-  updatedAt: string;
-  sections: { heading: string; body: string[] }[];
-}
+import { InfoPageMeta, InfoPageSections } from '@/components/InfoPageView';
 
 export default function LegalScreen({
   slug,
@@ -30,62 +27,41 @@ export default function LegalScreen({
 }) {
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
-
-  const document = useQuery({
-    queryKey: ['legal', slug],
-    queryFn: () => api.get<LegalDocument>(`/legal/${slug}`),
-    staleTime: 60 * 60_000,
-  });
-
-  if (document.isLoading) return <Loading />;
-
-  if (document.isError || !document.data) {
-    return (
-      <ErrorState
-        message="We could not load this page."
-        offline={(document.error as { isOffline?: boolean } | null)?.isOffline === true}
-        onRetry={() => void document.refetch()}
-      />
-    );
-  }
+  const page = useInfoPage(slug);
+  const title = page.data?.title || INFO_PAGE_TITLES[slug];
 
   return (
     <Screen>
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
-        <Pressable onPress={onBack} hitSlop={12} style={styles.back}>
+        <Pressable onPress={onBack} hitSlop={12} style={styles.back} accessibilityRole="button" accessibilityLabel="Back">
           <AppText variant="h2">←</AppText>
         </Pressable>
-        <AppText variant="h3">{document.data.title}</AppText>
+        <AppText variant="h3" numberOfLines={1} style={styles.title}>
+          {title}
+        </AppText>
       </View>
 
-      <ScrollView
-        contentContainerStyle={{
-          padding: spacing.base,
-          // The tab bar floats over this screen now (see MainTabs.tsx's
-          // `AnimatedTabBar`) rather than reserving its own flex space.
-          paddingBottom: tabBarClearance + spacing.xxl,
-        }}
-      >
-        <AppText variant="caption" color={colors.textSecondary}>
-          Last updated {document.data.updatedAt}
-        </AppText>
-
-        {document.data.sections.map((section) => (
-          <View key={section.heading} style={{ marginTop: spacing.lg }}>
-            <AppText variant="h3">{section.heading}</AppText>
-            {section.body.map((paragraph, index) => (
-              <AppText
-                key={index}
-                variant="body"
-                color={colors.textSecondary}
-                style={{ marginTop: spacing.sm }}
-              >
-                {paragraph}
-              </AppText>
-            ))}
-          </View>
-        ))}
-      </ScrollView>
+      {page.isLoading ? (
+        <Loading />
+      ) : page.isError || !page.data ? (
+        <ErrorState
+          message="We could not load this page."
+          offline={(page.error as { isOffline?: boolean } | null)?.isOffline === true}
+          onRetry={() => void page.refetch()}
+        />
+      ) : (
+        <ScrollView
+          contentContainerStyle={{
+            padding: spacing.base,
+            // The tab bar floats over this screen (MainTabs.tsx's
+            // `AnimatedTabBar`) rather than reserving its own flex space.
+            paddingBottom: tabBarClearance + spacing.xxl,
+          }}
+        >
+          <InfoPageMeta page={page.data} />
+          <InfoPageSections page={page.data} />
+        </ScrollView>
+      )}
     </Screen>
   );
 }
@@ -102,4 +78,5 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   back: { width: 40, height: 40, justifyContent: 'center' },
+  title: { flex: 1 },
 });

@@ -36,6 +36,7 @@ import { resolveImageUrl } from "@/lib/api";
 import { useBanners, useRestaurants } from "@/lib/queries";
 import { useLocation } from "@/lib/store";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
+import { useRefreshOnFocus } from "@/lib/useRefreshOnFocus";
 import { useSystemBack } from "@/lib/useSystemBack";
 
 /** Room for MiniCartBar, which rests above the tab bar on this screen. */
@@ -143,6 +144,8 @@ export default function FoodScreen({
   const filter = FILTERS.find((f) => f.key === filterKey)!;
   // Veg / Non-Veg = the restaurant's own type (the server's restaurantDietOf), never its dishes.
   const query = useRestaurants(near, filter.query);
+  // Open / closed can change while this tab sits in the background.
+  useRefreshOnFocus(query, { minAgeMs: 30_000 });
   const heroBanners = useBanners(FOOD_BANNER_PLACEMENTS.HERO);
   const background = useBanners(FOOD_BANNER_PLACEMENTS.BACKGROUND);
 

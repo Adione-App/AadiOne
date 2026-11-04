@@ -66,10 +66,13 @@ import {
   PRODUCT_SHELF_SCOPE_MAX,
   PRODUCT_SHELF_SOURCES,
   PRODUCT_SHELF_VIEW_ALL_TYPES,
+  INFO_PAGE_SLUGS,
   Permission,
   type BannerBackground,
+  type InfoPageSlug,
 } from '../../shared';
 import * as homeLayout from '../content/home-layout.service';
+import * as infoPages from '../content/info-page.service';
 import { asyncHandler, created, ok } from '../../common/response';
 import { validate, validatedQuery } from '../../middleware/validate';
 import { requirePermission, requireUser } from '../../middleware/auth';
@@ -534,5 +537,73 @@ adminContentRouter.post(
   validate({ body: z.object({ key }).strict() }),
   asyncHandler(async (req: Request, res: Response) => {
     ok(res, await homeLayout.processBackgroundImage(req.body.key));
+  }),
+);
+
+/* -------------------------------------------------------------------------- */
+/* Information pages — Privacy Policy, Terms & Conditions, About Aadione       */
+/* -------------------------------------------------------------------------- */
+
+// Reading needs Configuration read access; every change (draft, preview of an
+// unsaved page, publish, restore) needs Configuration write access — legal
+// wording is an owner-level decision, not catalogue work.
+const infoPageParams = z.object({ slug: z.enum(INFO_PAGE_SLUGS) });
+const slugOf = (req: Request) => req.params['slug'] as InfoPageSlug;
+// The page itself is checked by the shared validateInfoPage (types, lengths, known settings only).
+const infoPageBody = z.object({ content: z.unknown() }).strict();
+
+adminContentRouter.get(
+  '/content/pages/:slug',
+  requirePermission(Permission.CONFIG_READ),
+  validate({ params: infoPageParams }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await infoPages.getAdminInfoPage(slugOf(req)));
+  }),
+);
+
+/** What customers would see for the page on screen (saved or not), with today's settings. */
+adminContentRouter.post(
+  '/content/pages/:slug/preview',
+  requirePermission(Permission.CONFIG_WRITE),
+  validate({ params: infoPageParams, body: infoPageBody }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await infoPages.previewInfoPage(slugOf(req), req.body.content));
+  }),
+);
+
+adminContentRouter.put(
+  '/content/pages/:slug/draft',
+  requirePermission(Permission.CONFIG_WRITE),
+  validate({ params: infoPageParams, body: infoPageBody }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await infoPages.saveInfoPageDraft(slugOf(req), req.body.content, requireUser(req).id));
+  }),
+);
+
+adminContentRouter.delete(
+  '/content/pages/:slug/draft',
+  requirePermission(Permission.CONFIG_WRITE),
+  validate({ params: infoPageParams }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await infoPages.discardInfoPageDraft(slugOf(req), requireUser(req).id));
+  }),
+);
+
+/** `basedOnRevision`: the published revision the admin's screen showed (0 = none). */
+adminContentRouter.post(
+  '/content/pages/:slug/publish',
+  requirePermission(Permission.CONFIG_WRITE),
+  validate({ params: infoPageParams, body: z.object({ basedOnRevision: z.number().int().min(0) }).strict() }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await infoPages.publishInfoPage(slugOf(req), req.body.basedOnRevision, requireUser(req).id));
+  }),
+);
+
+adminContentRouter.post(
+  '/content/pages/:slug/restore/:id',
+  requirePermission(Permission.CONFIG_WRITE),
+  validate({ params: infoPageParams.extend({ id: uuid }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await infoPages.restoreInfoPageRevision(slugOf(req), req.params['id'] as string, requireUser(req).id));
   }),
 );

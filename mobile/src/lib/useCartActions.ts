@@ -87,6 +87,7 @@ import { ErrorCode } from "@shared";
 import { ApiRequestError, resolveImageUrl } from "./api";
 import { flyFromCart } from "./flyToCart";
 import { showCartNotice } from "./cartNotice";
+import { revalidateStoreAvailability } from "./storeAvailability";
 import { quantityLimitMessage, quantityLimitOf, type QuantityLimit } from "./quantityLimit";
 import { useCart, useCartMutations } from "./queries";
 import { singleCartVariantOf } from "./cartVariant";
@@ -856,6 +857,12 @@ export function useCartActions() {
         // The server's own limit / stock answer ("Only 3 left in stock."):
         // the same popup as a limit caught on the device, not a banner.
         showCartNotice(err.message);
+      } else if (err instanceof ApiRequestError && err.code === ErrorCode.SELLER_CLOSED) {
+        // The store closed after this screen last asked: a short popup, never
+        // a banner that would stay on Home after the customer moved on — and
+        // ask again, so every card and menu shows it closed (CLOSED, no ADD).
+        showCartNotice(err.message);
+        revalidateStoreAvailability();
       } else {
         setError(
           err instanceof ApiRequestError

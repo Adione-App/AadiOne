@@ -45,7 +45,7 @@ const SUPPORT_MENU: MenuItem[] = [
 ];
 
 const ABOUT_MENU: MenuItem[] = [
-  { key: 'about', label: 'About AadiOne', subtitle: 'Know more about us', icon: Info },
+  { key: 'about', label: 'About Aadione', subtitle: 'Know more about us', icon: Info },
   { key: 'privacy', label: 'Privacy Policy', subtitle: 'How we handle your data', icon: ShieldCheck },
   { key: 'terms', label: 'Terms & Conditions', subtitle: 'Rules and guidelines', icon: FileText },
 ];

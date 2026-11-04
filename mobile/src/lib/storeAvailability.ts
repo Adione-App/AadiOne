@@ -44,6 +44,10 @@ function run(): void {
     ["stores"],
     ["store"],
     ["store-products"],
+    // Restaurants and cafes: Home's food rail, the Food list and an open
+    // menu (its CLOSED labels / ADD buttons).
+    ["restaurants"],
+    ["restaurant-menu"],
     ["category-listing"],
     ["search"],
   ] as const) {

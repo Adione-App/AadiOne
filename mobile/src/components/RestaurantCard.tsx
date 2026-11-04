@@ -16,6 +16,7 @@ import { prepTimeRange, type RestaurantSummaryDto } from "@shared";
 import { formatDistance } from "@shared/distance";
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { AppText } from "@/components/ui";
+import { ClosedBadge } from "@/components/ClosedBadge";
 import { resolveImageUrl } from "@/lib/api";
 import { restaurantListImage } from "@/lib/restaurantImages";
 
@@ -72,13 +73,9 @@ function RestaurantCardImpl({
           </View>
         )}
 
-        {!restaurant.isOpen && (
-          <View style={styles.closedBand}>
-            <AppText style={styles.closedText} numberOfLines={1}>
-              {restaurant.nextOpenText ?? "Closed now"}
-            </AppText>
-          </View>
-        )}
+        {/* Light red, the same CLOSED as the Food list and its menu page; the
+            card still opens the menu (browsable, nothing can be added). */}
+        {!restaurant.isOpen && <ClosedBadge style={styles.closedBadge} />}
       </View>
 
       <View style={styles.body}>
@@ -193,20 +190,10 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: palette.green700,
   },
-  closedBand: {
+  closedBadge: {
     position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingVertical: 4,
-    paddingHorizontal: spacing.sm,
-    backgroundColor: "rgba(20,24,22,0.72)",
-  },
-  closedText: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "600",
-    color: palette.white,
+    left: spacing.sm,
+    bottom: spacing.sm,
   },
   body: {
     paddingHorizontal: spacing.sm + 2,

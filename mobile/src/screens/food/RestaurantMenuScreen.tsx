@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { prepTimeRange, restaurantDietOf, type RestaurantDto, type RestaurantMenuItemDto } from "@shared";
 import { formatPaise } from "@shared/money";
 import { colors, palette, radius, spacing } from "@shared/theme";
+import { ClosedBadge } from "@/components/ClosedBadge";
 import { DietBadge } from "@/components/FoodRestaurantCard";
 import { QuantityStepper } from "@/components/ProductCard";
 import { AppText, EmptyState, ErrorState, NoticeStrip, Screen } from "@/components/ui";
@@ -28,6 +29,7 @@ import { flyToCart } from "@/lib/flyToCart";
 import { useRestaurantMenu } from "@/lib/queries";
 import { menuItemImage, restaurantMenuCoverImage } from "@/lib/restaurantImages";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
+import { useRefreshOnFocus } from "@/lib/useRefreshOnFocus";
 import { useCartActions, type CartItemSnapshot } from "@/lib/useCartActions";
 import { Bone, SkeletonGroup, useSkeletonPulse } from "@/components/Skeleton";
 
@@ -69,6 +71,7 @@ function snapshotOf(item: RestaurantMenuItemDto): CartItemSnapshot {
 const MenuItemRow = memo(function MenuItemRow({
   item,
   showVariant,
+  closed,
   qty,
   onAdd,
   onIncrement,
@@ -76,6 +79,8 @@ const MenuItemRow = memo(function MenuItemRow({
 }: {
   item: RestaurantMenuItemDto;
   showVariant: boolean;
+  /** The restaurant is not taking orders right now: the menu stays readable, nothing can be added. */
+  closed: boolean;
   qty: number;
   onAdd: Cart["add"];
   onIncrement: Cart["increment"];
@@ -135,7 +140,13 @@ const MenuItemRow = memo(function MenuItemRow({
           )}
         </View>
         <View style={styles.action}>
-          {!item.inStock ? (
+          {closed ? (
+            // In ADD's own slot and size, so the row keeps its alignment. No
+            // ADD and no stepper — even for an item already in the cart: the
+            // cart keeps that line (the server holds it as "store closed"),
+            // it just can't be changed or ordered until the restaurant opens.
+            <ClosedBadge size="action" />
+          ) : !item.inStock ? (
             <View style={styles.soldOut}>
               <AppText style={styles.soldOutText}>Sold out</AppText>
             </View>
@@ -258,11 +269,16 @@ function RestaurantHero({
             </AppText>
           ) : null}
           <View style={styles.infoMeta}>
-            <View style={[styles.statusPill, restaurant.isOpen ? styles.statusOpen : styles.statusClosed]}>
-              <AppText style={[styles.statusText, { color: restaurant.isOpen ? palette.green700 : colors.textSecondary }]}>
-                {restaurant.isOpen ? "Open now" : restaurant.nextOpenText ?? "Closed now"}
-              </AppText>
-            </View>
+            {restaurant.isOpen ? (
+              <View style={[styles.statusPill, styles.statusOpen]}>
+                <AppText style={[styles.statusText, { color: palette.green700 }]}>Open now</AppText>
+              </View>
+            ) : (
+              <>
+                <ClosedBadge />
+                {restaurant.nextOpenText ? <AppText style={styles.metaText}>{restaurant.nextOpenText}</AppText> : null}
+              </>
+            )}
             {time ? (
               <View style={styles.metaItem}>
                 <Clock size={14} color={colors.textSecondary} strokeWidth={2.25} />
@@ -394,6 +410,11 @@ export default function RestaurantMenuScreen({
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
   const menu = useRestaurantMenu(sellerId);
+  // Open / closed is the server's answer, asked again when this page is
+  // shown again and every minute while it is on screen (opening hours start
+  // and end without any event); a seller's switch, a holiday or an admin
+  // change arrives at once over the socket (lib/storeAvailability.ts).
+  useRefreshOnFocus(menu, { intervalMs: 60_000 });
   const cart = useCartActions();
   const listRef = useRef<SectionList<RestaurantMenuItemDto, (typeof allSections)[number]>>(null);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
@@ -488,18 +509,21 @@ export default function RestaurantMenuScreen({
     setPinned((current) => (current === shouldPin ? current : shouldPin));
   }, [insets.top]);
 
+  const closed = menu.data?.restaurant.isOpen === false;
+
   const renderItem = useCallback(
     ({ item, section }: { item: RestaurantMenuItemDto; section: (typeof sections)[number] }) => (
       <MenuItemRow
         item={item}
         showVariant={(section.multiVariant.get(item.productId) ?? 0) > 1}
+        closed={closed}
         qty={cart.qtyFor(item.variantId)}
         onAdd={cart.add}
         onIncrement={cart.increment}
         onDecrement={cart.decrement}
       />
     ),
-    [cart],
+    [cart, closed],
   );
 
   if (menu.isLoading) {
@@ -554,7 +578,8 @@ export default function RestaurantMenuScreen({
         ListHeaderComponent={
           <View>
             <RestaurantHero restaurant={restaurant} coverUrl={coverUrl} topInset={insets.top} onBack={onBack} />
-            {cart.error && (
+            {/* A closed restaurant says so on every item (CLOSED) — no banner on top of that. */}
+            {cart.error && !closed && (
               <View style={styles.notice}>
                 <NoticeStrip message={cart.error} />
               </View>
@@ -727,9 +752,6 @@ const styles = StyleSheet.create({
   },
   statusOpen: {
     backgroundColor: palette.green50,
-  },
-  statusClosed: {
-    backgroundColor: colors.surfaceSunken,
   },
   statusText: {
     fontSize: 12,

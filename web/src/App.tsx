@@ -32,6 +32,7 @@ import CustomersPage from '@/pages/Customers';
 import DeliveryPage from '@/pages/Delivery';
 import ReferralsPage from '@/pages/Referrals';
 import ConfigPage from '@/pages/Config';
+import InfoPagesPage from '@/pages/InfoPages';
 import AppUpdatesPage from '@/pages/AppUpdates';
 import PaymentsPage from '@/pages/Payments';
 import RefundsPage from '@/pages/Refunds';
@@ -180,6 +181,15 @@ const NAV: NavItem[] = [
     title: 'Audit Logs',
     subtitle: 'Who changed what, and when',
     permission: Permission.CONFIG_WRITE,
+  },
+  {
+    to: '/info-pages',
+    label: 'Information Pages',
+    icon: 'clipboard',
+    section: 'SYSTEM',
+    title: 'Information Pages',
+    subtitle: 'Privacy Policy, Terms & Conditions and About Aadione — draft, preview, publish.',
+    permission: Permission.CONFIG_READ,
   },
   {
     to: '/app-updates',
@@ -468,6 +478,7 @@ function AdminApp() {
         <Route path="/audit-logs" element={<AuditLogsPage />} />
         <Route path="/app-updates" element={<AppUpdatesPage />} />
         <Route path="/settings" element={<ConfigPage />} />
+        <Route path="/info-pages" element={<InfoPagesPage />} />
         {/* Old link: the app availability settings now live at the top of Configuration. */}
         <Route path="/global-availability" element={<Navigate to="/settings#app-availability" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />

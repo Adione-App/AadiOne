@@ -1519,6 +1519,14 @@ export interface ProductApprovalBatchProductRowDto {
   productId: string;
   itemStatus: ApprovalStatus;
   reviewNote: string | null;
+  /**
+   * The product's approval status NOW. Differs from `itemStatus` (the decision
+   * in this batch, kept as history) once the product was resubmitted and
+   * decided again in a later batch.
+   */
+  currentApprovalStatus: ApprovalStatus;
+  /** Its later submission when this batch's decision is no longer the latest; null otherwise. */
+  newerSubmission: { batchId: string; status: ApprovalStatus } | null;
   name: string;
   /**
    * The product's brand (customers see it once the product is approved).

@@ -9,10 +9,14 @@
  *     another seller's folder. Direct upload and attach accept only keys under
  *     the caller's folder, so a seller can never overwrite, borrow — and then,
  *     by removing, delete — anyone else's file.
- *   - Attach and remove require the caller's own product in its editable
- *     window (never submitted, or rejected — `loadEditableOwnProduct`), the
- *     same rule as editing the product's details: an approved product's
- *     images cannot change without review.
+ *   - Attach, replace, reorder and remove require the caller's own product in
+ *     its editable window (`loadEditableOwnProduct`: never submitted, rejected,
+ *     or approved — never while it is under review), the same rule as editing
+ *     the product's details. The check is repeated inside the transaction that
+ *     writes the image rows, behind the lock a submission holds
+ *     (`lockSellerForProductEdit`): an image can never change between "Submit
+ *     for Approval" and the admin's decision, so the reviewer sees exactly the
+ *     images that were submitted.
  *
  * Content types, the 5 MB limit, key shape, URLs and file removal are the
  * storage layer's and the admin catalogue's, unchanged.
@@ -22,11 +26,11 @@ import { createHmac } from 'node:crypto';
 import { ErrorCode, type SellerProductDto } from '../../shared';
 import { AppError } from '../../common/errors';
 import { env } from '../../config/env';
-import { prisma } from '../../infra/db/prisma';
+import { prisma, runInTransaction, type Tx } from '../../infra/db/prisma';
 import { assertUploadable, storage, type PresignedUpload } from '../../infra/storage';
-import { attachProductImage, removeProductImage } from './product-image.service';
+import { attachProductImage, discardProcessedImage, removeProductImage } from './product-image.service';
 import { processUploadedImage, removeProductImageFileIfUnused } from './uploaded-image.service';
-import { loadEditableOwnProduct } from './product-approval.service';
+import { loadEditableOwnProduct, lockSellerForProductEdit } from './product-approval.service';
 import { getOwnProduct } from './seller-product.service';
 
 export const SELLER_DIRECT_UPLOAD_PATH = '/api/v1/seller/uploads/direct';
@@ -45,6 +49,18 @@ export function sellerImageFolderFor(sellerId: string, key: string): string {
 
 /** A product's gallery: image 1 is the PRIMARY one (lowest `displayOrder`). */
 export const MAX_SELLER_PRODUCT_IMAGES = 8;
+
+/** Inside the image write: the submission lock, then "still editable?" again (see the header). */
+async function assertStillEditable(tx: Tx, sellerId: string, productId: string): Promise<void> {
+  await lockSellerForProductEdit(tx, sellerId);
+  await loadEditableOwnProduct(sellerId, productId, tx);
+}
+
+function tooManyImages(): AppError {
+  return new AppError(ErrorCode.VALIDATION_ERROR, {
+    message: `A product can have at most ${MAX_SELLER_PRODUCT_IMAGES} images. Remove one first.`,
+  });
+}
 
 /** Throws unless `key` is a well-formed key under this seller's own folder. */
 export function assertOwnSellerKey(sellerId: string, key: string): void {
@@ -99,13 +115,12 @@ export async function attachSellerImage(
 ): Promise<SellerProductDto> {
   await loadEditableOwnProduct(sellerId, productId);
   assertOwnKey(sellerId, input.key);
-  const count = await prisma.productImage.count({ where: { productId } });
-  if (count >= MAX_SELLER_PRODUCT_IMAGES) {
-    throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message: `A product can have at most ${MAX_SELLER_PRODUCT_IMAGES} images. Remove one first.`,
-    });
-  }
-  await attachProductImage({ productId, key: input.key, altText: input.altText ?? null }, actorUserId);
+  if ((await prisma.productImage.count({ where: { productId } })) >= MAX_SELLER_PRODUCT_IMAGES) throw tooManyImages();
+  await attachProductImage({ productId, key: input.key, altText: input.altText ?? null }, actorUserId, async (tx) => {
+    await assertStillEditable(tx, sellerId, productId);
+    // Two uploads at once can't both take the last place.
+    if ((await tx.productImage.count({ where: { productId } })) >= MAX_SELLER_PRODUCT_IMAGES) throw tooManyImages();
+  });
   return getOwnProduct(sellerId, productId);
 }
 
@@ -132,10 +147,19 @@ export async function replaceSellerImage(
   if (!image) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Image not found.' });
 
   const { url, thumbUrl } = await processUploadedImage(input.key, 'product');
-  await prisma.productImage.update({
-    where: { id: imageId },
-    data: { url, thumbUrl, cardUrl: thumbUrl, ...(input.altText !== undefined ? { altText: input.altText } : {}) },
-  });
+  try {
+    await runInTransaction(async (tx) => {
+      await assertStillEditable(tx, sellerId, productId);
+      await tx.productImage.update({
+        where: { id: imageId },
+        data: { url, thumbUrl, cardUrl: thumbUrl, ...(input.altText !== undefined ? { altText: input.altText } : {}) },
+      });
+    });
+  } catch (error) {
+    // Refused (now under review) or failed: the old image stays, the new files go.
+    await discardProcessedImage({ url, thumbUrl });
+    throw error;
+  }
   await prisma.auditLog.create({
     data: {
       actorUserId,
@@ -163,18 +187,20 @@ export async function reorderSellerImages(
   actorUserId: string,
 ): Promise<SellerProductDto> {
   await loadEditableOwnProduct(sellerId, productId);
-  const images = await prisma.productImage.findMany({ where: { productId }, select: { id: true, displayOrder: true } });
-  const current = new Set(images.map((image) => image.id));
-  const wanted = new Set(imageIds);
-  if (wanted.size !== imageIds.length || wanted.size !== current.size || imageIds.some((id) => !current.has(id))) {
-    // An id of another product's image is indistinguishable from a wrong list.
-    throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message: 'The image list does not match this product’s images. Refresh and try again.',
-    });
-  }
-  await prisma.$transaction(
-    imageIds.map((id, index) => prisma.productImage.update({ where: { id }, data: { displayOrder: index } })),
-  );
+  const images = await runInTransaction(async (tx) => {
+    await assertStillEditable(tx, sellerId, productId);
+    const rows = await tx.productImage.findMany({ where: { productId }, select: { id: true, displayOrder: true } });
+    const current = new Set(rows.map((image) => image.id));
+    const wanted = new Set(imageIds);
+    if (wanted.size !== imageIds.length || wanted.size !== current.size || imageIds.some((id) => !current.has(id))) {
+      // An id of another product's image is indistinguishable from a wrong list.
+      throw new AppError(ErrorCode.VALIDATION_ERROR, {
+        message: 'The image list does not match this product’s images. Refresh and try again.',
+      });
+    }
+    for (const [index, id] of imageIds.entries()) await tx.productImage.update({ where: { id }, data: { displayOrder: index } });
+    return rows;
+  });
   await prisma.auditLog.create({
     data: {
       actorUserId,
@@ -197,6 +223,6 @@ export async function removeSellerImage(
   await loadEditableOwnProduct(sellerId, productId);
   const image = await prisma.productImage.findFirst({ where: { id: imageId, productId }, select: { id: true } });
   if (!image) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Image not found.' });
-  await removeProductImage(imageId, actorUserId);
+  await removeProductImage(imageId, actorUserId, (tx) => assertStillEditable(tx, sellerId, productId));
   return getOwnProduct(sellerId, productId);
 }

@@ -20,6 +20,7 @@ import { ChevronRight, Clock, UtensilsCrossed } from "lucide-react-native";
 import { prepTimeRange, restaurantDietOf, type FoodDiet, type RestaurantSummaryDto } from "@shared";
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { AppText } from "@/components/ui";
+import { ClosedBadge } from "@/components/ClosedBadge";
 import { Bone } from "@/components/Skeleton";
 import { resolveImageUrl } from "@/lib/api";
 import { restaurantListImage } from "@/lib/restaurantImages";
@@ -100,11 +101,14 @@ function FoodRestaurantCardImpl({
           <AppText style={styles.name} numberOfLines={2}>
             {restaurant.name}
           </AppText>
-          <View style={[styles.status, restaurant.isOpen ? styles.statusOpen : styles.statusClosed]}>
-            <AppText style={[styles.statusText, { color: restaurant.isOpen ? palette.green700 : colors.textSecondary }]}>
-              {restaurant.isOpen ? "Open" : "Closed"}
-            </AppText>
-          </View>
+          {restaurant.isOpen ? (
+            <View style={[styles.status, styles.statusOpen]}>
+              <AppText style={[styles.statusText, { color: palette.green700 }]}>Open</AppText>
+            </View>
+          ) : (
+            // Light red, the same CLOSED as its menu page; the card still opens the menu.
+            <ClosedBadge style={styles.closedBadge} />
+          )}
         </View>
         {!restaurant.isOpen && restaurant.nextOpenText ? (
           <AppText style={styles.nextOpen} numberOfLines={1}>
@@ -249,8 +253,8 @@ const styles = StyleSheet.create({
   statusOpen: {
     backgroundColor: palette.green50,
   },
-  statusClosed: {
-    backgroundColor: colors.surfaceSunken,
+  closedBadge: {
+    alignSelf: "auto",
   },
   statusText: {
     fontSize: 11,

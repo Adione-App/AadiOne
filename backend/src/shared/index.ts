@@ -34,6 +34,7 @@ export * from './dto';
 export * from './product-import';
 export * from './home-layout';
 export * from './home-builder';
+export * from './info-pages';
 
 /* business helpers (pure functions) */
 export * from './money';

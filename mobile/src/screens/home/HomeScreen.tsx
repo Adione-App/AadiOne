@@ -51,6 +51,7 @@ import { useCartError } from "@/lib/useCartActions";
 import { useLocation, usePreferences } from "@/lib/store";
 import { isActiveLiveDestination, liveLocationLabel } from "@/lib/liveLocation";
 import { openBannerAction } from "@/lib/bannerAction";
+import { useRefreshOnFocus } from "@/lib/useRefreshOnFocus";
 
 import BrandMark from "@/components/BrandMark";
 import { AppText, ErrorState, NoticeStrip, Screen } from "@/components/ui";
@@ -519,6 +520,8 @@ export default function HomeScreen({
     [location],
   );
   const restaurantsQuery = useRestaurants(near);
+  // A restaurant may have opened or closed while another tab was in front.
+  useRefreshOnFocus(restaurantsQuery, { minAgeMs: 30_000 });
   const storesQuery = useStores(near);
   const offersQuery = useOffers();
 

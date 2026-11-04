@@ -18,7 +18,8 @@
  *                            when the search or a filter changes
  *     Hide / Show / Delete → POST /seller/products/bulk, every product reported
  *     Submit Selected for  → POST /seller/approval-batches { productIds }: the
- *     Approval               ticked "Ready for Submission" products go to
+ *     Approval               ticked "Ready for Submission" products — and
+ *                            corrected Rejected ones, resubmitted — go to
  *                            Aadione as ONE batch. The server refuses pending,
  *                            approved, incomplete or another seller's products,
  *                            so nothing is ever sent twice.
@@ -138,9 +139,16 @@ function matchesApproval(row: ProductRow, approval: Approval): boolean {
   }
 }
 
-/** Own, never submitted, with its price and stock — what may go into a batch. */
+/**
+ * Own, with its price and stock, and not under review — what may go into a
+ * batch: a never-submitted product, a Rejected one the seller corrected
+ * (resubmitted: back to Pending Approval until Aadione decides again), or an
+ * approved product's new options.
+ */
 const isReady = (row: ProductRow): boolean =>
-  row.own && row.productId !== null && ((row.draft && row.listing !== null) || (row.product !== null && hasOptionsToSubmit(row.product)));
+  row.own &&
+  row.productId !== null &&
+  (((row.draft || row.approval === 'REJECTED') && row.listing !== null) || (row.product !== null && hasOptionsToSubmit(row.product)));
 
 /** Most products one submission takes (backend submitBatchSchema). */
 const MAX_SELECTION = 1000;

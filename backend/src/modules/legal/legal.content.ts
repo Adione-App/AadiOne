@@ -16,6 +16,8 @@
  * placeholders marked {{ }} with the registered business details.
  */
 
+import type { InfoPageContent, InfoPageSlug } from '../../shared';
+
 export interface LegalDocument {
   slug: string;
   title: string;
@@ -226,4 +228,36 @@ export const TERMS_AND_CONDITIONS: LegalDocument = {
 export const LEGAL_DOCUMENTS: Record<string, LegalDocument> = {
   privacy: PRIVACY_POLICY,
   terms: TERMS_AND_CONDITIONS,
+};
+
+/**
+ * The wording above, in the information-page format, served while an admin
+ * has not yet published a page of their own (content/info-page.service.ts).
+ * The text is unchanged; its contact details now come from Admin
+ * Configuration with NO invented fallback (a line whose setting is empty is
+ * left out), and the business-name token is the configured brand.
+ */
+const legacyText = (text: string): string =>
+  text
+    .split(PLACEHOLDERS.BUSINESS_NAME)
+    .join('{{BUSINESS_TRADE_NAME}}')
+    .split(PLACEHOLDERS.STORE_HOURS)
+    .join('the opening hours each seller shows in the app');
+
+function legacyContent(document: LegalDocument): InfoPageContent {
+  return {
+    title: document.title,
+    version: '1.0',
+    effectiveDate: document.updatedAt,
+    sections: document.sections.map((section) => ({
+      heading: section.heading,
+      blocks: section.body.map((text) => ({ type: 'paragraph' as const, text: legacyText(text) })),
+    })),
+  };
+}
+
+/** Built-in wording per page; the About page has none (the app shows its own screen until one is published). */
+export const BUILTIN_INFO_PAGES: Partial<Record<InfoPageSlug, { updatedAt: string; content: InfoPageContent }>> = {
+  privacy: { updatedAt: LAST_UPDATED, content: legacyContent(PRIVACY_POLICY) },
+  terms: { updatedAt: LAST_UPDATED, content: legacyContent(TERMS_AND_CONDITIONS) },
 };

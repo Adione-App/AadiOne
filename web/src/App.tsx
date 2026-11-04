@@ -85,6 +85,9 @@ const NAV: NavItem[] = [
     section: 'MAIN',
     title: 'Payments',
     subtitle: 'Cashfree payments for every order',
+    // ORDER_REFUND: Admin and Super Admin only. Staff (the only other admin-panel
+    // role) cannot open Payments; they still see the paid-but-not-placed warning
+    // on Orders and the Dashboard. Changing this needs a separate decision.
     permission: Permission.ORDER_REFUND,
   },
   {

@@ -54,7 +54,22 @@ export interface MarketplaceProductRow {
   approvalStatus: string;
   productStatus: string;
   visibility: { sellable: boolean; reason: VisibilityReason; availableQty: number; lowStock: boolean };
+  /** Each listed variant, default first (backend MarketplaceVariantRow); absent from older servers. */
+  variants?: MarketplaceVariantRow[];
   updatedAt: string;
+}
+
+export interface MarketplaceVariantRow {
+  variantId: string;
+  variantName: string;
+  isDefault: boolean;
+  displayOrder: number;
+  /** APPROVED, or PENDING / REJECTED for a variant added to an approved product. */
+  approvalStatus: string;
+  /** ACTIVE (shown), INACTIVE (hidden by the seller), DRAFT (waiting for review). */
+  variantStatus: string;
+  listing: NonNullable<MarketplaceProductRow['listing']>;
+  visibility: MarketplaceProductRow['visibility'];
 }
 
 export interface MarketplaceProducts extends Paged<MarketplaceProductRow> {

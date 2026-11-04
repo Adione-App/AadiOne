@@ -27,6 +27,16 @@ export interface RowListing {
   tracksStock: boolean;
 }
 
+/** One size / variant of an own product, as the product list summarises it. */
+export interface RowSize {
+  variantId: string;
+  name: string;
+  pricePaise: number | null;
+  availableQty: number | null;
+  /** Shown to customers and on sale (its own visibility answer, when the server gives one). */
+  live: boolean;
+}
+
 export interface ProductRow {
   key: string;
   own: boolean;
@@ -41,6 +51,10 @@ export interface ProductRow {
   listing: RowListing | null;
   /** Live variants (sizes / options) of an own product; 1 for a simple item or a catalogue listing. */
   variantCount: number;
+  /** Each size of a multi-variant own product, in display order; [] otherwise. */
+  sizes: RowSize[];
+  /** Highest selling price among the sizes (with `listing.pricePaise`, the lowest: a price range). */
+  maxPricePaise: number | null;
   visibility: ListingVisibility;
   /** APPROVED | PENDING | REJECTED (a catalogue listing is always APPROVED). */
   approval: string;
@@ -73,7 +87,8 @@ function productListing(p: SellerProductInventory, updatedAt: string | null): Ro
   const sum = (pick: (l: (typeof listings)[number]) => number) => listings.reduce((n, l) => n + pick(l), 0);
   return {
     ...own,
-    pricePaise: cheapest.pricePaise,
+    // "From" price: the cheapest size a customer can buy now.
+    pricePaise: minPriceOf(p) ?? cheapest.pricePaise,
     mrpPaise: cheapest.mrpPaise,
     stockQty: sum((l) => l.stockQty),
     reservedQty: sum((l) => l.reservedQty),
@@ -83,8 +98,42 @@ function productListing(p: SellerProductInventory, updatedAt: string | null): Ro
   };
 }
 
+function sizesOf(p: SellerProductInventory): RowSize[] {
+  const variants = p.variants ?? [];
+  if (variants.length <= 1) return [];
+  return variants.map((v) => ({
+    variantId: v.id,
+    name: v.variantName,
+    pricePaise: v.listing?.pricePaise ?? null,
+    availableQty: v.listing ? (v.listing.tracksStock ? v.listing.availableQty : null) : null,
+    live: v.visibility ? v.visibility.sellable : v.status !== 'INACTIVE' && v.listing?.isAvailable === true,
+  }));
+}
+
+/** The prices a customer can pay now — the live sizes; every size when none is live (e.g. still in review). */
+function rangePrices(p: SellerProductInventory): number[] {
+  const priced = (p.variants ?? []).filter((v) => v.listing !== null);
+  const live = priced.filter((v) => v.visibility?.sellable === true);
+  return (live.length > 0 ? live : priced).map((v) => v.listing!.pricePaise);
+}
+
+function maxPriceOf(p: SellerProductInventory): number | null {
+  const prices = rangePrices(p);
+  return prices.length > 1 ? Math.max(...prices) : null;
+}
+
+function minPriceOf(p: SellerProductInventory): number | null {
+  const prices = rangePrices(p);
+  return prices.length > 0 ? Math.min(...prices) : null;
+}
+
 export function rowsOf(products: SellerProductInventory[], listings: SellerListingInventory[]): ProductRow[] {
-  const ownListingIds = new Set(products.map((p) => p.listing?.id).filter(Boolean));
+  // Every listing of the seller's OWN products — each size of a multi-variant
+  // product, not only the default one — belongs to that product's single row
+  // (its sizes are managed on the product page), never to a row of its own.
+  const ownListingIds = new Set(
+    products.flatMap((p) => [p.listing?.id, ...(p.variants ?? []).map((v) => v.listing?.id)]).filter((id): id is string => Boolean(id)),
+  );
   const listingUpdated = new Map(listings.map((l) => [l.id, l.updatedAt]));
   const own: ProductRow[] = products.map((p) => {
     const review = reviewState(p);
@@ -98,6 +147,8 @@ export function rowsOf(products: SellerProductInventory[], listings: SellerListi
       image: p.images[0]?.thumbUrl ?? p.images[0]?.url ?? null,
       listing: productListing(p, listingUpdatedAt),
       variantCount: Math.max(1, (p.variants ?? []).length),
+      sizes: sizesOf(p),
+      maxPricePaise: maxPriceOf(p),
       visibility: p.visibility,
       approval: p.approvalStatus,
       draft: p.approvalStatus === 'PENDING' && p.latestApproval?.status !== 'PENDING',
@@ -113,7 +164,8 @@ export function rowsOf(products: SellerProductInventory[], listings: SellerListi
     };
   });
   const others: ProductRow[] = listings
-    .filter((l) => !ownListingIds.has(l.id))
+    // A removed size of an own product keeps its listing (off sale) for order history: not a row either.
+    .filter((l) => !l.ownProduct && !ownListingIds.has(l.id))
     .map((l) => ({
       key: `l-${l.id}`,
       own: false,
@@ -123,6 +175,8 @@ export function rowsOf(products: SellerProductInventory[], listings: SellerListi
       image: l.imageUrl,
       listing: l,
       variantCount: 1,
+      sizes: [],
+      maxPricePaise: null,
       visibility: l.visibility,
       approval: l.approvalStatus,
       draft: false,

@@ -11,6 +11,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test:unit": "node --experimental-transform-types --import ./tests/resolve-ts.mjs --test \"tests/**/*.test.ts\"",
     "lint": "eslint src --ext .ts,.tsx"
   },
   "dependencies": {

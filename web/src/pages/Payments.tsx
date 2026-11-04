@@ -14,19 +14,28 @@ import { api } from '@/lib/api';
 import { adminErrorMessage, marketplaceKeys, shortDateTime, toQuery, type Paged, type PaymentRow } from '@/lib/marketplace';
 import { Button, Icon, Pill, Surface, type IconName, type Tone } from '@/components/ui';
 import { Pager } from '@/components/MarketplaceUi';
+import { PaidNotPlacedAlert } from '@/components/PaidNotPlacedAlert';
 import { EmptyPanel, FilterSelect, LoadError, SearchBox, SkeletonList } from '@/seller/sellerUi';
 import { useDebouncedValue } from '@/seller/sellerQueries';
 
 const PAGE_SIZE = 25;
-const STATUSES = [
+/**
+ * Filter on the outcome each row shows (backend paymentOutcomeWhere), not on
+ * the gateway's raw status: "Pending" is a checkout still open while its order
+ * awaits payment — Cashfree keeps those CREATED, so a raw PENDING filter
+ * missed every one of them.
+ */
+const OUTCOMES = [
   { value: 'ALL', label: 'Any status' },
-  { value: 'CAPTURED', label: 'Captured (paid)' },
+  { value: 'PAID', label: 'Paid' },
   { value: 'PENDING', label: 'Pending' },
-  { value: 'CREATED', label: 'Created' },
   { value: 'FAILED', label: 'Failed' },
+  { value: 'CANCELLED', label: 'Cancelled' },
   { value: 'REFUNDED', label: 'Refunded' },
   { value: 'PARTIALLY_REFUNDED', label: 'Partially refunded' },
 ] as const;
+/** Order states of a paid order that has not reached its sellers yet. */
+const NOT_PLACED_ORDER_STATUSES = new Set(['PENDING_PAYMENT', 'PAYMENT_CONFIRMED']);
 
 /**
  * The outcome badge — success, pending, failed/cancelled (red) and refunded
@@ -66,6 +75,8 @@ export default function PaymentsPage() {
   const [params, setParams] = useSearchParams();
   const [search, setSearch] = useState(params.get('q') ?? '');
   const q = useDebouncedValue(search.trim(), 350);
+  const outcome = params.get('outcome') ?? 'ALL';
+  // An older link's raw gateway status (?status=CAPTURED) still filters as before.
   const status = params.get('status') ?? 'ALL';
   const page = Math.max(1, Number(params.get('page') ?? '1') || 1);
   const update = (changes: Record<string, string | null>) =>
@@ -86,7 +97,7 @@ export default function PaymentsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q]);
 
-  const query = toQuery({ q, status, page, pageSize: PAGE_SIZE });
+  const query = toQuery({ q, outcome, status, page, pageSize: PAGE_SIZE });
   const payments = useQuery({
     queryKey: marketplaceKeys.payments(query),
     queryFn: () => api.get<Paged<PaymentRow>>(`/admin/payments?${query}`),
@@ -95,6 +106,7 @@ export default function PaymentsPage() {
 
   return (
     <div className="space-y-5">
+      <PaidNotPlacedAlert paymentsLink={false} />
       <p className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600">
         Payments are taken and confirmed through Cashfree. To refund a customer, open the order in{' '}
         <Link to="/orders" className="font-semibold text-brand-600 hover:underline">
@@ -112,13 +124,13 @@ export default function PaymentsPage() {
           <span className="mb-1 block text-xs font-medium text-gray-500">Order / Cashfree ID</span>
           <SearchBox value={search} onChange={setSearch} placeholder="Order number, Cashfree order or payment ID…" label="Search payments" />
         </div>
-        <FilterSelect label="Payment status" value={status} options={STATUSES} onChange={(next) => update({ status: next })} />
+        <FilterSelect label="Payment status" value={outcome} options={OUTCOMES} onChange={(next) => update({ outcome: next, status: null })} />
         <Button
           variant="ghost"
-          disabled={!q && status === 'ALL'}
+          disabled={!q && outcome === 'ALL' && status === 'ALL'}
           onClick={() => {
             setSearch('');
-            update({ q: null, status: null });
+            update({ q: null, outcome: null, status: null });
           }}
         >
           Clear filters
@@ -130,7 +142,7 @@ export default function PaymentsPage() {
       ) : payments.isError ? (
         <LoadError message={adminErrorMessage(payments.error)} onRetry={() => void payments.refetch()} />
       ) : payments.data.items.length === 0 ? (
-        <EmptyPanel icon="rupee" title="No payments found" hint={q || status !== 'ALL' ? 'Try clearing your filters.' : undefined} />
+        <EmptyPanel icon="rupee" title="No payments found" hint={q || outcome !== 'ALL' || status !== 'ALL' ? 'Try clearing your filters.' : undefined} />
       ) : (
         <>
           <Surface className="overflow-hidden">
@@ -184,6 +196,9 @@ export default function PaymentsPage() {
                         </Pill>
                         {outcomeReason(p) && (
                           <span className="mt-1 block text-xs font-medium text-danger-600">{outcomeReason(p)}</span>
+                        )}
+                        {p.outcome === 'PAID' && NOT_PLACED_ORDER_STATUSES.has(p.order.status) && (
+                          <span className="mt-1 block text-xs font-semibold text-warn-500">Paid — order not placed yet</span>
                         )}
                         <span className="mt-1 block text-xs text-gray-500">
                           {p.provider}

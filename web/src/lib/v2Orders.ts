@@ -94,6 +94,35 @@ export const V2_ADMIN_ORDER_TABS = [
 ] as const;
 export type V2AdminOrderTab = (typeof V2_ADMIN_ORDER_TABS)[number]['key'];
 
+/**
+ * The tabs the Orders page shows. Payment Pending only where an admin acts on
+ * it — the legacy direct-UPI mode, where the store confirms each payment by
+ * hand (GET /admin/payment-mode `manualConfirmation`). With Cashfree an
+ * unpaid checkout is not an order to work on: it settles (or expires) by
+ * itself and is tracked in Payments. The backend tab stays for compatibility.
+ */
+export function visibleAdminOrderTabs(manualPaymentConfirmation: boolean) {
+  return V2_ADMIN_ORDER_TABS.filter((item) => manualPaymentConfirmation || item.key !== 'PAYMENT_PENDING');
+}
+
+/**
+ * Tabs with a count badge. `urgent` (red) only for Payment Pending in
+ * direct-UPI mode — a payment the store must check; a normal Cashfree
+ * checkout in progress never raises one.
+ */
+export function orderBadgeTabs(manualPaymentConfirmation: boolean): { key: V2AdminOrderTab; urgent: boolean }[] {
+  return [
+    ...(manualPaymentConfirmation ? [{ key: 'PAYMENT_PENDING' as const, urgent: true }] : []),
+    { key: 'PROCESSING', urgent: false },
+    { key: 'READY_FOR_PICKUP', urgent: false },
+  ];
+}
+
+/** The tab to open: the requested one (e.g. a Dashboard link's ?tab=) when shown, else Processing. */
+export function resolveAdminOrderTab(requested: string | null | undefined, manualPaymentConfirmation: boolean): V2AdminOrderTab {
+  return visibleAdminOrderTabs(manualPaymentConfirmation).find((item) => item.key === requested)?.key ?? 'PROCESSING';
+}
+
 /** GET /admin/orders row: V1's summary plus V2's marketplace fields. */
 export type AdminOrderSummaryV2 = Omit<AdminOrderSummaryDto, 'status'> & {
   status: string;

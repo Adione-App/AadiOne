@@ -16,6 +16,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PaymentMethod, type CursorPage, type DeliveryAgentDto } from "@shared";
 import { formatPaise } from "@shared/money";
@@ -33,31 +34,22 @@ import {
   Surface,
 } from "@/components/ui";
 import { useOrderSocket } from "@/lib/socket";
+import { PaidNotPlacedAlert } from "@/components/PaidNotPlacedAlert";
 import {
   PARENT_NEXT_ACTION,
   SELLER_ORDER_NEXT_ACTION,
   SellerOrderStatus,
   V2OrderStatus,
-  V2_ADMIN_ORDER_TABS,
+  orderBadgeTabs,
+  resolveAdminOrderTab,
   sellerOrderStatusLabel,
+  visibleAdminOrderTabs,
   sellerOrderStatusStyle,
   toAdminOrderDetailView,
   type AdminOrderSummaryV2,
   type SellerOrderView,
   type V2AdminOrderTab,
 } from "@/lib/v2Orders";
-
-/**
- * Tabs whose count is worth a badge. Payment verification blocks an order
- * completely and its tab is easy to never visit, so it gets the louder,
- * danger-toned badge; Processing and Ready for Pickup are where the counter
- * has work to do.
- */
-const BADGE_TABS: { key: V2AdminOrderTab; urgent: boolean }[] = [
-  { key: "PAYMENT_PENDING", urgent: true },
-  { key: "PROCESSING", urgent: false },
-  { key: "READY_FOR_PICKUP", urgent: false },
-];
 
 /**
  * One tab's list request. The key matches the Customers page's per-tab
@@ -144,8 +136,30 @@ function useNewOrderChime(): {
 }
 
 export default function OrdersPage() {
-  const [tab, setTab] = useState<V2AdminOrderTab>("PROCESSING");
-  const [search, setSearch] = useState("");
+  const [params] = useSearchParams();
+
+  /**
+   * Whether the legacy manual UPI confirmation controls apply at all. With a
+   * payment gateway (Cashfree) payments settle only by server-side
+   * verification, so the controls are hidden — and the backend refuses them
+   * regardless. Hidden until the answer arrives.
+   */
+  const paymentMode = useQuery({
+    queryKey: ["admin-payment-mode"],
+    queryFn: () =>
+      api.get<{ provider: string; manualConfirmation: boolean }>("/admin/payment-mode"),
+    staleTime: 5 * 60_000,
+  });
+  const manualPayments = paymentMode.data?.manualConfirmation === true;
+
+  // Tabs and badges for the active provider (v2Orders.ts): no Payment Pending
+  // tab — and no red badge for checkouts in progress — with Cashfree. The
+  // open tab is derived, so a link's ?tab= is honoured once the mode is known.
+  const tabs = visibleAdminOrderTabs(manualPayments);
+  const badgeTabs = orderBadgeTabs(manualPayments);
+  const [requestedTab, setTab] = useState<string>(() => params.get("tab") ?? "PROCESSING");
+  const tab: V2AdminOrderTab = resolveAdminOrderTab(requestedTab, manualPayments);
+  const [search, setSearch] = useState(() => params.get("search") ?? "");
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
 
@@ -160,7 +174,7 @@ export default function OrdersPage() {
    * is one of these with no search, it IS the same query, not a second one.
    */
   const badgeQueries = useQueries({
-    queries: BADGE_TABS.map((item) => ordersQuery(item.key, "")),
+    queries: badgeTabs.map((item) => ordersQuery(item.key, "")),
   });
 
   /**
@@ -182,20 +196,6 @@ export default function OrdersPage() {
     },
     refetchInterval: 20_000,
   });
-
-  /**
-   * Whether the legacy manual UPI confirmation controls apply at all. With a
-   * payment gateway (Cashfree) payments settle only by server-side
-   * verification, so the controls are hidden — and the backend refuses them
-   * regardless. Hidden until the answer arrives.
-   */
-  const paymentMode = useQuery({
-    queryKey: ["admin-payment-mode"],
-    queryFn: () =>
-      api.get<{ provider: string; manualConfirmation: boolean }>("/admin/payment-mode"),
-    staleTime: 5 * 60_000,
-  });
-  const manualPayments = paymentMode.data?.manualConfirmation === true;
 
   /**
    * Delivery agents.
@@ -418,11 +418,13 @@ export default function OrdersPage() {
         </button>
       )}
 
+      <PaidNotPlacedAlert />
+
       <Surface className="px-2">
         <div className="flex flex-nowrap gap-1 overflow-x-auto">
-          {V2_ADMIN_ORDER_TABS.map((item) => {
-            const badgeIndex = BADGE_TABS.findIndex((badge) => badge.key === item.key);
-            const badge = badgeIndex >= 0 ? BADGE_TABS[badgeIndex] : undefined;
+          {tabs.map((item) => {
+            const badgeIndex = badgeTabs.findIndex((badge) => badge.key === item.key);
+            const badge = badgeIndex >= 0 ? badgeTabs[badgeIndex] : undefined;
             const page = badgeIndex >= 0 ? badgeQueries[badgeIndex]?.data : undefined;
             const count = page?.items.length ?? 0;
 

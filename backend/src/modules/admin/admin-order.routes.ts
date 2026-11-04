@@ -86,6 +86,8 @@ adminOrderRouter.get(
       search: z.string().trim().max(60).optional(),
       cursor: z.string().datetime().optional(),
       date: calendarDate.optional(),
+      // Only orders that were ever placed — no unpaid / failed / never-placed checkout.
+      placedOnly: z.enum(["true", "false"]).optional(),
       limit: z.coerce
         .number()
         .int()
@@ -100,6 +102,7 @@ adminOrderRouter.get(
       search?: string;
       cursor?: string;
       date?: string;
+      placedOnly?: "true" | "false";
       limit: number;
     }>(req);
     okCursorPage(
@@ -108,6 +111,7 @@ adminOrderRouter.get(
         ...(query.tab ? { tab: query.tab } : {}),
         ...(query.search ? { search: query.search } : {}),
         ...(query.date ? { date: query.date } : {}),
+        ...(query.placedOnly === "true" ? { placedOnly: true } : {}),
         cursor: query.cursor ?? null,
         limit: query.limit,
       }),
@@ -130,6 +134,23 @@ adminOrderRouter.get(
       provider: payments.name,
       manualConfirmation: allowsManualPaymentConfirmation(),
     });
+  }),
+);
+
+/**
+ * GET /admin/payment-anomalies
+ *
+ * Orders paid (capture verified with the gateway) but still not placed well
+ * after every automatic path had its chance — the admin warning on Orders,
+ * Dashboard and Payments. Read-only; ORDER_READ_ALL like the order board, so
+ * everyone who works the orders sees it (the Payments page itself keeps its
+ * ORDER_REFUND permission).
+ */
+adminOrderRouter.get(
+  "/payment-anomalies",
+  requirePermission(Permission.ORDER_READ_ALL),
+  asyncHandler(async (_req: Request, res: Response) => {
+    ok(res, await service.listPaidNotPlaced());
   }),
 );
 

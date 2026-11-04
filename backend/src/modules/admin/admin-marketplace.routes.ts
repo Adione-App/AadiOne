@@ -98,6 +98,8 @@ adminMarketplaceRouter.get(
     query: z.object({
       q,
       status: z.enum(['CREATED', 'PENDING', 'AUTHORIZED', 'CAPTURED', 'FAILED', 'REFUNDED', 'PARTIALLY_REFUNDED']).optional(),
+      // What the page shows (paymentOutcome) — "PENDING" includes Cashfree's CREATED checkouts.
+      outcome: z.enum(['PAID', 'PENDING', 'FAILED', 'CANCELLED', 'REFUNDED', 'PARTIALLY_REFUNDED']).optional(),
       page,
       pageSize,
     }),

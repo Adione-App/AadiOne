@@ -10,7 +10,7 @@
  * product's content.
  */
 
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatPaise } from '@shared/money';
@@ -60,6 +60,15 @@ export default function ProductsPage() {
   const stock = params.get('stock') ?? 'ALL';
   const page = Math.max(1, Number(params.get('page') ?? '1') || 1);
   const [moderating, setModerating] = useState<MarketplaceProductRow | null>(null);
+  // Grouped products whose variants are expanded underneath their row.
+  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleOpen = (key: string) =>
+    setOpen((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   const query = toQuery({
     q,
@@ -188,7 +197,8 @@ export default function ProductsPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {products.data.items.map((row) => (
-                    <tr key={row.key} className="align-middle hover:bg-gray-50/60">
+                    <Fragment key={row.key}>
+                    <tr className="align-middle hover:bg-gray-50/60">
                       <td className="px-4 py-3">
                         <div className="flex min-w-[13rem] items-center gap-3">
                           <Thumb src={row.imageUrl} alt={row.productName} />
@@ -198,6 +208,17 @@ export default function ProductsPage() {
                               {row.variantName ?? '—'}
                               {row.ownership === 'CATALOG' && ' · shared catalogue'}
                             </p>
+                            {(row.variants?.length ?? 0) > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => toggleOpen(row.key)}
+                                aria-expanded={open.has(row.key)}
+                                className="mt-0.5 text-xs font-semibold text-brand-600 hover:underline"
+                              >
+                                {open.has(row.key) ? 'Hide variants' : `Show ${row.variants!.length} variants`}
+                                {row.variants!.some((v) => v.approvalStatus === 'PENDING') && ' · new in review'}
+                              </button>
+                            )}
                           </div>
                         </div>
                       </td>
@@ -209,10 +230,14 @@ export default function ProductsPage() {
                         {row.listing ? (
                           <>
                             <span className="font-semibold text-gray-900">
-                              {(row.variantCount ?? 1) > 1 && <span className="mr-1 text-xs font-medium text-gray-500">from</span>}
-                              {formatPaise(row.listing.pricePaise)}
+                              {priceRangeOf(row) ?? (
+                                <>
+                                  {(row.variantCount ?? 1) > 1 && <span className="mr-1 text-xs font-medium text-gray-500">from</span>}
+                                  {formatPaise(row.listing.pricePaise)}
+                                </>
+                              )}
                             </span>
-                            {row.listing.mrpPaise > row.listing.pricePaise && (
+                            {!priceRangeOf(row) && row.listing.mrpPaise > row.listing.pricePaise && (
                               <span className="block text-xs text-gray-400 line-through">{formatPaise(row.listing.mrpPaise)}</span>
                             )}
                           </>
@@ -268,6 +293,14 @@ export default function ProductsPage() {
                         </div>
                       </td>
                     </tr>
+                    {open.has(row.key) && row.variants && row.variants.length > 1 && (
+                      <tr className="bg-gray-50/70">
+                        <td colSpan={10} className="px-4 pb-3 pt-1">
+                          <VariantBreakdown row={row} />
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -334,5 +367,63 @@ function ModerationModal({ row, onClose }: { row: MarketplaceProductRow; onClose
         <p className="text-xs text-gray-500">Recorded in the audit log with your name and the reason.</p>
       </div>
     </Modal>
+  );
+}
+
+/** "₹20 – ₹78" for a grouped product whose variants sell at different prices. */
+function priceRangeOf(row: MarketplaceProductRow): string | null {
+  // What customers can pay now: the buyable variants (all of them when none is).
+  const variants = row.variants ?? [];
+  const buyable = variants.filter((v) => v.visibility.sellable);
+  const prices = (buyable.length > 0 ? buyable : variants).map((v) => v.listing.pricePaise);
+  if (prices.length < 2) return null;
+  const low = Math.min(...prices);
+  const high = Math.max(...prices);
+  return low === high ? null : `${formatPaise(low)} – ${formatPaise(high)}`;
+}
+
+/** Every variant of one grouped product: its own price, stock, review and status. Read-only. */
+function VariantBreakdown({ row }: { row: MarketplaceProductRow }) {
+  return (
+    <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
+      <table className="w-full text-xs">
+        <caption className="sr-only">Variants of {row.productName}</caption>
+        <thead className="bg-gray-50 text-left font-semibold uppercase tracking-wide text-gray-500">
+          <tr>
+            <th scope="col" className="px-3 py-2">Variant</th>
+            <th scope="col" className="px-3 py-2 text-right">Selling price</th>
+            <th scope="col" className="px-3 py-2 text-right">MRP</th>
+            <th scope="col" className="px-3 py-2 text-right">Stock</th>
+            <th scope="col" className="px-3 py-2 text-right">Reserved</th>
+            <th scope="col" className="px-3 py-2 text-right">Available</th>
+            <th scope="col" className="px-3 py-2">Review</th>
+            <th scope="col" className="px-3 py-2">Customers</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {row.variants!.map((v) => (
+            <tr key={v.variantId}>
+              <td className="px-3 py-2 font-semibold text-gray-900">
+                {v.variantName}
+                {v.isDefault && <span className="ml-1 font-normal text-gray-400">(default)</span>}
+              </td>
+              <td className="px-3 py-2 text-right font-semibold">{formatPaise(v.listing.pricePaise)}</td>
+              <td className="px-3 py-2 text-right text-gray-600">{formatPaise(v.listing.mrpPaise)}</td>
+              {v.listing.stock === 'MADE_TO_ORDER' ? (
+                <td colSpan={3} className="px-3 py-2 text-center text-gray-500">Made to order</td>
+              ) : (
+                <>
+                  <td className="px-3 py-2 text-right tabular-nums">{v.listing.stockQty}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{v.listing.reservedQty}</td>
+                  <td className="px-3 py-2 text-right font-semibold tabular-nums">{v.listing.availableQty}</td>
+                </>
+              )}
+              <td className="px-3 py-2"><ApprovalBadge status={v.approvalStatus} /></td>
+              <td className="px-3 py-2"><VisibilityBadge reason={v.visibility.reason} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }

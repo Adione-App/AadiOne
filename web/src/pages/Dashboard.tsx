@@ -10,6 +10,7 @@ import { formatPaise } from '@shared/money';
 import { api } from '@/lib/api';
 import { formatShortDate, todayIsoInIndia } from '@/lib/dashboardDate';
 import { orderStatusLabel } from '@/lib/v2Orders';
+import { PaidNotPlacedAlert } from '@/components/PaidNotPlacedAlert';
 import {
   Button,
   EmptyState,
@@ -155,7 +156,8 @@ export default function DashboardPage() {
             `/admin/orders?tab=PROCESSING&limit=5`,
           )
         : api.get<CursorPage<AdminOrderSummaryDto>>(
-            `/admin/orders?date=${selectedDate}&limit=5`,
+            // Placed orders only: never an unpaid, failed or never-placed checkout.
+            `/admin/orders?date=${selectedDate}&placedOnly=true&limit=5`,
           ),
     refetchInterval: isToday ? 30_000 : false,
     placeholderData: keepPreviousData,
@@ -170,9 +172,13 @@ export default function DashboardPage() {
     colour: SLICE_COLOURS[index % SLICE_COLOURS.length]!,
   }));
   const inProgressTotal = segments.reduce((sum, segment) => sum + segment.count, 0);
+  // Placed orders still to finish, per tab — never an unpaid Cashfree checkout.
+  const actionable = data.actionableOrders ?? { processing: data.pendingOrderCount, readyForPickup: 0, outForDelivery: 0 };
 
   return (
     <div className="space-y-5">
+      <PaidNotPlacedAlert />
+
       {/* ---- headline metrics ---- */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
@@ -195,13 +201,21 @@ export default function DashboardPage() {
         />
         <StatCard
           icon="clock"
-          label="Pending Orders"
+          label="Orders in Progress"
           value={data.pendingOrderCount}
           tone="purple"
           foot={
-            <Link to="/orders" className="font-medium text-brand-600 hover:underline">
-              View pending →
-            </Link>
+            <span className="flex flex-wrap gap-x-3 gap-y-1">
+              <Link to="/orders?tab=PROCESSING" className="font-medium text-brand-600 hover:underline">
+                {actionable.processing} processing
+              </Link>
+              <Link to="/orders?tab=READY_FOR_PICKUP" className="font-medium text-brand-600 hover:underline">
+                {actionable.readyForPickup} ready
+              </Link>
+              <Link to="/orders?tab=OUT_FOR_DELIVERY" className="font-medium text-brand-600 hover:underline">
+                {actionable.outForDelivery} out for delivery
+              </Link>
+            </span>
           }
         />
         <StatCard
@@ -313,8 +327,8 @@ export default function DashboardPage() {
         title={data.isToday ? 'Processing Orders' : `Orders on ${formatShortDate(data.date)}`}
         bodyClass=""
         action={
-          <Link to="/orders" className="text-sm font-medium text-brand-600 hover:underline">
-            View all orders →
+          <Link to={data.isToday ? '/orders?tab=PROCESSING' : '/orders'} className="text-sm font-medium text-brand-600 hover:underline">
+            {data.isToday ? 'View processing orders →' : 'View all orders →'}
           </Link>
         }
       >

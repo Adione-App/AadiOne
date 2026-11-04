@@ -25,7 +25,18 @@ import { ErrorCode, ProductStatus } from '../../shared';
 import { prisma } from '../../infra/db/prisma';
 import { listingVisibility, type ListingVisibility, type ListingVisibilityReason } from '../catalog/listing-visibility';
 import * as settlementService from '../sellers/seller-settlement.service';
-import { maskMobile, paginate, paymentOutcome, redactAuditValue, refundSummary, stockState, type Paged, type StockState } from './admin-marketplace-views';
+import {
+  maskMobile,
+  paginate,
+  paymentOutcome,
+  paymentOutcomeWhere,
+  redactAuditValue,
+  refundSummary,
+  stockState,
+  type Paged,
+  type PaymentOutcome,
+  type StockState,
+} from './admin-marketplace-views';
 import { trackedAvailableQty } from '../inventory/stock-rules';
 
 /** Upper bound on rows a monitoring view loads before filtering. */
@@ -55,7 +66,18 @@ const LISTING_SELECT = {
   lowStockThreshold: true,
   updatedAt: true,
   seller: { select: STORE_SELECT },
-  variant: { select: { variantName: true, status: true, deletedAt: true, product: { select: PRODUCT_SELECT } } },
+  variant: {
+    select: {
+      id: true,
+      variantName: true,
+      status: true,
+      deletedAt: true,
+      approvalStatus: true,
+      isDefault: true,
+      displayOrder: true,
+      product: { select: PRODUCT_SELECT },
+    },
+  },
 } as const;
 
 async function loadListings(filter: { q?: string; sellerId?: string }) {
@@ -110,7 +132,27 @@ export interface MarketplaceProductRow {
   approvalStatus: string;
   productStatus: string;
   visibility: ListingVisibility;
+  /**
+   * Each variant this seller lists, default first — its own price, stock,
+   * status and review state (a new variant of an approved product shows as
+   * PENDING here). One entry for a simple listing; [] for a product not
+   * listed yet.
+   */
+  variants: MarketplaceVariantRow[];
   updatedAt: string;
+}
+
+export interface MarketplaceVariantRow {
+  variantId: string;
+  variantName: string;
+  isDefault: boolean;
+  displayOrder: number;
+  /** The variant's own review: APPROVED, or PENDING / REJECTED for one added to an approved product. */
+  approvalStatus: string;
+  /** ACTIVE (shown), INACTIVE (hidden by the seller) or DRAFT (waiting for review). */
+  variantStatus: string;
+  listing: NonNullable<MarketplaceProductRow['listing']>;
+  visibility: ListingVisibility;
 }
 
 export interface MarketplaceProductQuery {
@@ -164,6 +206,10 @@ export function mergeVariantRows(rows: MarketplaceProductRow[]): MarketplaceProd
     const first = group[0]!;
     return {
       ...first,
+      // Every size underneath the one row, default first, then display order.
+      variants: group
+        .flatMap((r) => r.variants)
+        .sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.displayOrder - b.displayOrder),
       key: `p-${first.productId}-${first.seller.id}`,
       variantName: `${group.length} variants`,
       variantCount: group.length,
@@ -210,6 +256,16 @@ export async function listMarketplaceProducts(
   const perListing = listings.map((l): MarketplaceProductRow => {
     const product = l.variant.product;
     const { availableQty, state } = stockState(l);
+    const listing = {
+      id: l.id,
+      pricePaise: l.pricePaise,
+      mrpPaise: l.mrpPaise,
+      stockQty: l.tracksStock ? l.stockQty : 0,
+      reservedQty: l.tracksStock ? l.reservedQty : 0,
+      availableQty,
+      isAvailable: l.isAvailable,
+      stock: state,
+    };
     return {
       key: `l-${l.id}`,
       productId: product.id,
@@ -220,16 +276,7 @@ export async function listMarketplaceProducts(
       category: product.category,
       seller: { id: l.seller.id, name: l.seller.name },
       ownership: product.submittedBySellerId === l.seller.id ? 'SELLER' : 'CATALOG',
-      listing: {
-        id: l.id,
-        pricePaise: l.pricePaise,
-        mrpPaise: l.mrpPaise,
-        stockQty: l.tracksStock ? l.stockQty : 0,
-        reservedQty: l.tracksStock ? l.reservedQty : 0,
-        availableQty,
-        isAvailable: l.isAvailable,
-        stock: state,
-      },
+      listing,
       approvalStatus: product.approvalStatus,
       productStatus: product.status,
       visibility: listingVisibility({
@@ -238,6 +285,23 @@ export async function listMarketplaceProducts(
         variant: { status: l.variant.status, deletedAt: l.variant.deletedAt },
         listing: l,
       }),
+      variants: [
+        {
+          variantId: l.variant.id,
+          variantName: l.variant.variantName,
+          isDefault: l.variant.isDefault,
+          displayOrder: l.variant.displayOrder,
+          approvalStatus: l.variant.approvalStatus,
+          variantStatus: l.variant.status,
+          listing,
+          visibility: listingVisibility({
+            store: l.seller,
+            product,
+            variant: { status: l.variant.status, deletedAt: l.variant.deletedAt, approvalStatus: l.variant.approvalStatus },
+            listing: l,
+          }),
+        },
+      ],
       updatedAt: later(l.updatedAt, product.updatedAt).toISOString(),
     };
   });
@@ -264,6 +328,7 @@ export async function listMarketplaceProducts(
       approvalStatus: p.approvalStatus,
       productStatus: p.status,
       visibility: listingVisibility({ store: p.submittedBySeller!, product: p, variant: p.variants[0] ?? null, listing: null }),
+      variants: [],
       updatedAt: p.updatedAt.toISOString(),
     }));
 
@@ -476,18 +541,29 @@ export async function listingStockHistory(listingId: string, limit = 50) {
 /* payments + refunds                                                         */
 /* -------------------------------------------------------------------------- */
 
-export async function listPayments(query: { q?: string; status?: string; page: number; pageSize: number }) {
+/**
+ * Every payment attempt, newest first. `outcome` filters on what the page
+ * shows (Paid / Pending / Failed / Cancelled / Refunded — paymentOutcomeWhere);
+ * `status` on the gateway's raw status, as before. Nothing is ever hidden or
+ * removed: failed and abandoned attempts stay for reconciliation.
+ */
+export async function listPayments(query: { q?: string; status?: string; outcome?: PaymentOutcome; page: number; pageSize: number }) {
   const where = {
-    ...(query.status ? { status: query.status as never } : {}),
-    ...(query.q
-      ? {
-          OR: [
-            { order: { orderNumber: { contains: query.q, mode: 'insensitive' as const } } },
-            { providerOrderId: { contains: query.q, mode: 'insensitive' as const } },
-            { providerPaymentId: { contains: query.q, mode: 'insensitive' as const } },
-          ],
-        }
-      : {}),
+    AND: [
+      ...(query.status ? [{ status: query.status as never }] : []),
+      ...(query.outcome ? [paymentOutcomeWhere(query.outcome)] : []),
+      ...(query.q
+        ? [
+            {
+              OR: [
+                { order: { orderNumber: { contains: query.q, mode: 'insensitive' as const } } },
+                { providerOrderId: { contains: query.q, mode: 'insensitive' as const } },
+                { providerPaymentId: { contains: query.q, mode: 'insensitive' as const } },
+              ],
+            },
+          ]
+        : []),
+    ],
   };
   const [total, rows] = await Promise.all([
     prisma.payment.count({ where }),

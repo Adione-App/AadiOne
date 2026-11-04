@@ -1463,6 +1463,8 @@ export interface SellerProductVariantDto extends SubmittedProductVariantDto {
   isDefault: boolean;
   /** PENDING = added to an approved product, waiting for Aadione (hidden meanwhile). */
   approvalStatus: ApprovalStatus;
+  /** ACTIVE = shown, INACTIVE = hidden by the seller, DRAFT = waiting for review. Absent from older servers. */
+  status?: ProductStatus;
   listing: SellerProductListingDto | null;
 }
 
@@ -2268,7 +2270,14 @@ export interface AdminDashboardDto {
   totalOrderCount: number;
   totalRevenuePaise: number;
   ordersByStatus: { status: OrderStatus; count: number }[];
+  /**
+   * Placed orders still to finish: the Processing, Ready for Pickup and Out
+   * for Delivery tabs together (= the sum of `actionableOrders`). Never an
+   * unpaid or failed online checkout — those are tracked in Payments.
+   */
   pendingOrderCount: number;
+  /** The actionable order tabs' own counts, so each card links to its tab. */
+  actionableOrders: { processing: number; readyForPickup: number; outForDelivery: number };
   completedTodayCount: number;
   cancelledTodayCount: number;
   lowStockCount: number;
@@ -2279,6 +2288,31 @@ export interface AdminDashboardDto {
     variantName: string;
     availableQty: number;
     lowStockThreshold: number;
+  }[];
+}
+
+/**
+ * GET /admin/payment-anomalies — orders whose online payment was CAPTURED
+ * (verified with the gateway) but that are still not placed
+ * (PENDING_PAYMENT / PAYMENT_CONFIRMED) `afterMinutes` after the capture:
+ * past the webhook, the app's refresh and several reconciliation runs, so a
+ * real problem for an admin, never a checkout still in progress. Derived
+ * live — an order leaves the list the moment its placement succeeds.
+ */
+export interface AdminPaidNotPlacedDto {
+  afterMinutes: number;
+  total: number;
+  items: {
+    orderId: string;
+    orderNumber: string;
+    orderStatus: OrderStatus;
+    customerName: string | null;
+    amountPaise: number;
+    paymentId: string;
+    providerOrderId: string | null;
+    providerPaymentId: string | null;
+    capturedAt: string | null;
+    minutesSinceCapture: number;
   }[];
 }
 

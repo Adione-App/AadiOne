@@ -427,8 +427,13 @@ export interface ListingVisibility {
 }
 
 /** GET /seller/products(/:id) — the shared DTO plus inventory figures and visibility. */
-export type SellerProductInventory = Omit<SellerProductDto, 'listing'> & {
+export type SellerProductInventory = Omit<SellerProductDto, 'listing' | 'variants'> & {
   listing: (NonNullable<SellerProductDto['listing']> & { lowStockThreshold: number; maxQtyPerOrder: number; updatedAt: string }) | null;
+  /** Every live variant, default first, with its own listing and visibility (absent from older servers). */
+  variants: (Omit<SellerProductDto['variants'][number], 'listing'> & {
+    listing: (NonNullable<SellerProductDto['variants'][number]['listing']> & { lowStockThreshold: number; maxQtyPerOrder: number; updatedAt: string }) | null;
+    visibility?: ListingVisibility;
+  })[];
   visibility: ListingVisibility;
   adminDisabled: { reason: string | null; at: string } | null;
 };

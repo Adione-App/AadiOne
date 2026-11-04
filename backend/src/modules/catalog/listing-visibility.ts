@@ -11,7 +11,8 @@
  *   STORE_DEACTIVATED / STORE_NOT_APPROVED   admin (Seller.isActive, onboarding)
  *   DISABLED_BY_ADMIN                        admin (Product.status = ARCHIVED)
  *   PENDING_APPROVAL / REJECTED              admin review (approval workflow)
- *   HIDDEN_BY_SELLER                         seller (Product.status = INACTIVE)
+ *   HIDDEN_BY_SELLER                         seller (Product.status = INACTIVE, or —
+ *                                            per variant — ProductVariant.status = INACTIVE)
  *   OFF_SALE                                 seller (SellerListing.isAvailable)
  *   OUT_OF_STOCK                             stock − reserved ≤ 0
  */
@@ -43,8 +44,12 @@ export interface ListingVisibility {
 export interface ListingVisibilityInput {
   store: { isActive: boolean; deletedAt: Date | null; onboardingStatus: string };
   product: { status: string; deletedAt: Date | null; approvalStatus: string };
-  /** The default variant; absent only for a product with no live variant. */
-  variant: { status: string; deletedAt: Date | null } | null;
+  /**
+   * The default variant (or, for one variant's own answer, that variant);
+   * absent only for a product with no live variant. `approvalStatus`, when
+   * given, lets a variant still in (or refused in) review say so.
+   */
+  variant: { status: string; deletedAt: Date | null; approvalStatus?: string } | null;
   listing: { isAvailable: boolean; tracksStock: boolean; stockQty: number; reservedQty: number; lowStockThreshold: number } | null;
 }
 
@@ -74,6 +79,13 @@ export function listingVisibility(input: ListingVisibilityInput): ListingVisibil
     if (input.product.approvalStatus === ApprovalStatus.REJECTED) return result('REJECTED');
     if (input.product.approvalStatus !== ApprovalStatus.APPROVED) return result('PENDING_APPROVAL');
     if (input.product.status === ProductStatus.INACTIVE) return result('HIDDEN_BY_SELLER');
+    // The product is fine — this variant is not live.
+    const variant = input.variant;
+    if (variant && variant.deletedAt === null) {
+      if (variant.approvalStatus === ApprovalStatus.REJECTED) return result('REJECTED');
+      if (variant.approvalStatus === ApprovalStatus.PENDING) return result('PENDING_APPROVAL');
+      if (variant.status === ProductStatus.INACTIVE) return result('HIDDEN_BY_SELLER');
+    }
     // Draft / no live variant: not something the seller can switch on.
     return result('DISABLED_BY_ADMIN');
   }

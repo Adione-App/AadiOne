@@ -10,6 +10,10 @@
  *                           editable window; locked after approval.
  *   3. Pricing              the seller's own listing price and MRP.
  *   4. Inventory            stock, reserved, available, low stock, +/−.
+ *      — or, for a product sold in several variants (sizes / options):
+ *   3. Variants             every variant with its OWN price, MRP, stock,
+ *                           on-sale and show/hide switches, edit and delete,
+ *                           and "Add variant" (variantManager.tsx).
  *   5. Visibility           what customers see, and the seller's switches.
  *   6. Approval / status    review state, rejection reason, (re)submit.
  */
@@ -40,6 +44,7 @@ import {
 import { ProductFormModal, StartSellingModal } from '../productForms';
 import { FoodItemModal } from '../foodItemForm';
 import { InventoryPanel, PricingPanel, Section, VisibilityPanel } from '../productSections';
+import { VariantManager } from '../variantManager';
 import { SkeletonBlock, useScrollToHash } from '../sellerUi';
 
 function Detail({ label, children }: { label: string; children: React.ReactNode }) {
@@ -107,6 +112,9 @@ export default function SellerProductDetailPage() {
   const rejection = rejectionOf(product);
   const variant = product.defaultVariant;
   const listing = product.listing;
+  // Several variants (or options switched on): each is managed on its own row.
+  const multi = (product.variants?.length ?? 0) > 1 || (product.optionGroups?.length ?? 0) > 0;
+  const n = (single: number) => (multi && single > 3 ? single - 1 : single);
 
   async function imageAction(label: string, action: () => Promise<unknown>): Promise<void> {
     setNotice(null);
@@ -159,14 +167,23 @@ export default function SellerProductDetailPage() {
 
       {/* Jump links — handy on a phone. */}
       <nav aria-label="Product sections" className="-mx-3 flex gap-2 overflow-x-auto px-3 pb-1 sm:mx-0 sm:px-0">
-        {[
-          ['info', 'Details'],
-          ['images', 'Images'],
-          ['pricing', 'Pricing'],
-          ['inventory', 'Inventory'],
-          ['visibility', 'Visibility'],
-          ['approval', 'Approval'],
-        ].map(([anchor, label]) => (
+        {(multi
+          ? [
+              ['info', 'Details'],
+              ['images', 'Images'],
+              ['variants', 'Variants'],
+              ['visibility', 'Visibility'],
+              ['approval', 'Approval'],
+            ]
+          : [
+              ['info', 'Details'],
+              ['images', 'Images'],
+              ['pricing', 'Pricing'],
+              ['inventory', 'Inventory'],
+              ['visibility', 'Visibility'],
+              ['approval', 'Approval'],
+            ]
+        ).map(([anchor, label]) => (
           <a key={anchor} href={`#${anchor}`} className="inline-flex min-h-9 shrink-0 items-center rounded-full border border-gray-200 bg-white px-3.5 text-sm font-medium text-gray-700">
             {label}
           </a>
@@ -188,7 +205,12 @@ export default function SellerProductDetailPage() {
             {product.category.name}
             {product.subcategory && <> › {product.subcategory.name}</>}
           </Detail>
-          {variant && (
+          {multi && (
+            <Detail label="Variants">
+              {(product.variants ?? []).map((v) => v.variantName).join(', ')}
+            </Detail>
+          )}
+          {!multi && variant && (
             <>
               <Detail label="Variant">
                 {variant.variantName} · {variant.unitValue} {UNIT_SHORT[variant.unit] ?? variant.unit}
@@ -227,6 +249,13 @@ export default function SellerProductDetailPage() {
         />
       </Section>
 
+      {multi && (
+        <Section id="variants" title="3. Variants" subtitle="Price, MRP, stock and availability of each variant — changed one variant at a time.">
+          <VariantManager product={product} food={isFood} onChanged={refresh} onNotice={setNotice} />
+        </Section>
+      )}
+
+      {!multi && (
       <Section id="pricing" title="3. Pricing">
         {listing ? (
           <PricingPanel key={listing.id} listing={listing} onChanged={refresh} />
@@ -240,6 +269,9 @@ export default function SellerProductDetailPage() {
         )}
       </Section>
 
+      )}
+
+      {!multi && (
       <Section id="inventory" title={listing?.tracksStock === false ? '4. Availability' : '4. Inventory'}>
         {listing ? (
           <InventoryPanel key={listing.id} listing={listing} label={product.name} onChanged={refresh} />
@@ -248,17 +280,20 @@ export default function SellerProductDetailPage() {
         )}
       </Section>
 
-      <Section id="visibility" title="5. Visibility">
+      )}
+
+      <Section id="visibility" title={`${n(5)}. Visibility`}>
         <VisibilityPanel
           visibility={product.visibility}
-          listing={listing ? { id: listing.id, isAvailable: listing.isAvailable } : null}
+          // Several variants: each one's on-sale switch is in Variants — none here for just the default.
+          listing={listing && !multi ? { id: listing.id, isAvailable: listing.isAvailable } : null}
           product={{ id: product.id, status: product.status }}
           adminDisabled={product.adminDisabled}
           onChanged={refresh}
         />
       </Section>
 
-      <Section id="approval" title="6. Approval / status">
+      <Section id="approval" title={`${n(6)}. Approval / status`}>
         <div className="space-y-3 text-sm">
           <div className="flex flex-wrap items-center gap-2">
             <Pill tone={review.tone}>{review.label}</Pill>

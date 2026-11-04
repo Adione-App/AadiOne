@@ -592,17 +592,16 @@ export default function SellerProductsPage() {
                     <div className="flex items-center justify-between gap-3 rounded-xl bg-gray-50 px-3 py-2.5">
                       <div className="min-w-0">
                         <p className="text-base font-bold text-gray-900">
-                          {row.variantCount > 1 && <span className="mr-1 text-xs font-medium text-gray-500">from</span>}
-                          {formatPaise(row.listing.pricePaise)}
+                          <PriceRange row={row} />
                         </p>
                         <p className="text-xs text-gray-500">
                           {row.listing.stockQty} in stock · {row.listing.reservedQty} reserved
-                          {row.variantCount > 1 && ` · ${row.variantCount} sizes`}
+                          {row.variantCount > 1 && ` · ${row.variantCount} variants`}
                         </p>
                       </div>
                       {row.variantCount > 1 ? (
-                        <Link to={row.href} className="shrink-0 text-sm font-semibold text-brand-700 hover:underline">
-                          Stock per size
+                        <Link to={`${row.href}#variants`} className="shrink-0 text-sm font-semibold text-brand-700 hover:underline">
+                          Manage variants
                         </Link>
                       ) : (
                         <StockStepper
@@ -615,6 +614,7 @@ export default function SellerProductsPage() {
                       )}
                     </div>
                   )}
+                  <SizeLine row={row} />
                   <RowActions row={row} shown={isShown(row)} toggling={toggling(row)} onToggle={() => onToggle(row)} onStart={() => setStarting(row.product)} onDelete={() => askDelete(row)} />
                 </Surface>
               </li>
@@ -668,14 +668,19 @@ export default function SellerProductsPage() {
                             </Link>
                             <p className="truncate text-xs text-gray-500">{row.category}</p>
                             {!row.own && <p className="text-xs text-gray-400">Catalogue product</p>}
+                            <SizeLine row={row} />
                           </div>
                         </div>
                       </td>
                       <td className="whitespace-nowrap px-3 py-3">
                         {row.listing ? (
                           <>
-                            <p className="font-semibold text-gray-900">{formatPaise(row.listing.pricePaise)}</p>
-                            {row.listing.mrpPaise > row.listing.pricePaise && <p className="text-xs text-gray-400 line-through">{formatPaise(row.listing.mrpPaise)}</p>}
+                            <p className="font-semibold text-gray-900">
+                              <PriceRange row={row} />
+                            </p>
+                            {row.variantCount <= 1 && row.listing.mrpPaise > row.listing.pricePaise && (
+                              <p className="text-xs text-gray-400 line-through">{formatPaise(row.listing.mrpPaise)}</p>
+                            )}
                           </>
                         ) : (
                           <span className="text-gray-400">—</span>
@@ -691,9 +696,9 @@ export default function SellerProductsPage() {
                       <td className="px-2 py-3 text-right tabular-nums">{row.listing?.reservedQty ?? '—'}</td>
                       <td className="px-2 py-3">
                         {row.listing && row.variantCount > 1 ? (
-                          <Link to={row.href} className="block text-center text-sm">
+                          <Link to={`${row.href}#variants`} className="block text-center text-sm">
                             <span className="font-semibold tabular-nums text-gray-900">{row.listing.availableQty}</span>
-                            <span className="block text-xs font-semibold text-brand-700 hover:underline">{row.variantCount} sizes</span>
+                            <span className="block text-xs font-semibold text-brand-700 hover:underline">Manage {row.variantCount} variants</span>
                           </Link>
                         ) : row.listing ? (
                           <div className="flex items-center justify-center gap-1">
@@ -1033,5 +1038,36 @@ function RowActions({
       {remove}
       <span className="ml-auto flex items-center gap-2">{sell || toggleEl}</span>
     </div>
+  );
+}
+
+/** "₹20 – ₹78" for a product sold in several sizes at different prices; one price otherwise. */
+function PriceRange({ row }: { row: ProductRow }) {
+  if (!row.listing) return null;
+  if (row.maxPricePaise !== null && row.maxPricePaise > row.listing.pricePaise) {
+    return (
+      <>
+        {formatPaise(row.listing.pricePaise)} – {formatPaise(row.maxPricePaise)}
+      </>
+    );
+  }
+  return <>{formatPaise(row.listing.pricePaise)}</>;
+}
+
+/** Each size's stock at a glance ("250g · 8"), a hidden / off-sale size greyed out. */
+function SizeLine({ row }: { row: ProductRow }) {
+  if (row.sizes.length === 0) return null;
+  return (
+    <ul className="mt-1 flex flex-wrap gap-1" aria-label={`Variants of ${row.name}`}>
+      {row.sizes.map((size) => (
+        <li
+          key={size.variantId}
+          className={`rounded-full px-2 py-0.5 text-xs font-medium ${size.live ? 'bg-brand-50 text-brand-700' : 'bg-gray-100 text-gray-500 line-through'}`}
+        >
+          {size.name}
+          {size.availableQty !== null && <span className="tabular-nums"> · {size.availableQty}</span>}
+        </li>
+      ))}
+    </ul>
   );
 }

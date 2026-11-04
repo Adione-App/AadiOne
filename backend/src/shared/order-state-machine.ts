@@ -380,6 +380,9 @@ export const COMPLETED_SALE_STATUSES: readonly OrderStatus[] = [OrderStatus.DELI
 /* -------------------------------------------------------------------------- */
 
 export const AdminOrderTab = {
+  /** Unpaid online checkouts. Only the legacy direct-UPI mode shows it (an
+   * admin confirms those payments by hand); with Cashfree the panel hides it
+   * and these checkouts are tracked in Payments. Kept for compatibility. */
   PAYMENT_PENDING: "PAYMENT_PENDING",
   PROCESSING: "PROCESSING",
   READY_FOR_PICKUP: "READY_FOR_PICKUP",
@@ -401,9 +404,13 @@ export const ADMIN_TAB_STATUSES: Readonly<
   [AdminOrderTab.READY_FOR_PICKUP]: [OrderStatus.READY_FOR_PICKUP],
   [AdminOrderTab.OUT_FOR_DELIVERY]: [OrderStatus.PICKED_UP, OrderStatus.OUT_FOR_DELIVERY],
   [AdminOrderTab.COMPLETED]: [OrderStatus.DELIVERED],
+  // Genuine cancellations only. A checkout that was never paid — its payment
+  // failed or expired (PAYMENT_FAILED), or it was cancelled before it was ever
+  // placed (CANCELLED with no `placedAt`, filtered out by the admin order
+  // board) — was never an order to fulfil: it stays in Payments for
+  // reconciliation, never on this tab.
   [AdminOrderTab.CANCELLED]: [
     OrderStatus.CANCELLED,
-    OrderStatus.PAYMENT_FAILED,
     OrderStatus.REFUNDED,
     OrderStatus.PARTIALLY_REFUNDED,
   ],

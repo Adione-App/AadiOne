@@ -317,6 +317,92 @@ sellerCatalogRouter.put(
   }),
 );
 
+/* One variant at a time (product-variant.service) — the variant manager. ---- */
+/* Price, MRP, stock and on-sale stay on the variant's listing: PATCH         */
+/* /seller/listings/:id and its stock-adjust, unchanged.                      */
+
+const variantParams = z.object({ id: uuid, variantId: uuid });
+const optionValuesSchema = z.record(z.string().max(40), z.string().trim().min(1).max(40));
+
+/** One more variant of the same product (a new size); pending review when the product is approved. */
+sellerCatalogRouter.post(
+  '/products/:id/variants',
+  requirePermission(Permission.SELLER_CATALOG_MANAGE),
+  validate({
+    params: z.object({ id: uuid }),
+    body: z
+      .object({
+        optionValues: optionValuesSchema,
+        sku: z.string().trim().min(2).max(60).optional(),
+        unit: z.nativeEnum(UnitType).optional(),
+        unitValue: z.number().positive().optional(),
+        pricePaise: z.number().int().positive(),
+        mrpPaise: z.number().int().positive().optional(),
+        stockQty: z.number().int().min(0).max(100_000).optional(),
+        isAvailable: z.boolean().optional(),
+      })
+      .strict(),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const sellerId = requireSellerId(req);
+    const productId = req.params['id'] as string;
+    await variantService.addProductVariant(sellerId, productId, req.body, requireUser(req).id);
+    created(res, await productService.getOwnProduct(sellerId, productId));
+  }),
+);
+
+/** The variant's own details: option values / label, SKU, unit. */
+sellerCatalogRouter.patch(
+  '/products/:id/variants/:variantId',
+  requirePermission(Permission.SELLER_CATALOG_MANAGE),
+  validate({
+    params: variantParams,
+    body: z
+      .object({
+        optionValues: optionValuesSchema.optional(),
+        variantName: z.string().trim().min(1).max(80).optional(),
+        sku: z.string().trim().min(2).max(60).optional(),
+        unit: z.nativeEnum(UnitType).optional(),
+        unitValue: z.number().positive().optional(),
+      })
+      .strict()
+      .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update.' }),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const sellerId = requireSellerId(req);
+    const productId = req.params['id'] as string;
+    await variantService.updateProductVariant(sellerId, productId, req.params['variantId'] as string, req.body, requireUser(req).id);
+    ok(res, await productService.getOwnProduct(sellerId, productId));
+  }),
+);
+
+/** Show / hide one variant from customers. */
+sellerCatalogRouter.patch(
+  '/products/:id/variants/:variantId/visibility',
+  requirePermission(Permission.SELLER_CATALOG_MANAGE),
+  validate({ params: variantParams, body: z.object({ visible: z.boolean() }).strict() }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const sellerId = requireSellerId(req);
+    const productId = req.params['id'] as string;
+    const { visible } = req.body as { visible: boolean };
+    await variantService.setProductVariantVisibility(sellerId, productId, req.params['variantId'] as string, visible, requireUser(req).id);
+    ok(res, await productService.getOwnProduct(sellerId, productId));
+  }),
+);
+
+/** Remove one variant (soft delete; never the product's only one). */
+sellerCatalogRouter.delete(
+  '/products/:id/variants/:variantId',
+  requirePermission(Permission.SELLER_CATALOG_MANAGE),
+  validate({ params: variantParams }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const sellerId = requireSellerId(req);
+    const productId = req.params['id'] as string;
+    await variantService.deleteProductVariant(sellerId, productId, req.params['variantId'] as string, requireUser(req).id);
+    ok(res, await productService.getOwnProduct(sellerId, productId));
+  }),
+);
+
 /**
  * Restaurant / cafe food items: soft delete (deleteOwnFoodItem). Marketplace
  * products: deleted permanently when nothing references them, otherwise

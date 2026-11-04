@@ -4,6 +4,8 @@
  * redaction. No I/O — unit-tested on their own.
  */
 
+import type { Prisma } from '@prisma/client';
+
 /* -------------------------------------------------------------------------- */
 /* stock                                                                      */
 /* -------------------------------------------------------------------------- */
@@ -83,6 +85,33 @@ export function paymentOutcome(paymentStatus: string, orderStatus: string): Paym
   if (orderStatus === 'PENDING_PAYMENT') return 'PENDING';
   if (orderStatus === 'PAYMENT_FAILED') return 'FAILED';
   return 'CANCELLED';
+}
+
+/** A payment attempt that never completed (gateway status) — see `paymentOutcome`. */
+const OPEN_PAYMENT_STATUSES = ['CREATED', 'PENDING', 'AUTHORIZED'] as const;
+
+/**
+ * `paymentOutcome` as a database filter, so the Payments page filters on the
+ * outcome it shows. "Pending" is an attempt still open while its order awaits
+ * payment — a Cashfree checkout is stored CREATED until it is paid, so
+ * filtering on the raw PENDING status alone would miss every one of them.
+ */
+export function paymentOutcomeWhere(outcome: PaymentOutcome): Prisma.PaymentWhereInput {
+  const open = { status: { in: [...OPEN_PAYMENT_STATUSES] } };
+  switch (outcome) {
+    case 'PAID':
+      return { status: 'CAPTURED' };
+    case 'REFUNDED':
+      return { status: 'REFUNDED' };
+    case 'PARTIALLY_REFUNDED':
+      return { status: 'PARTIALLY_REFUNDED' };
+    case 'FAILED':
+      return { OR: [{ status: 'FAILED' }, { ...open, order: { status: 'PAYMENT_FAILED' } }] };
+    case 'PENDING':
+      return { ...open, order: { status: 'PENDING_PAYMENT' } };
+    case 'CANCELLED':
+      return { ...open, order: { status: { notIn: ['PENDING_PAYMENT', 'PAYMENT_FAILED'] } } };
+  }
 }
 
 /** "9876543210" -> "••••••3210" — enough to tell customers apart, no more. */

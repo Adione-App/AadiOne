@@ -113,10 +113,12 @@ export function toSubmittedProductDto(product: SubmittedProductRow): SubmittedPr
  * listing DTO doesn't carry, whether a customer can buy it right now (and if
  * not, why — listing-visibility.ts), and AdiOne's reason when it disabled it.
  */
-export type SellerProductInventoryDto = Omit<SellerProductDto, 'listing'> & {
+export type SellerProductInventoryDto = Omit<SellerProductDto, 'listing' | 'variants'> & {
   listing:
     | (NonNullable<SellerProductDto['listing']> & { lowStockThreshold: number; maxQtyPerOrder: number; updatedAt: string })
     | null;
+  /** Every live variant with its own listing and its own answer to "can a customer buy it?". */
+  variants: (SellerProductDto['variants'][number] & { visibility: ListingVisibility })[];
   visibility: ListingVisibility;
   /** Set while AdiOne has disabled the product (Product.status = ARCHIVED). */
   adminDisabled: { reason: string | null; at: string } | null;
@@ -243,7 +245,15 @@ async function findOwnProducts(sellerId: string, productId?: string): Promise<Se
         optionValues: optionValuesOf(v.optionValues),
         isDefault: v.isDefault,
         approvalStatus: v.approvalStatus,
+        status: v.status,
         listing: v.sellerListings[0] ? listingDto(v.sellerListings[0]) : null,
+        // This variant on its own: hidden, off sale, out of stock, in review…
+        visibility: listingVisibility({
+          store: store ?? { isActive: false, deletedAt: new Date(0), onboardingStatus: 'REJECTED' },
+          product: { status: product.status, deletedAt: product.deletedAt, approvalStatus: product.approvalStatus },
+          variant: { status: v.status, deletedAt: v.deletedAt, approvalStatus: v.approvalStatus },
+          listing: v.sellerListings[0] ?? null,
+        }),
       })),
       visibility: listingVisibility({
         store: store ?? { isActive: false, deletedAt: new Date(0), onboardingStatus: 'REJECTED' },

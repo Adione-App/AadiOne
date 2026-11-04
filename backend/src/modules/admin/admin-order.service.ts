@@ -17,9 +17,11 @@ import {
   ORDER_STATUS_LABELS,
   OrderStatus,
   PaymentMethod,
+  PaymentStatus,
   toOrderBucket,
   type AdminCustomersDto,
   type AdminDashboardDto,
+  type AdminPaidNotPlacedDto,
   type AdminOrderSummaryDto,
   type CursorPage,
 } from "../../shared";
@@ -68,6 +70,21 @@ function formatZonedDateOnly(date: Date, timeZone: string): string {
   return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
 }
 
+/** The order tabs an admin works through — what "pending orders" means. */
+const ACTIONABLE_TAB_STATUSES: readonly OrderStatus[] = [
+  ...ADMIN_TAB_STATUSES[AdminOrderTab.PROCESSING],
+  ...ADMIN_TAB_STATUSES[AdminOrderTab.READY_FOR_PICKUP],
+  ...ADMIN_TAB_STATUSES[AdminOrderTab.OUT_FOR_DELIVERY],
+];
+
+/**
+ * An online checkout cancelled before it was ever placed (unpaid: replaced by
+ * a new checkout, cancelled by the customer, or by an admin) — no seller ever
+ * saw it (order-visibility.ts). Not a cancelled ORDER: it is kept, with its
+ * payment attempts, for Payments and the audit trail.
+ */
+const NEVER_PLACED_CANCELLATION: Prisma.OrderWhereInput = { status: OrderStatus.CANCELLED, placedAt: null };
+
 /**
  * `date` is the reference calendar day to report on ("YYYY-MM-DD"), from the
  * admin dashboard's date picker. Defaults to today when omitted.
@@ -90,7 +107,7 @@ export async function getDashboard(date?: string): Promise<AdminDashboardDto> {
     totalOrders,
     totalRevenue,
     byStatus,
-    pendingCount,
+    actionableByStatus,
     completedToday,
     cancelledToday,
     lowStock,
@@ -112,8 +129,11 @@ export async function getDashboard(date?: string): Promise<AdminDashboardDto> {
       _count: { _all: true },
       where: { status: { in: [OrderStatus.PROCESSING, OrderStatus.PARTIALLY_CANCELLED, OrderStatus.READY_FOR_PICKUP, OrderStatus.PICKED_UP, OrderStatus.OUT_FOR_DELIVERY] } },
     }),
-    prisma.order.count({
-      where: { status: OrderStatus.PENDING_PAYMENT },
+    // Actionable placed orders, by tab — never an unpaid or failed checkout.
+    prisma.order.groupBy({
+      by: ["status"],
+      _count: { _all: true },
+      where: { status: { in: [...ACTIONABLE_TAB_STATUSES] } },
     }),
     prisma.order.count({
       where: { status: OrderStatus.DELIVERED, deliveredAt: { gte: dayStart, lte: dayEnd } },
@@ -123,6 +143,16 @@ export async function getDashboard(date?: string): Promise<AdminDashboardDto> {
     }),
     inventoryService.listLowStockAllSellers(20),
   ]);
+
+  const countIn = (tab: AdminOrderTab) =>
+    actionableByStatus
+      .filter((row) => ADMIN_TAB_STATUSES[tab].includes(row.status))
+      .reduce((sum, row) => sum + row._count._all, 0);
+  const actionable = {
+    processing: countIn(AdminOrderTab.PROCESSING),
+    readyForPickup: countIn(AdminOrderTab.READY_FOR_PICKUP),
+    outForDelivery: countIn(AdminOrderTab.OUT_FOR_DELIVERY),
+  };
 
   return {
     date: date ?? formatZonedDateOnly(new Date(), timezone),
@@ -135,7 +165,8 @@ export async function getDashboard(date?: string): Promise<AdminDashboardDto> {
       status: row.status,
       count: row._count._all,
     })),
-    pendingOrderCount: pendingCount,
+    pendingOrderCount: actionable.processing + actionable.readyForPickup + actionable.outForDelivery,
+    actionableOrders: actionable,
     completedTodayCount: completedToday,
     cancelledTodayCount: cancelledToday,
     lowStockCount: lowStock.length,
@@ -144,15 +175,97 @@ export async function getDashboard(date?: string): Promise<AdminDashboardDto> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Paid but not placed                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How long after a verified capture an unplaced order counts as a problem:
+ * past the webhook, the app's refresh, the half-placed sweep (1 min) and
+ * three runs of the 5-minute reconciliation job, each of which places it.
+ */
+export const PAID_NOT_PLACED_AFTER_MINUTES = 15;
+
+/**
+ * Orders whose online payment was captured and verified but which are still
+ * not placed after PAID_NOT_PLACED_AFTER_MINUTES (see AdminPaidNotPlacedDto).
+ * Read-only and derived: nothing here places, refunds or changes anything —
+ * reconciliation keeps trying on its own, and an order drops off this list
+ * as soon as it is placed. Orphan captures (late / duplicate / mismatched
+ * money, refunded automatically) are not "paid orders" and never listed.
+ */
+export async function listPaidNotPlaced(now: Date = new Date()): Promise<AdminPaidNotPlacedDto> {
+  const cutoff = new Date(now.getTime() - PAID_NOT_PLACED_AFTER_MINUTES * 60_000);
+  const verifiedCapture: Prisma.PaymentWhereInput = {
+    status: PaymentStatus.CAPTURED,
+    AND: [
+      { OR: [{ failureCode: null }, { failureCode: { not: "ORPHAN_CAPTURE" } }] },
+      { OR: [{ capturedAt: { lt: cutoff } }, { capturedAt: null, updatedAt: { lt: cutoff } }] },
+    ],
+  };
+  const where: Prisma.OrderWhereInput = {
+    status: { in: [OrderStatus.PENDING_PAYMENT, OrderStatus.PAYMENT_CONFIRMED] },
+    payments: { some: verifiedCapture },
+  };
+  const [total, orders] = await Promise.all([
+    prisma.order.count({ where }),
+    prisma.order.findMany({
+      where,
+      orderBy: { createdAt: "asc" },
+      take: 50,
+      select: {
+        id: true,
+        orderNumber: true,
+        status: true,
+        deliveryFullName: true,
+        payments: {
+          where: verifiedCapture,
+          orderBy: { capturedAt: "asc" },
+          take: 1,
+          select: { id: true, providerOrderId: true, providerPaymentId: true, amountPaise: true, capturedAt: true, updatedAt: true },
+        },
+      },
+    }),
+  ]);
+  return {
+    afterMinutes: PAID_NOT_PLACED_AFTER_MINUTES,
+    total,
+    items: orders.map((order) => {
+      const payment = order.payments[0]!;
+      const since = payment.capturedAt ?? payment.updatedAt;
+      return {
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        orderStatus: order.status,
+        customerName: order.deliveryFullName,
+        amountPaise: payment.amountPaise,
+        paymentId: payment.id,
+        providerOrderId: payment.providerOrderId,
+        providerPaymentId: payment.providerPaymentId,
+        capturedAt: payment.capturedAt?.toISOString() ?? null,
+        minutesSinceCapture: Math.floor((now.getTime() - since.getTime()) / 60_000),
+      };
+    }),
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /* Order board                                                                */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The admin order board. `tab` narrows by status (ADMIN_TAB_STATUSES; the
+ * Cancelled tab also leaves out never-placed checkouts). `placedOnly` keeps
+ * only orders that were ever placed — never an unpaid, failed or
+ * never-placed online checkout (the dashboard's list). Without either, every
+ * order, as before.
+ */
 export async function listOrders(options: {
   tab?: AdminOrderTab;
   search?: string;
   cursor?: string | null;
   limit: number;
   date?: string;
+  placedOnly?: boolean;
 }): Promise<CursorPage<AdminOrderSummaryDto>> {
   const timezone = await marketplaceTimezone();
   const statuses = options.tab ? ADMIN_TAB_STATUSES[options.tab] : undefined;
@@ -164,8 +277,15 @@ export async function listOrders(options: {
       }
     : null;
 
+  const scope: Prisma.OrderWhereInput[] = [];
+  if (options.tab === AdminOrderTab.CANCELLED) scope.push({ NOT: NEVER_PLACED_CANCELLATION });
+  if (options.placedOnly) {
+    scope.push({ status: { notIn: [OrderStatus.PENDING_PAYMENT, OrderStatus.PAYMENT_FAILED] } }, { NOT: NEVER_PLACED_CANCELLATION });
+  }
+
   const orders = await prisma.order.findMany({
     where: {
+      ...(scope.length > 0 ? { AND: scope } : {}),
       ...(statuses ? { status: { in: [...statuses] } } : {}),
       ...(options.search
         ? {

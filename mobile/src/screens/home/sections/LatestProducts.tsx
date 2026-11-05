@@ -57,3 +57,4 @@ function LatestProductsImpl({
 }
 
 export const LatestProducts = memo(LatestProductsImpl);
+

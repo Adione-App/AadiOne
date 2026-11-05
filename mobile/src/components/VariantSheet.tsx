@@ -1,46 +1,59 @@
 /**
  * The variant sheet: picking a size / color / pack size from a product card
  * without leaving the screen. Opened through `useVariantSheet` (lib/
- * variantSheet.ts) by any ProductCard whose product has several variants;
+ * variantSheet.ts) by any ProductCard whose product has SEVERAL sizes a
+ * customer can buy right now (lib/cardVariant.ts — one is added directly);
  * mounted once in App.tsx.
  *
- *   - Built from the product's real data (GET /products/:id — the same
- *     cached query the product page uses): its option groups and variants,
- *     via lib/variantSelection.ts. Nothing is preselected unless a group has
- *     one possible value; sold-out values are disabled; a combination that
- *     does not exist can never be chosen.
+ *   - Opens on the tap itself: an overlay in the app's own window (not a
+ *     native Modal, whose slide waited for Android's `onShow`), sliding up as
+ *     soon as its height is known, the backdrop fading with it.
+ *   - Rendered at once from the data the card already has — the product's
+ *     variants and option groups ride on every product list
+ *     (ProductSummaryDto.variants) — or the product page's own copy when it
+ *     is fresher. Opening sends no request at all (not the product, not the
+ *     cart); the server re-checks the listing, price and stock at Add, and a
+ *     refused Add refreshes the product lists (lib/useCartActions.ts).
+ *   - Lists only the sizes that can be bought now (in stock, on sale, store
+ *     taking orders); hidden, deleted and unreviewed ones never reach the app.
+ *     Nothing is preselected unless a group has one possible value; a
+ *     combination that does not exist can never be chosen.
  *   - Price, image, discount and stock follow the chosen variant ("From …"
- *     the cheapest in-stock one until then).
+ *     the cheapest until then).
  *   - Add puts EXACTLY the chosen variant in the cart through the shared
- *     cart actions (server-checked price and stock, the same optimistic
- *     quantities as everywhere else); after that the button becomes the
- *     shared quantity control for that variant. The sheet stays open, so a
- *     second size can be added too; it closes with ✕, a tap outside, or back.
+ *     cart actions (its own listing and price, re-checked by the server);
+ *     after that the button becomes the shared quantity control for that
+ *     variant. If the chosen size stops being available while the sheet is
+ *     open, the pick is dropped and the customer is told — never swapped for
+ *     another. The sheet stays open, so a second size can be added too; it
+ *     closes with ✕, a tap outside, or back.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
+  BackHandler,
   Easing,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   View,
   useWindowDimensions,
+  type LayoutChangeEvent,
 } from "react-native";
 import { Image } from "expo-image";
 import * as Haptics from "expo-haptics";
 import { ChevronRight, X } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { ProductSummaryDto, VariantDto } from "@shared";
+import type { ProductDetailDto, ProductSummaryDto, VariantDto } from "@shared";
 import { formatPaise } from "@shared/money";
 import { colors, radius, spacing } from "@shared/theme";
 import { resolveImageUrl } from "@/lib/api";
 import { useProduct } from "@/lib/queries";
 import { snapshotFromProduct, useCartActions } from "@/lib/useCartActions";
-import { useVariantSheet } from "@/lib/variantSheet";
+import { markSheet, useVariantSheet } from "@/lib/variantSheet";
 import { quantityLimitOf } from "@/lib/quantityLimit";
+import { isPurchasable, storeClosedHint, visibleVariantsOf } from "@/lib/cardVariant";
 import {
   choiceState,
   initialSelection,
@@ -49,90 +62,145 @@ import {
   selectedVariant,
   variantOptions,
   type Selection,
+  type VariantOptions,
 } from "@/lib/variantSelection";
 import { QuantityStepper } from "@/components/ProductCard";
 import { AppText, Button, NoticeStrip } from "@/components/ui";
-import { CartNoticeToast } from "@/components/CartNoticeToast";
 
-const OPEN_MS = 240;
+const OPEN_MS = 220;
 const CLOSE_MS = 180;
 /** Height of the footer control — the Add button and the quantity control alike, so swapping them never shifts the sheet. */
 const ACTION_HEIGHT = 48;
+
+type Shown = { product: ProductSummaryDto; onViewDetails: (() => void) | null };
 
 /** Mounted once (App.tsx). Keeps the last product on screen while the sheet slides away. */
 export function VariantSheetHost() {
   const product = useVariantSheet((state) => state.product);
   const onViewDetails = useVariantSheet((state) => state.onViewDetails);
   const close = useVariantSheet((state) => state.close);
-  const { height } = useWindowDimensions();
+  const { height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const progress = useRef(new Animated.Value(0)).current;
-  const [shown, setShown] = useState<{ product: ProductSummaryDto; onViewDetails: (() => void) | null } | null>(null);
+  const [shown, setShown] = useState<Shown | null>(null);
+  // The sheet's own height: it slides exactly that far, so it is moving on
+  // screen from the first frame (sliding a window's height would leave a
+  // short sheet off screen for most of the animation).
+  const [sheetHeight, setSheetHeight] = useState(0);
+  const waitingForLayout = useRef(false);
 
-  // Whether the modal is on screen — then an open must animate here, as `onShow` will not fire again.
-  const visibleRef = useRef(false);
-  visibleRef.current = shown !== null;
+  // What is on screen: the open product, or — while sliding away — the last one.
+  const current: Shown | null = product ? { product, onViewDetails } : shown;
+  if (product && (shown?.product !== product || shown.onViewDetails !== onViewDetails)) {
+    // Taken in the same render the tap's state arrives in, not an effect later.
+    setShown({ product, onViewDetails });
+  }
 
-  useEffect(() => {
-    if (product) {
-      if (visibleRef.current) {
-        Animated.timing(progress, { toValue: 1, duration: OPEN_MS, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
-      }
-      setShown({ product, onViewDetails });
-      return;
-    }
-    // Closed from the store: slide out, then unmount.
-    Animated.timing(progress, { toValue: 0, duration: CLOSE_MS, easing: Easing.in(Easing.cubic), useNativeDriver: true }).start(
+  const slideIn = useCallback(() => {
+    markSheet("animationStart");
+    Animated.timing(progress, { toValue: 1, duration: OPEN_MS, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start(
       ({ finished }) => {
-        if (finished) setShown(null);
+        if (finished) markSheet("fullyVisible");
       },
     );
-  }, [product, onViewDetails, progress]);
+  }, [progress]);
 
-  if (!shown) return null;
+  useLayoutEffect(() => {
+    if (product) {
+      progress.stopAnimation();
+      // Already measured (open, or sliding away): slide in now; a first
+      // opening slides in once the sheet's height is known (onLayout, the
+      // very next frame).
+      if (sheetHeight > 0) slideIn();
+      else waitingForLayout.current = true;
+      return;
+    }
+    waitingForLayout.current = false;
+    Animated.timing(progress, { toValue: 0, duration: CLOSE_MS, easing: Easing.in(Easing.cubic), useNativeDriver: true }).start(
+      ({ finished }) => {
+        if (finished) {
+          setShown(null);
+          setSheetHeight(0);
+        }
+      },
+    );
+    // `sheetHeight` is read, not reacted to: a height change must not restart the slide.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [product, progress, slideIn]);
 
-  const translateY = progress.interpolate({ inputRange: [0, 1], outputRange: [height, 0] });
+  // Android back closes the sheet first (registered last, so asked first).
+  useEffect(() => {
+    if (!product) return undefined;
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      close();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [product, close]);
+
+  const onSheetLayout = (event: LayoutChangeEvent) => {
+    const next = Math.round(event.nativeEvent.layout.height);
+    if (next !== sheetHeight) setSheetHeight(next);
+    if (waitingForLayout.current && next > 0) {
+      waitingForLayout.current = false;
+      slideIn();
+    }
+  };
+
+  if (!current) return null;
+
+  const travel = sheetHeight > 0 ? sheetHeight : windowHeight;
+  const translateY = progress.interpolate({ inputRange: [0, 1], outputRange: [travel, 0] });
 
   return (
-    <Modal
-      visible
-      transparent
-      animationType="none"
-      statusBarTranslucent
-      onRequestClose={close}
-      // Starts once the modal is on screen, so the slide is never skipped.
-      onShow={() =>
-        Animated.timing(progress, { toValue: 1, duration: OPEN_MS, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start()
-      }
-    >
-      <View style={StyleSheet.absoluteFill}>
-        <Animated.View style={[StyleSheet.absoluteFill, styles.backdrop, { opacity: progress }]}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityRole="button" accessibilityLabel="Close" />
-        </Animated.View>
+    <View style={StyleSheet.absoluteFill} pointerEvents={product ? "box-none" : "none"}>
+      <Animated.View style={[StyleSheet.absoluteFill, styles.backdrop, { opacity: progress }]}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityRole="button" accessibilityLabel="Close" />
+      </Animated.View>
 
-        <Animated.View
-          style={[
-            styles.sheet,
-            { maxHeight: height * 0.85, paddingBottom: insets.bottom + spacing.base, transform: [{ translateY }] },
-          ]}
-        >
-          <SheetContent
-            key={shown.product.id}
-            product={shown.product}
-            onClose={close}
-            onViewDetails={() => {
-              const open = shown.onViewDetails;
-              close();
-              open?.();
-            }}
-          />
-        </Animated.View>
-
-        {/* The sheet is its own window: cart popups (e.g. a limit reached) must show above it too. */}
-        <CartNoticeToast />
-      </View>
-    </Modal>
+      <Animated.View
+        onLayout={onSheetLayout}
+        testID="variant-sheet"
+        accessibilityViewIsModal
+        style={[
+          styles.sheet,
+          { maxHeight: windowHeight * 0.85, paddingBottom: insets.bottom + spacing.base, transform: [{ translateY }] },
+        ]}
+      >
+        <SheetContent
+          key={current.product.id}
+          product={current.product}
+          onClose={close}
+          onViewDetails={() => {
+            const open = current.onViewDetails;
+            close();
+            open?.();
+          }}
+        />
+      </Animated.View>
+    </View>
   );
+}
+
+/** The sheet's product data: the product page's when it is fresh, else the card's own — never a wait. */
+function useSheetProduct(product: ProductSummaryDto): {
+  source: ProductSummaryDto | ProductDetailDto | null;
+  detail: ProductDetailDto | undefined;
+  isError: boolean;
+  refetch: () => void;
+} {
+  const cardHasVariants = (product.variants?.length ?? 0) > 0;
+  // Reads the product page's cached copy; fetches only for a card from an
+  // older server, which carries no variants.
+  const query = useProduct(product.id, { enabled: !cardHasVariants });
+  const freshDetail = query.data && !query.isStale ? query.data : undefined;
+  const source = freshDetail ?? (cardHasVariants ? product : query.data ?? null);
+  return {
+    source,
+    detail: query.data,
+    isError: !source && query.isError,
+    refetch: () => void query.refetch(),
+  };
 }
 
 function SheetContent({
@@ -144,29 +212,57 @@ function SheetContent({
   onClose: () => void;
   onViewDetails: () => void;
 }) {
-  const detail = useProduct(product.id);
-  const cart = useCartActions();
-  const data = detail.data;
-  // Units the customer's own unpaid checkout holds count as theirs (lib/ownHolds.ts).
-  const variants = useMemo(() => (data?.variants ?? []).map((item) => cart.withOwnHold(item)), [data, cart.withOwnHold]);
-  const options = useMemo(() => (data ? variantOptions(data) : null), [data]);
+  const { source, detail, isError, refetch } = useSheetProduct(product);
+  // The screen below keeps the cart fresh: opening the sheet must not refetch it.
+  const cart = useCartActions({ refetchCart: false });
+  // Only what can be bought now, as THIS customer sees it: units their own
+  // unpaid checkout holds count as theirs (lib/ownHolds.ts).
+  const visible = useMemo(() => (source ? visibleVariantsOf(source, cart.withOwnHold) : []), [source, cart.withOwnHold]);
+  const variants = useMemo(() => visible.filter(isPurchasable), [visible]);
+  // Nothing can be bought because the store stopped taking orders (not sold
+  // out): said without naming the store — customers are not shown who sells it.
+  const closedHint = storeClosedHint(visible);
+  const closedMessage = closedHint === null ? null : `Unavailable right now.${closedHint ? ` ${closedHint}` : ""}`;
+  const options = useMemo<VariantOptions | null>(
+    () => (source ? variantOptions({ optionGroups: source.optionGroups ?? [], variants }) : null),
+    [source, variants],
+  );
   const [selection, setSelection] = useState<Selection | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  // The starting picks, once the product's options are known.
+  // The starting picks; and, when a refresh takes away a chosen option (it
+  // sold out meanwhile), the pick is dropped with a word — never swapped.
   useEffect(() => {
-    if (options && selection === null) setSelection(initialSelection(options, variants));
+    if (!options) return;
+    if (selection === null) {
+      setSelection(initialSelection(options, variants));
+      return;
+    }
+    const gone = Object.entries(selection).some(
+      ([group, key]) => !options.groups.find((item) => item.name === group)?.choices.some((choice) => choice.key === key),
+    );
+    if (gone) {
+      setSelection(initialSelection(options, variants));
+      setNotice("That option just sold out. Please choose another.");
+    }
   }, [options, variants, selection]);
+
+  useLayoutEffect(() => {
+    if (variants.length === 0) return;
+    markSheet("firstVariant");
+    markSheet("allPrices");
+  }, [variants]);
 
   const picks = selection ?? {};
   const chosen = options ? selectedVariant(options, variants, picks) : undefined;
-  const inStock = variants.filter((variant) => variant.inStock);
-  const cheapest = inStock.reduce<VariantDto | undefined>((low, item) => (!low || item.pricePaise < low.pricePaise ? item : low), undefined);
+  const cheapest = variants.reduce<VariantDto | undefined>((low, item) => (!low || item.pricePaise < low.pricePaise ? item : low), undefined);
   // Before a choice: the cheapest size that can be bought ("From …" when sizes differ in price).
   const shownVariant = chosen ?? cheapest ?? product.defaultVariant ?? undefined;
-  const fromPrice = !chosen && new Set(inStock.map((item) => item.pricePaise)).size > 1;
-  const image = resolveImageUrl(chosen?.imageUrl ?? data?.images[0]?.thumbUrl ?? product.thumbUrl);
+  const fromPrice = !chosen && new Set(variants.map((item) => item.pricePaise)).size > 1;
+  const image = resolveImageUrl(chosen?.imageUrl ?? detail?.images[0]?.thumbUrl ?? product.thumbUrl);
   const qty = chosen ? cart.qtyFor(chosen.id) : 0;
   const busy = chosen ? cart.isBusy(chosen.id) : false;
+  const name = source?.name ?? product.name;
 
   return (
     <>
@@ -179,7 +275,7 @@ function SheetContent({
         </View>
         <View style={styles.headerText}>
           <AppText variant="bodyStrong" numberOfLines={2}>
-            {product.name}
+            {name}
           </AppText>
           {shownVariant ? (
             <View style={styles.priceRow}>
@@ -202,7 +298,7 @@ function SheetContent({
               ) : null}
             </View>
           ) : null}
-          <Pressable onPress={onViewDetails} hitSlop={8} style={styles.viewDetails} accessibilityRole="link" accessibilityLabel={`View details of ${product.name}`}>
+          <Pressable onPress={onViewDetails} hitSlop={8} style={styles.viewDetails} accessibilityRole="link" accessibilityLabel={`View details of ${name}`}>
             <AppText variant="caption" color={colors.primary} style={styles.viewDetailsText}>
               View Details
             </AppText>
@@ -216,19 +312,26 @@ function SheetContent({
 
       {/* Options */}
       <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent} showsVerticalScrollIndicator={false} bounces={false}>
-        {detail.isLoading ? (
-          <AppText variant="body" color={colors.textSecondary}>
-            Loading options…
-          </AppText>
-        ) : detail.isError || !options ? (
-          <View>
+        {!source ? (
+          isError ? (
+            <View>
+              <AppText variant="body" color={colors.textSecondary}>
+                We could not load the options for this product.
+              </AppText>
+              <Button label="Try again" variant="secondary" onPress={refetch} style={{ marginTop: spacing.md }} />
+            </View>
+          ) : (
+            // Only from an older server, whose product lists carry no variants.
             <AppText variant="body" color={colors.textSecondary}>
-              We could not load the options for this product.
+              Loading options…
             </AppText>
-            <Button label="Try again" variant="secondary" onPress={() => void detail.refetch()} style={{ marginTop: spacing.md }} />
-          </View>
+          )
+        ) : variants.length === 0 ? (
+          <AppText variant="body" color={colors.textSecondary}>
+            {closedMessage ?? "This product just sold out."}
+          </AppText>
         ) : (
-          options.groups.map((group) => (
+          options?.groups.map((group) => (
             <View key={group.name} style={styles.group}>
               <AppText variant="bodyStrong">
                 {group.name}
@@ -242,13 +345,21 @@ function SheetContent({
                 {group.choices.map((choice) => {
                   const state = choiceState(options, variants, picks, group.name, choice.key);
                   const active = picks[group.name] === choice.key;
-                  // By-variant choices are whole variants: show each one's own price.
-                  const variant = options.byVariant ? variants.find((item) => item.id === choice.key) : undefined;
+                  // A choice that is one whole variant (by-variant choices, or the
+                  // only option group, e.g. Weight) shows that variant's own price.
+                  const variant = options.byVariant
+                    ? variants.find((item) => item.id === choice.key)
+                    : options.groups.length === 1
+                      ? variants.find((item) => options.keyOf(item, group.name) === choice.key)
+                      : undefined;
                   return (
                     <Pressable
                       key={choice.key}
                       disabled={state === "soldOut"}
-                      onPress={() => setSelection(pick(options, variants, picks, group.name, choice.key))}
+                      onPress={() => {
+                        setNotice(null);
+                        setSelection(pick(options, variants, picks, group.name, choice.key));
+                      }}
                       style={({ pressed }) => [
                         styles.chip,
                         active && styles.chipActive,
@@ -258,7 +369,7 @@ function SheetContent({
                       ]}
                       accessibilityRole="button"
                       accessibilityState={{ selected: active, disabled: state === "soldOut" }}
-                      accessibilityLabel={`${group.name} ${choice.label}${state === "soldOut" ? ", sold out" : ""}`}
+                      accessibilityLabel={`${group.name} ${choice.label}${variant ? `, ${formatPaise(variant.pricePaise)}` : ""}`}
                     >
                       <AppText
                         variant="bodyStrong"
@@ -269,7 +380,7 @@ function SheetContent({
                       </AppText>
                       {variant ? (
                         <AppText variant="caption" color={colors.textSecondary}>
-                          {variant.inStock ? formatPaise(variant.pricePaise) : "Sold out"}
+                          {formatPaise(variant.pricePaise)}
                         </AppText>
                       ) : null}
                     </Pressable>
@@ -280,30 +391,25 @@ function SheetContent({
           ))
         )}
 
-        {chosen && chosen.inStock && chosen.availableQty > 0 && chosen.availableQty <= 5 ? (
+        {chosen && chosen.availableQty > 0 && chosen.availableQty <= 5 ? (
           <AppText variant="caption" color={colors.warning}>
             Only {chosen.availableQty} left
           </AppText>
         ) : null}
-        {chosen ? (
-          <AppText variant="caption" color={colors.textMuted} style={{ marginTop: spacing.xs }}>
-            SKU {chosen.sku}
-          </AppText>
-        ) : null}
       </ScrollView>
 
-      {cart.error ? (
+      {notice || cart.error ? (
         <View style={styles.notice}>
-          <NoticeStrip message={cart.error} />
+          <NoticeStrip message={(notice ?? cart.error)!} />
         </View>
       ) : null}
 
       {/* Add / quantity */}
       <View style={styles.footer}>
-        {!options || detail.isError ? (
+        {!source || !options ? (
           <Button label="Add to cart" onPress={() => undefined} disabled style={styles.action} />
-        ) : inStock.length === 0 ? (
-          <Button label="Sold out" onPress={() => undefined} disabled style={styles.action} />
+        ) : variants.length === 0 ? (
+          <Button label={closedMessage ? "Unavailable" : "Sold out"} onPress={() => undefined} disabled style={styles.action} />
         ) : !chosen ? (
           <Button
             label={`Select ${(missingGroup(options, picks) ?? "an option").toLowerCase()}`}
@@ -311,11 +417,6 @@ function SheetContent({
             disabled
             style={styles.action}
           />
-        ) : !chosen.inStock ? (
-          <Button label="Sold out" onPress={() => undefined} disabled style={styles.action} />
-        ) : chosen.sellerAcceptingOrders === false ? (
-          // Its store is not taking orders right now: nothing can be added.
-          <Button label="Store closed" onPress={() => undefined} disabled style={styles.action} />
         ) : qty > 0 ? (
           <QuantityStepper
             qty={qty}
@@ -331,9 +432,9 @@ function SheetContent({
             label={`Add to cart · ${formatPaise(chosen.pricePaise)}`}
             onPress={() => {
               // A tap while this variant's previous change is still saving is ignored: never added twice.
-              if (busy || !data) return;
+              if (busy) return;
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
-              cart.add(chosen.id, snapshotFromProduct(data, chosen));
+              cart.add(chosen.id, snapshotFromProduct(source, chosen));
             }}
             disabled={busy}
             style={styles.action}
@@ -357,6 +458,8 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: radius.xl,
     borderTopRightRadius: radius.xl,
     paddingHorizontal: spacing.base,
+    // Above the backdrop on Android (elevation orders siblings there).
+    elevation: 16,
   },
   handle: {
     alignSelf: "center",

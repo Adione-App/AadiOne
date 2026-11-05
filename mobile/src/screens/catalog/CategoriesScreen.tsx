@@ -230,7 +230,7 @@ export default function CategoriesScreen({
         product={item}
         qtyInCart={cart.qtyForCard(item)}
         cartVariantId={cart.cartVariantForCard(item)}
-        ownAvailableQty={cart.ownAvailableQtyFor(item)}
+        withOwnHold={cart.withOwnHold}
         busy={item.defaultVariant ? cart.isBusy(item.defaultVariant.id) : false}
         onPress={onOpenProduct}
         onAdd={cart.add}

@@ -53,6 +53,7 @@ import {
   type ProductSummaryDto,
 } from "@shared";
 import type { HomeAction, HomeSection, PromoSlide } from "./homeEngine";
+import { purchasableVariantsOf } from "../../lib/cardVariant";
 
 /** A category tile as drawn: the category, its shown name and its own colours. */
 export interface CategoryTile {
@@ -295,7 +296,7 @@ function categorySectionTiles(config: HomeCategorySectionConfig, index: Category
 }
 
 /** Only products a customer can add right now (Home's own rule, as Latest products). */
-const isBuyable = (product: ProductSummaryDto) => product.defaultVariant !== null && product.defaultVariant.inStock;
+const isBuyable = (product: ProductSummaryDto) => purchasableVariantsOf(product).length > 0;
 
 /** Where a shelf's View All goes — only a destination that fits the shelf (productShelfViewAllProblem) and still exists. */
 function shelfViewAll(shelf: ProductShelfConfig, index: CategoryIndex, title: string): HomeAction | null {

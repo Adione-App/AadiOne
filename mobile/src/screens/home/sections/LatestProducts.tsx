@@ -17,13 +17,14 @@
 import { memo, useMemo } from "react";
 import type { ProductSummaryDto } from "@shared";
 import { useRailProducts } from "@/lib/queries";
+import { purchasableVariantsOf } from "@/lib/cardVariant";
 import type { HomeAction, HomeSection } from "../homeEngine";
 import { ProductShelf } from "./ProductShelf";
 
 const LATEST_RAIL = "RECENTLY_ADDED" as const;
 
 /** Only things a customer can add right now (the engine's own rule for Home). */
-const isBuyable = (product: ProductSummaryDto) => product.defaultVariant !== null && product.defaultVariant.inStock;
+const isBuyable = (product: ProductSummaryDto) => purchasableVariantsOf(product).length > 0;
 
 function LatestProductsImpl({
   title,

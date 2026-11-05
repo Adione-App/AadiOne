@@ -862,6 +862,17 @@ export interface ProductSummaryDto {
    */
   defaultVariant: VariantDto | null;
   variantCount: number;
+  /**
+   * Every customer-visible variant (live, approved, listed by a marketplace
+   * seller) in display order — the default first, then the seller's order —
+   * each with its own live price, stock and store state. The same list the
+   * product page gets, so a card can pick a size that can be bought and the
+   * variant sheet can open from it without another request. Absent from an
+   * older server (cards then fall back to `defaultVariant`).
+   */
+  variants?: VariantDto[];
+  /** The product's option groups (see ProductDetailDto.optionGroups); absent from an older server. */
+  optionGroups?: ProductOptionGroupDto[];
   /** Distinct sellers currently listing at least one variant of this product. */
   sellerCount: number;
   /**
@@ -1724,6 +1735,14 @@ export interface AddCartItemRequest {
    * variant can be listed by more than one seller at different prices. */
   sellerListingId: string;
   qty: number;
+  /**
+   * Optional checks against what the customer saw: the variant the listing
+   * must belong to, and the unit price shown. A mismatch is refused
+   * (PRODUCT_UNAVAILABLE / PRICE_CHANGED) instead of adding something else
+   * or at another price. Omitted by older apps.
+   */
+  variantId?: string;
+  expectedPricePaise?: number;
 }
 
 export interface UpdateCartItemRequest {

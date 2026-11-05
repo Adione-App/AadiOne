@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   Easing,
@@ -20,7 +20,7 @@ import { Image } from "expo-image";
 import * as Haptics from "expo-haptics";
 import { Heart, Plus } from "lucide-react-native";
 
-import type { ProductSummaryDto } from "@shared";
+import type { ProductSummaryDto, VariantDto } from "@shared";
 import { formatPaise } from "@shared/money";
 import { colors, radius, shadow, spacing } from "@shared/theme";
 
@@ -33,6 +33,7 @@ import { flyToCart } from "../lib/flyToCart";
 import { useWishlist } from "../lib/useWishlist";
 import { useVariantSheet } from "../lib/variantSheet";
 import { quantityLimitOf } from "../lib/quantityLimit";
+import { cardVariantsOf } from "../lib/cardVariant";
 import { AppText } from "./ui";
 
 
@@ -271,7 +272,7 @@ function ProductCardImpl({
   product,
   qtyInCart,
   cartVariantId = null,
-  ownAvailableQty = null,
+  withOwnHold,
   onPress,
   onAdd,
   onIncrement,
@@ -287,12 +288,12 @@ function ProductCardImpl({
    */
   cartVariantId?: string | null;
   /**
-   * What THIS customer may have of the default variant when their own unpaid
-   * online checkout holds some of it (`useCartActions().ownAvailableQtyFor`,
-   * lib/ownHolds.ts) — the shared catalogue counts that hold as taken. Null
-   * (the default, and always for a guest): the catalogue's own availability.
+   * Each variant as THIS customer sees it: units their own unpaid online
+   * checkout holds count as theirs (`useCartActions().withOwnHold`,
+   * lib/ownHolds.ts) — the shared catalogue counts that hold as taken.
+   * Absent (and for a guest): the catalogue's own availability.
    */
-  ownAvailableQty?: number | null;
+  withOwnHold?: (variant: VariantDto) => VariantDto;
   /** Called with the PRODUCT id — from the image, or the More Details icon. */
   onPress: (productId: string) => void;
   
@@ -302,20 +303,22 @@ function ProductCardImpl({
   onDecrement: (variantId: string) => void;
   busy?: boolean;
 }) {
-  // Their own held units count as theirs (badge, + limit and the cart
-  // snapshot alike); everyone else sees the catalogue's answer unchanged.
-  const catalogueVariant = product.defaultVariant;
-  const variant =
-    catalogueVariant && ownAvailableQty !== null
-      ? { ...catalogueVariant, availableQty: ownAvailableQty, inStock: ownAvailableQty > 0 }
-      : catalogueVariant;
+  // The size on the card and what + does (lib/cardVariant.ts): the default
+  // when it can be bought, else the next one that can — its own size and
+  // price together; + adds the only buyable size directly, opens the sheet
+  // for several, and is absent for none. Their own held units count as
+  // theirs (badge, + limit and the cart snapshot alike).
+  const { shown: variant, addMode, direct } = useMemo(
+    () => cardVariantsOf(product, withOwnHold),
+    [product, withOwnHold],
+  );
 
   const outOfStock = !variant?.inStock;
   // The listing's store is not taking orders (closed, outside hours, admin):
   // still browsable, never addable. Absent (older server) = open.
   const storeClosed = variant?.sellerAcceptingOrders === false;
-  // Either way there is no Add / + on this card.
-  const notAddable = outOfStock || storeClosed;
+  // Nothing can be bought: there is no Add / + on this card.
+  const notAddable = addMode === "none";
 
   const imageUrl = resolveImageUrl(product.thumbUrl);
 
@@ -323,9 +326,10 @@ function ProductCardImpl({
   const imageBoxRef = useRef<ViewInstance>(null);
 
   const openDetails = () => onPress(product.id);
-  // Several sizes / options: the card never picks one — it opens the variant
-  // sheet (components/VariantSheet.tsx), and its quantity is the product's
-  // total across them (`useCartActions().qtyForCard`).
+  // Several sizes / options: the card's quantity is the product's total
+  // across them (`useCartActions().qtyForCard`), and − / + act on the one in
+  // the cart; when several can be bought and none is in the cart, + opens the
+  // variant sheet (components/VariantSheet.tsx) — the card never picks one.
   const hasOptions = product.variantCount > 1;
   const openOptions = () => useVariantSheet.getState().open(product, openDetails);
 
@@ -477,22 +481,24 @@ function ProductCardImpl({
             ) : (
               <Pressable
                 onPress={() => {
-                  if (!variant) return;
                   tapHaptic();
-                  // Several sizes / options: the customer picks one in the
-                  // variant sheet — the card never adds a size nobody chose.
-                  if (hasOptions) {
+                  // Several sizes can be bought: the customer picks one in
+                  // the variant sheet — the card never adds a size nobody chose.
+                  if (addMode === "sheet") {
                     openOptions();
                     return;
                   }
-                  if (onAdd(variant.id, snapshotFromProduct(product, variant)) !== false) flyToCart(imageUrl, variant.id);
+                  // Exactly one can be bought: that one — its own listing and
+                  // price (the server re-checks both), never a blind default.
+                  if (!direct) return;
+                  if (onAdd(direct.id, snapshotFromProduct(product, direct)) !== false) flyToCart(imageUrl, direct.id);
                 }}
                 style={styles.floatingAddButton}
                 accessibilityRole="button"
                 accessibilityLabel={
-                  hasOptions
+                  addMode === "sheet"
                     ? `Choose an option of ${product.name}`
-                    : `Add ${product.name} to cart`
+                    : `Add ${product.name}${direct && hasOptions ? ` ${direct.variantName}` : ""} to cart`
                 }
               >
                 <Plus size={18} color={colors.primary} strokeWidth={2.6} />

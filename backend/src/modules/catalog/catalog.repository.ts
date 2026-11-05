@@ -41,7 +41,7 @@ export const MARKETPLACE_SELLER_WHERE = {
 const LISTED_JOINS = Prisma.sql`
     JOIN categories c ON c.id = p.category_id AND c.is_active AND c.deleted_at IS NULL
     JOIN categories top ON top.id = COALESCE(c.parent_id, c.id) AND top.is_active AND top.deleted_at IS NULL
-    JOIN product_variants v ON v.product_id = p.id AND v.status = 'ACTIVE' AND v.deleted_at IS NULL
+    JOIN product_variants v ON v.product_id = p.id AND v.status = 'ACTIVE' AND v.deleted_at IS NULL AND v.approval_status = 'APPROVED'
     JOIN seller_listings sl ON sl.variant_id = v.id
     JOIN sellers s ON s.id = sl.seller_id AND ${MARKETPLACE_SELLER_SQL}`;
 
@@ -125,8 +125,13 @@ export const PRODUCT_INCLUDE = {
   category: true,
   images: { orderBy: { displayOrder: "asc" } },
   variants: {
-    where: { status: ProductStatus.ACTIVE, deletedAt: null },
-    orderBy: [{ isDefault: "desc" }, { displayOrder: "asc" }],
+    // Live and approved: a variant added later stays out until its review
+    // passes (it is DRAFT meanwhile too — approval is checked explicitly so a
+    // half-reviewed row can never reach a customer).
+    where: { status: ProductStatus.ACTIVE, deletedAt: null, approvalStatus: "APPROVED" },
+    // The default first, then the seller's order; creation time and id break
+    // ties, so "the next size" is the same on every request and every screen.
+    orderBy: [{ isDefault: "desc" }, { displayOrder: "asc" }, { createdAt: "asc" }, { id: "asc" }],
     include: {
       sellerListings: {
         where: { seller: MARKETPLACE_SELLER_WHERE },

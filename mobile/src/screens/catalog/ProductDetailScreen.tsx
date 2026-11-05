@@ -1,17 +1,23 @@
 /**
  * Product detail + out-of-stock state (Task 14.8).
  *
- * Variants are selectable rather than collapsed into one price: the cart
- * treats each variant as a separate line, so the customer must be able to see
- * and choose which size they are buying.
+ * Sizes follow the one customer rule (lib/cardVariant.ts), on the sizes a
+ * customer can buy right now — never on every size the product has:
  *
- * A product with several sizes / options has NO size preselected: Add stays
- * "Select a size" until the customer taps an in-stock one (a sold-out size is
- * shown but cannot be chosen). Until then the price reads "From …" — the
- * lowest in-stock size. A simple item works exactly as before.
+ *   - two or more can be bought: "Select <weight>" with only those sizes,
+ *     nothing preselected; Add stays "Select a size" until the customer taps
+ *     one, and the price reads "From …" (the lowest) until then;
+ *   - exactly one: it IS the product — no selector, no choice to make; the
+ *     size shows as ordinary product information and Add adds that exact
+ *     size, the same flow (and cart flight) as a simple item;
+ *   - none: no selector; Add is disabled with the unavailable state.
+ *
+ * It follows availability as it changes (hidden, sold out, back in stock):
+ * the page re-reads the product whenever it opens, and on the app's
+ * availability refreshes. Who sells the product and its SKU are not shown.
  */
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View, type ViewInstance } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
@@ -21,6 +27,7 @@ import { colors, layout, radius, spacing } from "@shared/theme";
 import { api, resolveImageUrl } from "@/lib/api";
 import { requireAuth } from "@/lib/authGate";
 import { useProduct } from "@/lib/queries";
+import { pageVariantsOf, storeClosedHint } from "@/lib/cardVariant";
 import { snapshotFromProduct, useCartActions } from "@/lib/useCartActions";
 import { flyToCart } from "@/lib/flyToCart";
 import { quantityLimitOf } from "@/lib/quantityLimit";
@@ -52,7 +59,9 @@ export default function ProductDetailScreen({
   onOpenProduct: (productId: string) => void;
 }) {
   const insets = useSafeAreaInsets();
-  const product = useProduct(productId);
+  // Re-read on every visit: a size hidden, sold out or restored since the
+  // last one changes what this page offers (the cached copy shows meanwhile).
+  const product = useProduct(productId, { refetchOnMount: "always" });
   const cart = useCartActions();
   const relatedColumns = useGridColumns();
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(
@@ -79,20 +88,30 @@ export default function ProductDetailScreen({
   // until after the loading/error guards" convention.
   // Each size as THIS customer sees it: units their own unpaid checkout
   // holds count as theirs (lib/ownHolds.ts); the catalogue answer otherwise.
-  const allVariants = useMemo(
-    () => (product.data?.variants ?? []).map((item) => cart.withOwnHold(item)),
+  // The sizes that can be bought now (lib/cardVariant.ts) — the same rule as
+  // every product card: only these are offered, and their number decides
+  // whether the customer has a choice to make at all.
+  const sizes = useMemo(
+    () => pageVariantsOf(product.data ?? { defaultVariant: null, variantCount: 0, variants: [] }, cart.withOwnHold),
     [product.data, cart.withOwnHold],
   );
-  const needsChoice = allVariants.length > 1;
-  // What Add / the stepper act on: the only variant, or the size the customer chose.
+  const { visible: allVariants, purchasable } = sizes;
+  const needsChoice = sizes.mode === "choose";
+  // What Add / the stepper act on: the one buyable size, or the size the
+  // customer chose among several (nothing until they choose).
   const chosen: VariantDto | undefined = needsChoice
-    ? allVariants.find((item) => item.id === selectedVariantId && item.inStock)
-    : allVariants[0];
-  const inStockVariants = allVariants.filter((item) => item.inStock);
+    ? purchasable.find((item) => item.id === selectedVariantId)
+    : purchasable[0];
+  // A chosen size that stopped being buyable is dropped, never swapped.
+  useEffect(() => {
+    if (selectedVariantId && !purchasable.some((item) => item.id === selectedVariantId)) setSelectedVariantId(null);
+  }, [purchasable, selectedVariantId]);
   // What the price shows before a choice: the cheapest size that can be bought.
-  const cheapest = inStockVariants.reduce<VariantDto | undefined>((low, item) => (!low || item.pricePaise < low.pricePaise ? item : low), undefined);
-  const variant: VariantDto | undefined = chosen ?? cheapest ?? allVariants[0];
-  const fromPrice = needsChoice && !chosen && new Set(inStockVariants.map((item) => item.pricePaise)).size > 1;
+  const cheapest = purchasable.reduce<VariantDto | undefined>((low, item) => (!low || item.pricePaise < low.pricePaise ? item : low), undefined);
+  // Nothing can be bought: the server's own pick, for the unavailable state.
+  const fallback = allVariants.find((item) => item.id === product.data?.defaultVariant?.id) ?? allVariants[0];
+  const variant: VariantDto | undefined = chosen ?? cheapest ?? fallback;
+  const fromPrice = needsChoice && !chosen && new Set(purchasable.map((item) => item.pricePaise)).size > 1;
   const qtyInCart = chosen ? cart.qtyFor(chosen.id) : 0;
 
   if (product.isLoading) return <Loading />;
@@ -106,12 +125,11 @@ export default function ProductDetailScreen({
   }
 
   const detail = product.data;
-  // The product (not just one size) cannot be bought right now.
-  const outOfStock = inStockVariants.length === 0;
-  // The store selling the size on screen is not taking orders: the page
-  // stays browsable, but nothing can be added. Absent (older server) = open.
-  const shownVariant = chosen ?? variant;
-  const storeClosed = shownVariant?.sellerAcceptingOrders === false;
+  // Nothing can be bought because its store is not taking orders (when it
+  // opens again, without naming the store), or because nothing is in stock.
+  const closedHint = storeClosedHint(allVariants);
+  const storeClosed = closedHint !== null;
+  const outOfStock = purchasable.length === 0 && !storeClosed;
   const optionWord =
     (detail.optionGroups ?? []).length === 1 ? detail.optionGroups[0]!.name.toLowerCase() : (detail.optionGroups ?? []).length > 1 ? 'option' : 'size';
   // Same "small square thumbnail drops into the cart" flourish the card's
@@ -197,33 +215,38 @@ export default function ProductDetailScreen({
             </View>
           )}
 
+          {/* One size can be bought: it is simply part of the product. */}
+          {chosen && !needsChoice ? (
+            <AppText variant="bodyStrong" color={colors.textSecondary}>
+              {chosen.variantName}
+            </AppText>
+          ) : null}
+
           <AppText variant="caption" color={colors.textSecondary}>
             MRP incl. of all taxes
           </AppText>
 
-          {/* The store's current status — always shown, so a closed store is
-              never a surprise at the Add button. */}
-          {shownVariant && (
+          {/* Not orderable right now because the store is closed — said
+              before the Add button, never a surprise there. Who sells the
+              product is not shown to customers. */}
+          {storeClosed && (
             <View
-              style={[styles.storeStatus, storeClosed ? styles.storeStatusClosed : styles.storeStatusOpen]}
-              accessibilityLabel={
-                storeClosed
-                  ? `Store closed. ${shownVariant.sellerClosedMessage ?? ""}`
-                  : `Sold by ${shownVariant.sellerName}, open now`
-              }
+              style={[styles.storeStatus, styles.storeStatusClosed]}
+              accessibilityLabel={`Unavailable right now. ${closedHint}`}
             >
-              <AppText variant="bodyStrong" color={storeClosed ? colors.danger : colors.primary}>
-                {storeClosed ? "Store closed — unavailable right now" : `Sold by ${shownVariant.sellerName} · Open now`}
+              <AppText variant="bodyStrong" color={colors.danger}>
+                Unavailable right now
               </AppText>
-              {storeClosed && shownVariant.sellerClosedMessage && (
+              {closedHint ? (
                 <AppText variant="caption" color={colors.textSecondary} style={{ marginTop: 2 }}>
-                  {shownVariant.sellerClosedMessage}
+                  {closedHint}
                 </AppText>
-              )}
+              ) : null}
             </View>
           )}
 
-          {detail.variants.length > 1 && (
+          {/* A choice only when two or more sizes can be bought — and only those. */}
+          {needsChoice && (
             <View style={{ marginTop: spacing.lg }}>
               <AppText variant="h3">
                 {/* Generic option groups (Size, Portion, Color…): name the one group; "Select option" for several. */}
@@ -234,35 +257,28 @@ export default function ProductDetailScreen({
                     : 'Select size'}
               </AppText>
               <View style={styles.variantRow}>
-                {detail.variants.map((item) => {
+                {purchasable.map((item) => {
                   const active = item.id === chosen?.id;
                   return (
                     <Pressable
                       key={item.id}
                       onPress={() => setSelectedVariantId(item.id)}
-                      // A sold-out size stays visible but cannot be chosen.
-                      disabled={!item.inStock}
                       accessibilityRole="button"
-                      accessibilityState={{ selected: active, disabled: !item.inStock }}
-                      accessibilityLabel={`${item.variantName}, ${item.inStock ? formatPaise(item.pricePaise) : 'sold out'}`}
+                      accessibilityState={{ selected: active }}
+                      accessibilityLabel={`${item.variantName}, ${formatPaise(item.pricePaise)}`}
                       style={[
                         styles.variantChip,
                         active && {
                           borderColor: colors.primary,
                           backgroundColor: colors.primarySurface,
                         },
-                        !item.inStock && { opacity: 0.5 },
                       ]}
                     >
-                      <AppText
-                        variant="bodyStrong"
-                        color={active ? colors.primary : colors.textPrimary}
-                        style={!item.inStock ? { textDecorationLine: "line-through" } : undefined}
-                      >
+                      <AppText variant="bodyStrong" color={active ? colors.primary : colors.textPrimary}>
                         {item.variantName}
                       </AppText>
                       <AppText variant="caption" color={colors.textSecondary}>
-                        {item.inStock ? formatPaise(item.pricePaise) : "Sold out"}
+                        {formatPaise(item.pricePaise)}
                       </AppText>
                     </Pressable>
                   );
@@ -350,7 +366,7 @@ export default function ProductDetailScreen({
                       product={item}
                       qtyInCart={cart.qtyForCard(item)}
                       cartVariantId={cart.cartVariantForCard(item)}
-                      ownAvailableQty={cart.ownAvailableQtyFor(item)}
+                      withOwnHold={cart.withOwnHold}
                       busy={
                         item.defaultVariant
                           ? cart.isBusy(item.defaultVariant.id)
@@ -480,7 +496,7 @@ export default function ProductDetailScreen({
                 <View style={styles.footerUnavailable}>
                   <AppText variant="bodyStrong" color={colors.textSecondary}>
                     {storeClosed
-                      ? "Store closed"
+                      ? "Unavailable"
                       : !outOfStock && needsChoice && !chosen
                         ? `Select a ${optionWord}`
                         : "Currently unavailable"}
@@ -584,7 +600,6 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     borderWidth: 1,
   },
-  storeStatusOpen: { borderColor: colors.divider, backgroundColor: colors.primarySurface },
   storeStatusClosed: { borderColor: colors.danger, backgroundColor: colors.surface },
   // Overrides Button's/QuantityStepper's own default PILL corners — see
   // ProductCard.tsx's identical `floatingStepperShape` for the card's own

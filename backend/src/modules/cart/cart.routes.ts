@@ -57,12 +57,18 @@ cartRouter.post(
 
       // Bounded here as well as against the per-item limit.
       qty: z.number().int().positive().max(1000).default(1),
+
+      // Optional checks against what the customer saw (AddCartItemRequest).
+      variantId: uuid.optional(),
+      expectedPricePaise: z.number().int().nonnegative().optional(),
     }),
   }),
   asyncHandler(async (req: Request, res: Response) => {
-    const { sellerListingId, qty } = req.body as {
+    const { sellerListingId, qty, variantId, expectedPricePaise } = req.body as {
       sellerListingId: string;
       qty: number;
+      variantId?: string;
+      expectedPricePaise?: number;
     };
 
     const distanceKm =
@@ -73,6 +79,7 @@ cartRouter.post(
       sellerListingId,
       qty,
       distanceKm,
+      { variantId, pricePaise: expectedPricePaise },
     );
 
     ok(res, result);

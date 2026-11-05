@@ -81,20 +81,20 @@ describe("wiring", () => {
       const uses = text.match(/<ProductCard\b(?!Skeleton)/g)?.length ?? 0;
       if (uses === 0) continue;
       cards += uses;
-      assert.equal(text.match(/ownAvailableQty=\{cart\.ownAvailableQtyFor\(item\)\}/g)?.length ?? 0, uses, rel);
+      assert.equal(text.match(/withOwnHold=\{cart\.withOwnHold\}/g)?.length ?? 0, uses, rel);
     }
     assert.ok(cards >= 8, `expected the 8 known card screens, found ${cards}`);
   });
 
-  it("the card applies it to its variant (badge, + limit and cart snapshot alike)", () => {
+  it("the card applies it to every size it chooses from (badge, + limit and cart snapshot alike)", () => {
     const card = read("src/components/ProductCard.tsx");
-    assert.match(card, /ownAvailableQty = null,/);
-    assert.match(card, /catalogueVariant && ownAvailableQty !== null\n\s*\? \{ \.\.\.catalogueVariant, availableQty: ownAvailableQty, inStock: ownAvailableQty > 0 \}/);
+    assert.match(card, /cardVariantsOf\(product, withOwnHold\)/);
+    assert.match(card, /snapshotFromProduct\(product, direct\)/);
   });
 
   it("the product page and the size sheet show every size the same way", () => {
-    assert.match(read("src/screens/catalog/ProductDetailScreen.tsx"), /\(product\.data\?\.variants \?\? \[\]\)\.map\(\(item\) => cart\.withOwnHold\(item\)\)/);
-    assert.match(read("src/components/VariantSheet.tsx"), /\(data\?\.variants \?\? \[\]\)\.map\(\(item\) => cart\.withOwnHold\(item\)\)/);
+    assert.match(read("src/screens/catalog/ProductDetailScreen.tsx"), /pageVariantsOf\(product\.data \?\? \{[^}]*\}, cart\.withOwnHold\)/);
+    assert.match(read("src/components/VariantSheet.tsx"), /visibleVariantsOf\(source, cart\.withOwnHold\)/);
   });
 
   it("holds come from the server-confirmed cart — never the disk-restored or optimistic one", () => {

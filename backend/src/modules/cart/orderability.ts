@@ -18,6 +18,10 @@
  *                          (product-approval.service.ts); an APPROVED product
  *                          sent back for review is not buyable meanwhile.
  *   - Product/Variant ACTIVE and not deleted — unchanged from before.
+ *   - Variant.approvalStatus — a variant added to a live product is reviewed
+ *                          on its own; until it is APPROVED it is not
+ *                          buyable (it is also DRAFT meanwhile; checked
+ *                          explicitly so a half-reviewed row never is).
  *
  * Stock and `SellerListing.isAvailable` stay with the existing out-of-stock
  * handling (they are "temporarily unavailable", not "not sellable").
@@ -28,7 +32,8 @@ import { ApprovalStatus } from '../../shared';
 export interface OrderabilityInput {
   seller: { isActive: boolean; deletedAt: Date | null; onboardingStatus: string };
   product: { status: string; deletedAt: Date | null; approvalStatus: string };
-  variant: { status: string; deletedAt: Date | null };
+  /** `approvalStatus` absent (a caller that did not load it): only status / deletion apply. */
+  variant: { status: string; deletedAt: Date | null; approvalStatus?: string };
 }
 
 export type UnorderableReason = 'SELLER_NOT_TRADING' | 'PRODUCT_NOT_SELLABLE';
@@ -43,7 +48,8 @@ export function unorderableReason(input: OrderabilityInput): UnorderableReason |
     product.deletedAt !== null ||
     product.approvalStatus !== ApprovalStatus.APPROVED ||
     variant.status !== 'ACTIVE' ||
-    variant.deletedAt !== null
+    variant.deletedAt !== null ||
+    (variant.approvalStatus !== undefined && variant.approvalStatus !== ApprovalStatus.APPROVED)
   ) {
     return 'PRODUCT_NOT_SELLABLE';
   }

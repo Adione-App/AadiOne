@@ -31,6 +31,7 @@ import {
   type CartSellerGroupDto,
 } from "../../shared";
 import { resolveItemCodPolicy } from "../../shared/cod";
+import { formatPaise } from "../../shared/money";
 import { AppError } from "../../common/errors";
 import { prisma, type DbClient } from "../../infra/db/prisma";
 import * as configService from "../configuration/configuration.service";
@@ -452,6 +453,13 @@ export async function addItem(
   sellerListingId: string,
   qty: number,
   distanceKm: number | null = null,
+  /**
+   * What the customer saw when they tapped (AddCartItemRequest): the variant
+   * the listing must be of, and its unit price. A mismatch is refused — never
+   * added as another size or at another price. Each check is skipped when
+   * absent (older apps).
+   */
+  expected: { variantId?: string | undefined; pricePaise?: number | undefined } = {},
 ): Promise<CartDto> {
   const [offer, holds] = await Promise.all([
     prisma.sellerListing.findUnique({
@@ -465,6 +473,12 @@ export async function addItem(
   ]);
 
   if (!offer) throw new AppError(ErrorCode.PRODUCT_UNAVAILABLE);
+  if (expected.variantId !== undefined && expected.variantId !== offer.variantId) {
+    throw new AppError(ErrorCode.PRODUCT_UNAVAILABLE, {
+      message: `${offer.variant.product.name} is no longer available in that size.`,
+      internalMessage: `listing ${sellerListingId} is variant ${offer.variantId}, not ${expected.variantId}`,
+    });
+  }
   const unorderable = unorderableReason({
     seller: offer.seller,
     product: offer.variant.product,
@@ -486,6 +500,14 @@ export async function addItem(
   if (!offer.isAvailable || (availableQty !== null && availableQty <= 0)) {
     throw new AppError(ErrorCode.ITEM_OUT_OF_STOCK, {
       message: `${offer.variant.product.name} is out of stock.`,
+    });
+  }
+  // The price changed after the customer's screen loaded: they decide again
+  // at the new price rather than being charged one they never saw.
+  if (expected.pricePaise !== undefined && expected.pricePaise !== offer.pricePaise) {
+    throw new AppError(ErrorCode.PRICE_CHANGED, {
+      message: `The price of ${offer.variant.product.name} (${offer.variant.variantName}) is now ${formatPaise(offer.pricePaise)}. Please check and add it again.`,
+      details: [{ field: "pricePaise", message: "price changed", expected: expected.pricePaise, actual: offer.pricePaise }],
     });
   }
 

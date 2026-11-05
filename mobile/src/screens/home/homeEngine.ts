@@ -33,6 +33,7 @@
  */
 
 import { BANNER_RAIL_TARGETS, resolveBannerLayout } from "@shared";
+import { purchasableVariantsOf } from "../../lib/cardVariant";
 import type {
   BannerDto,
   CategoryDto,
@@ -118,9 +119,9 @@ export const MORE_CATEGORY_TILES = 12;
 /* Product selection                                                           */
 /* -------------------------------------------------------------------------- */
 
-/** Only things a customer can add right now belong on Home. */
+/** Only things a customer can add right now belong on Home — any size of them (lib/cardVariant.ts). */
 function isBuyable(product: ProductSummaryDto): boolean {
-  return product.defaultVariant !== null && product.defaultVariant.inStock;
+  return purchasableVariantsOf(product).length > 0;
 }
 
 /** A category shelf: its own buyable products, whatever else the page shows. */

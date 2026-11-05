@@ -73,3 +73,28 @@ export function revalidateStoreAvailability(): void {
     run();
   }, wait);
 }
+
+/**
+ * Product lists only: a size sold out, went off sale or changed price
+ * between the screen loading and a tap (the server refused the add). Every
+ * card showing it asks again, so it shows the size that can be bought now
+ * (lib/cardVariant.ts) — the current cards stay until the answer lands.
+ */
+const PRODUCT_LIST_KEYS = [
+  keys.home,
+  homeShelvesQueryKey,
+  keys.previouslyOrdered,
+  ["product"],
+  ["related"],
+  ["rail"],
+  ["store-products"],
+  ["category-listing"],
+  ["search"],
+] as const;
+let lastProductRun = 0;
+
+export function revalidateProductAvailability(): void {
+  if (!client || Date.now() - lastProductRun < THROTTLE_MS) return;
+  lastProductRun = Date.now();
+  for (const queryKey of PRODUCT_LIST_KEYS) void client.invalidateQueries({ queryKey: [...queryKey] });
+}

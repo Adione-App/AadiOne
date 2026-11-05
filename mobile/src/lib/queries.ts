@@ -212,10 +212,14 @@ export function prefetchCategoryListing(queryClient: QueryClient, categoryId: st
   void queryClient.prefetchInfiniteQuery(options);
 }
 
-export function useProduct(id: string) {
+export function useProduct(id: string, options: { enabled?: boolean; refetchOnMount?: boolean | "always" } = {}) {
   return useQuery({
     queryKey: keys.product(id),
     queryFn: () => api.get<ProductDetailDto>(`/products/${id}`),
+    enabled: options.enabled ?? true,
+    // The product page passes "always": what can be bought may have changed
+    // since its last visit. Anyone else follows the usual staleness.
+    ...(options.refetchOnMount !== undefined ? { refetchOnMount: options.refetchOnMount } : {}),
     // Reopening a product already viewed this session (e.g. from the cart,
     // or backing out and tapping it again) should be instant, not refetched
     // from a blank loading screen.
@@ -530,7 +534,7 @@ function reconcileCart(queryClient: QueryClient): void {
   }
 }
 
-export function useCart(distanceKm: number | null = null) {
+export function useCart(distanceKm: number | null = null, options: { refetchOnMount?: boolean } = {}) {
   const queryClient = useQueryClient();
   const queryKey = [...keys.cart, distanceKm];
   // The cart belongs to an account (the server has no guest cart): a guest
@@ -548,7 +552,12 @@ export function useCart(distanceKm: number | null = null) {
     // this, an order placed on one screen could leave the cart looking
     // unchanged for up to 30s on another that had it cached (e.g. re-opening
     // the Cart tab right after checkout).
-    refetchOnMount: "always",
+    //
+    // `refetchOnMount: false` is for a passing overlay over a screen that
+    // already observes the cart (the variant sheet): opening it must not
+    // send a GET /cart — and re-render every cart reader — each time. With
+    // no cart loaded yet it still fetches.
+    refetchOnMount: options.refetchOnMount === false ? false : "always",
   });
 }
 
@@ -653,6 +662,9 @@ export function useCartMutations() {
       sellerListingId: string;
       qty?: number;
       distanceKm?: number | null;
+      /** Optional: the size and unit price the customer saw — the server refuses a mismatch. */
+      variantId?: string;
+      expectedPricePaise?: number | undefined;
     }) => {
       const distanceKm = input.distanceKm ?? null;
 
@@ -664,6 +676,8 @@ export function useCartMutations() {
       return api.post<CartDto>(`/cart/items${query}`, {
         sellerListingId: input.sellerListingId,
         qty: input.qty ?? 1,
+        ...(input.variantId ? { variantId: input.variantId } : {}),
+        ...(input.expectedPricePaise !== undefined ? { expectedPricePaise: input.expectedPricePaise } : {}),
       });
     },
 

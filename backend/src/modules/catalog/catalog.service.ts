@@ -397,6 +397,10 @@ async function toSummaryDto(
       variants[0] ??
       null,
     variantCount: variants.length,
+    // The whole visible set, so a card can show a size that can be bought
+    // and the variant sheet opens from it without another request.
+    variants,
+    optionGroups: optionGroupsOf(product.optionGroups),
     sellerCount: sellerIds.size,
     status: product.status,
     approvalStatus: product.approvalStatus,
@@ -408,13 +412,14 @@ async function toDetailDto(
   context: MappingContext,
 ): Promise<ProductDetailDto> {
   const summary = await toSummaryDto(product, context);
-  const chain = await codChainForCategory(product.categoryId);
   const byId = await getCategoryMap();
   const pathIds = await categoryPathFor(product.categoryId);
 
   return {
     ...summary,
-    optionGroups: optionGroupsOf(product.optionGroups),
+    // The summary's own list: one mapping, so a card and its product page never disagree.
+    variants: summary.variants ?? [],
+    optionGroups: summary.optionGroups ?? [],
     description: product.description,
     descriptionHi: product.descriptionHi,
     images: product.images.map((image) => ({
@@ -425,9 +430,6 @@ async function toDetailDto(
       altText: image.altText,
       displayOrder: image.displayOrder,
     })),
-    variants: product.variants
-      .map((variant) => toVariantDto(variant, chain, product.allowCod, context))
-      .filter((variant): variant is VariantDto => variant !== null),
     attributes: (product.attributes ?? {}) as ProductDetailDto["attributes"],
     categoryPath: pathIds
       .map((id) => byId.get(id))

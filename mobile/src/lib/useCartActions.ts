@@ -87,13 +87,13 @@ import { ErrorCode } from "@shared";
 import { ApiRequestError, resolveImageUrl } from "./api";
 import { flyFromCart } from "./flyToCart";
 import { showCartNotice } from "./cartNotice";
-import { revalidateStoreAvailability } from "./storeAvailability";
+import { revalidateProductAvailability, revalidateStoreAvailability } from "./storeAvailability";
 import { quantityLimitMessage, quantityLimitOf, type QuantityLimit } from "./quantityLimit";
 import { useCart, useCartMutations } from "./queries";
 import { singleCartVariantOf } from "./cartVariant";
 import { requireAuth } from "./authGate";
 import { deferredAddDecision, type DeferredCartAdd } from "./guestAccess";
-import { ownAvailableQty, ownHoldsFromCart, withOwnHold as applyOwnHold } from "./ownHolds";
+import { ownHoldsFromCart, withOwnHold as applyOwnHold } from "./ownHolds";
 import { useAuth, useLocation, useSignedIn } from "@/lib/store";
 
 const isSignedIn = (): boolean => useAuth.getState().status === "authenticated";
@@ -494,7 +494,11 @@ export function forgetCartAfterSignOut(): void {
  */
 let clearInFlightPromise: Promise<void> | null = null;
 
-export function useCartActions() {
+/**
+ * `refetchCart: false` — for the variant sheet, an overlay above a screen
+ * that already keeps the cart fresh: opening it must not refetch the cart.
+ */
+export function useCartActions(options: { refetchCart?: boolean } = {}) {
   // IMPORTANT: pass the current serviceability distance
   // so cart pricing includes the correct delivery fee.
   const serviceability = useLocation((state) => state.serviceability);
@@ -507,7 +511,7 @@ export function useCartActions() {
     isLoading: cartIsLoading,
     isError: cartIsError,
     refetch: refetchCart,
-  } = useCart(distanceKm);
+  } = useCart(distanceKm, { refetchOnMount: options.refetchCart !== false });
 
   const mutations = useCartMutations();
 
@@ -800,9 +804,8 @@ export function useCartActions() {
 
     // A first add needs the listing the tapping screen captured (see
     // CartItemSnapshot.sellerListingId); an existing line is updated by id.
-    const sellerListingId = known
-      ? null
-      : (usePendingCartStore.getState().pendingSnapshots[variantId]?.sellerListingId ?? null);
+    const firstAddSnapshot = known ? undefined : usePendingCartStore.getState().pendingSnapshots[variantId];
+    const sellerListingId = firstAddSnapshot?.sellerListingId ?? null;
     if (!known && !sellerListingId) {
       // Nothing can be sent, so nothing will ever confirm this qty — drop
       // the optimistic line instead of showing one the server never saw.
@@ -842,6 +845,10 @@ export function useCartActions() {
             sellerListingId: sellerListingId!,
             qty: targetQty,
             distanceKm: distanceKmRef.current,
+            // What the customer saw: the server refuses another size or
+            // another price instead of adding it (AddCartItemRequest).
+            variantId,
+            expectedPricePaise: firstAddSnapshot?.unitPricePaise,
           });
 
       const line = response.items.find((item) => item.variantId === variantId);
@@ -857,6 +864,18 @@ export function useCartActions() {
         // The server's own limit / stock answer ("Only 3 left in stock."):
         // the same popup as a limit caught on the device, not a banner.
         showCartNotice(err.message);
+        // Stock moved since the screen loaded: cards ask again, so they show
+        // a size that can be bought now (lib/cardVariant.ts).
+        if (err.code !== ErrorCode.QTY_LIMIT_EXCEEDED) revalidateProductAvailability();
+      } else if (
+        err instanceof ApiRequestError &&
+        (err.code === ErrorCode.PRICE_CHANGED || err.code === ErrorCode.PRODUCT_UNAVAILABLE)
+      ) {
+        // The size changed after the screen loaded (new price, hidden,
+        // removed, under review): say why, never add something else — and
+        // refresh the cards so the customer chooses again from what is real.
+        showCartNotice(err.message);
+        revalidateProductAvailability();
       } else if (err instanceof ApiRequestError && err.code === ErrorCode.SELLER_CLOSED) {
         // The store closed after this screen last asked: a short popup, never
         // a banner that would stay on Home after the customer moved on — and
@@ -981,14 +1000,7 @@ export function useCartActions() {
    */
   const ownHolds = useMemo(() => ownHoldsFromCart(cart?.items), [cart]);
 
-  /** A card's availability override: units this customer may have, or null (use the catalogue's). */
-  const ownAvailableQtyFor = useCallback(
-    (product: Pick<ProductSummaryDto, "defaultVariant">): number | null =>
-      ownAvailableQty(ownHolds, product.defaultVariant?.sellerListingId),
-    [ownHolds],
-  );
-
-  /** One catalogue variant as this customer sees it (product page, size sheet). */
+  /** One catalogue variant as this customer sees it (product cards, product page, size sheet). */
   const withOwnHold = useCallback(
     <V extends VariantDto>(variant: V): V => applyOwnHold(variant, ownHolds),
     [ownHolds],
@@ -1195,7 +1207,6 @@ export function useCartActions() {
     qtyForProduct,
     qtyForCard,
     cartVariantForCard,
-    ownAvailableQtyFor,
     withOwnHold,
     isBusy,
 

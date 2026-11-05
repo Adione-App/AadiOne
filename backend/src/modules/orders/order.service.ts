@@ -72,6 +72,7 @@ import * as inventoryService from "../inventory/inventory.service";
 import * as cartService from "../cart/cart.service";
 import * as commissionService from "../commission/commission.service";
 import * as notificationService from "../notifications/notification.service";
+import { announceNewOrderToAdmins } from "../admin/admin-order-alerts.service";
 import { withRefundAction } from "../refunds/refund-action";
 import {
   announceNewOrder,
@@ -624,6 +625,8 @@ async function notifyOrderPlaced(created: {
         },
       }),
     );
+    // The admin panel's "NEW ORDER" (badge + popup) — once per admin.
+    jobs.push(announceNewOrderToAdmins(created.id));
     for (const so of created.sellerOrders) {
       jobs.push(
         notificationService.notifySeller(so.sellerId, {

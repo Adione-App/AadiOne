@@ -145,12 +145,15 @@ export function StockStepper({
   availableQty,
   stockQty,
   busy,
+  saving = false,
   onAdjust,
 }: {
   label: string;
   availableQty: number;
   stockQty: number;
   busy: boolean;
+  /** Taps not confirmed by the server yet (they keep counting; the figure is shown dimmed). */
+  saving?: boolean;
   onAdjust: (delta: number) => void;
 }) {
   const reserved = stockQty - availableQty;
@@ -161,9 +164,9 @@ export function StockStepper({
       <button type="button" aria-label={`Decrease stock of ${label}`} disabled={busy || availableQty <= 0} onClick={() => onAdjust(-1)} className={button}>
         −
       </button>
-      <div className="min-w-[3.5rem] text-center" aria-live="polite">
-        <p className={`text-base font-bold leading-none ${availableQty === 0 ? 'text-danger-600' : 'text-gray-900'}`}>{availableQty}</p>
-        <p className="mt-0.5 text-[11px] leading-none text-gray-500">{reserved > 0 ? `+${reserved} held` : 'available'}</p>
+      <div className="min-w-[3.5rem] text-center" aria-live="polite" aria-busy={saving}>
+        <p className={`text-base font-bold leading-none ${availableQty === 0 ? 'text-danger-600' : 'text-gray-900'} ${saving ? 'opacity-70' : ''}`}>{availableQty}</p>
+        <p className="mt-0.5 text-[11px] leading-none text-gray-500">{saving ? 'saving…' : reserved > 0 ? `+${reserved} held` : 'available'}</p>
       </div>
       <button type="button" aria-label={`Increase stock of ${label}`} disabled={busy} onClick={() => onAdjust(1)} className={button}>
         +
@@ -301,7 +304,7 @@ export function ImageGallery({
       </ul>
       {!readOnly && (
         <p className="text-xs text-gray-500">
-          JPEG, PNG, WebP or AVIF, up to 5 MB each, at most {MAX_PRODUCT_IMAGES}. ★ Main is shown on your product card; ↻ replaces a photo.
+          JPEG, PNG, WebP or AVIF, at most {MAX_PRODUCT_IMAGES} — large phone photos are resized automatically before upload. ★ Main is shown on your product card; ↻ replaces a photo.
         </p>
       )}
     </section>

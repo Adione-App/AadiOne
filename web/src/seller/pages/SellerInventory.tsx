@@ -7,18 +7,19 @@
  * All changes go through POST /seller/listings/:id/stock-adjust, which the
  * server row-locks and never lets go below what is reserved for open orders
  * or below zero; the buttons here only avoid offering an obviously invalid
- * change. Everything re-reads from the server afterwards.
+ * change. Quick ±1 taps show at once and are batched per listing
+ * (stockBatch.ts); the server's answer replaces the figures, a refused batch
+ * is taken back.
  */
 
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useMutation } from '@tanstack/react-query';
 import { Button, Modal, Pill, Surface } from '@/components/ui';
-import { sellerApi, sellerErrorMessage, type SellerListingInventory } from '../sellerApi';
-import { useApplyListing, useRefreshInventory, useSellerListings } from '../sellerQueries';
+import { sellerErrorMessage, type SellerListingInventory } from '../sellerApi';
+import { useRefreshInventory, useSellerListings, useStockBatcher } from '../sellerQueries';
 import { ProductImage, StockStepper, VisibilityPill, shortDate } from '../productUi';
 import { InventoryPanel, StockHistory } from '../productSections';
-import { ChipTabs, EmptyPanel, LoadError, SearchBox, SkeletonList, toast } from '../sellerUi';
+import { ChipTabs, EmptyPanel, LoadError, SearchBox, SkeletonList } from '../sellerUi';
 
 const FILTERS = [
   { value: 'ALL', label: 'All' },
@@ -51,7 +52,6 @@ export default function SellerInventoryPage() {
   const search = params.get('q') ?? '';
   const listings = useSellerListings();
   const refresh = useRefreshInventory();
-  const apply = useApplyListing();
   const [adjusting, setAdjusting] = useState<string | null>(null);
   const [history, setHistory] = useState<string | null>(null);
 
@@ -68,24 +68,9 @@ export default function SellerInventoryPage() {
       { replace: true },
     );
 
-  const quick = useMutation({
-    mutationFn: (input: { listing: SellerListingInventory; delta: number }) =>
-      sellerApi.post<SellerListingInventory>(`/seller/listings/${input.listing.id}/stock-adjust`, { delta: input.delta }),
-    onSuccess: (listing, input) => {
-      apply(listing);
-      toast(`${input.listing.productName}: ${listing.availableQty} available.`);
-    },
-    onError: (error) => toast(sellerErrorMessage(error), false),
-    onSettled: () => refresh(),
-  });
-
-  // Listings with a change in flight (set synchronously — see Products).
-  const inFlight = useRef(new Set<string>());
-  const onAdjust = (listing: SellerListingInventory, delta: number) => {
-    if (inFlight.current.has(listing.id)) return;
-    inFlight.current.add(listing.id);
-    quick.mutate({ listing, delta }, { onSettled: () => inFlight.current.delete(listing.id) });
-  };
+  // Quick ±1: on screen at once, batched per listing, never ignored while saving.
+  const stock = useStockBatcher();
+  const onAdjust = (listing: SellerListingInventory, delta: number) => stock.adjust(listing.id, delta, listing.productName);
 
   const all = listings.data ?? [];
   const term = search.trim().toLowerCase();
@@ -98,7 +83,7 @@ export default function SellerInventoryPage() {
   const visible = searched.filter((l) => matches(l, filter)).sort((a, b) => rank(a) - rank(b) || a.productName.localeCompare(b.productName));
   const selected = all.find((l) => l.id === adjusting) ?? null;
   const historyOf = all.find((l) => l.id === history) ?? null;
-  const busy = (l: SellerListingInventory) => quick.isPending && quick.variables?.listing.id === l.id;
+  const saving = (l: SellerListingInventory) => stock.busy(l.id);
 
   return (
     <div className="space-y-4">
@@ -173,7 +158,7 @@ export default function SellerInventoryPage() {
                     ))}
                   </dl>
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <StockStepper label={l.productName} availableQty={l.availableQty} stockQty={l.stockQty} busy={busy(l)} onAdjust={(delta) => onAdjust(l, delta)} />
+                    <StockStepper label={l.productName} availableQty={l.availableQty} stockQty={l.stockQty} busy={false} saving={saving(l)} onAdjust={(delta) => onAdjust(l, delta)} />
                     <div className="flex gap-1">
                       <Button variant="soft" onClick={() => setAdjusting(l.id)}>
                         Adjust
@@ -226,19 +211,21 @@ export default function SellerInventoryPage() {
                           <button
                             type="button"
                             aria-label={`Decrease stock of ${l.productName}`}
-                            disabled={busy(l) || l.availableQty <= 0}
+                            disabled={l.availableQty <= 0}
                             onClick={() => onAdjust(l, -1)}
                             className="h-7 w-7 rounded-lg border border-gray-200 text-gray-600 outline-none focus-visible:ring-2 focus-visible:ring-brand-400 disabled:opacity-40"
                           >
                             −
                           </button>
-                          <span className={`min-w-[2.5rem] text-center font-semibold tabular-nums ${l.availableQty <= 0 ? 'text-danger-600' : l.visibility.lowStock ? 'text-warn-500' : 'text-gray-900'}`}>
+                          <span
+                            aria-busy={saving(l)}
+                            className={`min-w-[2.5rem] text-center font-semibold tabular-nums ${l.availableQty <= 0 ? 'text-danger-600' : l.visibility.lowStock ? 'text-warn-500' : 'text-gray-900'} ${saving(l) ? 'opacity-70' : ''}`}
+                          >
                             {l.availableQty}
                           </span>
                           <button
                             type="button"
                             aria-label={`Increase stock of ${l.productName}`}
-                            disabled={busy(l)}
                             onClick={() => onAdjust(l, 1)}
                             className="h-7 w-7 rounded-lg border border-gray-200 text-gray-600 outline-none focus-visible:ring-2 focus-visible:ring-brand-400 disabled:opacity-40"
                           >

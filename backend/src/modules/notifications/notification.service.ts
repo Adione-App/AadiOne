@@ -177,6 +177,24 @@ export interface NotifyContext {
   refundStage?: 'DELAYED' | 'REQUEST_RECEIVED' | 'REQUEST_APPROVED' | 'REQUEST_REJECTED';
   /** SELLER_REFUND_ISSUED after delivery: the seller's net taken from its next payout (commission reversed). */
   deductionPaise?: number;
+  /** ADMIN new order: how it is paid — COD is never called an online payment. */
+  paymentMethod?: 'COD' | 'ONLINE';
+}
+
+/**
+ * The admin panel's own wording where an event has one (the same type can
+ * reach several feeds): a new order for the shop team, never the customer's
+ * "Order placed".
+ */
+function composeFor(type: NotificationType, c: NotifyContext, audience: NotificationAudience): { title: string; body: string } {
+  if (audience === NotificationAudience.ADMIN && type === NotificationType.ORDER_PLACED) {
+    const paid = c.paymentMethod === 'COD' ? 'COD (Cash on Delivery)' : 'Online payment';
+    return {
+      title: `New order ${c.orderNumber ?? ''}`.trim(),
+      body: `${c.totalPaise !== undefined ? `${formatPaise(c.totalPaise)} · ` : ''}${paid}`,
+    };
+  }
+  return compose(type, c);
 }
 
 /**
@@ -352,8 +370,8 @@ export interface NotifyInput {
  * failure recorded for retry.
  */
 export async function notify(input: NotifyInput): Promise<boolean> {
-  const { title, body } = compose(input.type, input.context ?? {});
   const audience = input.audience ?? NotificationAudience.CUSTOMER;
+  const { title, body } = composeFor(input.type, input.context ?? {}, audience);
 
   // The ordinary repeat (a retried operation) is caught here quietly; the
   // unique index is the backstop for two truly concurrent first attempts.
@@ -415,7 +433,9 @@ export async function notifySeller(sellerId: string, input: FanOutInput): Promis
 
 /** Admin-panel users whose role holds `permission` — the same rule that
  * decides whether they may act on the event. */
-export async function notifyAdmins(permission: Permission, input: FanOutInput): Promise<void> {
+/** Every active admin-panel user holding `permission`, on their own ADMIN feed. Resolves to how many rows were NEW (0 for a repeat). */
+export async function notifyAdmins(permission: Permission, input: FanOutInput): Promise<number> {
+  let created = 0;
   try {
     const roles = ADMIN_PANEL_ROLES.filter((role) => ROLE_PERMISSIONS[role].includes(permission));
     const admins = await prisma.user.findMany({
@@ -423,11 +443,12 @@ export async function notifyAdmins(permission: Permission, input: FanOutInput): 
       select: { id: true },
     });
     for (const { id } of admins) {
-      await notify({ ...input, userId: id, audience: NotificationAudience.ADMIN });
+      if (await notify({ ...input, userId: id, audience: NotificationAudience.ADMIN })) created += 1;
     }
   } catch (error) {
     log.error({ err: error, permission, type: input.type }, 'admin notification fan-out failed');
   }
+  return created;
 }
 
 async function dispatch(notificationId: string): Promise<void> {

@@ -24,6 +24,7 @@ import * as deliveryService from "../delivery/delivery.service";
 import * as paymentService from "../payments/payment.service";
 import { allowsManualPaymentConfirmation, payments } from "../../infra/payment";
 import * as service from "./admin-order.service";
+import * as orderAlerts from "./admin-order-alerts.service";
 import * as sellerOrderService from "../orders/seller-order.service";
 import * as settlementService from "../sellers/seller-settlement.service";
 import * as orderFinancials from "../orders/order-financials.service";
@@ -134,6 +135,30 @@ adminOrderRouter.get(
       provider: payments.name,
       manualConfirmation: allowsManualPaymentConfirmation(),
     });
+  }),
+);
+
+/**
+ * GET /admin/order-alerts — this admin's unread new-order alerts (badge count
+ * + the popups' order summaries). The panel re-reads it on load, on focus,
+ * on every realtime "order.created" and on a timer, so a missed socket event
+ * is never a missed order.
+ */
+adminOrderRouter.get(
+  "/order-alerts",
+  requirePermission(Permission.ORDER_READ_ALL),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await orderAlerts.listOrderAlerts(requireUser(req).id));
+  }),
+);
+
+/** POST /admin/order-alerts/:orderId/read — this admin opened the order (read for them only). */
+adminOrderRouter.post(
+  "/order-alerts/:orderId/read",
+  requirePermission(Permission.ORDER_READ_ALL),
+  validate({ params: z.object({ orderId: uuid }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await orderAlerts.markOrderAlertRead(requireUser(req).id, req.params["orderId"] as string));
   }),
 );
 

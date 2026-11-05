@@ -18,6 +18,7 @@
  */
 
 import { getAccessToken } from "./api";
+import { prepareImageForUpload } from "./imagePrep";
 
 const API_BASE =
   (import.meta.env["VITE_API_URL"] as string | undefined) ?? "/api/v1";
@@ -40,18 +41,56 @@ export const ACCEPTED_IMAGE_TYPES = [
 ];
 
 /**
- * Validate an image before asking the backend for a presigned URL.
+ * A photo resized in the browser (imagePrep.ts) may start larger than
+ * MAX_IMAGE_BYTES — what is uploaded is checked against that limit after the
+ * resize. Past this, the file is refused before it is even decoded.
  */
-export function validateImage(file: File): string | null {
+export const MAX_SOURCE_IMAGE_BYTES = 30 * 1024 * 1024;
+
+/**
+ * Validate an image before asking the backend for a presigned URL.
+ * `resizable`: the file is resized before upload, so only the source cap applies here.
+ */
+export function validateImage(file: File, resizable = false): string | null {
   if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
     return "Please choose a JPEG, PNG, WebP or AVIF image.";
   }
 
-  if (file.size > MAX_IMAGE_BYTES) {
-    return "Images must be 5 MB or smaller.";
+  if (resizable ? file.size > MAX_SOURCE_IMAGE_BYTES : file.size > MAX_IMAGE_BYTES) {
+    return resizable ? "Images must be 30 MB or smaller." : "Images must be 5 MB or smaller.";
   }
 
   return null;
+}
+
+export interface UploadOptions {
+  /** Resize / re-encode in the browser first (product photos — imagePrep.ts). */
+  optimize?: boolean;
+  /** Upload progress of the bytes, 0..1. */
+  onProgress?: (fraction: number) => void;
+}
+
+/** PUT with upload progress (fetch has none). Resolves to the HTTP status; rejects on a network error. */
+function putWithProgress(
+  url: string,
+  headers: Record<string, string>,
+  body: Blob,
+  onProgress?: (fraction: number) => void,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", url);
+    for (const [name, value] of Object.entries(headers)) request.setRequestHeader(name, value);
+    if (onProgress) {
+      request.upload.onprogress = (event) => {
+        if (event.lengthComputable && event.total > 0) onProgress(Math.min(1, event.loaded / event.total));
+      };
+    }
+    request.onload = () => resolve(request.status);
+    request.onerror = () => reject(new Error("The image upload failed — check your connection and try again."));
+    request.onabort = () => reject(new Error("The image upload was cancelled."));
+    request.send(body);
+  });
 }
 
 /**
@@ -118,15 +157,25 @@ export async function uploadProductImage(
   }) => Promise<PresignedUpload>,
   /** The session that owns the upload — the admin one unless a caller (the seller panel) passes its own. */
   getToken: () => string | null = getAccessToken,
+  options: UploadOptions = {},
 ): Promise<string> {
   /* ---------------------------------------------------------------------- */
   /* 1. Validate image                                                      */
   /* ---------------------------------------------------------------------- */
 
-  const invalid = validateImage(file);
+  const invalid = validateImage(file, options.optimize === true);
 
   if (invalid) {
     throw new Error(invalid);
+  }
+
+  if (options.optimize) {
+    file = await prepareImageForUpload(file);
+
+    // What is actually sent must fit the server's limit.
+    if (file.size > MAX_IMAGE_BYTES) {
+      throw new Error("This image is still over 5 MB after resizing. Please choose a smaller picture.");
+    }
   }
 
   /* ---------------------------------------------------------------------- */
@@ -168,33 +217,29 @@ export async function uploadProductImage(
   /* 5. Upload directly to storage                                         */
   /* ---------------------------------------------------------------------- */
 
-  const response = await fetch(target.uploadUrl, {
-    method: "PUT",
-
-    /**
-     * Do not manually set Content-Type here.
-     *
-     * It is already supplied by target.headers and MUST match the
-     * value that was signed by the backend.
-     */
-    headers,
-
-    body: file,
-  });
+  /**
+   * Do not manually set Content-Type here.
+   *
+   * It is already supplied by target.headers and MUST match the
+   * value that was signed by the backend.
+   */
+  const status = options.onProgress
+    ? await putWithProgress(target.uploadUrl, headers, file, options.onProgress)
+    : (await fetch(target.uploadUrl, { method: "PUT", headers, body: file })).status;
 
   /* ---------------------------------------------------------------------- */
   /* 6. Handle upload errors                                                */
   /* ---------------------------------------------------------------------- */
 
-  if (!response.ok) {
-    if (response.status === 401) {
+  if (status < 200 || status >= 300) {
+    if (status === 401) {
       throw new Error(
         "The upload was rejected as unauthenticated. Check that API_BASE_URL in the " +
           "backend .env matches the address this panel talks to, then restart the API.",
       );
     }
 
-    if (response.status === 403) {
+    if (status === 403) {
       throw new Error(
         "The image upload was rejected by storage (403). " +
           "The presigned upload URL may be invalid or expired.",
@@ -202,7 +247,7 @@ export async function uploadProductImage(
     }
 
     throw new Error(
-      `Could not upload the image (${response.status}). Please try again.`,
+      `Could not upload the image (${status}). Please try again.`,
     );
   }
 

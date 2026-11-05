@@ -19,6 +19,8 @@ interface OrderEvent {
 interface Handlers {
   onNewOrder?: (event: OrderEvent) => void;
   onStatusChanged?: (event: OrderEvent) => void;
+  /** Every (re)connect — re-read whatever an event missed while offline. */
+  onConnect?: () => void;
 }
 
 let socket: Socket | null = null;
@@ -74,9 +76,11 @@ export function useOrderSocket(handlers: Handlers, storeId?: string): void {
     instance.on('order.created', handleCreated);
     instance.on('order.status_changed', handleChanged);
     instance.on('connect_error', handleConnectError);
-    instance.on('connect', () => {
+    const handleConnect = () => {
       if (storeId) instance.emit('store:subscribe', storeId);
-    });
+      ref.current.onConnect?.();
+    };
+    instance.on('connect', handleConnect);
 
     if (instance.connected && storeId) instance.emit('store:subscribe', storeId);
 
@@ -84,6 +88,7 @@ export function useOrderSocket(handlers: Handlers, storeId?: string): void {
       instance.off('order.created', handleCreated);
       instance.off('order.status_changed', handleChanged);
       instance.off('connect_error', handleConnectError);
+      instance.off('connect', handleConnect);
     };
   }, [storeId]);
 }

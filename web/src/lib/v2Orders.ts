@@ -118,6 +118,27 @@ export function orderBadgeTabs(manualPaymentConfirmation: boolean): { key: V2Adm
   ];
 }
 
+/** The tab an order of this status is listed under (a "View order" link opens it there). */
+export function adminOrderTabOf(status: string): V2AdminOrderTab {
+  switch (status) {
+    case 'PENDING_PAYMENT':
+      return 'PAYMENT_PENDING';
+    case 'READY_FOR_PICKUP':
+      return 'READY_FOR_PICKUP';
+    case 'PICKED_UP':
+    case 'OUT_FOR_DELIVERY':
+      return 'OUT_FOR_DELIVERY';
+    case 'DELIVERED':
+      return 'COMPLETED';
+    case 'CANCELLED':
+    case 'REFUNDED':
+    case 'PARTIALLY_REFUNDED':
+      return 'CANCELLED';
+    default:
+      return 'PROCESSING';
+  }
+}
+
 /** The tab to open: the requested one (e.g. a Dashboard link's ?tab=) when shown, else Processing. */
 export function resolveAdminOrderTab(requested: string | null | undefined, manualPaymentConfirmation: boolean): V2AdminOrderTab {
   return visibleAdminOrderTabs(manualPaymentConfirmation).find((item) => item.key === requested)?.key ?? 'PROCESSING';

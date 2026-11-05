@@ -26,7 +26,16 @@ import { ApiRequestError } from '@/lib/api';
 import { imageSrc } from '@/lib/image';
 import { validateImage } from '@/lib/upload';
 import { Button, EmptyState, ErrorBanner, Pill } from '@/components/ui';
-import { MAX_PRODUCT_IMAGES, sellerApi, sellerErrorMessage, uploadSellerImage, type SellerProductInventory } from '../sellerApi';
+import {
+  MAX_PRODUCT_IMAGES,
+  failedUploadsText,
+  imageUploadLabel,
+  sellerApi,
+  sellerErrorMessage,
+  uploadSellerImage,
+  uploadSellerProductImages,
+  type SellerProductInventory,
+} from '../sellerApi';
 import { sellerKeys, useSellerAvailability } from '../sellerQueries';
 import {
   ImageGallery,
@@ -120,8 +129,10 @@ export default function SellerProductDetailPage() {
     setNotice(null);
     setImageBusy(label);
     try {
-      await action();
-      await refresh();
+      // Image calls answer with the product: its gallery shows at once.
+      const saved = await action();
+      if (saved && typeof saved === 'object' && 'images' in saved) showImages(saved as SellerProductDto);
+      void refresh();
     } catch (error) {
       setNotice({ ok: false, text: error instanceof ApiRequestError ? sellerErrorMessage(error) : (error as Error).message });
     } finally {
@@ -129,18 +140,40 @@ export default function SellerProductDetailPage() {
     }
   }
 
+  /** The gallery from an image call's answer — on screen at once; the full re-read follows in the background. */
+  const showImages = (saved: SellerProductDto) =>
+    queryClient.setQueryData<SellerProductInventory>(key, (old) => (old ? { ...old, images: saved.images } : old));
+
+  /**
+   * New photos: resized in the browser and uploaded together (up to 3 at a
+   * time, with progress), then attached one by one in the order chosen — a
+   * photo shows as added only once the server has stored it. One that fails
+   * never stops the others; it is named so the seller can pick it again.
+   */
   async function addImages(files: FileList | null): Promise<void> {
+    if (imageBusy !== null) return;
     const chosen = Array.from(files ?? []).slice(0, MAX_PRODUCT_IMAGES - product.images.length);
+    if (chosen.length === 0) return;
     for (const file of chosen) {
-      const invalid = validateImage(file);
+      const invalid = validateImage(file, true);
       if (invalid) return setNotice({ ok: false, text: `${file.name}: ${invalid}` });
     }
-    await imageAction('Uploading…', async () => {
-      for (const file of chosen) {
-        const imageKey = await uploadSellerImage(file);
-        await sellerApi.post(`/seller/products/${id}/images`, { key: imageKey });
+    setNotice(null);
+    setImageBusy(imageUploadLabel(0, chosen.length));
+    try {
+      const results = await uploadSellerProductImages(chosen, (fraction) => setImageBusy(imageUploadLabel(fraction, chosen.length)));
+      setImageBusy(imageUploadLabel(1, chosen.length));
+      for (const result of results) {
+        if (result.ok) showImages(await sellerApi.post<SellerProductDto>(`/seller/products/${id}/images`, { key: result.key }));
       }
-    });
+      const failed = results.filter((result) => !result.ok);
+      if (failed.length > 0) setNotice({ ok: false, text: failedUploadsText(failed) });
+    } catch (error) {
+      setNotice({ ok: false, text: error instanceof ApiRequestError ? sellerErrorMessage(error) : (error as Error).message });
+    } finally {
+      setImageBusy(null);
+      void refresh();
+    }
   }
 
   const order = (next: string[]) => imageAction('Saving…', () => sellerApi.put(`/seller/products/${id}/images/order`, { imageIds: next }));
@@ -239,11 +272,15 @@ export default function SellerProductDetailPage() {
           onMove={(index, direction) => void order(moved(ids, index, index + direction))}
           onRemove={(index) => void imageAction('Removing…', () => sellerApi.delete(`/seller/products/${id}/images/${ids[index]}`))}
           onReplace={(index, file) => {
-            const invalid = validateImage(file);
+            const invalid = validateImage(file, true);
             if (invalid) return setNotice({ ok: false, text: `${file.name}: ${invalid}` });
-            void imageAction('Replacing…', async () => {
-              const imageKey = await uploadSellerImage(file);
-              await sellerApi.patch(`/seller/products/${id}/images/${ids[index]}`, { key: imageKey });
+            void imageAction(imageUploadLabel(0, 1), async () => {
+              const imageKey = await uploadSellerImage(file, {
+                optimize: true,
+                onProgress: (fraction) => setImageBusy(imageUploadLabel(fraction, 1)),
+              });
+              setImageBusy('Replacing…');
+              showImages(await sellerApi.patch<SellerProductDto>(`/seller/products/${id}/images/${ids[index]}`, { key: imageKey }));
             });
           }}
         />

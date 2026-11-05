@@ -104,13 +104,101 @@ function toDto(listing: ListingRow): SellerListingInventoryDto {
   };
 }
 
+/** LISTING_SELECT through Prisma — one query per relation (6). Kept for the bulk list and its type. */
 function loadOwnListing(listingId: string) {
   return prisma.sellerListing.findUnique({ where: { id: listingId }, select: LISTING_SELECT });
 }
 
+interface ListingSqlRow {
+  id: string;
+  seller_id: string;
+  variant_id: string;
+  mrp_paise: number;
+  price_paise: number;
+  stock_qty: number;
+  reserved_qty: number;
+  is_available: boolean;
+  tracks_stock: boolean;
+  low_stock_threshold: number;
+  max_qty_per_order: number;
+  updated_at: Date;
+  s_is_active: boolean;
+  s_deleted_at: Date | null;
+  s_onboarding_status: string;
+  v_variant_name: string;
+  v_status: string;
+  v_deleted_at: Date | null;
+  p_id: string;
+  p_name: string;
+  p_status: string;
+  p_deleted_at: Date | null;
+  p_approval_status: string;
+  p_submitted_by: string | null;
+  c_id: string;
+  c_name: string;
+  img_url: string | null;
+  img_thumb: string | null;
+}
+
+/**
+ * The same row as LISTING_SELECT in ONE query (joins + the first image) —
+ * every stock / price change answers with it. In production each query is a
+ * network round trip to the database, so this one replaces six.
+ */
+async function loadListingRow(listingId: string): Promise<ListingRow | null> {
+  const [r] = await prisma.$queryRaw<ListingSqlRow[]>`
+    SELECT l.id, l.seller_id, l.variant_id, l.mrp_paise, l.price_paise, l.stock_qty, l.reserved_qty,
+           l.is_available, l.tracks_stock, l.low_stock_threshold, l.max_qty_per_order, l.updated_at,
+           s.is_active AS s_is_active, s.deleted_at AS s_deleted_at, s.onboarding_status::text AS s_onboarding_status,
+           v.variant_name AS v_variant_name, v.status::text AS v_status, v.deleted_at AS v_deleted_at,
+           p.id AS p_id, p.name AS p_name, p.status::text AS p_status, p.deleted_at AS p_deleted_at,
+           p.approval_status::text AS p_approval_status, p.submitted_by_seller_id AS p_submitted_by,
+           c.id AS c_id, c.name AS c_name, img.url AS img_url, img.thumb_url AS img_thumb
+      FROM seller_listings l
+      JOIN sellers s ON s.id = l.seller_id
+      JOIN product_variants v ON v.id = l.variant_id
+      JOIN products p ON p.id = v.product_id
+      JOIN categories c ON c.id = p.category_id
+      LEFT JOIN LATERAL (
+        SELECT pi.url, pi.thumb_url FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.display_order ASC LIMIT 1
+      ) img ON true
+     WHERE l.id = ${listingId}::uuid`;
+  if (!r) return null;
+  return {
+    id: r.id,
+    sellerId: r.seller_id,
+    variantId: r.variant_id,
+    mrpPaise: r.mrp_paise,
+    pricePaise: r.price_paise,
+    stockQty: r.stock_qty,
+    reservedQty: r.reserved_qty,
+    isAvailable: r.is_available,
+    tracksStock: r.tracks_stock,
+    lowStockThreshold: r.low_stock_threshold,
+    maxQtyPerOrder: r.max_qty_per_order,
+    updatedAt: r.updated_at,
+    seller: { isActive: r.s_is_active, deletedAt: r.s_deleted_at, onboardingStatus: r.s_onboarding_status },
+    variant: {
+      variantName: r.v_variant_name,
+      status: r.v_status,
+      deletedAt: r.v_deleted_at,
+      product: {
+        id: r.p_id,
+        name: r.p_name,
+        status: r.p_status,
+        deletedAt: r.p_deleted_at,
+        approvalStatus: r.p_approval_status,
+        submittedBySellerId: r.p_submitted_by,
+        category: { id: r.c_id, name: r.c_name },
+        images: r.img_url !== null ? [{ url: r.img_url, thumbUrl: r.img_thumb }] : [],
+      },
+    },
+  } as ListingRow;
+}
+
 /** This seller's listing, or NOT_FOUND — another seller's looks exactly like a missing one. */
 async function loadOwnListingOrThrow(sellerId: string, listingId: string): Promise<ListingRow> {
-  const listing = await loadOwnListing(listingId);
+  const listing = await loadListingRow(listingId);
   if (!listing || listing.sellerId !== sellerId) {
     throw new AppError(ErrorCode.NOT_FOUND, { message: 'Listing not found.' });
   }
@@ -188,7 +276,7 @@ export async function updateOwnListing(
     });
   }
 
-  return toDto((await loadOwnListing(listingId))!);
+  return toDto((await loadListingRow(listingId))!);
 }
 
 /**
@@ -203,9 +291,13 @@ export async function adjustOwnStock(
   actorUserId: string,
   note?: string | null,
 ) {
-  await loadOwnListingOrThrow(sellerId, listingId);
-  await inventoryService.adjustStock(listingId, delta, actorUserId, note?.trim() ? `seller: ${note.trim()}` : 'seller stock +/-');
-  return toDto((await loadOwnListing(listingId))!);
+  // Ownership is checked by the row lock itself (seller_id in the FOR UPDATE):
+  // another seller's listing is NOT_FOUND, exactly as before — without a
+  // separate read of the whole listing first.
+  await inventoryService.adjustStock(listingId, delta, actorUserId, note?.trim() ? `seller: ${note.trim()}` : 'seller stock +/-', {
+    sellerId,
+  });
+  return toDto((await loadListingRow(listingId))!);
 }
 
 export interface StockMovementDto {

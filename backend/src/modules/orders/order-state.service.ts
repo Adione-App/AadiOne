@@ -43,6 +43,7 @@ import { prisma, runInTransaction, type Tx } from '../../infra/db/prisma';
 import { moduleLogger } from '../../common/logger';
 import * as inventoryService from '../inventory/inventory.service';
 import * as notificationService from '../notifications/notification.service';
+import { announceNewOrderToAdmins } from '../admin/admin-order-alerts.service';
 import * as referralService from '../referrals/referral.service';
 import * as deliveryService from '../delivery/delivery.service';
 import { releaseCouponRedemptions } from './coupon-release';
@@ -878,6 +879,11 @@ async function dispatchOrderSideEffects(
       });
     }
   }
+
+  // The admin panel's "NEW ORDER" for an online order: only now that its
+  // payment is verified (a COD order is announced at placement instead).
+  // Once per admin per order, whichever path got here (admin-order-alerts.service).
+  if (announceNew) await announceNewOrderToAdmins(order.id);
 }
 
 /**

@@ -7,12 +7,13 @@
  * mutation refreshes it once for every screen.
  */
 
-import { useEffect, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { SellerLifecycleDto } from '@shared';
 import {
   SELLER_QUERY_ROOT,
   sellerApi,
+  sellerErrorMessage,
   toEarningsSummary,
   type SellerActivityItem,
   type SellerAvailability,
@@ -22,6 +23,8 @@ import {
   type SellerProductInventory,
   type SellerTodayEarnings,
 } from './sellerApi';
+import { StockBatcher, confirmProduct, shiftFigures, shiftProduct, withUnsent } from './stockBatch';
+import { toast } from './sellerUi';
 
 export const sellerKeys = {
   all: [SELLER_QUERY_ROOT] as const,
@@ -146,36 +149,113 @@ export function useRefreshInventory() {
 }
 
 /**
- * Puts a listing the SERVER just returned (e.g. from stock-adjust) into the
- * cached lists at once, so the figures on screen match the confirmation
- * straight away; the follow-up refresh still re-reads everything.
+ * Marks everything a stock change affects as out of date WITHOUT re-reading
+ * it now: the screen already shows the server's answer (useApplyListing), so
+ * the lists are re-read only when next opened or refocused — not three full
+ * list downloads after every tap.
+ */
+export function useMarkInventoryStale() {
+  const queryClient = useQueryClient();
+  return () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: sellerKeys.products, refetchType: 'none' }),
+      queryClient.invalidateQueries({ queryKey: sellerKeys.listings, refetchType: 'none' }),
+      queryClient.invalidateQueries({ queryKey: sellerKeys.activity, refetchType: 'none' }),
+    ]);
+}
+
+/** Every cached copy of one listing — lists, the listing page, product rows and product pages (default and size listings). */
+function patchListingCaches(
+  queryClient: QueryClient,
+  listingId: string,
+  onListing: (listing: SellerListingInventory) => SellerListingInventory,
+  onProduct: (product: SellerProductInventory) => SellerProductInventory,
+): void {
+  queryClient.setQueryData<SellerListingInventory[]>(sellerKeys.listings, (old) =>
+    old?.map((row) => (row.id === listingId ? onListing(row) : row)),
+  );
+  queryClient.setQueryData<SellerListingInventory>([...sellerKeys.listings, listingId], (old) => (old ? onListing(old) : old));
+  // The products list and every product page ([...products, id]).
+  for (const [key, data] of queryClient.getQueriesData<SellerProductInventory[] | SellerProductInventory>({ queryKey: sellerKeys.products })) {
+    if (Array.isArray(data)) queryClient.setQueryData(key, data.map(onProduct));
+    else if (data && typeof data === 'object' && 'variants' in data) queryClient.setQueryData(key, onProduct(data));
+  }
+}
+
+/**
+ * Puts a listing the SERVER just returned (e.g. from stock-adjust) into every
+ * cached copy at once — lists, the listing page and product pages, including
+ * a size's listing — so the figures on screen match the confirmation.
  */
 export function useApplyListing() {
   const queryClient = useQueryClient();
-  return (listing: SellerListingInventory) => {
-    queryClient.setQueryData<SellerListingInventory[]>(sellerKeys.listings, (old) =>
-      old?.map((row) => (row.id === listing.id ? listing : row)),
+  return (listing: SellerListingInventory) =>
+    patchListingCaches(
+      queryClient,
+      listing.id,
+      (row) => ({ ...row, ...listing }),
+      (product) => confirmProduct(product, listing),
     );
-    queryClient.setQueryData<SellerProductInventory[]>(sellerKeys.products, (old) =>
-      old?.map((product) =>
-        product.listing?.id === listing.id
-          ? {
-              ...product,
-              listing: {
-                ...product.listing,
-                stockQty: listing.stockQty,
-                reservedQty: listing.reservedQty,
-                availableQty: listing.availableQty,
-                isAvailable: listing.isAvailable,
-                pricePaise: listing.pricePaise,
-                mrpPaise: listing.mrpPaise,
-                updatedAt: listing.updatedAt,
-              },
-              visibility: listing.visibility,
-            }
-          : product,
-      ),
+}
+
+/**
+ * Stock −/+ taps (stockBatch.ts): every tap shows at once, taps on one listing
+ * are added up and sent as one change, one request per listing at a time, and
+ * a refused batch is taken back. `adjust(listingId, delta, label)`;
+ * `busy(listingId)` while taps of it are not confirmed yet.
+ */
+export function useStockBatcher() {
+  const queryClient = useQueryClient();
+  const markStale = useMarkInventoryStale();
+  const labels = useRef(new Map<string, string>());
+  const [, setVersion] = useState(0);
+  const rerender = () => setVersion((v) => v + 1);
+
+  const shift = (listingId: string, delta: number) =>
+    patchListingCaches(
+      queryClient,
+      listingId,
+      (row) => shiftFigures(row, delta),
+      (product) => shiftProduct(product, listingId, delta),
     );
+
+  const batcher = useRef<StockBatcher<SellerListingInventory> | null>(null);
+  batcher.current ??= new StockBatcher<SellerListingInventory>({
+    send: (listingId, delta) => sellerApi.post<SellerListingInventory>(`/seller/listings/${listingId}/stock-adjust`, { delta }),
+    onConfirmed: (listingId, listing, unsent) => {
+      const shown = withUnsent(listing, unsent);
+      patchListingCaches(
+        queryClient,
+        listingId,
+        (row) => ({ ...row, ...shown }),
+        (product) => confirmProduct(product, shown),
+      );
+      void markStale();
+      void queryClient.invalidateQueries({ queryKey: [...sellerKeys.listings, listingId, 'movements'] });
+      if (unsent === 0) toast(`${labels.current.get(listingId) ?? listing.productName}: ${listing.availableQty} available.`);
+      rerender();
+    },
+    onFailed: (listingId, error, undo) => {
+      shift(listingId, -undo);
+      // The server is the authority: re-read the real figures.
+      void queryClient.invalidateQueries({ queryKey: sellerKeys.products });
+      void queryClient.invalidateQueries({ queryKey: sellerKeys.listings });
+      toast(sellerErrorMessage(error), false);
+      rerender();
+    },
+  });
+
+  // Leaving the page sends what is waiting — a tap is never dropped.
+  useEffect(() => () => batcher.current?.flushAll(), []);
+
+  return {
+    adjust: (listingId: string, delta: number, label: string) => {
+      labels.current.set(listingId, label);
+      shift(listingId, delta);
+      batcher.current!.add(listingId, delta);
+      rerender();
+    },
+    busy: (listingId: string) => batcher.current!.isBusy(listingId),
   };
 }
 

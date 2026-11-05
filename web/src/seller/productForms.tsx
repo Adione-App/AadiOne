@@ -23,8 +23,11 @@ import {
   PRODUCT_LIMITS,
   UNIT_OPTIONS,
   sellerApi,
+  failedUploadsText,
+  imageUploadLabel,
   sellerErrorMessage,
   uploadSellerImage,
+  uploadSellerProductImages,
   type CreateSellerListingRequest,
   type CreateSellerProductRequest,
   type CreatedSellerProduct,
@@ -156,7 +159,7 @@ export function ProductFormModal({
     if (chosen.length > room) setImageError(`A product can have at most ${MAX_PRODUCT_IMAGES} images — only the first ${Math.max(0, room)} were added.`);
     const accepted: File[] = [];
     for (const file of chosen.slice(0, Math.max(0, room))) {
-      const invalid = validateImage(file);
+      const invalid = validateImage(file, true);
       if (invalid) {
         setImageError(`${file.name}: ${invalid}`);
         continue;
@@ -185,27 +188,35 @@ export function ProductFormModal({
     }
   }
 
+  // Resized in the browser, uploaded together (with progress), attached in the order chosen.
   const addImages = (files: File[]) =>
-    run('Uploading…', async () => {
-      let latest: SellerProductDto | undefined;
-      for (const file of files) {
-        const key = await uploadSellerImage(file);
-        latest = await sellerApi.post<SellerProductDto>(`/seller/products/${saved!.id}/images`, { key });
-        setSaved(latest);
-      }
-      return latest;
-    });
+    files.length === 0
+      ? Promise.resolve()
+      : run(imageUploadLabel(0, files.length), async () => {
+          const results = await uploadSellerProductImages(files, (fraction) => setImageBusy(imageUploadLabel(fraction, files.length)));
+          setImageBusy(imageUploadLabel(1, files.length));
+          let latest: SellerProductDto | undefined;
+          for (const result of results) {
+            if (!result.ok) continue;
+            latest = await sellerApi.post<SellerProductDto>(`/seller/products/${saved!.id}/images`, { key: result.key });
+            setSaved(latest);
+          }
+          const failed = results.filter((result) => !result.ok);
+          if (failed.length > 0) setImageError(failedUploadsText(failed));
+          return latest;
+        });
 
   function replace(index: number, file: File): void {
-    const invalid = validateImage(file);
+    const invalid = validateImage(file, true);
     if (invalid) return setImageError(`${file.name}: ${invalid}`);
     if (!saved) {
       setPendingFiles((list) => list.map((item, i) => (i === index ? { ...item, file, preview: preview(file) } : item)));
       return;
     }
     const imageId = saved.images[index]!.id;
-    void run('Replacing…', async () => {
-      const key = await uploadSellerImage(file);
+    void run(imageUploadLabel(0, 1), async () => {
+      const key = await uploadSellerImage(file, { optimize: true, onProgress: (fraction) => setImageBusy(imageUploadLabel(fraction, 1)) });
+      setImageBusy('Replacing…');
       return sellerApi.patch<SellerProductDto>(`/seller/products/${saved.id}/images/${imageId}`, { key });
     });
   }
@@ -314,20 +325,36 @@ export function ProductFormModal({
       );
       return;
     }
-    await queryClient.invalidateQueries({ queryKey: sellerKeys.products });
+    void queryClient.invalidateQueries({ queryKey: sellerKeys.products });
 
-    // Images in gallery order, so the ★ Main one is uploaded first.
-    for (const pending of pendingFiles) {
+    // Photos resized and uploaded together (with progress), then attached in
+    // gallery order, so the ★ Main one is attached first.
+    if (pendingFiles.length > 0) {
+      const count = pendingFiles.length;
+      setImageBusy(imageUploadLabel(0, count));
+      let problemText: string | null = null;
       try {
-        const key = await uploadSellerImage(pending.file);
-        await sellerApi.post(`/seller/products/${created.id}/images`, { key });
+        const results = await uploadSellerProductImages(
+          pendingFiles.map((pending) => pending.file),
+          (fraction) => setImageBusy(imageUploadLabel(fraction, count)),
+        );
+        setImageBusy(imageUploadLabel(1, count));
+        for (const result of results) {
+          if (result.ok) await sellerApi.post(`/seller/products/${created.id}/images`, { key: result.key });
+        }
+        const failed = results.filter((result) => !result.ok);
+        if (failed.length > 0) problemText = failedUploadsText(failed);
       } catch (error) {
+        problemText = error instanceof ApiRequestError ? sellerErrorMessage(error) : (error as Error).message;
+      } finally {
+        setImageBusy(null);
+      }
+      if (problemText !== null) {
         setStep(null);
         await queryClient.invalidateQueries({ queryKey: sellerKeys.products });
-        const reason = error instanceof ApiRequestError ? sellerErrorMessage(error) : (error as Error).message;
         onDone({
           ok: false,
-          text: `"${request.name}" was saved as a draft, but an image could not be uploaded (${reason}). Open the product to add images before you submit it for approval.`,
+          text: `"${request.name}" was saved as a draft, but not every image could be added (${problemText}). Open the product to add images before you submit it for approval.`,
         });
         return;
       }
@@ -450,7 +477,7 @@ export function ProductFormModal({
               Save &amp; Add Another
             </Button>
             <Button onClick={() => void create(false)} disabled={busy || loadingSource || noCategories} className="w-full sm:w-auto">
-              {step === 'creating' ? 'Saving…' : 'Save Product'}
+              {step === 'creating' ? (imageBusy ?? 'Saving…') : 'Save Product'}
             </Button>
           </div>
         ) : (

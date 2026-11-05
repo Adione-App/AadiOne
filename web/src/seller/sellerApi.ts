@@ -12,7 +12,8 @@
 import type { FoodDiet, ProductOptionGroupDto, SellerProductDto, UnitType } from '@shared';
 import type { VariantSetRequest } from './variantEditor';
 import { createApiClient, ApiRequestError } from '@/lib/api';
-import { uploadProductImage, type PresignedUpload } from '@/lib/upload';
+import { uploadProductImage, type PresignedUpload, type UploadOptions } from '@/lib/upload';
+import { mapLimit } from '@/lib/mapLimit';
 
 export const sellerClient = createApiClient('adione.seller.refresh');
 export const sellerApi = sellerClient.api;
@@ -310,12 +311,60 @@ export type UpdateSellerProductRequest = Partial<Omit<CreateSellerProductRequest
  * /seller/uploads/presign, then the bytes) with the seller session, and
  * returns the key to attach with POST /seller/products/:id/images.
  */
-export function uploadSellerImage(file: File): Promise<string> {
+export function uploadSellerImage(file: File, options: UploadOptions = {}): Promise<string> {
   return uploadProductImage(
     file,
     (body) => sellerApi.post<PresignedUpload>('/seller/uploads/presign', body),
     () => sellerClient.getAccessToken(),
+    options,
   );
+}
+
+/** Product photos upload at once, this many at a time. */
+export const PARALLEL_IMAGE_UPLOADS = 3;
+
+export type ImageUploadResult = { ok: true; file: File; key: string } | { ok: false; file: File; error: unknown };
+
+/**
+ * Product photos: each resized in the browser (lib/imagePrep.ts) and uploaded,
+ * up to PARALLEL_IMAGE_UPLOADS at a time. One result per file, in the order of
+ * `files` — the caller attaches the uploaded ones in the order the seller
+ * chose; a failed one never stops the others. `onProgress` gets the bytes sent
+ * over all files, 0..1. Nothing is attached here: an image counts as added
+ * only once its attach call has stored it.
+ */
+export function uploadSellerProductImages(files: readonly File[], onProgress?: (fraction: number) => void): Promise<ImageUploadResult[]> {
+  const sent = files.map(() => 0);
+  const report = () => onProgress?.(sent.reduce((sum, value) => sum + value, 0) / Math.max(1, files.length));
+  return mapLimit(files, PARALLEL_IMAGE_UPLOADS, async (file, index): Promise<ImageUploadResult> => {
+    try {
+      const key = await uploadSellerImage(file, {
+        optimize: true,
+        onProgress: (fraction) => {
+          sent[index] = fraction;
+          report();
+        },
+      });
+      return { ok: true, file, key };
+    } catch (error) {
+      return { ok: false, file, error };
+    } finally {
+      sent[index] = 1;
+      report();
+    }
+  });
+}
+
+/** "Uploading 3 photos… 40%" while bytes are on their way; then the server stores them. */
+export function imageUploadLabel(fraction: number, count: number): string {
+  if (fraction >= 1) return count === 1 ? 'Saving photo…' : 'Saving photos…';
+  return `Uploading ${count === 1 ? 'photo' : `${count} photos`}… ${Math.round(fraction * 100)}%`;
+}
+
+/** Why some photos were not added — each file named — and how to retry. */
+export function failedUploadsText(failed: readonly { file: File; error: unknown }[]): string {
+  const reasons = failed.map(({ file, error }) => `${file.name}: ${error instanceof ApiRequestError ? sellerErrorMessage(error) : (error as Error).message}`);
+  return `${failed.length === 1 ? 'A photo was' : `${failed.length} photos were`} not added — ${reasons.join('; ')}. Choose ${failed.length === 1 ? 'it' : 'them'} again to retry.`;
 }
 
 /** The restaurant's own photos: cover = the Restaurant Image (Food list card); menu = the Menu Cover Image atop its menu page. */

@@ -30,8 +30,11 @@ import {
   MAX_PRODUCT_IMAGES,
   PRODUCT_LIMITS,
   sellerApi,
+  failedUploadsText,
+  imageUploadLabel,
   sellerErrorMessage,
   uploadSellerImage,
+  uploadSellerProductImages,
   type CreatedSellerProduct,
   type SellerCatalogCategories,
   type SellerProductInventory,
@@ -122,17 +125,24 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
     const room = MAX_PRODUCT_IMAGES - (item ? images.length : pendingFiles.length);
     const accepted: File[] = [];
     for (const file of Array.from(files ?? []).slice(0, Math.max(0, room))) {
-      const invalid = validateImage(file);
+      const invalid = validateImage(file, true);
       if (invalid) setImageError(`${file.name}: ${invalid}`);
       else accepted.push(file);
     }
     if (item) {
-      void imageAction('Uploading…', async () => {
+      if (accepted.length === 0) return;
+      // Resized in the browser, uploaded together (with progress), attached in the order chosen.
+      void imageAction(imageUploadLabel(0, accepted.length), async () => {
+        const results = await uploadSellerProductImages(accepted, (fraction) => setImageBusy(imageUploadLabel(fraction, accepted.length)));
+        setImageBusy(imageUploadLabel(1, accepted.length));
         let latest: SellerProductInventory | undefined;
-        for (const file of accepted) {
-          const key = await uploadSellerImage(file);
-          latest = await sellerApi.post<SellerProductInventory>(`/seller/products/${item.id}/images`, { key });
+        for (const result of results) {
+          if (!result.ok) continue;
+          latest = await sellerApi.post<SellerProductInventory>(`/seller/products/${item.id}/images`, { key: result.key });
+          setImages(latest.images);
         }
+        const failed = results.filter((result) => !result.ok);
+        if (failed.length > 0) throw new Error(failedUploadsText(failed));
         return latest ?? item;
       });
     } else {
@@ -173,11 +183,35 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
         ...(set ? { optionGroups: set.optionGroups, variants: set.variants } : { pricePaise: toPaise(price)!, isAvailable: available }),
         diet: diet || null,
       });
-      for (const pending of pendingFiles) {
-        const key = await uploadSellerImage(pending.file);
-        await sellerApi.post(`/seller/products/${created.id}/images`, { key });
+      if (pendingFiles.length > 0) {
+        const count = pendingFiles.length;
+        let imageProblem: string | null = null;
+        setImageBusy(imageUploadLabel(0, count));
+        try {
+          const results = await uploadSellerProductImages(
+            pendingFiles.map((pending) => pending.file),
+            (fraction) => setImageBusy(imageUploadLabel(fraction, count)),
+          );
+          setImageBusy(imageUploadLabel(1, count));
+          // In gallery order, so the main photo is attached first.
+          for (const result of results) {
+            if (result.ok) await sellerApi.post(`/seller/products/${created.id}/images`, { key: result.key });
+          }
+          const failed = results.filter((result) => !result.ok);
+          if (failed.length > 0) imageProblem = failedUploadsText(failed);
+        } catch (error) {
+          imageProblem = error instanceof ApiRequestError ? sellerErrorMessage(error) : (error as Error).message;
+        } finally {
+          setImageBusy(null);
+        }
+        // The item exists now: never leave the form in "create" (a second Save would add it twice).
+        if (imageProblem !== null) {
+          void refresh();
+          onDone({ ok: false, text: `"${trimmed}" was saved, but not every photo could be added (${imageProblem}). Open it to add photos.` });
+          return;
+        }
       }
-      await refresh();
+      void refresh();
       if (addAnother) {
         setAddedCount((count) => count + 1);
         setSavedNote(`"${trimmed}" saved. Add the next food item.`);
@@ -291,7 +325,7 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
                 Save &amp; Add Another
               </Button>
               <Button onClick={() => void create(false)} disabled={busy || menu.isPending || noSections} className="w-full sm:w-auto">
-                {busy ? 'Saving…' : 'Save Food Item'}
+                {busy ? (imageBusy ?? 'Saving…') : 'Save Food Item'}
               </Button>
             </>
           )}
@@ -344,8 +378,9 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
             const invalid = validateImage(file);
             if (invalid) return setImageError(`${file.name}: ${invalid}`);
             if (!item) return setPendingFiles((list) => list.map((p, i) => (i === index ? { ...p, file, preview: preview(file) } : p)));
-            void imageAction('Replacing…', async () => {
-              const key = await uploadSellerImage(file);
+            void imageAction(imageUploadLabel(0, 1), async () => {
+              const key = await uploadSellerImage(file, { optimize: true, onProgress: (fraction) => setImageBusy(imageUploadLabel(fraction, 1)) });
+              setImageBusy('Replacing…');
               return sellerApi.patch<SellerProductInventory>(`/seller/products/${item.id}/images/${images[index]!.id}`, { key });
             });
           }}

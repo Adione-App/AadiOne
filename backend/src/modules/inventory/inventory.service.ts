@@ -337,13 +337,23 @@ export async function adjustStock(
   delta: number,
   actorUserId: string,
   note?: string,
+  /**
+   * The seller who must own the listing (the seller panel): checked by the
+   * row lock itself, so another seller's listing is "not found" without a
+   * separate read first. Absent for admin / system callers, as before.
+   */
+  owner?: { sellerId: string },
 ): Promise<{ stockQty: number; reservedQty: number }> {
   const result = await runInTransaction(async (tx) => {
-    const [current] = await tx.$queryRaw<{ stock_qty: number; reserved_qty: number; tracks_stock: boolean }[]>`
-      SELECT stock_qty, reserved_qty, tracks_stock FROM seller_listings
-      WHERE id = ${sellerListingId}::uuid FOR UPDATE`;
+    const [current] = owner
+      ? await tx.$queryRaw<{ stock_qty: number; reserved_qty: number; tracks_stock: boolean }[]>`
+          SELECT stock_qty, reserved_qty, tracks_stock FROM seller_listings
+          WHERE id = ${sellerListingId}::uuid AND seller_id = ${owner.sellerId}::uuid FOR UPDATE`
+      : await tx.$queryRaw<{ stock_qty: number; reserved_qty: number; tracks_stock: boolean }[]>`
+          SELECT stock_qty, reserved_qty, tracks_stock FROM seller_listings
+          WHERE id = ${sellerListingId}::uuid FOR UPDATE`;
     if (!current) {
-      throw new AppError(ErrorCode.NOT_FOUND, { message: 'Inventory record not found.' });
+      throw new AppError(ErrorCode.NOT_FOUND, { message: owner ? 'Listing not found.' : 'Inventory record not found.' });
     }
     if (!current.tracks_stock) throw new AppError(ErrorCode.VALIDATION_ERROR, { message: NO_STOCK_FOR_FOOD });
     const next = nextStockAfterAdjust({ stockQty: current.stock_qty, reservedQty: current.reserved_qty }, delta);

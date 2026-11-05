@@ -68,20 +68,22 @@ export function optimizedKeysFor(key: string): { imageKey: string; thumbKey: str
  * another host name for the same local file count too.
  */
 export async function isStorageKeyReferenced(key: string): Promise<boolean> {
-  const suffix = { endsWith: `/${key}` };
-  const hits = await Promise.all([
-    prisma.productImage.findFirst({
-      where: { OR: [{ url: suffix }, { thumbUrl: suffix }, { cardUrl: suffix }] },
-      select: { id: true },
-    }),
-    prisma.category.findFirst({ where: { imageUrl: suffix }, select: { id: true } }),
-    prisma.orderItem.findFirst({ where: { imageUrl: suffix }, select: { id: true } }),
-    prisma.productVariant.findFirst({ where: { imageUrl: suffix }, select: { id: true } }),
-    prisma.brand.findFirst({ where: { logoUrl: suffix }, select: { id: true } }),
-    prisma.banner.findFirst({ where: { imageUrl: suffix }, select: { id: true } }),
-    prisma.restaurantProfile.findFirst({ where: { OR: [{ logoUrl: suffix }, { coverImageUrl: suffix }, { menuImageUrl: suffix }] }, select: { id: true } }),
-  ]);
-  return hits.some(Boolean);
+  // Every table that can hold an image URL, in ONE statement (was seven
+  // parallel queries: two round-trip waves on a five-connection pool).
+  // "Ends with /<key>", with LIKE's own wildcards (% _ \) escaped exactly as
+  // Prisma's `endsWith` escapes them — the same match as before.
+  const pattern = `%/${key.replace(/[\\%_]/g, (c) => `\\${c}`)}`;
+  const [row] = await prisma.$queryRaw<{ used: boolean }[]>`
+    SELECT (
+      EXISTS (SELECT 1 FROM product_images WHERE url LIKE ${pattern} OR thumb_url LIKE ${pattern} OR card_url LIKE ${pattern})
+      OR EXISTS (SELECT 1 FROM categories WHERE image_url LIKE ${pattern})
+      OR EXISTS (SELECT 1 FROM order_items WHERE image_url LIKE ${pattern})
+      OR EXISTS (SELECT 1 FROM product_variants WHERE image_url LIKE ${pattern})
+      OR EXISTS (SELECT 1 FROM brands WHERE logo_url LIKE ${pattern})
+      OR EXISTS (SELECT 1 FROM banners WHERE image_url LIKE ${pattern})
+      OR EXISTS (SELECT 1 FROM restaurant_profiles WHERE logo_url LIKE ${pattern} OR cover_image_url LIKE ${pattern} OR menu_image_url LIKE ${pattern})
+    ) AS used`;
+  return row?.used === true;
 }
 
 /**
@@ -230,21 +232,23 @@ async function storeOptimized(
   const imageUrl = storage.publicUrl(imageKey);
   const thumbUrl = storage.publicUrl(thumbKey);
 
-  if (!(rawAtKey && image.keptOriginal && key === imageKey)) {
-    await storage.put(imageKey, image.data, image.contentType);
-  }
-
-  // With IMAGE_CARD_FRAMING on, a packshot with lots of plain background gets
-  // its own card image framed to the product (image-optimizer.ts, cardFrame),
-  // even when it is small. Off (the default): card images as before.
-  const frame = kind === 'product' && env.IMAGE_CARD_FRAMING ? await cardFrame(source) : null;
-  const needsThumb = kind === 'product' && (frame !== null || needsCardThumbnail(image.width, image.height));
-  let thumbBytes: number | null = null;
-  if (needsThumb) {
+  // The main image upload and the card thumbnail (encode + upload) do not
+  // depend on each other: run together, so the seller waits for the slower
+  // of the two instead of their sum. Same files, same keys as before.
+  const storeMain =
+    rawAtKey && image.keptOriginal && key === imageKey ? Promise.resolve() : storage.put(imageKey, image.data, image.contentType);
+  const storeThumb = (async (): Promise<{ needsThumb: boolean; thumbBytes: number | null }> => {
+    // With IMAGE_CARD_FRAMING on, a packshot with lots of plain background gets
+    // its own card image framed to the product (image-optimizer.ts, cardFrame),
+    // even when it is small. Off (the default): card images as before.
+    const frame = kind === 'product' && env.IMAGE_CARD_FRAMING ? await cardFrame(source) : null;
+    const needsThumb = kind === 'product' && (frame !== null || needsCardThumbnail(image.width, image.height));
+    if (!needsThumb) return { needsThumb, thumbBytes: null };
     const thumb = await optimizeImage(source, IMAGE_PROFILES.productThumb, frame);
     await storage.put(thumbKey, thumb.data, thumb.contentType);
-    thumbBytes = thumb.data.byteLength;
-  }
+    return { needsThumb, thumbBytes: thumb.data.byteLength };
+  })();
+  const [, { needsThumb, thumbBytes }] = await Promise.all([storeMain, storeThumb]);
 
   log.info(
     {

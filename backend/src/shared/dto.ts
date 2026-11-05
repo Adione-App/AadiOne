@@ -2316,6 +2316,48 @@ export interface AdminPaidNotPlacedDto {
   }[];
 }
 
+/**
+ * GET /admin/order-alerts — this admin's UNREAD new-order alerts (newest
+ * first): one per order that became a real order — COD at placement, online
+ * only after its payment was verified. Read state is per admin
+ * (notifications.read_at); opening the order marks it read.
+ */
+export interface AdminOrderAlertDto {
+  /** The admin's own notification row (stable across reloads — the popup key). */
+  alertId: string;
+  orderId: string;
+  orderNumber: string;
+  orderStatus: OrderStatus;
+  /** COD = Cash on Delivery (paid at the door); ONLINE = paid online, verified. */
+  paymentMethod: 'COD' | 'ONLINE';
+  /** PENDING for COD until collected; PAID for a verified online payment. */
+  paymentStatus: string;
+  customerName: string | null;
+  /** First item: its photo (null = show a placeholder) and name. */
+  firstItem: { productName: string; variantName: string; qty: number; imageUrl: string | null } | null;
+  /** All lines / units in the order, across every seller. */
+  lineCount: number;
+  unitCount: number;
+  sellerCount: number;
+  /** Items at their selling prices (before delivery and fees). */
+  itemsSubtotalPaise: number;
+  deliveryFeePaise: number;
+  platformFeePaise: number;
+  taxPaise: number;
+  /** Coupon discount — reduces what the customer pays (0 when none). */
+  discountPaise: number;
+  /** What the customer pays for the whole order. */
+  totalPaise: number;
+  placedAt: string;
+  /** When this admin was alerted (the order became a real order). */
+  alertedAt: string;
+}
+
+export interface AdminOrderAlertsDto {
+  unread: number;
+  items: AdminOrderAlertDto[];
+}
+
 export interface AdminOrderSummaryDto extends OrderSummaryDto {
   customerName: string | null;
   customerMobile: string;

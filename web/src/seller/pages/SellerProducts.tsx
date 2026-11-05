@@ -9,7 +9,8 @@
  *   Details                → product page (/seller/products/:id: info, images,
  *                            pricing, stock, visibility, approval) or, for a
  *                            catalogue product, the listing page
- *   Stock −/+              → POST /seller/listings/:id/stock-adjust
+ *   Stock −/+              → POST /seller/listings/:id/stock-adjust — taps show at
+ *                            once and are batched per listing (stockBatch.ts)
  *   Show / Hide            → own product: PATCH /seller/products/:id/status;
  *                            catalogue product: the listing's on-sale switch
  *   Delete                 → DELETE /seller/products/:id (confirmed by name):
@@ -40,11 +41,10 @@ import {
   sellerErrorMessage,
   type BulkProductAction,
   type BulkProductReport,
-  type SellerListingInventory,
   type SellerProductInventory,
   type SubmittedApprovalBatch,
 } from '../sellerApi';
-import { useApplyListing, useRefreshInventory, useSellerAvailability, useSellerListings, useSellerProducts } from '../sellerQueries';
+import { useRefreshInventory, useSellerAvailability, useSellerListings, useSellerProducts, useStockBatcher } from '../sellerQueries';
 import { ProductImage, StockStepper, VisibilityPill, hasOptionsToSubmit, shortDate } from '../productUi';
 import { ProductFormModal, StartSellingModal } from '../productForms';
 import { FoodItemModal } from '../foodItemForm';
@@ -213,7 +213,6 @@ export default function SellerProductsPage() {
   const products = useSellerProducts();
   const listings = useSellerListings();
   const refresh = useRefreshInventory();
-  const apply = useApplyListing();
 
   const update = (changes: Record<string, string | null>) => {
     setShown(PAGE);
@@ -233,16 +232,8 @@ export default function SellerProductsPage() {
     );
   };
 
-  const adjust = useMutation({
-    mutationFn: (input: { row: ProductRow; delta: number }) =>
-      sellerApi.post<SellerListingInventory>(`/seller/listings/${input.row.listing!.id}/stock-adjust`, { delta: input.delta }),
-    onSuccess: (listing, input) => {
-      apply(listing);
-      toast(`${input.row.name}: ${listing.availableQty} available.`);
-    },
-    onError: (error) => toast(sellerErrorMessage(error), false),
-    onSettled: () => refresh(),
-  });
+  // −/+ taps: on screen at once, batched per listing, taken back if refused (stockBatch.ts).
+  const stockBatch = useStockBatcher();
   const toggle = useMutation({
     mutationFn: (row: ProductRow) =>
       row.own
@@ -261,7 +252,9 @@ export default function SellerProductsPage() {
     inFlight.current.add(row.key);
     run(() => inFlight.current.delete(row.key));
   };
-  const onAdjust = (row: ProductRow, delta: number) => guarded(row, (done) => adjust.mutate({ row, delta }, { onSettled: done }));
+  const onAdjust = (row: ProductRow, delta: number) => {
+    if (row.listing) stockBatch.adjust(row.listing.id, delta, row.name);
+  };
   const onToggle = (row: ProductRow) => guarded(row, (done) => toggle.mutate(row, { onSettled: done }));
 
   const rows = useMemo(() => rowsOf(products.data ?? [], listings.data ?? []), [products.data, listings.data]);
@@ -379,7 +372,8 @@ export default function SellerProductsPage() {
   };
 
   const isShown = (row: ProductRow) => (row.own ? row.productShown : row.listing?.isAvailable ?? false);
-  const adjusting = (row: ProductRow) => adjust.isPending && adjust.variables?.row.key === row.key;
+  // Taps keep counting while a batch is saving — never ignored.
+  const saving = (row: ProductRow) => (row.listing ? stockBatch.busy(row.listing.id) : false);
   const toggling = (row: ProductRow) => toggle.isPending && toggle.variables?.key === row.key;
   const clearAll = () => update({ view: null, approval: null, stock: null, q: null });
 
@@ -608,7 +602,8 @@ export default function SellerProductsPage() {
                           label={row.name}
                           availableQty={row.listing.availableQty}
                           stockQty={row.listing.stockQty}
-                          busy={adjusting(row)}
+                          busy={false}
+                          saving={saving(row)}
                           onAdjust={(delta) => onAdjust(row, delta)}
                         />
                       )}
@@ -705,19 +700,21 @@ export default function SellerProductsPage() {
                             <button
                               type="button"
                               aria-label={`Decrease stock of ${row.name}`}
-                              disabled={adjusting(row) || row.listing.availableQty <= 0}
+                              disabled={row.listing.availableQty <= 0}
                               onClick={() => onAdjust(row, -1)}
                               className="h-7 w-7 rounded-lg border border-gray-200 text-gray-600 outline-none focus-visible:ring-2 focus-visible:ring-brand-400 disabled:opacity-40"
                             >
                               −
                             </button>
-                            <span className={`min-w-[2rem] text-center font-semibold tabular-nums ${row.listing.availableQty === 0 ? 'text-danger-600' : 'text-gray-900'}`}>
+                            <span
+                              aria-busy={saving(row)}
+                              className={`min-w-[2rem] text-center font-semibold tabular-nums ${row.listing.availableQty === 0 ? 'text-danger-600' : 'text-gray-900'} ${saving(row) ? 'opacity-70' : ''}`}
+                            >
                               {row.listing.availableQty}
                             </span>
                             <button
                               type="button"
                               aria-label={`Increase stock of ${row.name}`}
-                              disabled={adjusting(row)}
                               onClick={() => onAdjust(row, 1)}
                               className="h-7 w-7 rounded-lg border border-gray-200 text-gray-600 outline-none focus-visible:ring-2 focus-visible:ring-brand-400 disabled:opacity-40"
                             >

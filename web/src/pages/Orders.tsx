@@ -15,7 +15,7 @@
  * confirmation, rider assignment and the delivery leg. See lib/v2Orders.ts.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PaymentMethod, type CursorPage, type DeliveryAgentDto } from "@shared";
@@ -34,6 +34,7 @@ import {
   Surface,
 } from "@/components/ui";
 import { useOrderSocket } from "@/lib/socket";
+import { useMarkOrderRead } from "@/lib/orderAlerts";
 import { PaidNotPlacedAlert } from "@/components/PaidNotPlacedAlert";
 import {
   PARENT_NEXT_ACTION,
@@ -71,70 +72,6 @@ function ordersQuery(tab: V2AdminOrderTab, search: string) {
   };
 }
 
-function useNewOrderChime(): {
-  armed: boolean;
-  announce: () => void;
-  acknowledge: () => void;
-} {
-  const [armed, setArmed] = useState(false);
-  const timer = useRef<number | null>(null);
-
-  const beep = useCallback(() => {
-    try {
-      const context = new AudioContext();
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-
-      oscillator.connect(gain);
-      gain.connect(context.destination);
-
-      oscillator.frequency.value = 880;
-
-      gain.gain.setValueAtTime(0.15, context.currentTime);
-
-      oscillator.start();
-      oscillator.stop(context.currentTime + 0.25);
-    } catch {
-      // Audio blocked until the user interacts with the page.
-      // The visual banner still does its job.
-    }
-  }, []);
-
-  const announce = useCallback(() => {
-    setArmed(true);
-    beep();
-
-    // Keep ringing every 10 seconds until acknowledged.
-    if (timer.current === null) {
-      timer.current = window.setInterval(beep, 10_000);
-    }
-  }, [beep]);
-
-  const acknowledge = useCallback(() => {
-    setArmed(false);
-
-    if (timer.current !== null) {
-      window.clearInterval(timer.current);
-      timer.current = null;
-    }
-  }, []);
-
-  useEffect(
-    () => () => {
-      if (timer.current !== null) {
-        window.clearInterval(timer.current);
-      }
-    },
-    [],
-  );
-
-  return {
-    armed,
-    announce,
-    acknowledge,
-  };
-}
-
 export default function OrdersPage() {
   const [params] = useSearchParams();
 
@@ -164,7 +101,21 @@ export default function OrdersPage() {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
 
   const queryClient = useQueryClient();
-  const chime = useNewOrderChime();
+  const markOrderRead = useMarkOrderRead();
+
+  /**
+   * A "View order" link (the NEW ORDER popup) lands here with
+   * ?tab=&search=&open=<orderId> — also while this page is already open, so
+   * the URL is followed on every change, not only on the first render.
+   */
+  const linkTab = params.get("tab");
+  const linkSearch = params.get("search");
+  const linkOpen = params.get("open");
+  useEffect(() => {
+    if (linkTab) setTab(linkTab);
+    if (linkSearch !== null) setSearch(linkSearch);
+    if (linkOpen) setExpanded((current) => (current.has(linkOpen) ? current : new Set(current).add(linkOpen)));
+  }, [linkTab, linkSearch, linkOpen]);
 
   const query = useQuery(ordersQuery(tab, search));
 
@@ -210,9 +161,8 @@ export default function OrdersPage() {
    * Realtime order updates.
    */
   useOrderSocket({
+    // The sound and the NEW ORDER popup are the panel-wide OrderAlerts (App.tsx).
     onNewOrder: () => {
-      chime.announce();
-
       void queryClient.invalidateQueries({
         queryKey: ["admin-orders"],
       });
@@ -346,6 +296,8 @@ export default function OrdersPage() {
   const orders = query.data?.items ?? [];
 
   function toggleExpanded(orderId: string): void {
+    // Opening an order reads its new-order alert for this admin (a no-op when it had none).
+    if (!expanded.has(orderId)) markOrderRead.mutate(orderId);
     setExpanded((current) => {
       const next = new Set(current);
       if (next.has(orderId)) next.delete(orderId);
@@ -409,15 +361,6 @@ export default function OrdersPage() {
 
   return (
     <div className="space-y-4">
-      {chime.armed && (
-        <button
-          onClick={chime.acknowledge}
-          className="w-full rounded-xl bg-brand-500 px-4 py-3 text-left font-semibold text-white shadow-lg"
-        >
-          New order received — tap to silence
-        </button>
-      )}
-
       <PaidNotPlacedAlert />
 
       <Surface className="px-2">

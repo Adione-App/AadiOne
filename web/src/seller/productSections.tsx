@@ -16,8 +16,15 @@ import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { formatPaise } from '@shared/money';
 import { Button, ErrorBanner, Field, Icon, Spinner, Surface, Toggle, inputClass } from '@/components/ui';
-import { sellerApi, sellerErrorMessage, type ListingVisibility, type SellerAvailability, type StockMovement } from './sellerApi';
-import { sellerKeys, useSellerAvailability } from './sellerQueries';
+import {
+  sellerApi,
+  sellerErrorMessage,
+  type ListingVisibility,
+  type SellerAvailability,
+  type SellerListingInventory,
+  type StockMovement,
+} from './sellerApi';
+import { sellerKeys, useApplyListing, useSellerAvailability } from './sellerQueries';
 import { NoticeBar, VISIBILITY, VisibilityPill, dateTime, toPaise, type Notice } from './productUi';
 
 export function Section({ id, title, subtitle, action, children }: { id: string; title: string; subtitle?: string; action?: ReactNode; children: ReactNode }) {
@@ -199,25 +206,30 @@ function StockPanel({ listing, label, onChanged }: { listing: ListingFigures; la
   const [qty, setQty] = useState('');
   const [note, setNote] = useState('');
   const [notice, setNotice] = useState<Notice | null>(null);
-  // True from the request until the refreshed figures are on screen, so a
-  // second tap never acts on stale numbers.
+  // True while the change is on its way. The server's answer is put on screen
+  // as soon as it arrives (every cached copy), so the next tap acts on the
+  // confirmed numbers; the full re-read then runs in the background.
   const [busy, setBusy] = useState(false);
+  const applyListing = useApplyListing();
   const movements = useQuery({
     queryKey: [...sellerKeys.listings, listing.id, 'movements'],
     queryFn: () => sellerApi.get<StockMovement[]>(`/seller/listings/${listing.id}/stock-movements`),
   });
   const adjust = useMutation({
-    mutationFn: (body: { delta: number; note?: string }) => sellerApi.post(`/seller/listings/${listing.id}/stock-adjust`, body),
+    mutationFn: (body: { delta: number; note?: string }) =>
+      sellerApi.post<SellerListingInventory>(`/seller/listings/${listing.id}/stock-adjust`, body),
   });
 
   async function apply(delta: number, withNote?: string): Promise<void> {
     setNotice(null);
     setBusy(true);
     try {
-      await adjust.mutateAsync({ delta, ...(withNote?.trim() ? { note: withNote.trim() } : {}) });
+      const confirmed = await adjust.mutateAsync({ delta, ...(withNote?.trim() ? { note: withNote.trim() } : {}) });
+      applyListing(confirmed);
       setQty('');
       setNote('');
-      await Promise.all([onChanged(), movements.refetch()]);
+      void onChanged();
+      void movements.refetch();
       setNotice({ ok: true, text: `${delta > 0 ? 'Added' : 'Removed'} ${Math.abs(delta)} unit${Math.abs(delta) === 1 ? '' : 's'} of ${label}.` });
     } catch (error) {
       setNotice({ ok: false, text: sellerErrorMessage(error) });

@@ -13,6 +13,7 @@ import { onSessionExpired } from '@/lib/api';
 import { disconnectSocket } from '@/lib/socket';
 import { Icon, Spinner, type IconName } from '@/components/ui';
 import { NotificationBell } from '@/components/NotificationBell';
+import { NewOrdersBadge, OrderAlerts } from '@/components/OrderAlerts';
 import { useAdminNotificationSource } from '@/lib/notifications';
 import { todayIsoInIndia } from '@/lib/dashboardDate';
 import LoginPage from '@/pages/Login';
@@ -55,7 +56,7 @@ interface NavItem {
   title: string;
   subtitle: string;
   /** A live count shown beside the label. */
-  badge?: 'pendingApprovals';
+  badge?: 'pendingApprovals' | 'newOrders';
   /** Shown only to roles holding this permission (display only — the API
    * enforces it). Items without one are shown to every admin, as before. */
   permission?: Permission;
@@ -77,7 +78,15 @@ const SECTIONS: { key: NavSection; label: string }[] = [
  */
 const NAV: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: 'dashboard', section: 'MAIN', end: true, title: 'Dashboard', subtitle: 'Marketplace overview' },
-  { to: '/orders', label: 'Orders', icon: 'orders', section: 'MAIN', title: 'Orders', subtitle: 'Customer orders across every seller' },
+  {
+    to: '/orders',
+    label: 'Orders',
+    icon: 'orders',
+    section: 'MAIN',
+    title: 'Orders',
+    subtitle: 'Customer orders across every seller',
+    badge: 'newOrders',
+  },
   {
     to: '/payments',
     label: 'Payments',
@@ -260,6 +269,7 @@ function Sidebar({ onNavigate }: { onNavigate: () => void }) {
                     <Icon name={item.icon} />
                     {item.label}
                     {item.badge === 'pendingApprovals' && <PendingApprovalsBadge />}
+                    {item.badge === 'newOrders' && <NewOrdersBadge />}
                   </NavLink>
                 ))}
               </div>
@@ -397,6 +407,8 @@ function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
 
 function Shell({ children }: { children: React.ReactNode }) {
   const [navOpen, setNavOpen] = useState(false);
+  const user = useAuth((state) => state.user);
+  const seesOrderAlerts = user !== null && roleHasPermission(user.role, Permission.ORDER_READ_ALL);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -423,6 +435,9 @@ function Shell({ children }: { children: React.ReactNode }) {
         <TopBar onOpenNav={() => setNavOpen(true)} />
         <main className="p-4 sm:p-6">{children}</main>
       </div>
+
+      {/* NEW ORDER popups — per admin; keyed so a different login starts clean. */}
+      {seesOrderAlerts && <OrderAlerts key={user.id} userId={user.id} />}
     </div>
   );
 }

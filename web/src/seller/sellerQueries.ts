@@ -23,7 +23,7 @@ import {
   type SellerProductInventory,
   type SellerTodayEarnings,
 } from './sellerApi';
-import { StockBatcher, confirmProduct, shiftFigures, shiftProduct, withUnsent } from './stockBatch';
+import { StockBatcher, confirmProduct, figuresIn, holdFigures, shiftFigures, shiftProduct, withUnsent, type HeldFigures } from './stockBatch';
 import { toast } from './sellerUi';
 
 export const sellerKeys = {
@@ -148,22 +148,6 @@ export function useRefreshInventory() {
     ]);
 }
 
-/**
- * Marks everything a stock change affects as out of date WITHOUT re-reading
- * it now: the screen already shows the server's answer (useApplyListing), so
- * the lists are re-read only when next opened or refocused — not three full
- * list downloads after every tap.
- */
-export function useMarkInventoryStale() {
-  const queryClient = useQueryClient();
-  return () =>
-    Promise.all([
-      queryClient.invalidateQueries({ queryKey: sellerKeys.products, refetchType: 'none' }),
-      queryClient.invalidateQueries({ queryKey: sellerKeys.listings, refetchType: 'none' }),
-      queryClient.invalidateQueries({ queryKey: sellerKeys.activity, refetchType: 'none' }),
-    ]);
-}
-
 /** Every cached copy of one listing — lists, the listing page, product rows and product pages (default and size listings). */
 function patchListingCaches(
   queryClient: QueryClient,
@@ -182,34 +166,27 @@ function patchListingCaches(
   }
 }
 
-/**
- * Puts a listing the SERVER just returned (e.g. from stock-adjust) into every
- * cached copy at once — lists, the listing page and product pages, including
- * a size's listing — so the figures on screen match the confirmation.
- */
-export function useApplyListing() {
-  const queryClient = useQueryClient();
-  return (listing: SellerListingInventory) =>
-    patchListingCaches(
-      queryClient,
-      listing.id,
-      (row) => ({ ...row, ...listing }),
-      (product) => confirmProduct(product, listing),
-    );
-}
+type StockOutcome = { ok: true; listing: SellerListingInventory } | { ok: false; error: unknown };
 
 /**
- * Stock −/+ taps (stockBatch.ts): every tap shows at once, taps on one listing
- * are added up and sent as one change, one request per listing at a time, and
- * a refused batch is taken back. `adjust(listingId, delta, label)`;
- * `busy(listingId)` while taps of it are not confirmed yet.
+ * ONE stock queue per query client, shared by every stock control on every
+ * page (a list row, the stock dialog over it, the product page): two queues
+ * on one listing could each confirm over the other's taps.
  */
-export function useStockBatcher() {
-  const queryClient = useQueryClient();
-  const markStale = useMarkInventoryStale();
-  const labels = useRef(new Map<string, string>());
-  const [, setVersion] = useState(0);
-  const rerender = () => setVersion((v) => v + 1);
+interface SharedStock {
+  batcher: StockBatcher<SellerListingInventory>;
+  labels: Map<string, string>;
+  /** Figures on screen of listings with unconfirmed changes (see holdFigures). */
+  held: Map<string, HeldFigures>;
+  /** Components to re-render / tell about an outcome. */
+  listeners: Set<{ rerender: () => void; onSettled?: (listingId: string, outcome: StockOutcome) => void }>;
+  adjust: (listingId: string, delta: number, label: string, note?: string) => void;
+}
+const sharedStock = new WeakMap<QueryClient, SharedStock>();
+
+function stockFor(queryClient: QueryClient): SharedStock {
+  const existing = sharedStock.get(queryClient);
+  if (existing) return existing;
 
   const shift = (listingId: string, delta: number) =>
     patchListingCaches(
@@ -218,44 +195,127 @@ export function useStockBatcher() {
       (row) => shiftFigures(row, delta),
       (product) => shiftProduct(product, listingId, delta),
     );
+  /** What the screen shows for the listing now (any cached copy). */
+  const shownFigures = (listingId: string): HeldFigures | null => {
+    for (const key of [sellerKeys.listings, sellerKeys.products]) {
+      for (const [, data] of queryClient.getQueriesData({ queryKey: key })) {
+        const found = figuresIn(data, listingId);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+  const hold = (listingId: string) => {
+    const figures = shared.batcher.isBusy(listingId) ? shownFigures(listingId) : null;
+    if (figures) shared.held.set(listingId, figures);
+    else shared.held.delete(listingId);
+  };
+  const tell = (listingId: string, outcome: StockOutcome | null) => {
+    for (const listener of shared.listeners) {
+      if (outcome) listener.onSettled?.(listingId, outcome);
+      listener.rerender();
+    }
+  };
 
-  const batcher = useRef<StockBatcher<SellerListingInventory> | null>(null);
-  batcher.current ??= new StockBatcher<SellerListingInventory>({
-    send: (listingId, delta) => sellerApi.post<SellerListingInventory>(`/seller/listings/${listingId}/stock-adjust`, { delta }),
-    onConfirmed: (listingId, listing, unsent) => {
-      const shown = withUnsent(listing, unsent);
-      patchListingCaches(
-        queryClient,
-        listingId,
-        (row) => ({ ...row, ...shown }),
-        (product) => confirmProduct(product, shown),
-      );
-      void markStale();
-      void queryClient.invalidateQueries({ queryKey: [...sellerKeys.listings, listingId, 'movements'] });
-      if (unsent === 0) toast(`${labels.current.get(listingId) ?? listing.productName}: ${listing.availableQty} available.`);
-      rerender();
+  const shared: SharedStock = {
+    labels: new Map(),
+    held: new Map(),
+    listeners: new Set(),
+    batcher: new StockBatcher<SellerListingInventory>({
+      send: (listingId, delta, note) =>
+        sellerApi.post<SellerListingInventory>(`/seller/listings/${listingId}/stock-adjust`, note ? { delta, note } : { delta }),
+      onConfirmed: (listingId, listing, unsent) => {
+        const shown = withUnsent(listing, unsent);
+        patchListingCaches(
+          queryClient,
+          listingId,
+          (row) => ({ ...row, ...shown }),
+          (product) => confirmProduct(product, shown),
+        );
+        hold(listingId);
+        // The screen already shows the server's answer: the lists are only
+        // marked out of date (re-read when next opened), the history re-read.
+        for (const key of [sellerKeys.products, sellerKeys.listings, sellerKeys.activity]) {
+          void queryClient.invalidateQueries({ queryKey: key, refetchType: 'none' });
+        }
+        void queryClient.invalidateQueries({ queryKey: [...sellerKeys.listings, listingId, 'movements'] });
+        if (unsent === 0) toast(`${shared.labels.get(listingId) ?? listing.productName}: ${listing.availableQty} available.`);
+        tell(listingId, { ok: true, listing });
+      },
+      onFailed: (listingId, error, undo) => {
+        shared.held.delete(listingId);
+        shift(listingId, -undo);
+        // The server is the authority: re-read the real figures.
+        void queryClient.invalidateQueries({ queryKey: sellerKeys.products });
+        void queryClient.invalidateQueries({ queryKey: sellerKeys.listings });
+        toast(sellerErrorMessage(error), false);
+        tell(listingId, { ok: false, error });
+      },
+    }),
+    adjust: (listingId, delta, label, note) => {
+      if (!Number.isInteger(delta) || delta === 0) return;
+      shared.labels.set(listingId, label);
+      // A list read already on its way predates this tap: drop it.
+      void queryClient.cancelQueries({ queryKey: sellerKeys.listings });
+      void queryClient.cancelQueries({ queryKey: sellerKeys.products });
+      shift(listingId, delta);
+      shared.batcher.add(listingId, delta, note?.trim() ? note.trim() : undefined);
+      hold(listingId);
+      tell(listingId, null);
     },
-    onFailed: (listingId, error, undo) => {
-      shift(listingId, -undo);
-      // The server is the authority: re-read the real figures.
-      void queryClient.invalidateQueries({ queryKey: sellerKeys.products });
-      void queryClient.invalidateQueries({ queryKey: sellerKeys.listings });
-      toast(sellerErrorMessage(error), false);
-      rerender();
-    },
+  };
+
+  // Figures fetched while taps are unconfirmed keep what the screen shows.
+  queryClient.getQueryCache().subscribe((event) => {
+    if (event.type !== 'updated' || event.action.type !== 'success' || event.action.manual) return;
+    const key = event.query.queryKey;
+    if (key[0] !== SELLER_QUERY_ROOT || (key[1] !== 'listings' && key[1] !== 'products')) return;
+    for (const [listingId, figures] of shared.held) {
+      if (!shared.batcher.isBusy(listingId)) continue;
+      queryClient.setQueryData(key, (data: unknown) => holdFigures(data, listingId, figures));
+    }
   });
 
-  // Leaving the page sends what is waiting — a tap is never dropped.
-  useEffect(() => () => batcher.current?.flushAll(), []);
+  sharedStock.set(queryClient, shared);
+  return shared;
+}
+
+/**
+ * Stock −/+ taps (stockBatch.ts): every tap shows at once, taps on one listing
+ * are added up and sent as one change, one request per listing at a time (one
+ * shared queue — stockFor), and a refused change is taken back.
+ * `adjust(listingId, delta, label, note?)` — a note makes it its own change,
+ * sent at once (the "Adjust by an amount" form); `busy(listingId)` while
+ * changes of it are not confirmed yet; `onSettled` hears each outcome.
+ *
+ * Never disables anything: a control stays usable while earlier taps are on
+ * their way. Stale data cannot undo taps: list reads already running are
+ * cancelled on a tap, and figures fetched while taps are unconfirmed are held
+ * at what the screen shows (holdFigures) until the server's answer arrives.
+ */
+export function useStockBatcher(options: { onSettled?: (listingId: string, outcome: StockOutcome) => void } = {}) {
+  const queryClient = useQueryClient();
+  const shared = stockFor(queryClient);
+  const [, setVersion] = useState(0);
+  const settled = useRef(options.onSettled);
+  settled.current = options.onSettled;
+
+  useEffect(() => {
+    const listener = {
+      rerender: () => setVersion((v) => v + 1),
+      onSettled: (listingId: string, outcome: StockOutcome) => settled.current?.(listingId, outcome),
+    };
+    shared.listeners.add(listener);
+    return () => {
+      shared.listeners.delete(listener);
+      // The last stock control gone (leaving the page): send what is waiting — a tap is never dropped.
+      if (shared.listeners.size === 0) shared.batcher.flushAll();
+    };
+  }, [shared]);
 
   return {
-    adjust: (listingId: string, delta: number, label: string) => {
-      labels.current.set(listingId, label);
-      shift(listingId, delta);
-      batcher.current!.add(listingId, delta);
-      rerender();
-    },
-    busy: (listingId: string) => batcher.current!.isBusy(listingId),
+    adjust: shared.adjust,
+    busy: (listingId: string) => shared.batcher.isBusy(listingId),
   };
 }
 

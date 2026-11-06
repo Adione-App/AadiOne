@@ -12,6 +12,8 @@ import {
   DEFAULT_HOME_LAYOUT,
   PRODUCT_SHELF_MIN_GRID_CARD_DP,
   addHomeSection,
+  categoryShelfKind,
+  createCategoryProductSection,
   createHomeSection,
   moveHomeSection,
   resolveHomeLayout,
@@ -178,5 +180,50 @@ describe("productGridColumns — no overflow, no squeezed cards", () => {
         assert.ok(columns * cardWidth + (columns - 1) * 12 <= width - 24, `${requested} at ${width}`);
       }
     }
+  });
+});
+
+describe("category products sections (Home Page Builder → Category products)", () => {
+  const add = (layout: HomeLayoutContent, id: string, path: string, title: string, count: number) =>
+    resolveHomeLayout(addHomeSection(layout, createCategoryProductSection(id, { path, title, count })!)!);
+
+  it("main and subcategory sections in the admin's order, each View All opening exactly its category; the same category twice", () => {
+    let layout = resolveHomeLayout(DEFAULT_HOME_LAYOUT);
+    layout = add(layout, "shelf-grocery", "grocery", "Grocery", 12);
+    layout = add(layout, "shelf-fruits", "vegetables-fruits/fruits", "Fruits", 10);
+    layout = add(layout, "shelf-fresh", "vegetables-fruits", "Vegetables & Fruits", 12);
+    layout = add(layout, "shelf-fruits-2", "vegetables-fruits/fruits", "More fruits", 2);
+    const sections = run(layout, {
+      "shelf-grocery": [product("g1"), product("g2")],
+      "shelf-fruits": [product("f1"), product("f2"), product("f3")],
+      "shelf-fresh": [product("v1"), product("f1")],
+      "shelf-fruits-2": [product("f1"), product("f2"), product("f3")],
+    }).filter((section): section is Extract<LaidOutSection, { kind: "productShelf" }> => section.kind === "productShelf");
+
+    assert.deepEqual(sections.map((section) => section.title), ["Grocery", "Fruits", "Vegetables & Fruits", "More fruits"]);
+    assert.deepEqual(sections.map((section) => section.viewAll), [
+      { type: "category", categoryId: grocery.id },
+      { type: "category", categoryId: fruits.id },
+      { type: "category", categoryId: fresh.id },
+      { type: "category", categoryId: fruits.id },
+    ]);
+    // Each with its own count, as a scrolling row.
+    assert.deepEqual(sections.map((section) => section.products.length), [2, 3, 2, 2]);
+    assert.ok(sections.every((section) => section.display.layout === "carousel"));
+    assert.deepEqual(
+      layout.sections.filter((section) => section.id.startsWith("shelf-")).map((section) => categoryShelfKind(section.shelf)),
+      ["main", "sub", "main", "sub"],
+    );
+  });
+
+  it("an empty or hidden category section is left out; nothing buyable counts as empty", () => {
+    let layout = resolveHomeLayout(DEFAULT_HOME_LAYOUT);
+    layout = add(layout, "shelf-rice", "grocery/rice", "Rice", 12);
+    layout = add(layout, "shelf-veg", "vegetables-fruits/vegetables", "Fresh Vegetables", 12);
+    layout = add(layout, "shelf-fruits", "vegetables-fruits/fruits", "Fruits", 10);
+    layout.sections.find((section) => section.id === "shelf-fruits")!.visible = false;
+    const sections = run(layout, { "shelf-rice": [], "shelf-veg": [product("sold-out", false)], "shelf-fruits": [product("f1")] });
+    assert.equal(sections.filter((section) => section.kind === "productShelf").length, 0);
+    assert.ok(sections.some((section) => section.kind === "footer"), "the rest of Home stays");
   });
 });

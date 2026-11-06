@@ -11,6 +11,7 @@
  * the caller's transaction and inherit its row locks.
  */
 
+import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { ErrorCode, StockLedgerReason } from '../../shared';
 import { AppError } from '../../common/errors';
@@ -327,10 +328,22 @@ export function nextStockAfterAdjust(
 }
 
 /**
- * Relative stock change (the seller's +/- buttons). Computed from the value
- * read under the row lock, so two quick taps add up instead of the second
- * overwriting the first — which an absolute `setStock` from a stale screen
- * would do. Same reserved-quantity floor and ledger entry as `setStock`.
+ * Relative stock change (the seller's +/- buttons). ONE SQL statement — the
+ * guarded UPDATE and its ledger row together (a data-modifying CTE is atomic)
+ * — instead of BEGIN / SET / SELECT … FOR UPDATE / UPDATE / INSERT / COMMIT:
+ * in production every statement is a network round trip to the database, so
+ * this is what a tap waits for.
+ *
+ * Concurrency: the UPDATE takes the row lock and, under READ COMMITTED,
+ * re-checks its WHERE against the newest committed row, so two quick taps
+ * (or a tap racing an order's reservation) add up instead of one overwriting
+ * the other — which an absolute `setStock` from a stale screen would do. The
+ * floors are in the WHERE (never below zero, never below what is reserved),
+ * the same as `nextStockAfterAdjust`, and the DB CHECK reserved <= stock
+ * stays the last line of defence. Same ledger entry as before.
+ *
+ * Only when nothing was updated does a second read find out why (not found,
+ * made-to-order food, or the floor) so the message stays exactly as before.
  */
 export async function adjustStock(
   sellerListingId: string,
@@ -338,38 +351,50 @@ export async function adjustStock(
   actorUserId: string,
   note?: string,
   /**
-   * The seller who must own the listing (the seller panel): checked by the
-   * row lock itself, so another seller's listing is "not found" without a
+   * The seller who must own the listing (the seller panel): checked in the
+   * UPDATE itself, so another seller's listing is "not found" without a
    * separate read first. Absent for admin / system callers, as before.
    */
   owner?: { sellerId: string },
 ): Promise<{ stockQty: number; reservedQty: number }> {
-  const result = await runInTransaction(async (tx) => {
-    const [current] = owner
-      ? await tx.$queryRaw<{ stock_qty: number; reserved_qty: number; tracks_stock: boolean }[]>`
-          SELECT stock_qty, reserved_qty, tracks_stock FROM seller_listings
-          WHERE id = ${sellerListingId}::uuid AND seller_id = ${owner.sellerId}::uuid FOR UPDATE`
-      : await tx.$queryRaw<{ stock_qty: number; reserved_qty: number; tracks_stock: boolean }[]>`
-          SELECT stock_qty, reserved_qty, tracks_stock FROM seller_listings
-          WHERE id = ${sellerListingId}::uuid FOR UPDATE`;
+  const ownedBy = owner ? Prisma.sql`AND seller_id = ${owner.sellerId}::uuid` : Prisma.empty;
+  let result: { stockQty: number; reservedQty: number } | null = null;
+  // A refusal whose re-read finds the change allowed means the row moved in
+  // between (an order reserved or released units): try again, a few times.
+  for (let attempt = 0; attempt < 3 && !result; attempt += 1) {
+    const [updated] = await prisma.$queryRaw<{ stock_qty: number; reserved_qty: number }[]>`
+      WITH changed AS (
+        UPDATE seller_listings
+           SET stock_qty = stock_qty + ${delta}, updated_at = now()
+         WHERE id = ${sellerListingId}::uuid ${ownedBy}
+           AND tracks_stock
+           AND stock_qty + ${delta} >= 0
+           AND stock_qty + ${delta} >= reserved_qty
+        RETURNING id, stock_qty, reserved_qty
+      ), ledger AS (
+        INSERT INTO stock_ledger (id, seller_listing_id, delta, reason, balance_after, seller_order_id, actor_user_id, note, created_at)
+        SELECT ${randomUUID()}::uuid, id, ${delta}, ${StockLedgerReason.MANUAL_ADJUST}::"StockLedgerReason",
+               stock_qty - reserved_qty, NULL, ${actorUserId}::uuid, ${note ?? 'manual stock adjustment'}, now()
+          FROM changed
+      )
+      SELECT stock_qty, reserved_qty FROM changed`;
+    if (updated) {
+      result = { stockQty: updated.stock_qty, reservedQty: updated.reserved_qty };
+      break;
+    }
+    const [current] = await prisma.$queryRaw<{ stock_qty: number; reserved_qty: number; tracks_stock: boolean }[]>`
+      SELECT stock_qty, reserved_qty, tracks_stock FROM seller_listings
+      WHERE id = ${sellerListingId}::uuid ${ownedBy}`;
     if (!current) {
       throw new AppError(ErrorCode.NOT_FOUND, { message: owner ? 'Listing not found.' : 'Inventory record not found.' });
     }
     if (!current.tracks_stock) throw new AppError(ErrorCode.VALIDATION_ERROR, { message: NO_STOCK_FOR_FOOD });
     const next = nextStockAfterAdjust({ stockQty: current.stock_qty, reservedQty: current.reserved_qty }, delta);
     if (!next.ok) throw new AppError(ErrorCode.VALIDATION_ERROR, { message: next.message });
-
-    await tx.sellerListing.update({ where: { id: sellerListingId }, data: { stockQty: next.stockQty } });
-    await writeLedger(tx, {
-      sellerListingId,
-      delta,
-      reason: StockLedgerReason.MANUAL_ADJUST,
-      balanceAfter: next.stockQty - current.reserved_qty,
-      actorUserId,
-      note: note ?? 'manual stock adjustment',
-    });
-    return { stockQty: next.stockQty, reservedQty: current.reserved_qty };
-  });
+  }
+  if (!result) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'Stock is changing right now (orders in progress). Please try again.' });
+  }
 
   log.info({ sellerListingId, delta, stockQty: result.stockQty, actorUserId }, 'stock adjusted by delta');
   return result;

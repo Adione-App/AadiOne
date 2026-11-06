@@ -20,9 +20,8 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { ErrorCode, isAdminRole, type SellerLifecycleStatus } from '../shared';
 import { AppError } from '../common/errors';
-import { prisma } from '../infra/db/prisma';
 import { isSellerOnboardingWrite, sellerPanelAccess } from '../modules/sellers/seller-lifecycle-rules';
-import { resolveOwnSellerId } from './sellerAuth';
+import { resolveOwnSeller } from './sellerAuth';
 
 const DENIAL_MESSAGE: Record<'NOT_ACTIVE' | 'UNDER_REVIEW' | 'NO_ONBOARDING', string> = {
   NOT_ACTIVE: 'Your seller account is not active yet. Complete your seller onboarding to use this.',
@@ -49,23 +48,19 @@ export const requireSellerLifecycleAccess: RequestHandler = (req: Request, _res:
         return;
       }
 
-      const sellerId = await resolveOwnSellerId(req);
-      const seller = await prisma.seller.findFirst({
-        where: { id: sellerId, deletedAt: null },
-        select: { lifecycleStatus: true },
-      });
-      if (!seller) {
+      // Membership + lifecycle in one query (resolveOwnSeller).
+      const { sellerId, lifecycleStatus } = await resolveOwnSeller(req);
+      if (lifecycleStatus === null) {
         throw new AppError(ErrorCode.FORBIDDEN, {
           message: 'Your account is not linked to a seller.',
           internalMessage: `seller ${sellerId} of user ${req.user.id} is missing or deleted`,
         });
       }
-
-      const access = sellerPanelAccess(seller.lifecycleStatus as SellerLifecycleStatus, req.method, req.path);
+      const access = sellerPanelAccess(lifecycleStatus as SellerLifecycleStatus, req.method, req.path);
       if (!access.allowed) {
         throw new AppError(ErrorCode.SELLER_ACCOUNT_NOT_ACTIVE, {
           message: DENIAL_MESSAGE[access.reason],
-          internalMessage: `seller ${sellerId} (${seller.lifecycleStatus}) denied ${req.method} ${req.path}: ${access.reason}`,
+          internalMessage: `seller ${sellerId} (${lifecycleStatus}) denied ${req.method} ${req.path}: ${access.reason}`,
         });
       }
 

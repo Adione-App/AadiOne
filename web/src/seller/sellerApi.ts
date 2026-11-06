@@ -14,6 +14,7 @@ import type { VariantSetRequest } from './variantEditor';
 import { createApiClient, ApiRequestError } from '@/lib/api';
 import { uploadProductImage, type PresignedUpload, type UploadOptions } from '@/lib/upload';
 import { mapLimit } from '@/lib/mapLimit';
+import { withRetry } from '@/lib/retry';
 
 export const sellerClient = createApiClient('adione.seller.refresh');
 export const sellerApi = sellerClient.api;
@@ -353,6 +354,42 @@ export function uploadSellerProductImages(files: readonly File[], onProgress?: (
       report();
     }
   });
+}
+
+/**
+ * Adds photos to a product: every file resized and uploaded (in parallel,
+ * uploadSellerProductImages), then ALL the uploaded ones attached in ONE
+ * request in the order chosen (POST /seller/products/:id/images/batch — the
+ * server processes them in parallel and writes them together). The attach is
+ * tried again if the connection drops (lib/retry.ts): the server counts an
+ * upload already on the product as attached, so a retry never adds a photo
+ * twice. `images` is the product's whole gallery afterwards, in order (null
+ * when nothing was uploaded) — photos are all an attach changes, so callers
+ * put it into the product they already show. `failed` names every photo not
+ * added and why (upload or processing). A refusal of the whole attach (under
+ * review, gallery full) is thrown.
+ */
+export async function addSellerProductImages(
+  productId: string,
+  files: readonly File[],
+  onProgress?: (fraction: number) => void,
+): Promise<{ images: SellerProductDto['images'] | null; failed: { file: File; error: unknown }[] }> {
+  const results = await uploadSellerProductImages(files, onProgress);
+  const uploaded = results.filter((result): result is Extract<ImageUploadResult, { ok: true }> => result.ok);
+  const failed: { file: File; error: unknown }[] = results.flatMap((result) => (result.ok ? [] : [{ file: result.file, error: result.error }]));
+  if (uploaded.length === 0) return { images: null, failed };
+  const answer = await withRetry(() =>
+    sellerApi.post<{ images: SellerProductDto['images']; failed: { key: string; message: string }[] }>(`/seller/products/${productId}/images/batch`, {
+      images: uploaded.map((result) => ({ key: result.key })),
+    }),
+  );
+  for (const problem of answer.failed) {
+    const file = uploaded.find((result) => result.key === problem.key)?.file;
+    if (file) failed.push({ file, error: new Error(problem.message) });
+  }
+  // In the order the seller chose them.
+  failed.sort((a, b) => files.indexOf(a.file) - files.indexOf(b.file));
+  return { images: answer.images, failed };
 }
 
 /** "Uploading 3 photos… 40%" while bytes are on their way; then the server stores them. */

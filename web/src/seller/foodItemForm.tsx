@@ -34,7 +34,7 @@ import {
   imageUploadLabel,
   sellerErrorMessage,
   uploadSellerImage,
-  uploadSellerProductImages,
+  addSellerProductImages,
   type CreatedSellerProduct,
   type SellerCatalogCategories,
   type SellerProductInventory,
@@ -133,17 +133,12 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
       if (accepted.length === 0) return;
       // Resized in the browser, uploaded together (with progress), attached in the order chosen.
       void imageAction(imageUploadLabel(0, accepted.length), async () => {
-        const results = await uploadSellerProductImages(accepted, (fraction) => setImageBusy(imageUploadLabel(fraction, accepted.length)));
-        setImageBusy(imageUploadLabel(1, accepted.length));
-        let latest: SellerProductInventory | undefined;
-        for (const result of results) {
-          if (!result.ok) continue;
-          latest = await sellerApi.post<SellerProductInventory>(`/seller/products/${item.id}/images`, { key: result.key });
-          setImages(latest.images);
-        }
-        const failed = results.filter((result) => !result.ok);
+        const { images: added, failed } = await addSellerProductImages(item.id, accepted, (fraction) =>
+          setImageBusy(imageUploadLabel(fraction, accepted.length)),
+        );
+        if (added) setImages(added);
         if (failed.length > 0) throw new Error(failedUploadsText(failed));
-        return latest ?? item;
+        return added ? { ...item, images: added } : item;
       });
     } else {
       setPendingFiles((list) => [...list, ...accepted.map((file, index) => ({ id: `${Date.now()}-${list.length + index}`, file, preview: preview(file) }))]);
@@ -188,16 +183,12 @@ export function FoodItemModal({ mode, onClose, onDone }: { mode: FoodItemFormMod
         let imageProblem: string | null = null;
         setImageBusy(imageUploadLabel(0, count));
         try {
-          const results = await uploadSellerProductImages(
+          // Attached together in gallery order, so the main photo is first.
+          const { failed } = await addSellerProductImages(
+            created.id,
             pendingFiles.map((pending) => pending.file),
             (fraction) => setImageBusy(imageUploadLabel(fraction, count)),
           );
-          setImageBusy(imageUploadLabel(1, count));
-          // In gallery order, so the main photo is attached first.
-          for (const result of results) {
-            if (result.ok) await sellerApi.post(`/seller/products/${created.id}/images`, { key: result.key });
-          }
-          const failed = results.filter((result) => !result.ok);
           if (failed.length > 0) imageProblem = failedUploadsText(failed);
         } catch (error) {
           imageProblem = error instanceof ApiRequestError ? sellerErrorMessage(error) : (error as Error).message;

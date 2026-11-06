@@ -1,17 +1,23 @@
 /**
  * Stock −/+ taps: instant on screen, batched on the wire.
  *
- *   - Every tap moves the figures on screen at once (optimistic).
+ *   - Every tap moves the figures on screen at once (optimistic). No control
+ *     is ever disabled because an earlier change is still on its way.
  *   - Taps on one listing are added up while the seller keeps tapping
  *     (DEBOUNCE_MS after the last one) and sent as ONE relative change
  *     (POST /seller/listings/:id/stock-adjust { delta }) — five fast taps of
  *     +1 are one +5, not five requests. Taps that cancel out send nothing.
- *   - One request per listing at a time; taps made while it is on its way are
- *     the next batch.
- *   - The server stays the authority: it row-locks the listing, applies the
- *     delta and refuses a change that would go below zero or below what is
- *     reserved. Its answer replaces the guess (plus any taps not sent yet).
- *   - A refused or failed batch takes back everything not confirmed — the
+ *   - An amount typed with a note ("Add 25 · new delivery") is its own change,
+ *     sent at once (its note goes on its own ledger row), in the order made.
+ *   - One request per listing at a time, in order; changes made while it is on
+ *     its way queue up behind it. So answers can never arrive out of order.
+ *   - The server stays the authority: one guarded UPDATE applies the delta
+ *     and refuses a change that would go below zero or below what is
+ *     reserved. Its answer replaces the guess (plus any changes not sent
+ *     yet). While changes are unconfirmed, figures fetched for any other
+ *     reason (a page opening, a list re-read) never overwrite them
+ *     (`holdFigures`) — a stale answer can never undo newer taps.
+ *   - A refused or failed change takes back everything not confirmed — the
  *     figures return to the last confirmed ones — and the error is shown.
  *
  * Pure (no React): unit-tested in web/tests/sellerStock.test.ts; the hook is
@@ -24,22 +30,31 @@ export const DEBOUNCE_MS = 400;
 
 export interface StockBatchOptions<T> {
   delayMs?: number;
-  send: (listingId: string, delta: number) => Promise<T>;
-  /** The server's answer to a batch; `unsent` = taps made since it left (already on screen). */
+  send: (listingId: string, delta: number, note?: string) => Promise<T>;
+  /** The server's answer to a batch; `unsent` = changes made since it left (already on screen). */
   onConfirmed: (listingId: string, result: T, unsent: number) => void;
-  /** A batch failed: `undo` = every tap not confirmed (the batch + any made since) — take it back. */
+  /** A batch failed: `undo` = every change not confirmed (the batch + any made since) — take it back. */
   onFailed: (listingId: string, error: unknown, undo: number) => void;
   setTimer?: (run: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
 }
 
+interface Batch {
+  delta: number;
+  /** Set for a typed amount with a note: never merged, sent at once. */
+  note?: string;
+}
+
 interface Slot {
-  pending: number;
+  /** Changes not sent yet, in the order made. Consecutive plain taps share one batch. */
+  queue: Batch[];
   /** The batch on its way (0 when none). */
   sending: number;
   timer: unknown;
   inFlight: boolean;
 }
+
+const sum = (queue: Batch[]) => queue.reduce((total, batch) => total + batch.delta, 0);
 
 export class StockBatcher<T> {
   private readonly slots = new Map<string, Slot>();
@@ -53,32 +68,42 @@ export class StockBatcher<T> {
     this.clearTimer = options.clearTimer ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
   }
 
-  /** One tap (or a typed amount): counted at once, sent after the pause. */
-  add(listingId: string, delta: number): void {
+  /**
+   * One tap (or a typed amount): counted at once. A plain tap is sent after
+   * the pause; one with a `note` is sent as soon as nothing is on its way.
+   */
+  add(listingId: string, delta: number, note?: string): void {
     if (!Number.isInteger(delta) || delta === 0) return;
-    const slot = this.slots.get(listingId) ?? { pending: 0, sending: 0, timer: null, inFlight: false };
+    const slot = this.slots.get(listingId) ?? { queue: [], sending: 0, timer: null, inFlight: false };
     this.slots.set(listingId, slot);
-    slot.pending += delta;
-    if (!slot.inFlight) this.arm(listingId, slot);
+    const tail = slot.queue.at(-1);
+    if (note === undefined && tail && tail.note === undefined) tail.delta += delta;
+    else slot.queue.push(note === undefined ? { delta } : { delta, note });
+    if (slot.inFlight) return;
+    if (note === undefined) this.arm(listingId, slot);
+    else this.sendNow(listingId, slot);
   }
 
-  /** Taps counted but not sent yet, plus a batch on its way — what the screen shows on top of the server's figures. */
+  /** Changes counted but not sent yet, plus a batch on its way — what the screen shows on top of the server's figures. */
   unconfirmed(listingId: string): number {
     const slot = this.slots.get(listingId);
-    return slot ? slot.pending + slot.sending : 0;
+    return slot ? sum(slot.queue) + slot.sending : 0;
   }
 
   isBusy(listingId: string): boolean {
     const slot = this.slots.get(listingId);
-    return Boolean(slot && (slot.inFlight || slot.pending !== 0));
+    return Boolean(slot && (slot.inFlight || slot.queue.some((batch) => batch.delta !== 0)));
+  }
+
+  /** Listings with changes not confirmed yet. */
+  busyListings(): string[] {
+    return [...this.slots.keys()].filter((listingId) => this.isBusy(listingId));
   }
 
   /** Sends every waiting batch now (leaving the page never drops taps). */
   flushAll(): void {
     for (const [listingId, slot] of this.slots) {
-      if (slot.timer !== null) this.clearTimer(slot.timer);
-      slot.timer = null;
-      if (!slot.inFlight) this.dispatch(listingId, slot);
+      if (!slot.inFlight) this.sendNow(listingId, slot);
     }
   }
 
@@ -90,27 +115,43 @@ export class StockBatcher<T> {
     }, this.delayMs);
   }
 
-  private dispatch(listingId: string, slot: Slot): void {
-    const delta = slot.pending;
-    if (delta === 0) {
+  private sendNow(listingId: string, slot: Slot): void {
+    if (slot.timer !== null) this.clearTimer(slot.timer);
+    slot.timer = null;
+    this.dispatch(listingId, slot);
+  }
+
+  /** After an answer: the next batch — at once if it carries a note, else after the pause. */
+  private next(listingId: string, slot: Slot): void {
+    while (slot.queue.length > 0 && slot.queue[0]!.delta === 0) slot.queue.shift();
+    if (slot.queue.length === 0) {
       this.slots.delete(listingId);
       return;
     }
-    slot.pending = 0;
-    slot.sending = delta;
+    if (slot.queue[0]!.note !== undefined) this.sendNow(listingId, slot);
+    else this.arm(listingId, slot);
+  }
+
+  private dispatch(listingId: string, slot: Slot): void {
+    while (slot.queue.length > 0 && slot.queue[0]!.delta === 0) slot.queue.shift();
+    const batch = slot.queue.shift();
+    if (!batch) {
+      this.slots.delete(listingId);
+      return;
+    }
+    slot.sending = batch.delta;
     slot.inFlight = true;
-    this.options.send(listingId, delta).then(
+    this.options.send(listingId, batch.delta, batch.note).then(
       (result) => {
         slot.inFlight = false;
         slot.sending = 0;
-        this.options.onConfirmed(listingId, result, slot.pending);
-        if (slot.pending !== 0) this.arm(listingId, slot);
-        else this.slots.delete(listingId);
+        this.options.onConfirmed(listingId, result, sum(slot.queue));
+        this.next(listingId, slot);
       },
       (error: unknown) => {
         slot.inFlight = false;
         slot.sending = 0;
-        const undo = delta + slot.pending;
+        const undo = batch.delta + sum(slot.queue);
         if (slot.timer !== null) this.clearTimer(slot.timer);
         this.slots.delete(listingId);
         this.options.onFailed(listingId, error, undo);
@@ -200,4 +241,50 @@ export function shiftProduct(product: SellerProductInventory, listingId: string,
 /** The server's figures (with unsent taps on top) into every cached copy of the listing. */
 export function confirmProduct(product: SellerProductInventory, listing: SellerListingInventory): SellerProductInventory {
   return patchProduct(product, listing.id, (current) => ({ ...current, ...listingFields(listing) }), listing.visibility);
+}
+
+/** The stock figures on screen for a listing whose changes are not confirmed yet. */
+export type HeldFigures = Pick<Figures, 'stockQty' | 'reservedQty' | 'availableQty'>;
+
+/**
+ * Data FETCHED for any reason (a page opening, a list re-read) while taps of
+ * a listing are unconfirmed: keep the figures on screen for that listing, so
+ * an answer read before (or while) the taps were applied can never undo them.
+ * The confirmation of the taps then puts the server's figures in. Works on
+ * every cached shape — listing rows / a listing page, product rows / a
+ * product page (default and size listings); anything else is left alone.
+ */
+export function holdFigures(data: unknown, listingId: string, held: HeldFigures): unknown {
+  const one = (item: unknown): unknown => {
+    if (!item || typeof item !== 'object') return item;
+    if ('variants' in item) return patchProduct(item as SellerProductInventory, listingId, (current) => ({ ...current, ...held }));
+    const listing = item as SellerListingInventory;
+    if (listing.id !== listingId || typeof listing.stockQty !== 'number') return item;
+    return {
+      ...listing,
+      ...held,
+      ...(listing.visibility ? { visibility: { ...listing.visibility, availableQty: held.availableQty } } : {}),
+    };
+  };
+  return Array.isArray(data) ? data.map(one) : one(data);
+}
+
+/** The figures of a listing in one cached value (see holdFigures for the shapes), or null. */
+export function figuresIn(data: unknown, listingId: string): HeldFigures | null {
+  const items: unknown[] = Array.isArray(data) ? data : [data];
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    if ('variants' in item) {
+      const product = item as SellerProductInventory;
+      const hit =
+        product.listing?.id === listingId ? product.listing : product.variants?.find((variant) => variant.listing?.id === listingId)?.listing;
+      if (hit) return { stockQty: hit.stockQty, reservedQty: hit.reservedQty, availableQty: hit.availableQty };
+      continue;
+    }
+    const listing = item as SellerListingInventory;
+    if (listing.id === listingId && typeof listing.stockQty === 'number') {
+      return { stockQty: listing.stockQty, reservedQty: listing.reservedQty, availableQty: listing.availableQty };
+    }
+  }
+  return null;
 }

@@ -33,7 +33,7 @@ import {
   sellerApi,
   sellerErrorMessage,
   uploadSellerImage,
-  uploadSellerProductImages,
+  addSellerProductImages,
   type SellerProductInventory,
 } from '../sellerApi';
 import { sellerKeys, useSellerAvailability } from '../sellerQueries';
@@ -131,7 +131,7 @@ export default function SellerProductDetailPage() {
     try {
       // Image calls answer with the product: its gallery shows at once.
       const saved = await action();
-      if (saved && typeof saved === 'object' && 'images' in saved) showImages(saved as SellerProductDto);
+      if (saved && typeof saved === 'object' && 'images' in saved) showImages((saved as SellerProductDto).images);
       void refresh();
     } catch (error) {
       setNotice({ ok: false, text: error instanceof ApiRequestError ? sellerErrorMessage(error) : (error as Error).message });
@@ -141,13 +141,13 @@ export default function SellerProductDetailPage() {
   }
 
   /** The gallery from an image call's answer — on screen at once; the full re-read follows in the background. */
-  const showImages = (saved: SellerProductDto) =>
-    queryClient.setQueryData<SellerProductInventory>(key, (old) => (old ? { ...old, images: saved.images } : old));
+  const showImages = (images: SellerProductDto['images']) =>
+    queryClient.setQueryData<SellerProductInventory>(key, (old) => (old ? { ...old, images } : old));
 
   /**
    * New photos: resized in the browser and uploaded together (up to 3 at a
-   * time, with progress), then attached one by one in the order chosen — a
-   * photo shows as added only once the server has stored it. One that fails
+   * time, with progress), then attached together in one request in the order
+   * chosen — a photo shows as added only once the server has stored it. One that fails
    * never stops the others; it is named so the seller can pick it again.
    */
   async function addImages(files: FileList | null): Promise<void> {
@@ -161,12 +161,11 @@ export default function SellerProductDetailPage() {
     setNotice(null);
     setImageBusy(imageUploadLabel(0, chosen.length));
     try {
-      const results = await uploadSellerProductImages(chosen, (fraction) => setImageBusy(imageUploadLabel(fraction, chosen.length)));
-      setImageBusy(imageUploadLabel(1, chosen.length));
-      for (const result of results) {
-        if (result.ok) showImages(await sellerApi.post<SellerProductDto>(`/seller/products/${id}/images`, { key: result.key }));
-      }
-      const failed = results.filter((result) => !result.ok);
+      // Uploaded in parallel, then attached together in one request, in the order chosen.
+      const { images, failed } = await addSellerProductImages(id, chosen, (fraction) =>
+        setImageBusy(imageUploadLabel(fraction, chosen.length)),
+      );
+      if (images) showImages(images);
       if (failed.length > 0) setNotice({ ok: false, text: failedUploadsText(failed) });
     } catch (error) {
       setNotice({ ok: false, text: error instanceof ApiRequestError ? sellerErrorMessage(error) : (error as Error).message });
@@ -280,7 +279,7 @@ export default function SellerProductDetailPage() {
                 onProgress: (fraction) => setImageBusy(imageUploadLabel(fraction, 1)),
               });
               setImageBusy('Replacing…');
-              showImages(await sellerApi.patch<SellerProductDto>(`/seller/products/${id}/images/${ids[index]}`, { key: imageKey }));
+              showImages((await sellerApi.patch<SellerProductDto>(`/seller/products/${id}/images/${ids[index]}`, { key: imageKey })).images);
             });
           }}
         />

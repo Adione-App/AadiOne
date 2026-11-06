@@ -27,7 +27,7 @@ import {
   imageUploadLabel,
   sellerErrorMessage,
   uploadSellerImage,
-  uploadSellerProductImages,
+  addSellerProductImages,
   type CreateSellerListingRequest,
   type CreateSellerProductRequest,
   type CreatedSellerProduct,
@@ -193,15 +193,11 @@ export function ProductFormModal({
     files.length === 0
       ? Promise.resolve()
       : run(imageUploadLabel(0, files.length), async () => {
-          const results = await uploadSellerProductImages(files, (fraction) => setImageBusy(imageUploadLabel(fraction, files.length)));
-          setImageBusy(imageUploadLabel(1, files.length));
-          let latest: SellerProductDto | undefined;
-          for (const result of results) {
-            if (!result.ok) continue;
-            latest = await sellerApi.post<SellerProductDto>(`/seller/products/${saved!.id}/images`, { key: result.key });
-            setSaved(latest);
-          }
-          const failed = results.filter((result) => !result.ok);
+          const { images, failed } = await addSellerProductImages(saved!.id, files, (fraction) =>
+            setImageBusy(imageUploadLabel(fraction, files.length)),
+          );
+          const latest = images ? { ...saved!, images } : undefined;
+          if (latest) setSaved(latest);
           if (failed.length > 0) setImageError(failedUploadsText(failed));
           return latest;
         });
@@ -327,22 +323,18 @@ export function ProductFormModal({
     }
     void queryClient.invalidateQueries({ queryKey: sellerKeys.products });
 
-    // Photos resized and uploaded together (with progress), then attached in
-    // gallery order, so the ★ Main one is attached first.
+    // Photos resized and uploaded together (with progress), then attached
+    // together in gallery order, so the ★ Main one is first.
     if (pendingFiles.length > 0) {
       const count = pendingFiles.length;
       setImageBusy(imageUploadLabel(0, count));
       let problemText: string | null = null;
       try {
-        const results = await uploadSellerProductImages(
+        const { failed } = await addSellerProductImages(
+          created.id,
           pendingFiles.map((pending) => pending.file),
           (fraction) => setImageBusy(imageUploadLabel(fraction, count)),
         );
-        setImageBusy(imageUploadLabel(1, count));
-        for (const result of results) {
-          if (result.ok) await sellerApi.post(`/seller/products/${created.id}/images`, { key: result.key });
-        }
-        const failed = results.filter((result) => !result.ok);
         if (failed.length > 0) problemText = failedUploadsText(failed);
       } catch (error) {
         problemText = error instanceof ApiRequestError ? sellerErrorMessage(error) : (error as Error).message;

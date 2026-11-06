@@ -77,16 +77,27 @@ export const attachSellerContext: RequestHandler = (req: Request, _res: Response
  * rows only (see `attachSellerContext` for the multi-membership rule).
  */
 export async function resolveOwnSellerId(req: Request): Promise<string> {
+  return (await resolveOwnSeller(req)).sellerId;
+}
+
+/**
+ * `resolveOwnSellerId` plus that seller's lifecycle status in the SAME query
+ * (one round trip instead of two — the lifecycle gate runs on every seller
+ * request). `lifecycleStatus` is null when the seller row is missing or
+ * soft-deleted.
+ */
+export async function resolveOwnSeller(req: Request): Promise<{ sellerId: string; lifecycleStatus: string | null }> {
   const user = req.user;
   if (!user) {
     throw new AppError(ErrorCode.UNAUTHENTICATED, { internalMessage: 'resolveOwnSellerId without authenticate' });
   }
 
-  const memberships = await prisma.sellerStaff.findMany({
-    where: { userId: user.id, isActive: true },
-    select: { sellerId: true },
-    orderBy: { createdAt: 'asc' },
-  });
+  const memberships = await prisma.$queryRaw<{ seller_id: string; lifecycle_status: string | null }[]>`
+    SELECT ss.seller_id, CASE WHEN s.deleted_at IS NULL THEN s.lifecycle_status::text END AS lifecycle_status
+      FROM seller_staff ss
+      LEFT JOIN sellers s ON s.id = ss.seller_id
+     WHERE ss.user_id = ${user.id}::uuid AND ss.is_active
+     ORDER BY ss.created_at ASC`;
 
   if (memberships.length === 0) {
     throw new AppError(ErrorCode.FORBIDDEN, {
@@ -95,10 +106,11 @@ export async function resolveOwnSellerId(req: Request): Promise<string> {
     });
   }
 
-  if (memberships.length === 1) return memberships[0]!.sellerId;
+  const pick = (row: { seller_id: string; lifecycle_status: string | null }) => ({ sellerId: row.seller_id, lifecycleStatus: row.lifecycle_status });
+  if (memberships.length === 1) return pick(memberships[0]!);
 
   const requestedSellerId = req.header('x-seller-id');
-  const match = memberships.find((m) => m.sellerId === requestedSellerId);
+  const match = memberships.find((m) => m.seller_id === requestedSellerId);
 
   if (!match) {
     throw new AppError(ErrorCode.VALIDATION_ERROR, {
@@ -107,7 +119,7 @@ export async function resolveOwnSellerId(req: Request): Promise<string> {
     });
   }
 
-  return match.sellerId;
+  return pick(match);
 }
 
 /** Reads `req.sellerId`, throwing if `attachSellerContext` never ran (or an

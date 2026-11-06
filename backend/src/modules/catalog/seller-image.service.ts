@@ -22,14 +22,14 @@
  * storage layer's and the admin catalogue's, unchanged.
  */
 
-import { createHmac } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { ErrorCode, type SellerProductDto } from '../../shared';
 import { AppError } from '../../common/errors';
 import { env } from '../../config/env';
 import { prisma, runInTransaction, type Tx } from '../../infra/db/prisma';
 import { assertUploadable, storage, type PresignedUpload } from '../../infra/storage';
-import { attachProductImage, discardProcessedImage, removeProductImage } from './product-image.service';
-import { processUploadedImage, removeProductImageFileIfUnused } from './uploaded-image.service';
+import { discardProcessedImage, removeProductImage } from './product-image.service';
+import { plannedImageUrls, processUploadedImage, removeProductImageFileIfUnused } from './uploaded-image.service';
 import { loadEditableOwnProduct, lockSellerForProductEdit } from './product-approval.service';
 import { getOwnProduct } from './seller-product.service';
 
@@ -107,20 +107,184 @@ export async function putSellerUpload(
   return { url: stored.url };
 }
 
+/** How many uploads one attach processes at once (download + decode + encode + store each). */
+const PARALLEL_IMAGE_PROCESSING = 3;
+
+/** An upload that could not be attached, and why (the seller is told, and can pick it again). */
+export interface FailedImageAttach {
+  key: string;
+  message: string;
+}
+
+/**
+ * The product's editable window and free gallery places, in ONE query (the
+ * same answers and messages as loadEditableOwnProduct + a count) — checked
+ * BEFORE any image work, so a refused attach costs no processing.
+ */
+async function assertImagesCanBeAdded(
+  sellerId: string,
+  productId: string,
+  adding: number,
+  client: Tx | typeof prisma = prisma,
+  /** Image URLs these uploads will be stored under: the ones this product already shows are reported, not counted. */
+  plannedUrls: string[] = [],
+): Promise<Set<string>> {
+  const [product] = await client.$queryRaw<
+    { seller_id: string | null; approved: boolean; under_review: boolean; images: number; attached: string[] | null }[]
+  >`
+    SELECT p.submitted_by_seller_id AS seller_id,
+           p.approval_status = 'APPROVED' AS approved,
+           EXISTS (SELECT 1 FROM product_approval_batch_items i WHERE i.product_id = p.id AND i.status = 'PENDING') AS under_review,
+           (SELECT count(*) FROM product_images pi WHERE pi.product_id = p.id)::int AS images,
+           (SELECT array_agg(pi.url) FROM product_images pi WHERE pi.product_id = p.id AND pi.url = ANY(${plannedUrls}::text[])) AS attached
+      FROM products p
+     WHERE p.id = ${productId}::uuid AND p.deleted_at IS NULL`;
+  if (!product || product.seller_id !== sellerId) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Product not found.' });
+  if (!product.approved && product.under_review) {
+    throw new AppError(ErrorCode.INVALID_STATUS_TRANSITION, {
+      message: 'This product is under review. It can be edited again if it is rejected.',
+    });
+  }
+  const attached = new Set(product.attached ?? []);
+  if (product.images + adding - attached.size > MAX_SELLER_PRODUCT_IMAGES) throw tooManyImages();
+  return attached;
+}
+
+/** `items` through `run`, at most `limit` at a time; results in input order, failures included. */
+async function settleLimited<T, R>(items: readonly T[], limit: number, run: (item: T) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++;
+      try {
+        results[index] = { status: 'fulfilled', value: await run(items[index]!) };
+      } catch (reason) {
+        results[index] = { status: 'rejected', reason };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+/**
+ * Attaches one or more uploads (the seller's photos, in the order chosen) in
+ * ONE request — the slow part done once for all of them:
+ *
+ *   1. one query: own product, editable, room in the gallery (fail fast);
+ *   2. every upload processed in parallel (up to PARALLEL_IMAGE_PROCESSING):
+ *      download, validate by decoding, WebP + card thumbnail, store — the same
+ *      pipeline as always (processUploadedImage);
+ *   3. one transaction: the submission lock, then ONE guarded INSERT of all
+ *      the rows in the chosen order after the current last image — refused
+ *      whole if the product went under review or the gallery filled meanwhile;
+ *   4. the audit rows and the answer — the product's gallery, in order — in
+ *      parallel. Attaching photos changes nothing else of the product, so the
+ *      panel merges the gallery into the product it already shows (the whole
+ *      product would cost six more sequential reads).
+ *
+ * An upload that fails step 2 never stops the others; it is reported in
+ * `failed` (and nothing of it is left behind). When none can be attached the
+ * first failure is thrown, so a single attach behaves exactly as before. A
+ * refused step 3 removes every file just processed (never one in use).
+ */
+export async function attachSellerImages(
+  sellerId: string,
+  productId: string,
+  inputs: readonly { key: string; altText?: string | null }[],
+  actorUserId: string,
+): Promise<{ images: SellerProductDto['images']; failed: FailedImageAttach[] }> {
+  // A retried attach (its answer was lost on the way) finds its photos
+  // already on the product: they count as attached — never a second row.
+  const planned = inputs.map((input) => plannedImageUrls(input.key).url);
+  const already = await assertImagesCanBeAdded(sellerId, productId, inputs.length, prisma, planned);
+  for (const input of inputs) assertOwnKey(sellerId, input.key);
+  if (new Set(inputs.map((input) => input.key)).size !== inputs.length) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'The same upload was sent twice.' });
+  }
+  const todo = inputs.filter((_, index) => !already.has(planned[index]!));
+  if (todo.length === 0) return { images: await galleryOf(productId), failed: [] };
+
+  const processed = await settleLimited(todo, PARALLEL_IMAGE_PROCESSING, (input) => processUploadedImage(input.key, 'product'));
+  const ready = todo.flatMap((input, index) => {
+    const result = processed[index]!;
+    return result.status === 'fulfilled' ? [{ ...input, ...result.value, id: randomUUID() }] : [];
+  });
+  const failed = todo.flatMap((input, index) => {
+    const result = processed[index]!;
+    if (result.status === 'fulfilled') return [];
+    const reason = result.reason;
+    return [{ key: input.key, message: reason instanceof AppError ? reason.message : 'This image could not be processed. Please try again.', reason }];
+  });
+  if (ready.length === 0) throw failed[0]!.reason;
+
+  try {
+    await runInTransaction(async (tx) => {
+      await lockSellerForProductEdit(tx, sellerId);
+      // Read after the lock (a fresh snapshot): a submission that just
+      // committed is seen, and the rows go after the current last image.
+      const inserted = await tx.$queryRaw<{ id: string }[]>`
+        INSERT INTO product_images (id, product_id, variant_id, url, thumb_url, card_url, alt_text, display_order, created_at)
+        SELECT n.id, p.id, NULL, n.url, n.thumb, n.thumb, n.alt,
+               COALESCE((SELECT max(pi.display_order) FROM product_images pi WHERE pi.product_id = p.id), -1) + n.ord::int,
+               now()
+          FROM products p
+         CROSS JOIN unnest(
+               ${ready.map((image) => image.id)}::uuid[],
+               ${ready.map((image) => image.url)}::text[],
+               ${ready.map((image) => image.thumbUrl)}::text[],
+               ${ready.map((image) => image.altText ?? null)}::text[]
+             ) WITH ORDINALITY AS n(id, url, thumb, alt, ord)
+         WHERE p.id = ${productId}::uuid
+           AND p.deleted_at IS NULL
+           AND p.submitted_by_seller_id = ${sellerId}::uuid
+           AND (p.approval_status = 'APPROVED'
+                OR NOT EXISTS (SELECT 1 FROM product_approval_batch_items i WHERE i.product_id = p.id AND i.status = 'PENDING'))
+           AND (SELECT count(*) FROM product_images pi WHERE pi.product_id = p.id) + ${ready.length} <= ${MAX_SELLER_PRODUCT_IMAGES}
+        RETURNING id`;
+      if (inserted.length !== ready.length) {
+        // Refused: say why, exactly as before (product gone / under review / gallery full).
+        await assertImagesCanBeAdded(sellerId, productId, ready.length, tx);
+        throw tooManyImages();
+      }
+    });
+  } catch (error) {
+    await Promise.all(ready.map((image) => discardProcessedImage(image)));
+    throw error;
+  }
+
+  const [images] = await Promise.all([
+    galleryOf(productId),
+    // One audit row per photo, as before (before = JSON null), in ONE statement:
+    // createMany would wrap it in a transaction of its own (three round trips).
+    prisma.$executeRaw`
+      INSERT INTO audit_logs (id, actor_user_id, action, entity_type, entity_id, before, after, created_at)
+      SELECT n.id, ${actorUserId}::uuid, 'product.image.attach', 'ProductImage', n.image_id, 'null'::jsonb,
+             jsonb_build_object('productId', ${productId}::text, 'key', n.key), now()
+        FROM unnest(${ready.map(() => randomUUID())}::uuid[], ${ready.map((image) => image.id)}::text[], ${ready.map((image) => image.key)}::text[])
+             AS n(id, image_id, key)`,
+  ]);
+  return { images, failed: failed.map(({ key, message }) => ({ key, message })) };
+}
+
+/** A product's photos as the seller's product answer lists them (image 1 = the main one). */
+function galleryOf(productId: string): Promise<SellerProductDto['images']> {
+  return prisma.productImage.findMany({
+    where: { productId },
+    orderBy: { displayOrder: 'asc' },
+    select: { id: true, url: true, thumbUrl: true, altText: true, displayOrder: true },
+  });
+}
+
+/** One upload — attachSellerImages with a single key; answers with the whole product, as this route always has. */
 export async function attachSellerImage(
   sellerId: string,
   productId: string,
   input: { key: string; altText?: string | null },
   actorUserId: string,
 ): Promise<SellerProductDto> {
-  await loadEditableOwnProduct(sellerId, productId);
-  assertOwnKey(sellerId, input.key);
-  if ((await prisma.productImage.count({ where: { productId } })) >= MAX_SELLER_PRODUCT_IMAGES) throw tooManyImages();
-  await attachProductImage({ productId, key: input.key, altText: input.altText ?? null }, actorUserId, async (tx) => {
-    await assertStillEditable(tx, sellerId, productId);
-    // Two uploads at once can't both take the last place.
-    if ((await tx.productImage.count({ where: { productId } })) >= MAX_SELLER_PRODUCT_IMAGES) throw tooManyImages();
-  });
+  await attachSellerImages(sellerId, productId, [input], actorUserId);
   return getOwnProduct(sellerId, productId);
 }
 

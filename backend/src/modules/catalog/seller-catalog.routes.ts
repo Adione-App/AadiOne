@@ -543,6 +543,25 @@ sellerCatalogRouter.post(
   }),
 );
 
+/**
+ * Several uploads attached in one go, in the order given (they follow the
+ * current last image): processed in parallel, written together. 201 with the
+ * product's gallery (`images`, in order) and any uploads that could not be
+ * used (`failed`, each with why).
+ */
+sellerCatalogRouter.post(
+  '/products/:id/images/batch',
+  requirePermission(Permission.SELLER_CATALOG_MANAGE),
+  validate({
+    params: z.object({ id: uuid }),
+    body: z.object({ images: z.array(attachImageSchema).min(1).max(imageService.MAX_SELLER_PRODUCT_IMAGES) }).strict(),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { images } = req.body as { images: { key: string; altText?: string | null }[] };
+    created(res, await imageService.attachSellerImages(requireSellerId(req), req.params['id'] as string, images, requireUser(req).id));
+  }),
+);
+
 /** Replace one image's file in place (same position; a replaced main image stays main). */
 sellerCatalogRouter.patch(
   '/products/:id/images/:imageId',

@@ -23,12 +23,14 @@
  */
 
 import {
+  CATEGORY_PATH_PATTERN,
   CATEGORY_PLACEMENT_INFO,
   DEFAULT_CATEGORY_SECTION,
   DEFAULT_HOME_SECTION,
   DEFAULT_PRODUCT_SHELF,
   HOME_CUSTOM_SECTION_MAX,
   HOME_SECTION_ID_PATTERN,
+  HOME_TEXT_LIMITS,
   PRODUCT_SHELF_COUNT_LIMITS,
   PRODUCT_SHELF_SOURCE_INFO,
   homeSectionInfo,
@@ -40,6 +42,7 @@ import {
   type HomeRepeatableSectionKind,
   type HomeSectionConfig,
   type ProductShelfConfig,
+  type ProductShelfSource,
 } from './home-layout';
 
 const ID_PREFIX: Record<HomeRepeatableSectionKind, string> = { product_shelf: 'shelf', category_section: 'cats' };
@@ -77,6 +80,53 @@ export function createHomeSection(
     shelf,
     categories: kind === 'category_section' ? { ...structuredCopy(DEFAULT_CATEGORY_SECTION), ...structuredCopy(init.categories ?? {}) } : null,
   };
+}
+
+/**
+ * A product shelf that draws from exactly ONE category is a "category
+ * products" section — what the builder calls it:
+ *   main  a main category's products (its subcategories included), "grocery"
+ *   sub   one subcategory's products, "grocery/fruits"
+ * Null for every other shelf (several categories, the whole catalogue, or
+ * picked by hand). Only a label: the shelf itself is an ordinary product
+ * shelf, resolved, validated and shown exactly like any other.
+ */
+export type CategoryShelfKind = 'main' | 'sub';
+export const CATEGORY_SHELF_KIND_LABEL: Record<CategoryShelfKind, string> = {
+  main: 'Main category section',
+  sub: 'Subcategory section',
+};
+export function categoryShelfKind(shelf: ProductShelfConfig | null | undefined): CategoryShelfKind | null {
+  if (!shelf || shelf.source === 'manual' || shelf.categoryPaths.length !== 1) return null;
+  return shelf.categoryPaths[0]!.includes('/') ? 'sub' : 'main';
+}
+
+/** The orders a category products section can use (picking by hand is a plain product shelf). */
+export const CATEGORY_SHELF_SOURCES = ['latest', 'bestselling', 'random'] as const satisfies readonly ProductShelfSource[];
+export type CategoryShelfSource = (typeof CATEGORY_SHELF_SOURCES)[number];
+
+/**
+ * A new "category products" section: the products of one category or
+ * subcategory (`path`) as a scrolling row of `count`, headed `title` (every
+ * shelf needs one — the builder suggests the category's name), with View All
+ * opening exactly that category. Null when the path is not a category path.
+ */
+export function createCategoryProductSection(
+  id: string,
+  input: { path: string; title: string; count: number; source?: CategoryShelfSource },
+): HomeSectionConfig | null {
+  if (!CATEGORY_PATH_PATTERN.test(input.path)) return null;
+  const count = Math.min(PRODUCT_SHELF_COUNT_LIMITS.max, Math.max(PRODUCT_SHELF_COUNT_LIMITS.min, Math.round(input.count)));
+  return createHomeSection('product_shelf', id, {
+    title: input.title.trim().slice(0, HOME_TEXT_LIMITS.title) || null,
+    shelf: {
+      source: input.source ?? 'latest',
+      categoryPaths: [input.path],
+      count,
+      layout: 'carousel',
+      viewAll: { type: 'category', path: input.path },
+    },
+  });
 }
 
 /** `layout` with a new section inserted at `at` (default: the end). Null when the page already has the most added sections allowed. */

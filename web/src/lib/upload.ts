@@ -19,6 +19,7 @@
 
 import { getAccessToken } from "./api";
 import { prepareImageForUpload } from "./imagePrep";
+import { isRetryableStatus, withRetry } from "./retry";
 
 const API_BASE =
   (import.meta.env["VITE_API_URL"] as string | undefined) ?? "/api/v1";
@@ -87,7 +88,8 @@ function putWithProgress(
       };
     }
     request.onload = () => resolve(request.status);
-    request.onerror = () => reject(new Error("The image upload failed — check your connection and try again."));
+    // A TypeError, like fetch's network failure, so lib/retry.ts tries it again.
+    request.onerror = () => reject(new TypeError("The image upload failed — check your connection and try again."));
     request.onabort = () => reject(new Error("The image upload was cancelled."));
     request.send(body);
   });
@@ -223,9 +225,20 @@ export async function uploadProductImage(
    * It is already supplied by target.headers and MUST match the
    * value that was signed by the backend.
    */
-  const status = options.onProgress
-    ? await putWithProgress(target.uploadUrl, headers, file, options.onProgress)
-    : (await fetch(target.uploadUrl, { method: "PUT", headers, body: file })).status;
+  // A dropped connection or a storage hiccup (5xx / 408 / 429) is tried again
+  // (lib/retry.ts) with the same signed target: the same key, the same bytes.
+  const body = file;
+  const status = await withRetry(async () => {
+    const answer = options.onProgress
+      ? await putWithProgress(target.uploadUrl, headers, body, options.onProgress)
+      : (await fetch(target.uploadUrl, { method: "PUT", headers, body })).status;
+    if (isRetryableStatus(answer)) throw Object.assign(new Error(`storage answered ${answer}`), { status: answer });
+    return answer;
+  }).catch((error: unknown) => {
+    const failed = (error as { status?: unknown }).status;
+    if (typeof failed === "number") return failed;
+    throw error;
+  });
 
   /* ---------------------------------------------------------------------- */
   /* 6. Handle upload errors                                                */

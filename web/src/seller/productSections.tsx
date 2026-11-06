@@ -21,10 +21,9 @@ import {
   sellerErrorMessage,
   type ListingVisibility,
   type SellerAvailability,
-  type SellerListingInventory,
   type StockMovement,
 } from './sellerApi';
-import { sellerKeys, useApplyListing, useSellerAvailability } from './sellerQueries';
+import { sellerKeys, useSellerAvailability, useStockBatcher } from './sellerQueries';
 import { NoticeBar, VISIBILITY, VisibilityPill, dateTime, toPaise, type Notice } from './productUi';
 
 export function Section({ id, title, subtitle, action, children }: { id: string; title: string; subtitle?: string; action?: ReactNode; children: ReactNode }) {
@@ -201,40 +200,33 @@ function FoodAvailabilityPanel({ listing, label, onChanged }: { listing: Listing
   );
 }
 
-function StockPanel({ listing, label, onChanged }: { listing: ListingFigures; label: string; onChanged: () => Promise<unknown> }) {
+function StockPanel({ listing, label }: { listing: ListingFigures; label: string; onChanged: () => Promise<unknown> }) {
   const [direction, setDirection] = useState<1 | -1>(1);
   const [qty, setQty] = useState('');
   const [note, setNote] = useState('');
   const [notice, setNotice] = useState<Notice | null>(null);
-  // True while the change is on its way. The server's answer is put on screen
-  // as soon as it arrives (every cached copy), so the next tap acts on the
-  // confirmed numbers; the full re-read then runs in the background.
-  const [busy, setBusy] = useState(false);
-  const applyListing = useApplyListing();
+  // Every change goes through the shared batcher (stockBatch.ts): the figures
+  // move at once, quick taps are added up and sent as one change, nothing is
+  // disabled while an earlier change is on its way, and a refused change is
+  // taken back. The confirmation patches every cached copy of the listing and
+  // re-reads the history below; the lists are only marked out of date.
+  const stock = useStockBatcher({
+    onSettled: (listingId, outcome) => {
+      if (listingId === listing.id && !outcome.ok) setNotice({ ok: false, text: sellerErrorMessage(outcome.error) });
+    },
+  });
+  const saving = stock.busy(listing.id);
   const movements = useQuery({
     queryKey: [...sellerKeys.listings, listing.id, 'movements'],
     queryFn: () => sellerApi.get<StockMovement[]>(`/seller/listings/${listing.id}/stock-movements`),
   });
-  const adjust = useMutation({
-    mutationFn: (body: { delta: number; note?: string }) =>
-      sellerApi.post<SellerListingInventory>(`/seller/listings/${listing.id}/stock-adjust`, body),
-  });
 
-  async function apply(delta: number, withNote?: string): Promise<void> {
+  function apply(delta: number, withNote?: string): void {
     setNotice(null);
-    setBusy(true);
-    try {
-      const confirmed = await adjust.mutateAsync({ delta, ...(withNote?.trim() ? { note: withNote.trim() } : {}) });
-      applyListing(confirmed);
+    stock.adjust(listing.id, delta, label, withNote);
+    if (withNote !== undefined) {
       setQty('');
       setNote('');
-      void onChanged();
-      void movements.refetch();
-      setNotice({ ok: true, text: `${delta > 0 ? 'Added' : 'Removed'} ${Math.abs(delta)} unit${Math.abs(delta) === 1 ? '' : 's'} of ${label}.` });
-    } catch (error) {
-      setNotice({ ok: false, text: sellerErrorMessage(error) });
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -249,7 +241,12 @@ function StockPanel({ listing, label, onChanged }: { listing: ListingFigures; la
       <div className="grid grid-cols-3 gap-2">
         <Figure label="In stock" value={listing.stockQty} hint="on your shelf" />
         <Figure label="Reserved" value={listing.reservedQty} hint="held for open orders" />
-        <Figure label="Available" value={listing.availableQty} tone={out ? 'text-danger-600' : low ? 'text-warn-500' : 'text-brand-600'} hint="customers can buy" />
+        <Figure
+          label="Available"
+          value={listing.availableQty}
+          tone={out ? 'text-danger-600' : low ? 'text-warn-500' : 'text-brand-600'}
+          hint={saving ? 'saving…' : 'customers can buy'}
+        />
       </div>
       {(out || low) && (
         <p className={`rounded-xl px-3 py-2 text-sm ${out ? 'bg-danger-50 text-danger-600' : 'bg-warn-50 text-gray-700'}`}>
@@ -263,8 +260,8 @@ function StockPanel({ listing, label, onChanged }: { listing: ListingFigures; la
             key={delta}
             type="button"
             className={quick}
-            disabled={busy || (delta < 0 && listing.availableQty + delta < 0)}
-            onClick={() => void apply(delta)}
+            disabled={delta < 0 && listing.availableQty + delta < 0}
+            onClick={() => apply(delta)}
           >
             {delta > 0 ? `+${delta}` : `−${Math.abs(delta)}`}
           </button>
@@ -291,8 +288,12 @@ function StockPanel({ listing, label, onChanged }: { listing: ListingFigures; la
           <input value={qty} onChange={(event) => setQty(event.target.value.replace(/\D/g, ''))} inputMode="numeric" placeholder="Qty" aria-label="Quantity" className={`${inputClass} min-w-0 flex-1`} />
         </div>
         <input value={note} onChange={(event) => setNote(event.target.value)} maxLength={200} placeholder="Note (optional), e.g. new delivery" aria-label="Note" className={inputClass} />
-        <Button onClick={() => void apply(direction * amount, note)} disabled={!validAmount || busy} className="w-full sm:w-auto">
-          {busy ? 'Saving…' : validAmount ? `${direction > 0 ? 'Add' : 'Remove'} ${amount}` : 'Enter a quantity'}
+        <Button
+          onClick={() => apply(direction * amount, note)}
+          disabled={!validAmount || (direction < 0 && listing.availableQty - amount < 0)}
+          className="w-full sm:w-auto"
+        >
+          {validAmount ? `${direction > 0 ? 'Add' : 'Remove'} ${amount}` : 'Enter a quantity'}
         </Button>
         <p className="text-xs text-gray-500">
           Stock can never go below what is reserved for open orders ({listing.reservedQty}). Each change is recorded with who made it and when.

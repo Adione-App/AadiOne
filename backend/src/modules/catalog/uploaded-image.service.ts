@@ -150,13 +150,14 @@ export async function processUploadedImage(key: string, kind: UploadedImageKind)
   const thumbUrl = storage.publicUrl(thumbKey);
 
   // The same upload attached a second time: its files already exist and are in
-  // use — reuse them rather than re-encoding (and degrading) them.
-  if (await isStorageKeyReferenced(imageKey)) {
+  // use — reuse them rather than re-encoding (and degrading) them. Checked
+  // while the upload downloads (two independent round trips, run together).
+  const [alreadyStored, source] = await Promise.all([isStorageKeyReferenced(imageKey), storage.get(key, MAX_IMAGE_BYTES)]);
+  if (alreadyStored) {
     const thumbInUse = kind === 'product' && (await isStorageKeyReferenced(thumbKey));
     return { url: imageUrl, thumbUrl: thumbInUse ? thumbUrl : imageUrl, width: null, height: null };
   }
 
-  const source = await storage.get(key, MAX_IMAGE_BYTES);
   if (!source) {
     throw new AppError(ErrorCode.VALIDATION_ERROR, {
       message: 'The uploaded image could not be found. Please upload it again.',

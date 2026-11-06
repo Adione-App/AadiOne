@@ -40,6 +40,9 @@ import {
   PRODUCT_SHELF_SOURCE_INFO,
   Permission,
   addHomeSection,
+  CATEGORY_SHELF_KIND_LABEL,
+  categoryShelfKind,
+  createCategoryProductSection,
   canDuplicateHomeSection,
   categoryPlacementLimit,
   contentColor,
@@ -73,6 +76,7 @@ import { uploadHomeBackground, useCategoryOptions, useLayoutEditor, useShelfPrev
 import { ColorPicker, DragHandle, MoveButtons, NoticeLine, PublishBar, backgroundCss, useDragReorder, type Notice } from './homeLayoutUi';
 import { PlacementEditor, categoriesForLevel, placementCategories } from './CategoryDisplay';
 import { CategorySectionEditor, ShelfEditor, categoryPathLabel } from './homeShelfEditor';
+import { CategoryProductSectionDialog, type CategoryProductSectionInput } from './categoryProductSection';
 
 const SPACING_LABEL = { compact: 'Compact', normal: 'Normal', relaxed: 'Relaxed' } as const;
 const BACKGROUND_TYPE_LABEL = { solid: 'Solid colour', gradient: 'Gradient', image: 'Image' } as const;
@@ -86,6 +90,7 @@ export default function HomeBuilderPage() {
   const categories = useCategoryOptions();
   const [notice, setNotice] = useState<Notice>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const [addingCategorySection, setAddingCategorySection] = useState(false);
   const drag = useDragReorder((from, to) => editor.update((l) => void Object.assign(l, moveHomeSection(l, from, to))));
 
   const liveBanners = useMemo(() => {
@@ -114,6 +119,19 @@ export default function HomeBuilderPage() {
       const next = addHomeSection(l, createHomeSection(kind, id));
       if (next) Object.assign(l, next);
     });
+    setOpen(id);
+  };
+
+  /** A category products section (one main category or subcategory) at the end of the page, opened for editing. */
+  const addCategorySection = (input: CategoryProductSectionInput) => {
+    const id = newHomeSectionId('product_shelf', layout);
+    const section = createCategoryProductSection(id, input);
+    if (!section) return;
+    update((l) => {
+      const next = addHomeSection(l, section);
+      if (next) Object.assign(l, next);
+    });
+    setAddingCategorySection(false);
     setOpen(id);
   };
 
@@ -289,6 +307,9 @@ export default function HomeBuilderPage() {
               </div>
               {canEdit && (
                 <div className="flex flex-wrap gap-2">
+                  <Button disabled={addedCount >= HOME_CUSTOM_SECTION_MAX || !categories.data} onClick={() => setAddingCategorySection(true)}>
+                    <Icon name="plus" className="h-4 w-4" /> Category products
+                  </Button>
                   {(['product_shelf', 'category_section'] as const).map((kind) => (
                     <Button key={kind} variant="soft" disabled={addedCount >= HOME_CUSTOM_SECTION_MAX} onClick={() => addSection(kind)}>
                       <Icon name="plus" className="h-4 w-4" /> {HOME_REPEATABLE_SECTION_INFO[kind].label}
@@ -368,6 +389,15 @@ export default function HomeBuilderPage() {
           <HomePreview layout={editor.resolved} banners={liveBanners} categories={categories.data ?? []} />
         </div>
       </div>
+
+      {addingCategorySection && (
+        <CategoryProductSectionDialog
+          options={categories.data ?? []}
+          layout={layout}
+          onAdd={addCategorySection}
+          onClose={() => setAddingCategorySection(false)}
+        />
+      )}
     </div>
   );
 }
@@ -426,7 +456,8 @@ function sectionSummary(
     const shelf = section.shelf;
     const scope = shelf.categoryPaths.length ? shelf.categoryPaths.map((path) => categoryName(path) ?? path).join(', ') : 'whole catalogue';
     const picked = shelf.source === 'manual' ? ` · ${shelf.productIds.length} chosen${shelf.fillFromScope ? ' + top-up' : ''}` : '';
-    return `${PRODUCT_SHELF_SOURCE_INFO[shelf.source].label} · ${scope}${picked} · up to ${shelf.count} · ${shelf.layout === 'grid' ? `grid of ${shelf.columns}` : 'scrolling row'}`;
+    const kind = categoryShelfKind(shelf);
+    return `${kind ? `${CATEGORY_SHELF_KIND_LABEL[kind]} · ` : ''}${PRODUCT_SHELF_SOURCE_INFO[shelf.source].label} · ${scope}${picked} · up to ${shelf.count} · ${shelf.layout === 'grid' ? `grid of ${shelf.columns}` : 'scrolling row'}`;
   }
   if (section.categories) {
     const config = section.categories;

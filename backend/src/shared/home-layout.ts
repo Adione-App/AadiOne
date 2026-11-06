@@ -326,7 +326,7 @@ export const PRODUCT_SHELF_SOURCE_INFO: Record<ProductShelfSource, { label: stri
 };
 
 export const PRODUCT_SHELF_COUNT_LIMITS = { min: 1, max: 30 } as const;
-export const PRODUCT_SHELF_COUNT_PRESETS = [4, 6, 8, 10, 15, 20] as const;
+export const PRODUCT_SHELF_COUNT_PRESETS = [4, 6, 8, 10, 12, 15, 20] as const;
 /** Categories one shelf may draw from. */
 export const PRODUCT_SHELF_SCOPE_MAX = 10;
 /** Products one shelf may list by hand. */

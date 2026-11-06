@@ -153,60 +153,63 @@ async function adminDisableNotes(productIds: string[]): Promise<Map<string, { re
 }
 
 async function findOwnProducts(sellerId: string, productId?: string): Promise<SellerProductInventoryDto[]> {
-  const store = await prisma.seller.findUnique({
-    where: { id: sellerId },
-    select: { isActive: true, deletedAt: true, onboardingStatus: true },
-  });
-  const products = await prisma.product.findMany({
-    where: { submittedBySellerId: sellerId, deletedAt: null, ...(productId ? { id: productId } : {}) },
-    select: {
-      ...PRODUCT_FIELDS,
-      deletedAt: true,
-      attributes: true,
-      variants: {
-        where: { deletedAt: null },
-        orderBy: VARIANT_ORDER,
-        select: {
-          ...VARIANT_FIELDS,
-          status: true,
-          deletedAt: true,
-          isDefault: true,
-          optionValues: true,
-          approvalStatus: true,
-          // Only ever this seller's own listing — never another seller's price.
-          sellerListings: {
-            where: { sellerId },
-            select: {
-              id: true,
-              mrpPaise: true,
-              pricePaise: true,
-              stockQty: true,
-              reservedQty: true,
-              isAvailable: true,
-              tracksStock: true,
-              lowStockThreshold: true,
-              maxQtyPerOrder: true,
-              updatedAt: true,
+  // The store and its products are independent reads: one round-trip wave, not two.
+  const [store, products] = await Promise.all([
+    prisma.seller.findUnique({
+      where: { id: sellerId },
+      select: { isActive: true, deletedAt: true, onboardingStatus: true },
+    }),
+    prisma.product.findMany({
+      where: { submittedBySellerId: sellerId, deletedAt: null, ...(productId ? { id: productId } : {}) },
+      select: {
+        ...PRODUCT_FIELDS,
+        deletedAt: true,
+        attributes: true,
+        variants: {
+          where: { deletedAt: null },
+          orderBy: VARIANT_ORDER,
+          select: {
+            ...VARIANT_FIELDS,
+            status: true,
+            deletedAt: true,
+            isDefault: true,
+            optionValues: true,
+            approvalStatus: true,
+            // Only ever this seller's own listing — never another seller's price.
+            sellerListings: {
+              where: { sellerId },
+              select: {
+                id: true,
+                mrpPaise: true,
+                pricePaise: true,
+                stockQty: true,
+                reservedQty: true,
+                isAvailable: true,
+                tracksStock: true,
+                lowStockThreshold: true,
+                maxQtyPerOrder: true,
+                updatedAt: true,
+              },
             },
           },
         },
-      },
-      images: {
-        orderBy: { displayOrder: 'asc' },
-        select: { id: true, url: true, thumbUrl: true, altText: true, displayOrder: true },
-      },
-      approvalBatchItems: {
-        orderBy: { createdAt: 'desc' },
-        select: {
-          id: true,
-          status: true,
-          reviewNote: true,
-          batch: { select: { id: true, status: true, submittedAt: true } },
+        images: {
+          orderBy: { displayOrder: 'asc' },
+          select: { id: true, url: true, thumbUrl: true, altText: true, displayOrder: true },
+        },
+        approvalBatchItems: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            status: true,
+            reviewNote: true,
+            batch: { select: { id: true, status: true, submittedAt: true } },
+          },
         },
       },
-    },
-    orderBy: { createdAt: 'desc' },
-  });
+      orderBy: { createdAt: 'desc' },
+    }),
+  ]);
 
   const disabledNotes = await adminDisableNotes(
     products.filter((product) => product.status === ProductStatusValue.ARCHIVED).map((product) => product.id),

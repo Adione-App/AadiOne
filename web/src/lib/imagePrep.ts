@@ -5,17 +5,19 @@
  * images at 1200 px (image-optimizer.ts, profile `product`) anyway. Sending
  * the full file cost the upload time of every one of those megabytes, then a
  * 12-megapixel decode on the server. Here the photo is scaled to at most
- * MAX_EDGE px — above the server's 1200 px, so the stored image is as sharp
- * as before and a card crop still has detail — and re-encoded as WebP (JPEG
- * where the browser cannot write WebP; a PNG with transparency stays PNG
- * then, so its transparency is never flattened).
+ * MAX_EDGE px — exactly the server's stored size, so the server never has to
+ * resize it again (one resample from the camera photo, not two, and ~45%
+ * fewer bytes than the 1600 px this used to send) — and re-encoded as WebP
+ * (JPEG where the browser cannot write WebP; a PNG with transparency stays
+ * PNG then, so its transparency is never flattened).
  *
  * The server still checks and optimizes every upload exactly as before; this
  * only sends it fewer bytes. Any failure here (an old browser, a decode error)
  * falls back to the original file — never a blocked upload.
  */
 
-export const MAX_EDGE = 1600;
+/** = IMAGE_PROFILES.product.maxWidth / maxHeight on the server (image-optimizer.ts). */
+export const MAX_EDGE = 1200;
 export const WEBP_QUALITY = 0.86;
 /** A file this small and already within MAX_EDGE is sent as it is. */
 export const SMALL_ENOUGH_BYTES = 600 * 1024;

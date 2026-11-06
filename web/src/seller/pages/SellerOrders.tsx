@@ -187,7 +187,7 @@ export default function SellerOrdersPage() {
       <Surface className="grid gap-3 p-3 sm:grid-cols-[1fr_auto_auto_auto] sm:items-end">
         <div>
           <span className="mb-1 block text-xs font-medium text-gray-500">Order number</span>
-          <SearchBox value={search} onChange={setSearch} placeholder="Search by order number…" label="Search by order number" />
+          <SearchBox value={search} onChange={setSearch} placeholder="Order number, phone, customer or item…" label="Search orders" />
         </div>
         <label className="block">
           <span className="mb-1 block text-xs font-medium text-gray-500">From</span>

@@ -1103,6 +1103,15 @@ model Product {
   /// no future migration ever drops it.
   searchVector Unsupported("tsvector")? @map("search_vector")
 
+  /// Smart Search: true while this product's `product_search_terms` rows are
+  /// missing or out of date. Set ONLY by DB triggers (v2_smart_search
+  /// migration) in the same transaction as any change to the name, Hindi
+  /// name, keywords, brand, category or deletion — and by a rename of its
+  /// brand or category — so a write path can never forget it. Cleared by the
+  /// indexer (infra/search/indexer.ts) once the terms are rewritten. While
+  /// true, search ignores the old terms and matches the live name instead.
+  searchIndexStale Boolean @default(true) @map("search_index_stale")
+
   /// Merchandising ranks for the Home rails. Maintained by admin/report jobs,
   /// not computed per request.
   popularityScore  Int     @default(0) @map("popularity_score")
@@ -1119,6 +1128,7 @@ model Product {
   images             ProductImage[]
   approvalBatchItems ProductApprovalBatchItem[]
   commissionRules    CommissionRule[]
+  searchTerms        ProductSearchTerm[]
 
   /// Category listing, in filter order.
   @@index([categoryId, status])
@@ -1135,7 +1145,42 @@ model Product {
   @@index([searchVector], map: "products_search_vector_idx", type: Gin)
   /// Product search: typo-tolerant name match (`term <% name`, pg_trgm).
   @@index([name(ops: raw("gin_trgm_ops"))], map: "products_name_trgm_idx", type: Gin)
+  // products_search_index_stale_idx (id) WHERE search_index_stale — the
+  // indexer's work queue and search's live-name fallback; partial, so it is
+  // hand-written in the v2_smart_search migration.
   @@map("products")
+}
+
+/// Smart Search index: every normalised searchable term of a product — whole
+/// name, name words, Hindi name, Roman transliteration of any Hindi,
+/// keywords, brand, category, dictionary synonyms — each with its phonetic
+/// key (shared/search-text.ts). Derived data, never edited by hand: rebuilt
+/// from the product by infra/search/indexer.ts (`npm run search:backfill`
+/// rebuilds all). Not a second catalogue — only text, keyed by product.
+model ProductSearchTerm {
+  productId String @map("product_id") @db.Uuid
+  /// normalizeSearchText() form, e.g. "banana", "केला", "kela".
+  term      String @db.VarChar(160)
+  /// phoneticKey() of the term, e.g. "kela" for "kelaa" / "केला" / "keela".
+  key       String @db.VarChar(160)
+  /// Which field it came from (SearchTermSource) — decides its tier cap.
+  source    String @db.VarChar(20)
+  /// Within-tier weight of the source (name 100 … category 40).
+  weight    Int    @db.SmallInt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  /// One row per distinct term per product — duplicates are impossible.
+  @@id([productId, term])
+  /// Exact word / alias lookup (`term = ANY(...)`).
+  @@index([term])
+  /// Phonetic / synonym lookup (`key = ANY(...)`).
+  @@index([key])
+  /// Prefix and partial matches (`term LIKE 'ban%'`, `LIKE '%anan%'`).
+  @@index([term(ops: raw("gin_trgm_ops"))], map: "product_search_terms_term_trgm_idx", type: Gin)
+  /// Typo matches (`key % 'bana'`) and phonetic prefixes.
+  @@index([key(ops: raw("gin_trgm_ops"))], map: "product_search_terms_key_trgm_idx", type: Gin)
+  @@map("product_search_terms")
 }
 
 model ProductVariant {

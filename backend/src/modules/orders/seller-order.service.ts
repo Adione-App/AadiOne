@@ -33,6 +33,7 @@ import {
   type SellerOrderHandover,
   type SellerOrderStage,
 } from './seller-order-views';
+import { sellerOrderSearchWhere } from './order-search';
 
 async function loadOwned(sellerOrderId: string, scopeSellerId?: string) {
   const sellerOrder = await prisma.sellerOrder.findUnique({
@@ -111,8 +112,10 @@ export async function listSellerOrders(
     // A seller's own list shows only placed orders; admins see all.
     ...(scopeSellerId ? [sellerVisibleOrderWhere] : []),
     ...(stage?.orderStatus ? [{ status: stage.orderStatus }] : []),
-    ...(options.q ? [{ orderNumber: { contains: options.q, mode: 'insensitive' as const } }] : []),
   ];
+  // Smart Search: order number, phone, customer name or one of THIS seller
+  // order's own lines (any language) — inside the same seller scope.
+  const searchWhere = options.q ? await sellerOrderSearchWhere(options.q, sellerId ?? null) : null;
 
   const rows = await prisma.sellerOrder.findMany({
     where: {
@@ -120,6 +123,7 @@ export async function listSellerOrders(
       ...(orderConditions.length > 0 ? { order: { AND: orderConditions } } : {}),
       ...(options.status ? { status: options.status } : stage ? { status: stage.status } : {}),
       ...(options.orderId ? { orderId: options.orderId } : {}),
+      ...(searchWhere ?? {}),
       ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
     },
     include: {

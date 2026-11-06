@@ -13,6 +13,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { smartSearch } from '@shared/search-match';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Button, Modal, Pill, Surface } from '@/components/ui';
 import { sellerErrorMessage, type SellerListingInventory } from '../sellerApi';
@@ -73,9 +74,17 @@ export default function SellerInventoryPage() {
   const onAdjust = (listing: SellerListingInventory, delta: number) => stock.adjust(listing.id, delta, listing.productName);
 
   const all = listings.data ?? [];
-  const term = search.trim().toLowerCase();
+  const term = search.trim();
+  // Smart Search (shared/search-match.ts): English / Hindi / Hinglish names,
+  // synonyms and typos; the urgency order below still applies to the matches.
   const searched = useMemo(
-    () => all.filter((l) => !term || l.productName.toLowerCase().includes(term) || l.categoryName.toLowerCase().includes(term)),
+    () =>
+      term
+        ? smartSearch(all, term, (l) => [
+            { text: l.productName, source: 'NAME' },
+            { text: l.categoryName, source: 'CATEGORY' },
+          ])
+        : all,
     [all, term],
   );
   // Most urgent first: out of stock, then low, then the rest by name.

@@ -17,6 +17,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { createSmartMatcher } from '@shared/search-match';
 import {
   CATEGORY_PLACEMENT_INFO,
   PRODUCT_SHELF_CARD_SIZES,
@@ -208,14 +209,23 @@ function CategoryScope({
 }) {
   const [search, setSearch] = useState('');
   const [level, setLevel] = useState<'all' | 'top' | 'sub'>('all');
-  const term = search.trim().toLowerCase();
+  const term = search.trim();
+  const matcher = createSmartMatcher(term);
   const addable = options.filter((option) => {
     if (shelf.categoryPaths.includes(option.path)) return false;
     if (level === 'top' && option.depth !== 0) return false;
     if (level === 'sub' && option.depth === 0) return false;
     if (!term) return true;
     const parent = option.parentPath ? byPath.get(option.parentPath) : undefined;
-    return [option.name, option.nameHi, parent?.name, parent?.nameHi, option.path].some((value) => value?.toLowerCase().includes(term));
+    // Smart Search (English / Hindi / Hinglish, synonyms, typos); the path by plain text.
+    return (
+      matcher.matches(option, [
+        { text: option.name, source: 'NAME' },
+        { text: option.nameHi, source: 'NAME_HI' },
+        { text: parent?.name, source: 'CATEGORY' },
+        { text: parent?.nameHi, source: 'CATEGORY' },
+      ]) || option.path.includes(term.toLowerCase())
+    );
   });
   const drag = useDragReorder((from, to) => onChange((s) => void (s.categoryPaths = moved(s.categoryPaths, from, to))));
   const manual = shelf.source === 'manual';

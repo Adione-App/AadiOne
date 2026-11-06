@@ -47,6 +47,9 @@ import { invalidateCategoryCache } from '../catalog/catalog.service';
 import { createOwnTopCategory } from '../catalog/seller-category.service';
 import { createOwnSubcategory } from '../catalog/seller-subcategory.service';
 import { checkServiceability, estimateEta, getSellerOpenState } from '../sellers/seller.service';
+import { searchProductIds } from '../../infra/search';
+import { createSmartMatcher } from '../../shared/search-match';
+import { foodSearchScope } from '../catalog/product-search-scope';
 
 /* -------------------------------------------------------------------------- */
 /* Seller — own menu sections                                                */
@@ -444,6 +447,67 @@ export async function getRestaurantMenu(sellerId: string): Promise<RestaurantMen
   const categoryOf = new Map(listings.map((l) => [l.id, l.variant.product.categoryId]));
   const grouped = groupBySection(sections, items, categoryOf);
   return { restaurant: await toRestaurantDto(seller), menus: groupByMenu(grouped), sections: grouped };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Customer Food search                                                       */
+/* -------------------------------------------------------------------------- */
+
+export interface RestaurantSearchHit {
+  sellerId: string;
+  /** Higher is better (Smart Search rank: thousands digit = tier). */
+  rank: number;
+  /** Up to three of its dishes that matched ("Paneer Chilli"), best first. */
+  matchedItems: string[];
+}
+
+/**
+ * GET /restaurants/search — live restaurants / cafes matching `q` by their
+ * own name or cuisine, or by a dish on their public menu, best first. Smart
+ * Search throughout: "paneer", "पनीर", "panir" and "momo" all work, and a
+ * restaurant serving the dish is found even when its name says nothing
+ * about it. Same live-restaurant rule as GET /restaurants; the app filters
+ * its already-loaded list (with delivery info) by these ids.
+ */
+export async function searchRestaurants(q: string, filters: RestaurantListQuery = {}): Promise<RestaurantSearchHit[]> {
+  const sellers = await prisma.seller.findMany({
+    where: { ...LIVE_RESTAURANT_WHERE, ...(filters.type ? { sellerType: filters.type } : {}) },
+    select: { id: true, name: true, restaurantProfile: { select: { cuisine: true, isVegOnly: true } } },
+  });
+  const live = filters.diet
+    ? sellers.filter((s) => restaurantDietOf({ isVegOnly: s.restaurantProfile?.isVegOnly ?? false }) === filters.diet)
+    : sellers;
+  if (live.length === 0) return [];
+
+  const best = new Map<string, RestaurantSearchHit>();
+  const matcher = createSmartMatcher(q);
+  for (const seller of live) {
+    const score = matcher.score(seller, [
+      { text: seller.name, source: 'NAME' },
+      ...(seller.restaurantProfile?.cuisine ?? []).map((cuisine) => ({ text: cuisine, source: 'KEYWORD' as const })),
+    ]);
+    if (score) best.set(seller.id, { sellerId: seller.id, rank: score.rank, matchedItems: [] });
+  }
+
+  const dishes = await searchProductIds({ query: q, where: foodSearchScope({ sellerIds: live.map((s) => s.id) }), limit: 200 });
+  if (dishes.length > 0) {
+    const listings = await prisma.sellerListing.findMany({
+      where: { sellerId: { in: live.map((s) => s.id) }, variant: { productId: { in: dishes.map((d) => d.productId) }, deletedAt: null } },
+      select: { sellerId: true, variant: { select: { product: { select: { id: true, name: true } } } } },
+    });
+    const rankOf = new Map(dishes.map((d) => [d.productId, d.rank]));
+    const ordered = [...listings].sort((a, b) => (rankOf.get(b.variant.product.id) ?? 0) - (rankOf.get(a.variant.product.id) ?? 0));
+    for (const listing of ordered) {
+      const product = listing.variant.product;
+      const rank = rankOf.get(product.id) ?? 0;
+      const hit = best.get(listing.sellerId) ?? { sellerId: listing.sellerId, rank, matchedItems: [] };
+      hit.rank = Math.max(hit.rank, rank);
+      if (hit.matchedItems.length < 3 && !hit.matchedItems.includes(product.name)) hit.matchedItems.push(product.name);
+      best.set(listing.sellerId, hit);
+    }
+  }
+
+  return [...best.values()].sort((a, b) => b.rank - a.rank || a.sellerId.localeCompare(b.sellerId));
 }
 
 /* -------------------------------------------------------------------------- */

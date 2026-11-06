@@ -60,6 +60,22 @@ restaurantRouter.get(
   }),
 );
 
+// Registered before `/:sellerId`, or Express would read "search" as an id.
+restaurantRouter.get(
+  '/search',
+  validate({
+    query: z.object({
+      q: z.string().trim().min(1, 'Enter something to search for').max(80),
+      diet: z.enum(['VEG', 'NON_VEG']).optional(),
+      type: z.enum(['RESTAURANT', 'CAFE']).optional(),
+    }),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { q, diet, type } = validatedQuery<{ q: string; diet?: 'VEG' | 'NON_VEG'; type?: 'RESTAURANT' | 'CAFE' }>(req);
+    ok(res, await service.searchRestaurants(q, { ...(diet ? { diet } : {}), ...(type ? { type } : {}) }));
+  }),
+);
+
 restaurantRouter.get(
   '/:sellerId',
   validate({ params: z.object({ sellerId: uuid }) }),

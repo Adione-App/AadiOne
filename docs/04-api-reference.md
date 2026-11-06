@@ -729,11 +729,33 @@ Cursor-paginated `ProductSummaryDto`.
 | `inStock` | boolean | |
 | `cursor`, `limit` | | |
 
-`q` is bounded because it reaches a Postgres `tsquery` and a trigram scan; an
-unbounded string is an easy way to make the database work hard for free.
+`q` is bounded because it reaches the Smart Search index (trigram and btree
+lookups); an unbounded string is an easy way to make the database work hard
+for free. Matching is multilingual and typo-tolerant (English, Hindi, Hinglish,
+dictionary synonyms) and ranked exact-first — see
+`SMART-SEARCH-IMPLEMENTATION.md`. The cursor resumes after the last result's
+(rank, id).
 
 > Registered **before** `/products/:id` in the route table, or Express would
 > match `search` as an id.
+
+### `GET /restaurants/search`
+
+Food search: live restaurants / cafes matching `q` by their name, cuisine or
+a dish on their public menu, best first. Public (guests too).
+
+| Query | Type | Notes |
+|---|---|---|
+| `q` | string | **Required.** 1–80 characters |
+| `diet` | `VEG` \| `NON_VEG` | as on `GET /restaurants` |
+| `type` | `RESTAURANT` \| `CAFE` | as on `GET /restaurants` |
+
+```jsonc
+[{ "sellerId": "uuid", "rank": 6890.5, "matchedItems": ["Chicken Momos (Steam)"] }]
+```
+
+Ids only: the app keeps its `GET /restaurants` list (with delivery details for
+the customer's location) and orders / filters it by these.
 
 ### `GET /products/{id}`
 

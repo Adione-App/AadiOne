@@ -23,6 +23,7 @@ import * as notificationService from '../modules/notifications/notification.serv
 import { reconcileCheckoutPayments } from '../modules/payments/payment.service';
 import { cleanupProductImports, runProductImportWorker } from '../modules/product-import/import-worker';
 import { hasStockToSellSql } from '../modules/inventory/stock-rules';
+import { installSearchIndexHook, reindexStaleProducts } from '../infra/search';
 
 const log = moduleLogger('jobs');
 
@@ -204,6 +205,17 @@ export function startJobs(): void {
   // Seller bulk imports: resume orphaned imports / fail dead analyses, and retention.
   schedule('product-imports', 30_000, runProductImportWorker);
   schedule('product-import-retention', 60 * 60_000, cleanupProductImports);
+  // Smart Search: rebuild products the DB triggers marked stale. Catalogue
+  // writes through Prisma also request a rebuild at once (the hook); this is
+  // the retry for failures and the path for raw-SQL writes. The first run
+  // shortly after boot indexes whatever a fresh migration left stale.
+  installSearchIndexHook();
+  schedule('search-index', 30_000, () => reindexStaleProducts());
+  const firstIndexRun = setTimeout(() => {
+    void reindexStaleProducts().catch((error) => log.error({ err: error, job: 'search-index' }, 'job failed'));
+  }, 5_000);
+  firstIndexRun.unref();
+  timers.push(firstIndexRun);
 
   log.info({ jobs: timers.length }, 'background jobs started');
 }

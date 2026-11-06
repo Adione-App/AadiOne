@@ -24,7 +24,7 @@
  * routes; there is no separately managed platform store.
  */
 
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PARTNER_ACCOUNT } from '../auth/account-type';
 import { emitStoreAvailabilityChanged } from '../../realtime/socket';
 import {
@@ -59,6 +59,7 @@ import * as sellerService from './seller.service';
 import { SellerAuditAction } from './seller-audit';
 import { stageFor } from './seller-lifecycle-rules';
 import { assertServiceState } from '../addresses/service-state';
+import { normalizeSearchText, normalizeIdentifier } from '../../shared/search-text';
 
 export interface CreateSellerResult {
   sellerId: string;
@@ -330,6 +331,18 @@ function lifecycleWhere(filter: SellerLifecycleFilter): Prisma.SellerWhereInput 
  * Every filter — `stage` included — is applied in the query, so a page is
  * never short because rows were dropped after fetching.
  */
+/** Sellers whose name is a close (typo-tolerant) match — pg_trgm word similarity. */
+async function fuzzySellerIds(search: string): Promise<string[]> {
+  const name = normalizeSearchText(search);
+  if (name.length < 3) return [];
+  const rows = await prisma.$queryRaw<{ id: string }[]>(Prisma.sql`
+    SELECT id FROM sellers
+    WHERE deleted_at IS NULL AND word_similarity(${name}, lower(name)) >= 0.5
+    ORDER BY word_similarity(${name}, lower(name)) DESC
+    LIMIT 200`);
+  return rows.map((row) => row.id);
+}
+
 export async function listSellers(options: ListSellersOptions): Promise<CursorPage<AdminSellerListRowDto>> {
   const filters: Prisma.SellerWhereInput[] = [{ deletedAt: null }];
   if (options.onboardingStatus) filters.push({ onboardingStatus: options.onboardingStatus });
@@ -338,8 +351,20 @@ export async function listSellers(options: ListSellersOptions): Promise<CursorPa
   if (options.isActive !== undefined) filters.push({ isActive: options.isActive });
   if (options.sellerType) filters.push({ sellerType: options.sellerType });
   if (options.search) {
+    // Smart Search: name, code or city as typed, the code without
+    // separators, or a misspelt store name ("aadion grocery").
     const contains = { contains: options.search, mode: 'insensitive' as const };
-    filters.push({ OR: [{ name: contains }, { code: contains }, { city: contains }] });
+    const code = normalizeIdentifier(options.search);
+    const fuzzyIds = await fuzzySellerIds(options.search);
+    filters.push({
+      OR: [
+        { name: contains },
+        { code: contains },
+        { city: contains },
+        ...(code ? [{ code: { contains: code, mode: 'insensitive' as const } }] : []),
+        ...(fuzzyIds.length > 0 ? [{ id: { in: fuzzyIds } }] : []),
+      ],
+    });
   }
   if (options.cursor) filters.push({ createdAt: { lt: new Date(options.cursor) } });
 

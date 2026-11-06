@@ -18,6 +18,7 @@
  */
 
 import { useMemo, useState, type ReactNode } from 'react';
+import { createSmartMatcher } from '@shared/search-match';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   CATEGORY_COLUMN_LIMITS,
@@ -249,7 +250,8 @@ export function CategoryListEditor<T extends CategoryPlacementConfig>({
   const styleOf = new Map(styles.map((style) => [style.path, style]));
   const parentName = (option: AdminCategoryOptionDto) => (option.parentPath ? byPath.get(option.parentPath)?.name ?? option.parentPath : null);
   const pickLabel = (option: AdminCategoryOptionDto) => (option.parentPath ? `${parentName(option)} › ${option.name}` : option.name);
-  const term = search.trim().toLowerCase();
+  const term = search.trim();
+  const matcher = createSmartMatcher(term);
   const addable = options.filter((option) => {
     if (placement.paths.includes(option.path)) return false;
     if (pickLevel === 'top' && option.depth !== 0) return false;
@@ -257,9 +259,17 @@ export function CategoryListEditor<T extends CategoryPlacementConfig>({
     if (levelFilter === 'sub' && option.depth === 0) return false;
     if (!term) return true;
     const style = styleOf.get(option.path);
-    // English and Hindi names, the admin's display names, the parent's name and the path.
-    return [option.name, option.nameHi, style?.displayName, style?.displayNameHi, parentName(option), option.path]
-      .some((value) => value?.toLowerCase().includes(term));
+    // Smart Search over the English and Hindi names, the admin's display
+    // names and the parent's name; the path by plain text.
+    return (
+      matcher.matches(option, [
+        { text: option.name, source: 'NAME' },
+        { text: option.nameHi, source: 'NAME_HI' },
+        { text: style?.displayName, source: 'KEYWORD' },
+        { text: style?.displayNameHi, source: 'KEYWORD' },
+        { text: parentName(option), source: 'CATEGORY' },
+      ]) || option.path.includes(term.toLowerCase())
+    );
   });
 
   return (
@@ -478,14 +488,24 @@ function CategoryTable({
   const styles = useMemo(() => new Map(layout.categoryStyles.map((style) => [style.path, style])), [layout.categoryStyles]);
 
   const rows = useMemo(() => {
-    const term = search.trim().toLowerCase();
+    const term = search.trim();
+    const matcher = createSmartMatcher(term);
     return options.filter((option) => {
       const style = styles.get(option.path);
       if (filter === 'top' && option.depth !== 0) return false;
       if (filter === 'sub' && option.depth === 0) return false;
       if (filter === 'customised' && !style) return false;
       if (filter === 'hidden' && !style?.hidden) return false;
-      return !term || `${option.name} ${option.nameHi ?? ''} ${option.path} ${style?.displayName ?? ''}`.toLowerCase().includes(term);
+      // Smart Search (English / Hindi / Hinglish, synonyms, typos); the path by plain text.
+      return (
+        !term ||
+        matcher.matches(option, [
+          { text: option.name, source: 'NAME' },
+          { text: option.nameHi, source: 'NAME_HI' },
+          { text: style?.displayName, source: 'KEYWORD' },
+        ]) ||
+        option.path.includes(term.toLowerCase())
+      );
     });
   }, [options, styles, search, filter]);
   const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));

@@ -15,6 +15,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { createSmartMatcher } from '@shared/search-match';
 import { ApprovalStatus, type AdminSellerDetailDto, type SellerListingDto, type SellerProductDto } from '@shared';
 import { formatPaise } from '@/lib/format';
 import { sellerErrorMessage, useAdminSellerListings, useAdminSellerProducts, useSellerPermissions } from '@/lib/sellers';
@@ -42,8 +43,29 @@ function ProductStatusPill({ status }: { status: string }) {
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
-const matches = (needle: string, ...values: (string | null | undefined)[]) =>
-  values.some((value) => value?.toLowerCase().includes(needle));
+/**
+ * Smart Search (shared/search-match.ts): the name matches in English, Hindi or
+ * Hinglish, by synonym or with a typo; the other values (variant, SKU,
+ * category) by plain text, so an exact SKU still finds its product.
+ */
+function matches(
+  matcher: SmartMatcher,
+  needle: string,
+  name: string,
+  nameHi: string | null | undefined,
+  ...values: (string | null | undefined)[]
+): boolean {
+  if (!needle) return true;
+  const plain = needle.toLowerCase();
+  return (
+    matcher.matches(name, [
+      { text: name, source: 'NAME' },
+      { text: nameHi, source: 'NAME_HI' },
+    ]) || values.some((value) => value?.toLowerCase().includes(plain))
+  );
+}
+
+type SmartMatcher = ReturnType<typeof createSmartMatcher>;
 
 function Count({ shown, total, noun }: { shown: number; total: number; noun: string }) {
   return (
@@ -67,20 +89,19 @@ export default function SellerListingsTab({ seller }: { seller: AdminSellerDetai
   const listings = useAdminSellerListings(seller.id);
   const products = useAdminSellerProducts(seller.id);
   const [filter, setFilter] = useState('');
-  const needle = filter.trim().toLowerCase();
+  const needle = filter.trim();
+  const matcher = useMemo(() => createSmartMatcher(needle), [needle]);
 
   const shownListings = useMemo(
-    () => (listings.data ?? []).filter((l) => !needle || matches(needle, l.productName, l.variantName, l.categoryName)),
-    [listings.data, needle],
+    () => (listings.data ?? []).filter((l) => matches(matcher, needle, l.productName, null, l.variantName, l.categoryName)),
+    [listings.data, matcher, needle],
   );
   const shownProducts = useMemo(
     () =>
-      (products.data ?? []).filter(
-        (p) =>
-          !needle ||
-          matches(needle, p.name, p.defaultVariant?.variantName, p.defaultVariant?.sku, p.category.name, p.subcategory?.name),
+      (products.data ?? []).filter((p) =>
+        matches(matcher, needle, p.name, p.nameHi, p.defaultVariant?.variantName, p.defaultVariant?.sku, p.category.name, p.subcategory?.name),
       ),
-    [products.data, needle],
+    [products.data, matcher, needle],
   );
 
   const refreshing = listings.isRefetching || products.isRefetching;

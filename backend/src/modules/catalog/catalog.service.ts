@@ -36,10 +36,8 @@ import { resolveItemCodPolicy } from "../../shared/cod";
 import { AppError } from "../../common/errors";
 import { moduleLogger } from "../../common/logger";
 import { prisma } from "../../infra/db/prisma";
-import {
-  search as searchProvider,
-  configureSearchThresholds,
-} from "../../infra/search";
+import { searchProductIds } from "../../infra/search";
+import { marketplaceSearchScope } from "./product-search-scope";
 import * as configService from "../configuration/configuration.service";
 import { ConfigKey, optionGroupsOf, optionValuesOf } from "../../shared";
 import * as repository from "./catalog.repository";
@@ -573,21 +571,28 @@ export async function getRelatedProducts(
 /* Task 4.3 — search                                                          */
 /* -------------------------------------------------------------------------- */
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function searchProducts(input: {
   term: string;
   limit: number;
   cursor?: string | null;
   inStock?: boolean;
 }): Promise<CursorPage<ProductSummaryDto>> {
-  await configureSearchThresholds();
-
   const cursor = decodeCursor(input.cursor ?? null);
 
-  const hits = await searchProvider.search({
-    term: input.term,
+  // Smart Search (infra/search): English, Hindi and Hinglish names,
+  // synonyms, spelling variants and typos, ranked exact-first — over the
+  // same customer visibility as the category listing. Restaurant menus are
+  // searched on /restaurants instead.
+  const hits = await searchProductIds({
+    query: input.term,
+    where: marketplaceSearchScope({ inStockOnly: input.inStock ?? false }),
     limit: input.limit + 1,
-    afterRank: cursor?.sortValue ?? null,
-    inStockOnly: input.inStock ?? false,
+    after:
+      cursor && Number.isFinite(cursor.sortValue) && UUID_PATTERN.test(cursor.id)
+        ? { rank: cursor.sortValue, productId: cursor.id }
+        : null,
   });
 
   const hasMore = hits.length > input.limit;

@@ -42,6 +42,8 @@ export interface ProductRow {
   own: boolean;
   href: string;
   name: string;
+  /** The product's Hindi name, when it has one — searchable (Smart Search). */
+  nameHi?: string | null;
   category: string;
   image: string | null;
   /**
@@ -143,6 +145,7 @@ export function rowsOf(products: SellerProductInventory[], listings: SellerListi
       own: true,
       href: `/seller/products/${p.id}`,
       name: p.name,
+      nameHi: p.nameHi,
       category: [p.category.name, p.subcategory?.name].filter(Boolean).join(' › '),
       image: p.images[0]?.thumbUrl ?? p.images[0]?.url ?? null,
       listing: productListing(p, listingUpdatedAt),

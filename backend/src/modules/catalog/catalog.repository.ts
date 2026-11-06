@@ -21,6 +21,10 @@ import { Prisma, type Category } from "@prisma/client";
 import { ProductStatus } from "../../shared";
 import { prisma, type DbClient } from "../../infra/db/prisma";
 import { hasStockToSellSql } from "../inventory/stock-rules";
+import { matchProductIds } from "../../infra/search";
+
+/** Most products one picker search narrows to (far above any real result list). */
+const SEARCH_MATCH_CAP = 500;
 
 /** SQL predicate on `sellers s`: a live marketplace seller — not a food seller (restaurant/cafe). */
 export const MARKETPLACE_SELLER_SQL = Prisma.sql`s.deleted_at IS NULL AND s.is_active AND s.onboarding_status = 'APPROVED' AND s.seller_type NOT IN ('RESTAURANT', 'CAFE')`;
@@ -618,11 +622,12 @@ export async function listProductOptions(
   },
   client: DbClient = prisma,
 ): Promise<ProductOptionRow[]> {
+  // Smart Search (infra/search): English / Hindi / Hinglish names, synonyms
+  // and typos. It narrows the set; the picker keeps its own name order and
+  // keyset pagination.
   const term = input.search?.trim();
-  const like = term ? `%${term.replace(/[\\%_]/g, (char) => `\\${char}`)}%` : null;
-  const search = like
-    ? Prisma.sql`AND (p.name ILIKE ${like} OR p.name_hi ILIKE ${like} OR b.name ILIKE ${like})`
-    : Prisma.empty;
+  const matched = term ? [...(await matchProductIds(term, Prisma.sql`p.deleted_at IS NULL`, SEARCH_MATCH_CAP, client)).keys()] : null;
+  const search = matched ? (matched.length > 0 ? Prisma.sql`AND p.id IN (${uuidList(matched)})` : Prisma.sql`AND FALSE`) : Prisma.empty;
   const category = input.categoryPath
     ? Prisma.sql`AND (c.path = ${input.categoryPath} OR c.path LIKE ${`${input.categoryPath}/%`})`
     : Prisma.empty;

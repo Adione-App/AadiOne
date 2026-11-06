@@ -45,6 +45,8 @@ import {
   placedOrderWhere,
 } from "../orders/sales-metrics";
 import { Prisma } from "@prisma/client";
+import { normalizeSearchText } from "../../shared/search-text";
+import { adminOrderSearchWhere } from "../orders/order-search";
 
 const log = moduleLogger("admin:orders");
 
@@ -283,19 +285,15 @@ export async function listOrders(options: {
     scope.push({ status: { notIn: [OrderStatus.PENDING_PAYMENT, OrderStatus.PAYMENT_FAILED] } }, { NOT: NEVER_PLACED_CANCELLATION });
   }
 
+  const searchWhere = options.search ? await adminOrderSearchWhere(options.search) : null;
+
   const orders = await prisma.order.findMany({
     where: {
       ...(scope.length > 0 ? { AND: scope } : {}),
       ...(statuses ? { status: { in: [...statuses] } } : {}),
-      ...(options.search
-        ? {
-            OR: [
-              { orderNumber: { contains: options.search, mode: "insensitive" } },
-              { deliveryMobile: { contains: options.search } },
-              { deliveryFullName: { contains: options.search, mode: "insensitive" } },
-            ],
-          }
-        : {}),
+      // Smart Search: order number, phone (any format), customer name
+      // (typo-tolerant) or a product in the order, in any language.
+      ...(searchWhere ?? {}),
       ...(dateRange || options.cursor
         ? {
             createdAt: {
@@ -624,9 +622,19 @@ export async function listCustomers(query: {
   const placed = Prisma.sql`o.status::text = ANY(${PLACED_ORDER_STATUS_LIST})`;
   const completed = Prisma.sql`o.status::text = ANY(${COMPLETED_SALE_STATUS_LIST}) AND o.payment_status::text = ANY(${COLLECTED_PAYMENT_STATUS_LIST})`;
   const cancelled = Prisma.sql`o.status::text = ANY(${CANCELLED_ORDER_STATUS_LIST})`;
+  // Smart Search: name (typo-tolerant, any case/spacing) or mobile in any
+  // format ("+91 98765-43210" -> its last ten digits).
   const term = query.q?.trim();
+  const name = term ? normalizeSearchText(term) : "";
+  const digits = term ? term.replace(/\D/g, "") : "";
+  const mobile = digits.length > 10 ? digits.slice(-10) : digits;
   const search = term
-    ? Prisma.sql`HAVING (u.full_name ILIKE ${`%${term}%`} OR u.mobile LIKE ${`%${term.replace(/\D/g, "") || term}%`} OR MAX(o.delivery_full_name) ILIKE ${`%${term}%`})`
+    ? Prisma.sql`HAVING (
+        u.full_name ILIKE ${`%${term}%`}
+        OR MAX(o.delivery_full_name) ILIKE ${`%${term}%`}
+        ${mobile.length > 0 ? Prisma.sql`OR u.mobile LIKE ${`%${mobile}%`}` : Prisma.empty}
+        ${name.length >= 3 ? Prisma.sql`OR word_similarity(${name}, lower(coalesce(u.full_name, ''))) >= 0.5 OR word_similarity(${name}, lower(MAX(o.delivery_full_name))) >= 0.5` : Prisma.empty}
+      )`
     : Prisma.empty;
 
   const perCustomer = Prisma.sql`

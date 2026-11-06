@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
   Pressable,
@@ -33,7 +33,8 @@ import { SkeletonGroup, useSkeletonPulse } from "@/components/Skeleton";
 import { PromoBanners, PromoSlot } from "@/components/PromoBanner";
 import { AppText, EmptyState, ErrorState, Screen } from "@/components/ui";
 import { resolveImageUrl } from "@/lib/api";
-import { useBanners, useRestaurants } from "@/lib/queries";
+import { useBanners, useRestaurantSearch, useRestaurants } from "@/lib/queries";
+import { smartSearch } from "@shared/search-match";
 import { useLocation } from "@/lib/store";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { useRefreshOnFocus } from "@/lib/useRefreshOnFocus";
@@ -159,15 +160,33 @@ export default function FoodScreen({
       (query.data ?? []).filter((restaurant) => restaurant.menuItemCount > 0),
     [query.data],
   );
+  // Smart Search, in two steps that never blank the list:
+  //  1. at once, on the device: restaurants whose own name or cuisine
+  //     matches (shared/search-match.ts — English, Hindi, Hinglish, typos);
+  //  2. once typing settles (350 ms), on the server: also every restaurant
+  //     serving a matching dish ("momo", "पनीर"), ranked best first.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search.trim()), 350);
+    return () => clearTimeout(timer);
+  }, [search]);
+  const remote = useRestaurantSearch(debouncedSearch, filter.query);
   const visible = useMemo(() => {
-    const term = search.trim().toLowerCase();
+    const term = search.trim();
     if (!term) return restaurants;
-    return restaurants.filter(
-      (r) =>
-        r.name.toLowerCase().includes(term) ||
-        r.cuisine.some((c) => c.toLowerCase().includes(term)),
-    );
-  }, [restaurants, search]);
+    const local = smartSearch(restaurants, term, (r) => [
+      { text: r.name, source: "NAME" },
+      ...r.cuisine.map((cuisine) => ({ text: cuisine, source: "KEYWORD" as const })),
+    ]);
+    const hits = remote.data && !remote.isPlaceholderData && debouncedSearch === term ? remote.data : null;
+    if (!hits) return local;
+    // The server's order, over the list already loaded here (which alone
+    // knows delivery to this location); anything only matched locally after.
+    const byId = new Map(restaurants.map((r) => [r.sellerId, r]));
+    const ranked = hits.map((hit) => byId.get(hit.sellerId)).filter((r): r is RestaurantSummaryDto => r !== undefined);
+    const shown = new Set(ranked.map((r) => r.sellerId));
+    return [...ranked, ...local.filter((r) => !shown.has(r.sellerId))];
+  }, [restaurants, search, debouncedSearch, remote.data, remote.isPlaceholderData]);
 
   const slides = heroBanners.data ?? [];
   const backgroundUrl = resolveImageUrl(

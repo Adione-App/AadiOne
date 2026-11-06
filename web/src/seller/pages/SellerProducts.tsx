@@ -33,6 +33,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { formatPaise } from '@shared/money';
 import { isFoodSellerType } from '@shared';
+import { smartSearch, type SearchField } from '@shared/search-match';
 import { Button, ErrorBanner, Icon, Modal, Pill, Surface, Toggle } from '@/components/ui';
 import {
   bulkProductAction,
@@ -98,6 +99,15 @@ type Sort = (typeof SORTS)[number]['value'];
 
 const pick = <T extends string>(options: readonly { value: T }[], raw: string | null, fallback: T): T =>
   options.find((option) => option.value === raw)?.value ?? fallback;
+
+/** What Smart Search looks at on a row: its name, Hindi name and category path. */
+function productRowSearchFields(row: ProductRow): SearchField[] {
+  return [
+    { text: row.name, source: 'NAME' },
+    { text: row.nameHi, source: 'NAME_HI' },
+    { text: row.category, source: 'CATEGORY' },
+  ];
+}
 
 function matchesView(row: ProductRow, view: View): boolean {
   switch (view) {
@@ -278,14 +288,14 @@ export default function SellerProductsPage() {
     },
     onSettled: () => refresh(),
   });
-  const term = search.trim().toLowerCase();
-  const narrowed = rows.filter(
-    (row) =>
-      (!term || row.name.toLowerCase().includes(term) || row.category.toLowerCase().includes(term)) &&
-      matchesApproval(row, approval) &&
-      matchesStock(row, stock),
-  );
-  const visible = narrowed.filter((row) => matchesView(row, view)).sort(compare(sort));
+  const term = search.trim();
+  // Smart Search (shared/search-match.ts — the same rules as the customer
+  // app): English, Hindi or Hinglish names, synonyms and typos. While
+  // searching, the best match comes first unless a sort was chosen.
+  const filtered = rows.filter((row) => matchesApproval(row, approval) && matchesStock(row, stock));
+  const narrowed = term ? smartSearch(filtered, term, productRowSearchFields) : filtered;
+  const views = narrowed.filter((row) => matchesView(row, view));
+  const visible = term && !params.get('sort') ? views : views.sort(compare(sort));
   const loading = products.isPending || listings.isPending;
   const error = products.error ?? listings.error;
   const filtersOn = view !== 'ALL' || approval !== 'ALL' || stock !== 'ALL' || term !== '';

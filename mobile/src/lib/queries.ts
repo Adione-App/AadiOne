@@ -315,6 +315,32 @@ export function useRestaurants(location: NearLocation, filters: RestaurantListQu
   });
 }
 
+/** One restaurant matched by Food search (GET /restaurants/search). */
+export interface RestaurantSearchHit {
+  sellerId: string;
+  rank: number;
+  /** Up to three of its dishes that matched, best first. */
+  matchedItems: string[];
+}
+
+/**
+ * Food search on the server (Smart Search): restaurants matching `term` by
+ * name, cuisine or a dish on their menu, in English, Hindi or Hinglish — best
+ * first. Cancelled when the term moves on; the previous answer stays on
+ * screen meanwhile (same reasoning as `useSearch`).
+ */
+export function useRestaurantSearch(term: string, filters: RestaurantListQuery = {}) {
+  const filter = [filters.diet ? `diet=${filters.diet}` : "", filters.type ? `type=${filters.type}` : ""].filter(Boolean).join("&");
+  return useQuery({
+    queryKey: ["restaurant-search", term, filter] as const,
+    queryFn: ({ signal }) =>
+      api.get<RestaurantSearchHit[]>(`/restaurants/search?q=${encodeURIComponent(term)}${filter ? `&${filter}` : ""}`, { signal }),
+    enabled: term.trim().length >= 2,
+    placeholderData: keepPreviousData,
+    staleTime: 60_000,
+  });
+}
+
 export function useRestaurantMenu(sellerId: string) {
   return useQuery({
     queryKey: keys.restaurantMenu(sellerId),

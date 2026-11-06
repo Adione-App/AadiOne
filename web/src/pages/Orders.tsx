@@ -36,6 +36,7 @@ import {
 import { useOrderSocket } from "@/lib/socket";
 import { useMarkOrderRead } from "@/lib/orderAlerts";
 import { PaidNotPlacedAlert } from "@/components/PaidNotPlacedAlert";
+import { useDebouncedValue } from "@/seller/sellerQueries";
 import {
   PARENT_NEXT_ACTION,
   SELLER_ORDER_NEXT_ACTION,
@@ -117,7 +118,15 @@ export default function OrdersPage() {
     if (linkOpen) setExpanded((current) => (current.has(linkOpen) ? current : new Set(current).add(linkOpen)));
   }, [linkTab, linkSearch, linkOpen]);
 
-  const query = useQuery(ordersQuery(tab, search));
+  // Smart Search on the server (order number, phone, customer name or an
+  // item, in any language) — debounced, so typing is not one request per
+  // key, with the previous results kept on screen until the new ones land.
+  const debouncedSearch = useDebouncedValue(search.trim(), 350);
+  const query = useQuery({
+    ...ordersQuery(tab, debouncedSearch),
+    // Only across searches in the same tab — never another tab's orders.
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[1] === tab ? previous : undefined),
+  });
 
   /**
    * Badge counts, fetched independently of the open tab — an admin sitting
@@ -404,7 +413,7 @@ export default function OrdersPage() {
       <SearchInput
         value={search}
         onChange={setSearch}
-        placeholder="Search by order number or phone…"
+        placeholder="Search order number, phone, name or item…"
         className="max-w-md"
       />
 

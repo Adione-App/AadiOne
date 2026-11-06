@@ -19,6 +19,7 @@
  */
 
 import type { CategoryDto } from "@shared";
+import { smartSearch } from "@shared/search-match";
 
 export interface CategorySection {
   key: string;
@@ -87,18 +88,23 @@ export interface CategorySearchResult {
   parent: CategoryDto | null;
 }
 
-/** Case-insensitive match on the English and Hindi names — roots first, then subcategories. */
+/**
+ * Smart Search over the tree already loaded (no request) — the same rules as
+ * the product search (shared/search-match.ts): English or Hindi names,
+ * Hinglish spellings ("sabji" -> Vegetables), dictionary synonyms and typos.
+ * Best match first; equally good matches keep the tree's order (roots, then
+ * subcategories). A subcategory also matches through its parent's name, a
+ * notch below its own.
+ */
 export function searchCategories(tree: CategoryTree, query: string): CategorySearchResult[] {
-  const term = query.trim().toLocaleLowerCase();
-  if (!term) return [];
-  const matches = (category: CategoryDto) =>
-    category.name.toLocaleLowerCase().includes(term) || (category.nameHi ?? "").toLocaleLowerCase().includes(term);
-
-  const results: CategorySearchResult[] = tree.roots.filter(matches).map((category) => ({ category, parent: null }));
+  if (!query.trim()) return [];
+  const candidates: CategorySearchResult[] = tree.roots.map((category) => ({ category, parent: null }));
   for (const root of tree.roots) {
-    for (const child of tree.childrenOf.get(root.id) ?? []) {
-      if (matches(child)) results.push({ category: child, parent: root });
-    }
+    for (const child of tree.childrenOf.get(root.id) ?? []) candidates.push({ category: child, parent: root });
   }
-  return results;
+  return smartSearch(candidates, query, ({ category, parent }) => [
+    { text: category.name, source: "NAME" },
+    { text: category.nameHi, source: "NAME_HI" },
+    { text: parent?.name, source: "CATEGORY" },
+  ]);
 }

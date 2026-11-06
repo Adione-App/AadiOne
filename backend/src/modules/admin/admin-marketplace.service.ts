@@ -38,6 +38,9 @@ import {
   type StockState,
 } from './admin-marketplace-views';
 import { trackedAvailableQty } from '../inventory/stock-rules';
+import { matchProductIds } from '../../infra/search';
+import { createSmartMatcher } from '../../shared/search-match';
+import { adminProductSearchScope } from '../catalog/product-search-scope';
 
 /** Upper bound on rows a monitoring view loads before filtering. */
 const ROW_CAP = 5000;
@@ -80,14 +83,34 @@ const LISTING_SELECT = {
   },
 } as const;
 
-async function loadListings(filter: { q?: string; sellerId?: string }) {
+/**
+ * Smart Search for the admin lists: the matching products (English, Hindi,
+ * Hinglish, synonyms, typos — infra/search) with their relevance, or null
+ * when there is no query. Admin scope: every live product, or the filtered
+ * seller's.
+ */
+async function adminProductMatches(filter: { q?: string; sellerId?: string }): Promise<Map<string, number> | null> {
+  if (!filter.q?.trim()) return null;
+  return matchProductIds(filter.q, adminProductSearchScope({ sellerId: filter.sellerId ?? null }), ROW_CAP);
+}
+
+/** Best match first; rows of equal relevance keep their existing order. */
+function byRelevance<T>(rows: T[], matches: Map<string, number> | null, productIdOf: (row: T) => string): T[] {
+  if (!matches) return rows;
+  return rows
+    .map((row, index) => ({ row, index, rank: matches.get(productIdOf(row)) ?? 0 }))
+    .sort((a, b) => b.rank - a.rank || a.index - b.index)
+    .map((entry) => entry.row);
+}
+
+async function loadListings(filter: { sellerId?: string }, matches: Map<string, number> | null) {
   return prisma.sellerListing.findMany({
     where: {
       ...(filter.sellerId ? { sellerId: filter.sellerId } : {}),
       seller: { deletedAt: null },
       variant: {
         deletedAt: null,
-        product: { deletedAt: null, ...(filter.q ? { name: { contains: filter.q, mode: 'insensitive' as const } } : {}) },
+        product: { deletedAt: null, ...(matches ? { id: { in: [...matches.keys()] } } : {}) },
       },
     },
     select: LISTING_SELECT,
@@ -230,14 +253,15 @@ export function mergeVariantRows(rows: MarketplaceProductRow[]): MarketplaceProd
 export async function listMarketplaceProducts(
   query: MarketplaceProductQuery,
 ): Promise<Paged<MarketplaceProductRow> & { summary: MarketplaceProductSummary }> {
+  const matches = await adminProductMatches(query);
   const [listings, submitted] = await Promise.all([
-    loadListings(query),
+    loadListings(query, matches),
     prisma.product.findMany({
       where: {
         deletedAt: null,
         submittedBySellerId: query.sellerId ? query.sellerId : { not: null },
         submittedBySeller: { deletedAt: null },
-        ...(query.q ? { name: { contains: query.q, mode: 'insensitive' as const } } : {}),
+        ...(matches ? { id: { in: [...matches.keys()] } } : {}),
       },
       select: {
         ...PRODUCT_SELECT,
@@ -332,7 +356,11 @@ export async function listMarketplaceProducts(
       updatedAt: p.updatedAt.toISOString(),
     }));
 
-  const all = [...listingRows, ...unlistedRows].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
+  const all = byRelevance(
+    [...listingRows, ...unlistedRows].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0)),
+    matches,
+    (row) => row.productId,
+  );
   const disabled = (r: MarketplaceProductRow) => r.visibility.reason === 'DISABLED_BY_ADMIN' || r.productStatus === ProductStatus.ARCHIVED;
   const summary: MarketplaceProductSummary = {
     total: all.length,
@@ -455,7 +483,8 @@ export async function listMarketplaceInventory(query: {
   page: number;
   pageSize: number;
 }): Promise<Paged<MarketplaceInventoryRow> & { summary: MarketplaceInventorySummary }> {
-  const listings = await loadListings(query);
+  const matches = await adminProductMatches(query);
+  const listings = await loadListings(query, matches);
   const rows = listings.map((l: ListingRow): MarketplaceInventoryRow => {
     const product = l.variant.product;
     const { availableQty, state } = stockState(l);
@@ -500,7 +529,8 @@ export async function listMarketplaceInventory(query: {
         (query.stock === 'OFF' ? !r.isAvailable : query.stock === 'IN' ? r.stock === 'IN_STOCK' : r.stock === query.stock),
     )
     .sort((a, b) => rank(a) - rank(b) || a.product.name.localeCompare(b.product.name));
-  return { ...paginate(filtered, query.page, query.pageSize), summary };
+  // Searching: best match first, urgency within equal relevance.
+  return { ...paginate(byRelevance(filtered, matches, (r) => r.product.id), query.page, query.pageSize), summary };
 }
 
 /** One listing's stock history for admin — actors as names, never contact details. */
@@ -960,9 +990,14 @@ export async function getMarketplaceCatalogue(query: { sellerId?: string; q?: st
     }
   }
 
-  const needle = query.q?.trim().toLowerCase() ?? '';
-  const matches = (text: string) => text.toLowerCase().includes(needle);
-  const productMatches = (row: CatalogueProductRow) => matches(row.name) || matches(row.seller.name);
+  // Smart Search over the loaded tree (shared/search-match.ts — the same
+  // rules as the indexed search): category names, product names, sellers.
+  const needle = query.q?.trim() ?? '';
+  const matcher = createSmartMatcher(needle);
+  const productHits = needle ? await matchProductIds(needle, adminProductSearchScope({ sellerId: query.sellerId ?? null }), ROW_CAP) : null;
+  const matches = (text: string) => matcher.matches(text, [{ text, source: 'NAME' }]);
+  const productMatches = (row: CatalogueProductRow) =>
+    (productHits?.has(row.productId) ?? true) || matcher.matches(row.seller, [{ text: row.seller.name, source: 'NAME' }]);
 
   let result = [...tops.values()];
   if (needle) {

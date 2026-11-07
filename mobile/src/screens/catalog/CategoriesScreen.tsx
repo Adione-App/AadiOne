@@ -18,7 +18,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, X } from 'lucide-react-native';
 import {
-  ActivityIndicator,
   FlatList,
   Pressable,
   ScrollView,
@@ -41,7 +40,7 @@ import { useGridColumns } from '@/lib/useGridColumns';
 import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, EmptyState, ErrorState, NoticeStrip, Screen } from '@/components/ui';
 import { ProductCard } from '@/components/ProductCard';
-import { ProductGridSkeleton } from '@/components/ProductCardSkeleton';
+import { ProductGridSkeleton, ProductPageSkeleton } from '@/components/ProductCardSkeleton';
 import { Bone, SkeletonGroup, useSkeletonPulse } from '@/components/Skeleton';
 import CategoryIcon from '@/components/CategoryIcon';
 import { buildCategoryTree, searchCategories } from './categorySections';
@@ -283,7 +282,7 @@ export default function CategoriesScreen({
           // The next page as the end comes near, until the server has no more.
           onEndReached={() => loadNextPage(products)}
           onEndReachedThreshold={0.6}
-          ListFooterComponent={<ListingFooter listing={products} />}
+          ListFooterComponent={<ListingFooter listing={products} columns={productGridColumns} />}
           // No `removeClippedSubviews`: on Android it can leave rows blank
           // after a layout change (sidebar switch, column change) — the
           // windowing below is enough.
@@ -489,7 +488,7 @@ function MainCategoryListing({
       }
       onEndReached={() => loadNextPage(listing)}
       onEndReachedThreshold={0.6}
-      ListFooterComponent={items.length > 0 ? <ListingFooter listing={listing} /> : undefined}
+      ListFooterComponent={items.length > 0 ? <ListingFooter listing={listing} columns={columns} /> : undefined}
       contentContainerStyle={{ padding: spacing.xs, paddingBottom: tabBarClearance + spacing.xxl }}
       showsVerticalScrollIndicator={false}
       initialNumToRender={8}
@@ -518,10 +517,10 @@ function loadNextPage(listing: PagedListing): void {
   void listing.fetchNextPage();
 }
 
-/** Under the grid: a spinner while the next page loads, a retry if it failed. */
-function ListingFooter({ listing }: { listing: PagedListing }) {
+/** Under the grid: one row of card skeletons while the next page loads, a retry if it failed. */
+function ListingFooter({ listing, columns }: { listing: PagedListing; columns: number }) {
   if (listing.isFetchingNextPage) {
-    return <ActivityIndicator color={colors.primary} style={{ margin: spacing.base }} />;
+    return <ProductPageSkeleton columns={columns} />;
   }
   if (listing.isFetchNextPageError && listing.hasNextPage) {
     return (

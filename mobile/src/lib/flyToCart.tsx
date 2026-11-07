@@ -566,7 +566,9 @@ export function FlyToCartOverlay() {
   }
 
   return (
-    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+    // Above the variant sheet (its `elevation: 16` orders it on Android even
+    // over a later sibling), never a touch target.
+    <View pointerEvents="none" collapsable={false} style={[StyleSheet.absoluteFill, styles.overlay]}>
       {flights.map((flight) => (
         <FlightDot
           key={flight.id}
@@ -602,6 +604,11 @@ export function FlyToCartOverlay() {
 }
 
 const styles = StyleSheet.create({
+  // Higher than the variant sheet's elevation (16) and zIndex for iOS.
+  overlay: {
+    zIndex: 100,
+    elevation: 100,
+  },
   dot: {
     position: "absolute",
     // Fixed at the overlay's own origin — `animatedStyle` positions the dot

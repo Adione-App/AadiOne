@@ -21,12 +21,17 @@
  *   - Price, image, discount and stock follow the chosen variant ("From …"
  *     the cheapest until then).
  *   - Add puts EXACTLY the chosen variant in the cart through the shared
- *     cart actions (its own listing and price, re-checked by the server);
- *     after that the button becomes the shared quantity control for that
- *     variant. If the chosen size stops being available while the sheet is
- *     open, the pick is dropped and the customer is told — never swapped for
- *     another. The sheet stays open, so a second size can be added too; it
- *     closes with ✕, a tap outside, or back.
+ *     cart actions (its own listing and price, re-checked by the server) and
+ *     closes the sheet at once: the cart actions are optimistic — the line is
+ *     already in the local cart (badge, Mini Cart, product cards) when `add`
+ *     returns — and the server's answer is reconciled behind it. A refused
+ *     add rolls that line back and says why (popup, or the screen's cart
+ *     notice); the server stays the source of truth. One Add per opening:
+ *     further taps before the sheet is gone do nothing. A size already in
+ *     the cart shows the shared quantity control instead (its steps do not
+ *     close the sheet). If the chosen size stops being available while the
+ *     sheet is open, the pick is dropped and the customer is told — never
+ *     swapped for another. It also closes with ✕, a tap outside, or back.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -52,8 +57,12 @@ import { resolveImageUrl } from "@/lib/api";
 import { useProduct } from "@/lib/queries";
 import { snapshotFromProduct, useCartActions } from "@/lib/useCartActions";
 import { markSheet, useVariantSheet } from "@/lib/variantSheet";
+import { flyToCart } from "@/lib/flyToCart";
+import { addAndFly, incrementAndFly } from "@/lib/addToCartFlow";
 import { quantityLimitOf } from "@/lib/quantityLimit";
 import { isPurchasable, storeClosedHint, visibleVariantsOf } from "@/lib/cardVariant";
+import { shownStoreClosedHint } from "@/lib/closureDisplay";
+import { useGlobalClosedNotice } from "@/lib/globalOrdering";
 import {
   choiceState,
   initialSelection,
@@ -221,7 +230,9 @@ function SheetContent({
   const variants = useMemo(() => visible.filter(isPurchasable), [visible]);
   // Nothing can be bought because the store stopped taking orders (not sold
   // out): said without naming the store — customers are not shown who sells it.
-  const closedHint = storeClosedHint(visible);
+  // While the whole app is closed, not even when the store opens.
+  const globalClosed = useGlobalClosedNotice() !== null;
+  const closedHint = shownStoreClosedHint(storeClosedHint(visible), globalClosed);
   const closedMessage = closedHint === null ? null : `Unavailable right now.${closedHint ? ` ${closedHint}` : ""}`;
   const options = useMemo<VariantOptions | null>(
     () => (source ? variantOptions({ optionGroups: source.optionGroups ?? [], variants }) : null),
@@ -229,6 +240,11 @@ function SheetContent({
   );
   const [selection, setSelection] = useState<Selection | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // The opening (its tap time) whose Add was already sent: a second tap in
+  // the frames before the sheet is gone must not add a second unit. Keyed by
+  // the opening, so the same product opened again can be added again.
+  const openedAt = useVariantSheet((state) => state.openedAt);
+  const addedFor = useRef<number | null>(null);
 
   // The starting picks; and, when a refresh takes away a chosen option (it
   // sold out meanwhile), the pick is dropped with a word — never swapped.
@@ -263,6 +279,10 @@ function SheetContent({
   const qty = chosen ? cart.qtyFor(chosen.id) : 0;
   const busy = chosen ? cart.isBusy(chosen.id) : false;
   const name = source?.name ?? product.name;
+  // What flies into the Mini Cart and becomes its latest thumbnail: the
+  // product's own image — the same one its card shows and flies on a direct
+  // Add (already in the image cache) — never the chosen size's photo.
+  const flightImage = resolveImageUrl(product.thumbUrl);
 
   return (
     <>
@@ -422,7 +442,7 @@ function SheetContent({
             qty={qty}
             max={quantityLimitOf(chosen).max}
             busy={busy}
-            onIncrement={() => cart.increment(chosen.id)}
+            onIncrement={() => incrementAndFly(cart.increment, flyToCart, chosen.id, flightImage)}
             onDecrement={() => cart.decrement(chosen.id)}
             fullWidth
             style={styles.action}
@@ -431,10 +451,20 @@ function SheetContent({
           <Button
             label={`Add to cart · ${formatPaise(chosen.pricePaise)}`}
             onPress={() => {
-              // A tap while this variant's previous change is still saving is ignored: never added twice.
-              if (busy) return;
+              // Never added twice: not while this size's previous change is
+              // still saving, and once per opening of the sheet.
+              if (busy || addedFor.current === openedAt) return;
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
-              cart.add(chosen.id, snapshotFromProduct(source, chosen));
+              // The shared add (lib/addToCartFlow.ts), exactly as a card's:
+              // true = the line is already in the local cart (optimistic),
+              // its request is on its way and its image is dropping into
+              // the Mini Cart — close now; a refusal rolls it back and says
+              // why. False: refused on the device (login needed, limit
+              // reached — it said so): no flight, the sheet stays open.
+              if (addAndFly(cart.add, flyToCart, chosen.id, snapshotFromProduct(source, chosen), flightImage)) {
+                addedFor.current = openedAt;
+                onClose();
+              }
             }}
             disabled={busy}
             style={styles.action}

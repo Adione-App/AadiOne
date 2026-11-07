@@ -115,6 +115,16 @@ export type LaidOutSection =
    * sections already show. The screen fetches and draws it.
    */
   | { kind: "latest"; key: "latest-products"; title: string; subtitle: string | null; maxItems: number; frame: SectionFrame }
+  /** An added product shelf whose products are still on their way: its heading and the shelf skeleton. */
+  | {
+      kind: "productShelfLoading";
+      key: string;
+      sectionId: string;
+      title: string;
+      subtitle: string | null;
+      display: ProductShelfDisplay;
+      frame: SectionFrame;
+    }
   /** An added product shelf: its products as the server resolved them, already limited to its count. */
   | {
       kind: "productShelf";
@@ -349,6 +359,26 @@ function productShelfSection(
   };
 }
 
+/** An added shelf before its products arrive: the same heading and layout, drawn as the shelf skeleton. */
+function productShelfLoadingSection(config: HomeSectionConfig, index: CategoryIndex, frame: SectionFrame): LaidOutSection | null {
+  const shelf = config.shelf;
+  if (!shelf) return null;
+  return {
+    kind: "productShelfLoading",
+    key: `shelf:${config.id}`,
+    sectionId: config.id,
+    title: homeSectionTitle(config, (path) => nameOfPath(index, path)),
+    subtitle: config.subtitle,
+    display: {
+      layout: shelf.layout,
+      columns: shelf.columns,
+      cardWidth: PRODUCT_SHELF_CARD_WIDTH_DP[shelf.cardSize],
+      gap: PRODUCT_SHELF_GAP_DP[shelf.gap],
+    },
+    frame,
+  };
+}
+
 /**
  * A product grid's real columns and card width on this screen: the admin's
  * columns, fewer when a card would get narrower than the safe minimum (a
@@ -394,9 +424,18 @@ export interface ApplyHomeLayoutInput {
   language?: "en" | "hi";
   /** GET /content/home-shelves' products per section id; absent / null while loading or after a failure. */
   shelves?: Readonly<Record<string, readonly ProductSummaryDto[]>> | null;
+  /** That first answer is still on its way: each added shelf shows its skeleton instead of nothing. */
+  shelvesLoading?: boolean;
 }
 
-export function applyHomeLayout({ sections, feed, layout, language = "en", shelves = null }: ApplyHomeLayoutInput): HomeLayoutResult {
+export function applyHomeLayout({
+  sections,
+  feed,
+  layout,
+  language = "en",
+  shelves = null,
+  shelvesLoading = false,
+}: ApplyHomeLayoutInput): HomeLayoutResult {
   const featuredIds = new Set(
     (feed.featuredCategoryIds ?? []).length > 0 ? feed.featuredCategoryIds! : feed.categoryRails.map((rail) => rail.categoryId),
   );
@@ -436,6 +475,11 @@ export function applyHomeLayout({ sections, feed, layout, language = "en", shelv
 
     // Added sections: drawn from their own settings, never from the engine.
     if (sectionConfig.key === "product_shelf") {
+      if (shelves === null && shelvesLoading) {
+        const loading = productShelfLoadingSection(sectionConfig, index, frame);
+        if (loading) out.push(loading);
+        continue;
+      }
       const laid = productShelfSection(sectionConfig, shelves?.[sectionConfig.id], index, frame);
       if (laid) out.push(laid);
       continue;

@@ -26,7 +26,9 @@ import { QuantityStepper } from "@/components/ProductCard";
 import { AppText, EmptyState, ErrorState, NoticeStrip, Screen } from "@/components/ui";
 import { resolveImageUrl } from "@/lib/api";
 import { flyToCart } from "@/lib/flyToCart";
+import { addAndFly, incrementAndFly } from "@/lib/addToCartFlow";
 import { useRestaurantMenu } from "@/lib/queries";
+import { useGlobalClosedNotice } from "@/lib/globalOrdering";
 import { menuItemImage, restaurantMenuCoverImage } from "@/lib/restaurantImages";
 import { useTabBarClearance } from "@/lib/tabBarVisibility";
 import { useRefreshOnFocus } from "@/lib/useRefreshOnFocus";
@@ -72,6 +74,7 @@ const MenuItemRow = memo(function MenuItemRow({
   item,
   showVariant,
   closed,
+  globalClosed,
   qty,
   onAdd,
   onIncrement,
@@ -81,6 +84,8 @@ const MenuItemRow = memo(function MenuItemRow({
   showVariant: boolean;
   /** The restaurant is not taking orders right now: the menu stays readable, nothing can be added. */
   closed: boolean;
+  /** The whole app is closed / paused: a closed restaurant's items read a neutral "Unavailable", never CLOSED. */
+  globalClosed: boolean;
   qty: number;
   onAdd: Cart["add"];
   onIncrement: Cart["increment"];
@@ -140,7 +145,13 @@ const MenuItemRow = memo(function MenuItemRow({
           )}
         </View>
         <View style={styles.action}>
-          {closed ? (
+          {closed && globalClosed ? (
+            // The app itself is closed: its notice explains it — this
+            // restaurant's own closure is not shown (lib/closureDisplay.ts).
+            <View style={styles.soldOut}>
+              <AppText style={styles.soldOutText}>Unavailable</AppText>
+            </View>
+          ) : closed ? (
             // In ADD's own slot and size, so the row keeps its alignment. No
             // ADD and no stepper — even for an item already in the cart: the
             // cart keeps that line (the server holds it as "store closed"),
@@ -157,7 +168,7 @@ const MenuItemRow = memo(function MenuItemRow({
               // Every accepted step flies into the Mini Cart, like the
               // grocery ProductCard's (a refused one — limit, login — doesn't).
               onIncrement={() => {
-                if (onIncrement(item.variantId)) flyToCart(flightImage, item.variantId);
+                incrementAndFly(onIncrement, flyToCart, item.variantId, flightImage);
               }}
               onDecrement={() => onDecrement(item.variantId)}
               // The shared control, sized like this menu's ADD button so the swap never shifts the row.
@@ -170,7 +181,7 @@ const MenuItemRow = memo(function MenuItemRow({
             // grocery ProductCard's add.
             <Pressable
               onPress={() => {
-                if (onAdd(item.variantId, snapshotOf(item))) flyToCart(flightImage, item.variantId);
+                addAndFly(onAdd, flyToCart, item.variantId, snapshotOf(item), flightImage);
               }}
               style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}
               accessibilityRole="button"
@@ -210,6 +221,7 @@ function RestaurantHero({
   onBack: () => void;
 }) {
   const { width } = useWindowDimensions();
+  const globalClosed = useGlobalClosedNotice() !== null;
   const heroHeight = Math.round(Math.min(HERO_MAX, Math.max(HERO_MIN, width * 0.56)));
   const logo = resolveImageUrl(restaurant.logoUrl ?? null);
   // A Menu Cover Image that fails to load shows the placeholder, not an empty band.
@@ -269,7 +281,8 @@ function RestaurantHero({
             </AppText>
           ) : null}
           <View style={styles.infoMeta}>
-            {restaurant.isOpen ? (
+            {/* Its own Open now / CLOSED / opening time: only while the app takes orders. */}
+            {globalClosed ? null : restaurant.isOpen ? (
               <View style={[styles.statusPill, styles.statusOpen]}>
                 <AppText style={[styles.statusText, { color: palette.green700 }]}>Open now</AppText>
               </View>
@@ -510,6 +523,7 @@ export default function RestaurantMenuScreen({
   }, [insets.top]);
 
   const closed = menu.data?.restaurant.isOpen === false;
+  const globalClosed = useGlobalClosedNotice() !== null;
 
   const renderItem = useCallback(
     ({ item, section }: { item: RestaurantMenuItemDto; section: (typeof sections)[number] }) => (
@@ -517,13 +531,14 @@ export default function RestaurantMenuScreen({
         item={item}
         showVariant={(section.multiVariant.get(item.productId) ?? 0) > 1}
         closed={closed}
+        globalClosed={globalClosed}
         qty={cart.qtyFor(item.variantId)}
         onAdd={cart.add}
         onIncrement={cart.increment}
         onDecrement={cart.decrement}
       />
     ),
-    [cart, closed],
+    [cart, closed, globalClosed],
   );
 
   if (menu.isLoading) {

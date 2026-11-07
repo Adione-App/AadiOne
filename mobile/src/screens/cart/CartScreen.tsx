@@ -113,7 +113,9 @@ import {
   useCartMutations,
   useMyCoupons,
 } from "@/lib/queries";
-import { isCheckingLine, isOrderableLine, orderedLines, partialOrderNotice, unavailableLabel } from "@/lib/cartAvailability";
+import { orderedLines, partialOrderNotice } from "@/lib/cartAvailability";
+import { cartLineAccessibilityLabel, cartLineDisplay, resolveGlobalOrdering } from "@/lib/closureDisplay";
+import { useGlobalClosedNotice } from "@/lib/globalOrdering";
 import { NOT_DELIVERING_MESSAGE, deliveryView, outOfAreaDetail } from "@/lib/deliveryArea";
 import { GPS_FAILURE_MESSAGE } from "@/lib/currentLocation";
 import { ensureFreshCurrentLocation, refreshCurrentLocation } from "@/lib/locationService";
@@ -231,6 +233,8 @@ export default function CartScreen({
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
   const queryClient = useQueryClient();
+  // App-wide ordering, the same answer Home shows (lib/globalOrdering.tsx).
+  const globalClosedNotice = useGlobalClosedNotice();
 
   const {
     location,
@@ -1013,8 +1017,13 @@ export default function CartScreen({
     cart.availableCheckoutEnabled === undefined
       ? cart.checkoutBlockedReason
       : cart.availableCheckoutBlockedReason;
-  const canCheckout = checkoutEnabled && !outOfArea;
-  const partialNotice = partialOrderNotice(cart.items);
+  // App-wide closed / paused (the cart's own answer or /availability's):
+  // its notice only, no checkout, and no store's closure on any line
+  // (lib/closureDisplay.ts). Checkout follows the server's cart otherwise.
+  const globalOrdering = resolveGlobalOrdering(globalClosedNotice, cart);
+  const shownCheckoutBlockedReason = globalOrdering.closed ? globalOrdering.message : checkoutBlockedReason;
+  const canCheckout = checkoutEnabled && !outOfArea && !globalOrdering.closed;
+  const partialNotice = globalOrdering.closed ? null : partialOrderNotice(cart.items);
 
   const displayBill = bill ?? cart.bill;
 
@@ -1051,20 +1060,16 @@ export default function CartScreen({
     // Unavailable: kept in the cart, greyed, with the reason and a working
     // Remove. No reason yet = still being checked (e.g. a cart restored from
     // the phone before the server answered) — neutral, never "available".
-    const unavailable = !isOrderableLine(item);
-    const checking = isCheckingLine(item);
-    const unavailableText = unavailableLabel(item) ?? "";
+    // While the whole app is closed, a closed store's line carries no store
+    // warning (lib/closureDisplay.ts) — and still can't be increased.
+    const line = cartLineDisplay(item, globalOrdering.closed);
 
     return (
       <View
-        style={[styles.productCard, unavailable && !checking && styles.productCardUnavailable]}
-        accessibilityLabel={
-          unavailable && !checking
-            ? `${item.productName}, ${unavailableText.toLowerCase()}. ${item.unavailableMessage ?? ""}`
-            : undefined
-        }
+        style={[styles.productCard, line.greyed && styles.productCardUnavailable]}
+        accessibilityLabel={cartLineAccessibilityLabel(item.productName, line)}
       >
-        <View style={[styles.productImageBox, unavailable && styles.unavailableDim]}>
+        <View style={[styles.productImageBox, line.faded && styles.unavailableDim]}>
           {imageUrl ? (
             <Image
               source={{ uri: imageUrl }}
@@ -1082,7 +1087,7 @@ export default function CartScreen({
           <AppText
             variant="bodyStrong"
             numberOfLines={2}
-            style={[styles.productName, unavailable && styles.unavailableDim]}
+            style={[styles.productName, line.faded && styles.unavailableDim]}
           >
             {item.productName}
           </AppText>
@@ -1116,18 +1121,18 @@ export default function CartScreen({
             )}
           </View>
 
-          {unavailable && (
+          {line.label && (
             <AppText
               variant="caption"
-              color={checking ? colors.textSecondary : colors.danger}
+              color={line.labelTone === "muted" ? colors.textSecondary : colors.danger}
               style={styles.unavailableLabel}
             >
-              {unavailableText}
+              {line.label}
             </AppText>
           )}
-          {unavailable && !checking && item.unavailableMessage && (
+          {line.detail && (
             <AppText variant="caption" color={colors.textSecondary} numberOfLines={3}>
-              {item.unavailableMessage}
+              {line.detail}
             </AppText>
           )}
         </View>
@@ -1147,7 +1152,7 @@ export default function CartScreen({
             <TrashIcon color={colors.textPrimary} />
           </Pressable>
 
-          {unavailable ? (
+          {!line.stepper ? (
             // Nothing can be added to an unavailable line; Remove (above)
             // always works.
             <AppText variant="bodyStrong" color={colors.textSecondary} style={styles.unavailableQty}>
@@ -1158,6 +1163,8 @@ export default function CartScreen({
               qty={qty}
               max={quantityLimitOf(item).max}
               busy={itemBusy}
+              // A closed seller's line: − and Remove work; + is disabled (no popup, no message).
+              increaseDisabled={!line.increase}
               onIncrement={() => void actions.increment(item.variantId)}
               onDecrement={() => {
                 if (qty <= 1)
@@ -1227,18 +1234,13 @@ export default function CartScreen({
         ItemSeparatorComponent={() => <View style={styles.productSeparator} />}
         ListHeaderComponent={
           <View>
-            {cart.orderingEnabled === false && (
+            {globalOrdering.closed && (
               <View style={styles.noticeContainer}>
-                <NoticeStrip
-                  message={
-                    cart.orderingPausedMessage ??
-                    "Ordering is paused right now. You can keep browsing and adding items to your cart."
-                  }
-                />
+                <NoticeStrip message={globalOrdering.message ?? ""} tone="closed" />
               </View>
             )}
 
-            {cart.orderingEnabled !== false && partialNotice && (
+            {partialNotice && (
               <View style={styles.noticeContainer}>
                 <NoticeStrip tone="info" message={partialNotice} />
               </View>
@@ -1368,13 +1370,13 @@ export default function CartScreen({
         />
         <View style={styles.bottomDivider} />
 
-        {!canCheckout && checkoutBlockedReason && (
+        {!canCheckout && shownCheckoutBlockedReason && (
           <AppText
             variant="caption"
             color={colors.warning}
             style={styles.checkoutBlockedText}
           >
-            {checkoutBlockedReason}
+            {shownCheckoutBlockedReason}
           </AppText>
         )}
 

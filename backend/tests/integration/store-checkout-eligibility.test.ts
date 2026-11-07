@@ -463,6 +463,162 @@ describe('app-wide ordering switch', () => {
 
 /* -------------------------------------------------------------------------- */
 
+describe("app-wide closure vs a store's own closure (what the customer is told)", () => {
+  const PAUSED = 'Aadione is closed right now. Back at 7 AM.';
+  const pause = async () => {
+    await configService.set({ key: ConfigKey.ORDERING_ENABLED, value: false, actorUserId: null });
+    await configService.set({ key: ConfigKey.ORDERING_PAUSED_MESSAGE, value: PAUSED, actorUserId: null });
+  };
+  const resume = () => configService.set({ key: ConfigKey.ORDERING_ENABLED, value: true, actorUserId: null });
+  /** Every customer-facing sentence about the whole cart. */
+  const cartSentences = (cart: CartDto) => [cart.availableCheckoutBlockedReason, cart.checkoutBlockedReason, cart.orderingPausedMessage];
+
+  it('app closed, every store open: the app-wide message only; nothing can be ordered', async () => {
+    const world = await seedWorld();
+    await addToCart(world, world.open1.listingId);
+    await addToCart(world, world.open2.listingId);
+    await pause();
+
+    const cart = await getCart(world);
+    expect(cart.orderingEnabled).toBe(false);
+    expect(cartSentences(cart)).toEqual([PAUSED, PAUSED, PAUSED]);
+    expect(cart.availableCheckoutEnabled).toBe(false);
+    expect(cart.items.every((item) => item.available)).toBe(true);
+    const res = await placeOrder(world, { expectedItems: expected(cart, [world.open1.listingId, world.open2.listingId]) }).expect(409);
+    expect(expectError(res.body)).toMatchObject({ code: ErrorCode.ORDERING_PAUSED, message: PAUSED });
+  });
+
+  it("app closed, one store closed too: the line keeps the store's state, but no cart sentence or refusal names the store", async () => {
+    const world = await seedWorld();
+    await addToCart(world, world.open1.listingId);
+    await addToCart(world, world.closed.listingId);
+    await closeStore(world.closed.sellerId);
+    await pause();
+
+    const cart = await getCart(world);
+    // The authoritative state stays (the app hides it while the app is closed;
+    // it is what the line shows once the app reopens with the store still closed).
+    expect(lineFor(cart, world.closed.listingId)).toMatchObject({ available: false, unavailableReason: 'STORE_CLOSED' });
+    expect(cartSentences(cart)).toEqual([PAUSED, PAUSED, PAUSED]);
+    for (const sentence of cartSentences(cart)) expect(sentence).not.toMatch(/Later Closed Store|Opens/);
+
+    const res = await placeOrder(world, { expectedItems: expected(cart, [world.open1.listingId]) }).expect(409);
+    expect(expectError(res.body)).toMatchObject({ code: ErrorCode.ORDERING_PAUSED, message: PAUSED });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("app paused with items in the cart: they stay; an open store's item can still be added, a closed store's cannot", async () => {
+    const world = await seedWorld();
+    await addToCart(world, world.open1.listingId, 2);
+    await addToCart(world, world.closed.listingId);
+    await closeStore(world.closed.sellerId);
+    await pause();
+
+    const cart = await addToCart(world, world.open2.listingId);
+    expect(cart.items.map((item) => `${item.sellerListingId}:${item.qty}`).sort()).toEqual(
+      [`${world.open1.listingId}:2`, `${world.open2.listingId}:1`, `${world.closed.listingId}:1`].sort(),
+    );
+    // Seller enforcement is unchanged while the app is paused.
+    const refused = await as(world.token).post('/cart/items', { sellerListingId: world.closed.listingId, qty: 1 }).expect(409);
+    expect(expectError(refused.body).code).toBe(ErrorCode.SELLER_CLOSED);
+    expect(lineFor(await getCart(world), world.closed.listingId).qty).toBe(1);
+  });
+
+  it('app open, one store closed: only its line is unavailable, with its name; the others check out normally', async () => {
+    const world = await seedWorld();
+    await addToCart(world, world.open1.listingId);
+    await addToCart(world, world.open2.listingId);
+    await addToCart(world, world.closed.listingId);
+    await closeStore(world.closed.sellerId);
+
+    const cart = await getCart(world);
+    expect(cart.orderingEnabled).toBe(true);
+    expect(cart.orderingPausedMessage).toBeNull();
+    expect(lineFor(cart, world.closed.listingId)).toMatchObject({ available: false, unavailableReason: 'STORE_CLOSED' });
+    expect(lineFor(cart, world.closed.listingId).unavailableMessage).toMatch(/^Later Closed Store /);
+    expect(lineFor(cart, world.open1.listingId).available).toBe(true);
+    expect(lineFor(cart, world.open2.listingId).available).toBe(true);
+    expect(cart.availableCheckoutEnabled).toBe(true);
+    expect(cart.sellerGroups.find((group) => group.sellerId === world.closed.sellerId)).toMatchObject({ isOpen: false });
+    expect(cart.sellerGroups.filter((group) => group.isOpen)).toHaveLength(2);
+
+    const refused = await as(world.token).post('/cart/items', { sellerListingId: world.closed.listingId, qty: 1 }).expect(409);
+    expect(expectError(refused.body).code).toBe(ErrorCode.SELLER_CLOSED);
+    expect(expectError(refused.body).message).toMatch(/^Later Closed Store /);
+    await placeOrder(world, { expectedItems: expected(cart, [world.open1.listingId, world.open2.listingId]) }).expect(201);
+    expect(lineFor(await getCart(world), world.closed.listingId).qty).toBe(1);
+  });
+
+  it('app open, a seller closed by its hours after its product was added: the line is marked; fewer is allowed, more is refused', async () => {
+    const world = await seedWorld();
+    await addToCart(world, world.closed.listingId, 3);
+    await addToCart(world, world.open1.listingId);
+    // Its hours now exclude this moment: a 1-minute window 12 hours away (IST).
+    const now = new Date();
+    const istMinutes = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330 + 720) % 1440;
+    const at = (m: number) => `${String(Math.floor((m % 1440) / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    await prisma.sellerHours.updateMany({ where: { sellerId: world.closed.sellerId }, data: { opensAt: at(istMinutes), closesAt: at(istMinutes + 1) } });
+
+    const cart = await getCart(world);
+    const line = lineFor(cart, world.closed.listingId);
+    expect(line).toMatchObject({ available: false, unavailableReason: 'STORE_CLOSED', storeClosedReason: 'OUTSIDE_HOURS', sellerName: 'Later Closed Store' });
+    expect(cart.availableCheckoutEnabled).toBe(true);
+
+    // − works on the closed seller's line; + is refused, and the line keeps its quantity.
+    const reduced = expectSuccess<CartDto>((await as(world.token).patch(`/cart/items/${line.id}`, { qty: 2 }).expect(200)).body).data;
+    expect(lineFor(reduced, world.closed.listingId).qty).toBe(2);
+    const refused = await as(world.token).patch(`/cart/items/${line.id}`, { qty: 3 }).expect(409);
+    expect(expectError(refused.body).code).toBe(ErrorCode.SELLER_CLOSED);
+    expect(lineFor(await getCart(world), world.closed.listingId).qty).toBe(2);
+
+    // Switched off by the seller: still marked, still reducible only.
+    await prisma.sellerHours.updateMany({ where: { sellerId: world.closed.sellerId }, data: { opensAt: '00:00', closesAt: '00:00' } });
+    await closeStore(world.closed.sellerId);
+    expect(lineFor(await getCart(world), world.closed.listingId)).toMatchObject({ unavailableReason: 'STORE_CLOSED', storeClosedReason: 'MANUALLY_CLOSED' });
+    await as(world.token).patch(`/cart/items/${line.id}`, { qty: 3 }).expect(409);
+
+    // App closed on top: the whole-cart sentences are the app-wide one only.
+    await pause();
+    const paused = await getCart(world);
+    expect(cartSentences(paused)).toEqual([PAUSED, PAUSED, PAUSED]);
+    expect(lineFor(paused, world.closed.listingId).qty).toBe(2);
+  });
+
+  it('app open, every store open: nothing is marked', async () => {
+    const world = await seedWorld();
+    await addToCart(world, world.open1.listingId);
+    await addToCart(world, world.closed.listingId);
+    const cart = await getCart(world);
+    expect(cart.items.every((item) => item.available && item.unavailableMessage === null)).toBe(true);
+    expect(cart.sellerGroups.every((group) => group.isOpen && group.closedMessage === null)).toBe(true);
+    expect(cart.availableCheckoutEnabled).toBe(true);
+  });
+
+  it('items added before the app closes keep their quantities through closing and reopening; each store is judged again', async () => {
+    const world = await seedWorld();
+    await addToCart(world, world.open1.listingId, 3);
+    await addToCart(world, world.closed.listingId, 2);
+    await pause();
+    await closeStore(world.closed.sellerId);
+    const paused = await getCart(world);
+    expect(paused.orderingEnabled).toBe(false);
+    expect(paused.items.map((item) => item.qty).sort()).toEqual([2, 3]);
+
+    await resume();
+    const reopened = await getCart(world);
+    expect(reopened.orderingEnabled).toBe(true);
+    expect(reopened.availableCheckoutEnabled).toBe(true);
+    // Now the store's own closure is what the customer is told, by name.
+    expect(lineFor(reopened, world.closed.listingId).unavailableMessage).toMatch(/^Later Closed Store /);
+    expect(reopened.items.map((item) => item.qty).sort()).toEqual([2, 3]);
+
+    await openStore(world.closed.sellerId);
+    expect(lineFor(await getCart(world), world.closed.listingId).available).toBe(true);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
 describe('online payment start', () => {
   async function onlineOrder(world: World) {
     await addToCart(world, world.open1.listingId, 2);
@@ -493,6 +649,22 @@ describe('online payment start', () => {
 
     // A retry neither cancels again nor puts the lines back twice.
     await startPayment(world, orderId).expect(400);
+    expect(lineFor(await getCart(world), world.open1.listingId).qty).toBe(2);
+  });
+
+  it('app closed AND a store closed before the first attempt: cancelled, with the app-wide reason only', async () => {
+    const world = await seedWorld();
+    const orderId = await onlineOrder(world);
+    await closeStore(world.open1.sellerId);
+    await configService.set({ key: ConfigKey.ORDERING_ENABLED, value: false, actorUserId: null });
+    await configService.set({ key: ConfigKey.ORDERING_PAUSED_MESSAGE, value: 'Back at 7 AM.', actorUserId: null });
+
+    const error = expectError((await startPayment(world, orderId).expect(409)).body);
+    expect(error.code).toBe(ErrorCode.ORDERING_PAUSED);
+    expect(error.message).toMatch(/^Back at 7 AM\. Your order was cancelled before any payment/);
+    expect(error.message).not.toMatch(/Open Store A/);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(OrderStatus.CANCELLED);
+    expect(await prisma.payment.count({ where: { orderId } })).toBe(0);
     expect(lineFor(await getCart(world), world.open1.listingId).qty).toBe(2);
   });
 

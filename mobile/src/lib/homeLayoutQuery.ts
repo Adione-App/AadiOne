@@ -44,11 +44,12 @@ export const homeShelvesQueryKey = ["content", "home-shelves"] as const;
  * GET /content/home-shelves), keyed by section id. Live data — prices and
  * stock — so it goes stale after a minute; it is kept on disk like the other
  * public queries, so an offline start or a failed refresh still shows the
- * last shelves. Null until the first answer (and on an older server without
- * the endpoint): the shelves are then simply not shown — the rest of Home is
- * unaffected.
+ * last shelves. `shelves` is null until the first answer (and on an older
+ * server without the endpoint): the shelves are then simply not shown — the
+ * rest of Home is unaffected. `loading` is true only while that first answer
+ * is on its way (Home shows the shelves' skeletons meanwhile).
  */
-export function useHomeShelves(): Readonly<Record<string, readonly ProductSummaryDto[]>> | null {
+export function useHomeShelves(): { shelves: Readonly<Record<string, readonly ProductSummaryDto[]>> | null; loading: boolean } {
   const query = useQuery({
     queryKey: homeShelvesQueryKey,
     queryFn: async () => (await api.get<HomeShelvesDto>("/content/home-shelves")).shelves,
@@ -56,5 +57,5 @@ export function useHomeShelves(): Readonly<Record<string, readonly ProductSummar
     gcTime: 24 * 60 * 60_000,
     retry: 1,
   });
-  return query.data ?? null;
+  return { shelves: query.data ?? null, loading: query.isPending };
 }

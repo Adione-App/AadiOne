@@ -24,6 +24,7 @@ import { ClosedBadge } from "@/components/ClosedBadge";
 import { Bone } from "@/components/Skeleton";
 import { resolveImageUrl } from "@/lib/api";
 import { restaurantListImage } from "@/lib/restaurantImages";
+import { useGlobalClosedNotice } from "@/lib/globalOrdering";
 
 const MAX_TAGS = 3;
 /** Fixed photo size, so every card has the same height whatever its text. */
@@ -68,13 +69,16 @@ function FoodRestaurantCardImpl({
   const time = prepTimeRange(restaurant.avgPrepMins);
   // The restaurant's own type, never its menu: its items keep their own marks on the menu.
   const cardDiet = restaurantDietOf(restaurant);
+  // Open / CLOSED and when it opens are this restaurant's own status: shown
+  // only while the app takes orders (lib/closureDisplay.ts).
+  const showStatus = useGlobalClosedNotice() === null;
 
   return (
     <Pressable
       onPress={() => onPress(restaurant.sellerId)}
       style={({ pressed }) => [styles.card, pressed && styles.pressed]}
       accessibilityRole="button"
-      accessibilityLabel={`${restaurant.name}, ${restaurant.isOpen ? "open" : "closed"}${time ? `, ${time.label}` : ""}. Open menu`}
+      accessibilityLabel={`${restaurant.name}${showStatus ? `, ${restaurant.isOpen ? "open" : "closed"}` : ""}${time ? `, ${time.label}` : ""}. Open menu`}
     >
       <View style={styles.photo}>
         {image && image !== failed ? (
@@ -101,7 +105,7 @@ function FoodRestaurantCardImpl({
           <AppText style={styles.name} numberOfLines={2}>
             {restaurant.name}
           </AppText>
-          {restaurant.isOpen ? (
+          {!showStatus ? null : restaurant.isOpen ? (
             <View style={[styles.status, styles.statusOpen]}>
               <AppText style={[styles.statusText, { color: palette.green700 }]}>Open</AppText>
             </View>
@@ -110,7 +114,7 @@ function FoodRestaurantCardImpl({
             <ClosedBadge style={styles.closedBadge} />
           )}
         </View>
-        {!restaurant.isOpen && restaurant.nextOpenText ? (
+        {showStatus && !restaurant.isOpen && restaurant.nextOpenText ? (
           <AppText style={styles.nextOpen} numberOfLines={1}>
             {restaurant.nextOpenText}
           </AppText>

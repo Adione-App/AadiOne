@@ -32,8 +32,6 @@ import { colors, radius, spacing } from "@shared/theme";
 
 import {
   useHomeFeed,
-  usePlatformAvailability,
-  usePublicConfig,
   useNotificationUnreadCount,
   useOffers,
   useActiveOrders,
@@ -45,7 +43,8 @@ import { formatUnreadBadge } from "@/lib/notifications";
 import { deliveryHeadline, deliveryView } from "@/lib/deliveryArea";
 import { DeliveryStatusNotice, deliveryNoticeShown } from "@/components/location/DeliveryStatusNotice";
 import { requestLocationOnFirstLaunch } from "@/lib/locationService";
-import { globalClosedNotice } from "@/lib/platformAvailability";
+import { useGlobalClosedNotice } from "@/lib/globalOrdering";
+import { deliveryNoticeCoveredByGlobal } from "@/lib/closureDisplay";
 import { ActiveOrdersCarousel } from "./sections/ActiveOrdersCarousel";
 import { useCartError } from "@/lib/useCartActions";
 import { useLocation, usePreferences } from "@/lib/store";
@@ -70,7 +69,7 @@ import {
 
 import { CategoryGrid } from "./sections/CategoryGrid";
 import { FoodSection } from "./sections/FoodSection";
-import { HomeSkeleton } from "./sections/HomeSkeleton";
+import { HomeSkeleton, ShelfLoading } from "./sections/HomeSkeleton";
 import { OfferSection } from "./sections/OfferSection";
 import { ProductShelf, SHELF_CARD_WIDTH } from "./sections/ProductShelf";
 import { PromoCarousel } from "./sections/PromoCarousel";
@@ -250,10 +249,9 @@ export default function HomeScreen({
   const feed = useHomeFeed();
   // App-wide availability (server-decided: master switch, emergency, pauses,
   // holidays, hours). Closed = browse and fill the cart, no orders. An older
-  // server without /availability: its master switch, as before.
-  const publicConfig = usePublicConfig().data;
-  const platformAvailability = usePlatformAvailability().data;
-  const globalClosed = globalClosedNotice(platformAvailability, publicConfig);
+  // server without /availability: its master switch, as before. One answer
+  // for the whole app (lib/globalOrdering.tsx).
+  const globalClosed = useGlobalClosedNotice();
   // Only the shared cart error — Home does NOT subscribe to the cart
   // itself: each ProductShelf does, so a quantity tap re-renders the shelves,
   // not this whole screen.
@@ -560,14 +558,14 @@ export default function HomeScreen({
   // order, visibility and style of the sections the engine built above.
   const homeLayout = useHomeLayout();
   // Products of the builder's added product shelves (resolved by the server, keyed by section id).
-  const homeShelves = useHomeShelves();
+  const { shelves: homeShelves, loading: homeShelvesLoading } = useHomeShelves();
   const language = usePreferences((state) => state.language);
   const laidOut = useMemo(
     () =>
       feed.data
-        ? applyHomeLayout({ sections, feed: feed.data, layout: homeLayout, language, shelves: homeShelves })
+        ? applyHomeLayout({ sections, feed: feed.data, layout: homeLayout, language, shelves: homeShelves, shelvesLoading: homeShelvesLoading })
         : { promo: [], sections: NO_RESULTS as LaidOutSection[] },
-    [sections, feed.data, homeLayout, language, homeShelves],
+    [sections, feed.data, homeLayout, language, homeShelves, homeShelvesLoading],
   );
   const headerColor = heroHeaderColor(homeLayout.hero);
 
@@ -722,6 +720,9 @@ export default function HomeScreen({
               onAction={handlers.action}
             />
           );
+        case "productShelfLoading":
+          // Its products are on their way: the shared shelf skeleton, at its own layout.
+          return <ShelfLoading title={item.title} subtitle={item.subtitle} display={item.display} />;
         case "productShelf":
           // A Home Page Builder shelf: the same ProductShelf and cards, with its own layout.
           return (
@@ -1059,9 +1060,11 @@ export default function HomeScreen({
                 SERVICEABILITY / CART NOTICES
             ==================================================== */}
 
+            {/* App-wide closed / paused: this notice only — no store's
+                name, closure or opening time anywhere (lib/closureDisplay.ts). */}
             {globalClosed && (
               <View style={styles.noticeContainer}>
-                <NoticeStrip message={globalClosed} />
+                <NoticeStrip message={globalClosed} tone="closed" />
               </View>
             )}
 
@@ -1094,7 +1097,7 @@ export default function HomeScreen({
                 with its own way forward. App-wide pauses have their own
                 notice above. Browsing always continues. */}
             {deliveryNoticeShown(delivery) &&
-              !(delivery.state === "ORDERING_DISABLED" && globalClosed) && (
+              !deliveryNoticeCoveredByGlobal(delivery.state, globalClosed !== null) && (
                 <View style={styles.noticeContainer}>
                   <DeliveryStatusNotice view={delivery} onChooseAddress={onOpenLocation} />
                 </View>

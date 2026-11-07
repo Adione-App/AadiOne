@@ -96,7 +96,20 @@ export function ProductGridSkeleton({
   );
 }
 
+/**
+ * The next page of a product grid is loading: ONE row of the same card
+ * skeletons under the cards already shown (never a full-page placeholder,
+ * never replacing what is loaded). Inside the list, whose own padding
+ * already insets it, so it lines up with the grid's columns.
+ */
+export function ProductPageSkeleton({ columns }: { columns: number }) {
+  return <ProductGridSkeleton columns={columns} count={columns} style={styles.pageRow} />;
+}
+
 const styles = StyleSheet.create({
+  pageRow: {
+    padding: 0,
+  },
   grid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -107,8 +120,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xs,
     paddingVertical: spacing.sm,
   },
+  // Sized by its content, exactly like a loaded ProductCard in a list (256dp
+  // at Home / View All widths). NOT `flex: 1` (ProductCard's own style): a
+  // flex basis of 0 collapses the card to zero height whenever the grid sits
+  // directly in a bounded screen View instead of a scrolling list (View All,
+  // Search, Store, the subcategory pane) — the image box became a 10dp
+  // outlined strip with the button bone floating below it, rows stacked on
+  // top of each other. Inside a list both lay out the same.
   card: {
-    flex: 1,
     width: "100%",
   },
   // Mirrors ProductCard's `mediaWrap` — the plain, unclipped positioning

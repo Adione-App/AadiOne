@@ -46,10 +46,12 @@ export async function assertUnpaidOrderStillOrderable(order: { id: string; userI
   const closed = sellerOrders.filter((sellerOrder) => !statusOf(statuses, sellerOrder.sellerId).acceptingOrders);
   if (ordering.enabled && closed.length === 0) return;
 
-  const reason =
-    closed.length > 0
-      ? (statusOf(statuses, closed[0]!.sellerId).message ?? `${closed[0]!.seller.name} is not taking orders right now.`)
-      : (ordering.message ?? 'Ordering is paused right now.');
+  // App-wide closed wins: its reason only, never a store's name or opening
+  // time (a store's own closure is the reason only while the app is open).
+  const storeClosed = ordering.enabled && closed.length > 0;
+  const reason = storeClosed
+    ? (statusOf(statuses, closed[0]!.sellerId).message ?? `${closed[0]!.seller.name} is not taking orders right now.`)
+    : (ordering.message ?? 'Ordering is paused right now.');
 
   // Cancelled first: if that is refused (it was paid meanwhile), nothing is
   // put back and the refusal is what the customer sees. Lines go back only
@@ -64,9 +66,14 @@ export async function assertUnpaidOrderStillOrderable(order: { id: string; userI
 
   if (cancelled.changed) await restoreUnpaidOrderLines(order.id);
 
-  throw new AppError(closed.length > 0 ? ErrorCode.SELLER_CLOSED : ErrorCode.ORDERING_PAUSED, {
+  throw new AppError(storeClosed ? ErrorCode.SELLER_CLOSED : ErrorCode.ORDERING_PAUSED, {
     message: `${reason} Your order was cancelled before any payment, and its items are back in your cart.`,
-    internalMessage: `unpaid order ${order.id} cancelled at payment start: ${closed.length > 0 ? `${closed.length} store(s) closed` : 'ordering paused'}`,
+    internalMessage: `unpaid order ${order.id} cancelled at payment start: ${[
+      ordering.enabled ? null : 'ordering paused',
+      closed.length > 0 ? `${closed.length} store(s) closed` : null,
+    ]
+      .filter(Boolean)
+      .join(', ')}`,
   });
 }
 

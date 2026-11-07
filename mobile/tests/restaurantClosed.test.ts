@@ -42,20 +42,22 @@ describe("the CLOSED label", () => {
 
 describe("Home and Food list cards", () => {
   it("Home's restaurant card shows the CLOSED badge instead of the dark band, and stays pressable", () => {
-    assert.match(homeCard, /\{!restaurant\.isOpen && <ClosedBadge style=\{styles\.closedBadge\} \/>\}/);
+    // Only while the app takes orders (tests/closureDisplay.test.ts).
+    assert.match(homeCard, /const showClosed = !restaurant\.isOpen && !globalClosed;/);
+    assert.match(homeCard, /\{showClosed && <ClosedBadge style=\{styles\.closedBadge\} \/>\}/);
     assert.doesNotMatch(homeCard, /closedBand|Closed now/);
     assert.match(homeCard, /<Pressable\n\s*onPress=\{\(\) => onPress\(restaurant\.sellerId\)\}/);
   });
 
   it("the Food list card swaps its grey Closed pill for the light red CLOSED (the Open pill is unchanged)", () => {
-    assert.match(foodCard, /restaurant\.isOpen \? \(\n\s*<View style=\{\[styles\.status, styles\.statusOpen\]\}>/);
+    assert.match(foodCard, /\{!showStatus \? null : restaurant\.isOpen \? \(\n\s*<View style=\{\[styles\.status, styles\.statusOpen\]\}>/);
     assert.match(foodCard, /<ClosedBadge style=\{styles\.closedBadge\} \/>/);
     assert.doesNotMatch(foodCard, /statusClosed|"Closed"/);
   });
 
   it("a closed-store refusal is a short popup, never Home's persistent banner", () => {
     const branch = cartActions.slice(cartActions.indexOf("err.code === ErrorCode.SELLER_CLOSED"));
-    assert.match(branch, /^err\.code === ErrorCode\.SELLER_CLOSED\) \{[\s\S]*?showCartNotice\(err\.message\);\n\s*revalidateStoreAvailability\(\);\n\s*\} else \{/);
+    assert.match(branch, /^err\.code === ErrorCode\.SELLER_CLOSED\) \{[\s\S]*?showCartNotice\(sellerClosedRefusalMessage\(err\.message, cachedGlobalClosedNotice\(\)\)\);\n\s*revalidateStoreAvailability\(\);\n\s*\} else \{/);
     // Home's only cart banner is the shared cart error, which this never sets.
     assert.match(home, /\{cartError && \(/);
   });
@@ -63,7 +65,7 @@ describe("Home and Food list cards", () => {
 
 describe("the menu page of a closed restaurant", () => {
   it("its header shows CLOSED (and when it opens next, if known)", () => {
-    assert.match(menu, /\{restaurant\.isOpen \? \([\s\S]*?Open now[\s\S]*?\) : \(\n\s*<>\n\s*<ClosedBadge \/>/);
+    assert.match(menu, /\{globalClosed \? null : restaurant\.isOpen \? \([\s\S]*?Open now[\s\S]*?\) : \(\n\s*<>\n\s*<ClosedBadge \/>/);
   });
 
   it("shows no banner on top: the error strip is for an open restaurant only", () => {
@@ -71,8 +73,10 @@ describe("the menu page of a closed restaurant", () => {
   });
 
   it("every item shows CLOSED in place of ADD — and of the stepper, even for an item already in the cart", () => {
-    assert.ok(actionSlot.indexOf("{closed ? (") >= 0);
-    assert.ok(actionSlot.indexOf("{closed ? (") < actionSlot.indexOf("<ClosedBadge size=\"action\" />"));
+    // While the whole app is closed a neutral "Unavailable" comes first (tests/closureDisplay.test.ts).
+    assert.ok(actionSlot.indexOf("{closed && globalClosed ? (") >= 0);
+    assert.ok(actionSlot.indexOf("{closed && globalClosed ? (") < actionSlot.indexOf(") : closed ? ("));
+    assert.ok(actionSlot.indexOf(") : closed ? (") < actionSlot.indexOf("<ClosedBadge size=\"action\" />"));
     assert.ok(actionSlot.indexOf("<ClosedBadge size=\"action\" />") < actionSlot.indexOf("<QuantityStepper"));
     assert.ok(actionSlot.indexOf("<ClosedBadge size=\"action\" />") < actionSlot.indexOf("styles.addButton"));
   });
@@ -87,7 +91,7 @@ describe("the menu page of a closed restaurant", () => {
   it("an open restaurant gets ADD and the stepper back (the same row, closed = false)", () => {
     assert.match(actionSlot, /\) : qty > 0 \? \(\n\s*<QuantityStepper/);
     assert.match(actionSlot, /<AppText style=\{styles\.addText\}>ADD<\/AppText>/);
-    assert.match(menu, /\[cart, closed\],/);
+    assert.match(menu, /\[cart, closed, globalClosed\],/);
   });
 });
 

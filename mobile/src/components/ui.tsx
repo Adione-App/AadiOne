@@ -443,26 +443,35 @@ export function StartupLoading() {
 
 /** Yellow strip used for cart corrections — never a silent change. */
 
+/**
+ * The light-red "closed" look (lib/closureDisplay.ts): the app-wide closed /
+ * paused notice on Home and Cart — the same red as a restaurant's CLOSED label.
+ */
+export const CLOSED_NOTICE_COLORS = { background: "#FDECEC", text: "#B42318", border: "#F2B8B5" } as const;
+
 export function NoticeStrip({
   message,
   tone = "warning",
 }: {
   message: string;
-  tone?: "warning" | "info";
+  /** `closed`: app-wide ordering closed / paused (light red, with a border). */
+  tone?: "warning" | "info" | "closed";
 }) {
   return (
     <View
       style={[
         styles.notice,
-        {
-          backgroundColor:
-            tone === "warning" ? colors.warningSurface : colors.infoSurface,
-        },
+        tone === "closed"
+          ? { backgroundColor: CLOSED_NOTICE_COLORS.background, borderWidth: 1, borderColor: CLOSED_NOTICE_COLORS.border }
+          : {
+              backgroundColor:
+                tone === "warning" ? colors.warningSurface : colors.infoSurface,
+            },
       ]}
     >
       <AppText
         variant="body"
-        color={tone === "warning" ? colors.warning : colors.info}
+        color={tone === "closed" ? CLOSED_NOTICE_COLORS.text : tone === "warning" ? colors.warning : colors.info}
       >
         {message}
       </AppText>

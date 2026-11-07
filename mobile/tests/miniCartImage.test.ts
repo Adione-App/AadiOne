@@ -96,8 +96,9 @@ describe("Food menu rows fly into the Mini Cart like grocery cards", () => {
   const menu = readFileSync(path.join(ROOT, "src/screens/food/RestaurantMenuScreen.tsx"), "utf8").replace(/\r\n/g, "\n");
 
   it("every accepted ADD and + starts its own flight with the row's image; a refused one does not", () => {
-    assert.match(menu, /if \(onAdd\(item\.variantId, snapshotOf\(item\)\)\) flyToCart\(flightImage, item\.variantId\);/);
-    assert.match(menu, /if \(onIncrement\(item\.variantId\)\) flyToCart\(flightImage, item\.variantId\);/);
+    // Through the shared step (lib/addToCartFlow.ts): a flight only for an accepted tap.
+    assert.match(menu, /addAndFly\(onAdd, flyToCart, item\.variantId, snapshotOf\(item\), flightImage\);/);
+    assert.match(menu, /incrementAndFly\(onIncrement, flyToCart, item\.variantId, flightImage\);/);
     assert.match(menu, /const flightImage = image && image !== failed \? image : null;/);
   });
 });

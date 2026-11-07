@@ -36,7 +36,7 @@ describe("line states", () => {
 
   it("labels each unavailable reason", () => {
     assert.equal(unavailableLabel(line("a", true)), null);
-    assert.equal(unavailableLabel(line("a", false, "STORE_CLOSED")), "STORE CLOSED — UNAVAILABLE RIGHT NOW");
+    assert.equal(unavailableLabel(line("a", false, "STORE_CLOSED")), "SELLER CLOSED — UNAVAILABLE RIGHT NOW");
     assert.equal(unavailableLabel(line("a", false, "OUT_OF_STOCK")), "OUT OF STOCK — UNAVAILABLE RIGHT NOW");
     assert.equal(unavailableLabel(line("a", false, "PRODUCT_UNAVAILABLE")), "UNAVAILABLE RIGHT NOW");
     assert.equal(unavailableLabel(line("a", false, null)), "Checking availability…");

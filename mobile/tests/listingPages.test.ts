@@ -48,9 +48,9 @@ describe("Categories screen wiring", () => {
     assert.match(screen, /uniqueListingItems\(products\.data\.pages\)/);
   });
 
-  it("both product grids load the next page near the end and show a spinner / retry while doing so", () => {
+  it("both product grids load the next page near the end and show a skeleton row / retry while doing so", () => {
     assert.equal(screen.match(/onEndReached=\{\(\) => loadNextPage\((products|listing)\)\}/g)?.length, 2);
-    assert.equal(screen.match(/<ListingFooter listing=\{(products|listing)\} \/>/g)?.length, 2);
+    assert.equal(screen.match(/<ListingFooter listing=\{(products|listing)\} columns=\{(productGridColumns|columns)\} \/>/g)?.length, 2);
     assert.match(screen, /if \(!listing\.hasNextPage \|\| listing\.isFetchingNextPage \|\| listing\.isFetchNextPageError\) return;/);
   });
 

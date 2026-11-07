@@ -28,7 +28,7 @@ export function unavailableLabel(item: Line): string | null {
   if (isCheckingLine(item)) return "Checking availability…";
   switch (item.unavailableReason) {
     case "STORE_CLOSED":
-      return "STORE CLOSED — UNAVAILABLE RIGHT NOW";
+      return "SELLER CLOSED — UNAVAILABLE RIGHT NOW";
     case "OUT_OF_STOCK":
       return "OUT OF STOCK — UNAVAILABLE RIGHT NOW";
     default:

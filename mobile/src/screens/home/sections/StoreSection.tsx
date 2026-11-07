@@ -12,12 +12,15 @@ import { formatDistance } from "@shared/distance";
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { AppText } from "@/components/ui";
 import { resolveImageUrl } from "@/lib/api";
+import { useGlobalClosedNotice } from "@/lib/globalOrdering";
 import { storeSubtitle } from "../homeEngine";
 import { PANEL_PADDING, SectionHeader, SectionPanel } from "./SectionShell";
 
 const CARD_WIDTH = 132;
 
 function StoreCard({ store, onPress }: { store: StoreSummaryDto; onPress: (sellerId: string) => void }) {
+  // A store's own closed / opening time: only while the app takes orders (lib/closureDisplay.ts).
+  const globalClosed = useGlobalClosedNotice() !== null;
   const images = store.previewImageUrls
     .map((url) => resolveImageUrl(url))
     .filter((url): url is string => url !== null);
@@ -48,7 +51,7 @@ function StoreCard({ store, onPress }: { store: StoreSummaryDto; onPress: (selle
         {store.distanceKm !== null ? ` · ${formatDistance(store.distanceKm)}` : ""}
       </AppText>
 
-      {!store.isOpen && (
+      {!store.isOpen && !globalClosed && (
         <View style={styles.closed}>
           <AppText style={styles.closedText} numberOfLines={1}>
             {store.nextOpenText ?? "Closed now"}

@@ -19,6 +19,7 @@ import { AppText } from "@/components/ui";
 import { ClosedBadge } from "@/components/ClosedBadge";
 import { resolveImageUrl } from "@/lib/api";
 import { restaurantListImage } from "@/lib/restaurantImages";
+import { useGlobalClosedNotice } from "@/lib/globalOrdering";
 
 export const RESTAURANT_CARD_WIDTH = 220;
 
@@ -38,13 +39,16 @@ function RestaurantCardImpl({
   const cover = resolveImageUrl(restaurantListImage(restaurant));
   const [failed, setFailed] = useState<string | null>(null);
   const cuisine = restaurant.cuisine.filter((entry) => entry.trim().length > 0).join(", ");
+  // While the whole app is closed, no restaurant is shown as closed on its own (lib/closureDisplay.ts).
+  const globalClosed = useGlobalClosedNotice() !== null;
+  const showClosed = !restaurant.isOpen && !globalClosed;
 
   return (
     <Pressable
       onPress={() => onPress(restaurant.sellerId)}
       style={({ pressed }) => [styles.card, compact ? styles.cardCompact : styles.cardWide, pressed && styles.pressed]}
       accessibilityRole="button"
-      accessibilityLabel={`Open ${restaurant.name}${restaurant.isOpen ? "" : ", closed now"}`}
+      accessibilityLabel={`Open ${restaurant.name}${showClosed ? ", closed now" : ""}`}
     >
       <View style={[styles.media, compact ? styles.mediaCompact : styles.mediaWide]}>
         {cover && cover !== failed ? (
@@ -75,7 +79,7 @@ function RestaurantCardImpl({
 
         {/* Light red, the same CLOSED as the Food list and its menu page; the
             card still opens the menu (browsable, nothing can be added). */}
-        {!restaurant.isOpen && <ClosedBadge style={styles.closedBadge} />}
+        {showClosed && <ClosedBadge style={styles.closedBadge} />}
       </View>
 
       <View style={styles.body}>

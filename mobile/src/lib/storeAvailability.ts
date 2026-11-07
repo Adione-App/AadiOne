@@ -11,7 +11,9 @@
  */
 
 import type { QueryClient } from "@tanstack/react-query";
-import { keys } from "./queries";
+import type { PlatformAvailabilityDto, PublicConfig } from "@shared";
+import { PLATFORM_AVAILABILITY_KEY, keys } from "./queries";
+import { globalClosedNotice } from "./platformAvailability";
 import { homeShelvesQueryKey } from "./homeLayoutQuery";
 import { useLocation } from "./store";
 
@@ -58,6 +60,18 @@ function run(): void {
   // until the new one lands).
   const { location, setLocation } = useLocation.getState();
   if (location) void setLocation(location);
+}
+
+/**
+ * The app-wide closed notice as last answered, without a request — for code
+ * outside a component (a refused cart tap). Null while open or not yet known.
+ */
+export function cachedGlobalClosedNotice(): string | null {
+  if (!client) return null;
+  return globalClosedNotice(
+    client.getQueryData<PlatformAvailabilityDto>(PLATFORM_AVAILABILITY_KEY),
+    client.getQueryData<PublicConfig>(["public-config"]),
+  );
 }
 
 /** Ask the server again (throttled). */

@@ -252,7 +252,7 @@ describe("wiring", () => {
   it("+ adds the exact buyable variant directly, or opens the sheet — never the default blindly", () => {
     const card = read("src/components/ProductCard.tsx");
     assert.match(card, /if \(addMode === "sheet"\) \{\n\s*openOptions\(\);/);
-    assert.match(card, /onAdd\(direct\.id, snapshotFromProduct\(product, direct\)\)/);
+    assert.match(card, /addAndFly\(onAdd, flyToCart, direct\.id, snapshotFromProduct\(product, direct\), imageUrl\)/);
     assert.doesNotMatch(card, /onAdd\(variant\.id/);
   });
 
@@ -366,7 +366,7 @@ describe("product page and sheet wiring — no seller identity, no SKU", () => {
 
   it("one buyable size: Add adds exactly it, through the shared cart flow with the cart flight", () => {
     assert.match(page, /: purchasable\[0\];/);
-    assert.match(page, /if \(cart\.add\(chosen\.id, snapshotFromProduct\(detail, chosen\)\)\) flyToCart\(flightImageUrl, chosen\.id\);/);
+    assert.match(page, /addAndFly\(cart\.add, flyToCart, chosen\.id, snapshotFromProduct\(detail, chosen\), flightImageUrl\);/);
   });
 
   it("re-reads the product on every visit (availability follows changes)", () => {

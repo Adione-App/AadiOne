@@ -29,6 +29,7 @@ import { onSessionExpired } from "@/lib/api";
 import { retryInterruptedRestore, useAuth, useLocation } from "@/lib/store";
 import { onMyOrderChanged, onStoreAvailabilityChanged } from "@/lib/socket";
 import { revalidateStoreAvailability, setAvailabilityQueryClient } from "@/lib/storeAvailability";
+import { GlobalOrderingProvider } from "@/lib/globalOrdering";
 import { refreshCurrentLocation } from "@/lib/locationService";
 import { checkPendingPayment, restorePendingPayment, setPaymentQueryClient } from "@/lib/pendingPayment";
 import { loginClosed } from "@/lib/authGate";
@@ -416,25 +417,30 @@ export default function App() {
         >
           <StatusBar style="dark" />
   
-          <RootNavigator status={status} startupReady={startupReady} />
+          {/* App-wide ordering open / closed, one answer for every screen (lib/globalOrdering.tsx). */}
+          <GlobalOrderingProvider>
+            <RootNavigator status={status} startupReady={startupReady} />
   
-          {/* Nothing of the app is layered over a required update. */}
-          {updateRequired ? null : (
-            <>
-              {/* Mounted last so it paints above the tab bar/screens — see
-                  flyToCart.tsx for why this needs to be a root-level overlay. */}
-              <FlyToCartOverlay />
+            {/* Nothing of the app is layered over a required update. */}
+            {updateRequired ? null : (
+              <>
+                {/* The variant sheet any product card opens (lib/variantSheet.ts). */}
+                <VariantSheetHost />
   
-              {/* The variant sheet any product card opens (lib/variantSheet.ts). */}
-              <VariantSheetHost />
+                {/* Above the tab bar, screens AND the variant sheet: an Add
+                    from the sheet drops into the Mini Cart while the sheet
+                    slides away — see flyToCart.tsx for why this needs to be
+                    a root-level overlay. */}
+                <FlyToCartOverlay />
   
-              {/* Cart popups, e.g. a quantity limit reached (lib/cartNotice.ts). */}
-              <CartNoticeToast />
+                {/* Cart popups, e.g. a quantity limit reached (lib/cartNotice.ts). */}
+                <CartNoticeToast />
   
-              {/* An optional update: one dismissible prompt (lib/appUpdate.ts). */}
-              {startupReady ? <AppUpdatePrompt /> : null}
-            </>
-          )}
+                {/* An optional update: one dismissible prompt (lib/appUpdate.ts). */}
+                {startupReady ? <AppUpdatePrompt /> : null}
+              </>
+            )}
+          </GlobalOrderingProvider>
         </PersistQueryClientProvider>
       </AppErrorBoundary>
     </SafeAreaProvider>

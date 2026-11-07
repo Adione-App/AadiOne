@@ -87,7 +87,8 @@ import { ErrorCode } from "@shared";
 import { ApiRequestError, resolveImageUrl } from "./api";
 import { flyFromCart } from "./flyToCart";
 import { showCartNotice } from "./cartNotice";
-import { revalidateProductAvailability, revalidateStoreAvailability } from "./storeAvailability";
+import { cachedGlobalClosedNotice, revalidateProductAvailability, revalidateStoreAvailability } from "./storeAvailability";
+import { sellerClosedRefusalMessage } from "./closureDisplay";
 import { quantityLimitMessage, quantityLimitOf, type QuantityLimit } from "./quantityLimit";
 import { useCart, useCartMutations } from "./queries";
 import { singleCartVariantOf } from "./cartVariant";
@@ -880,7 +881,9 @@ export function useCartActions(options: { refetchCart?: boolean } = {}) {
         // The store closed after this screen last asked: a short popup, never
         // a banner that would stay on Home after the customer moved on — and
         // ask again, so every card and menu shows it closed (CLOSED, no ADD).
-        showCartNotice(err.message);
+        // While the whole app is closed, its notice instead: the server's
+        // sentence names the store and when it opens (lib/closureDisplay.ts).
+        showCartNotice(sellerClosedRefusalMessage(err.message, cachedGlobalClosedNotice()));
         revalidateStoreAvailability();
       } else {
         setError(

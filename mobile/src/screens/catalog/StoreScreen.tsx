@@ -5,14 +5,14 @@
  */
 
 import { useCallback, useMemo } from "react";
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from "react-native";
+import { FlatList, Pressable, StyleSheet, View } from "react-native";
 import { ArrowLeft } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { ProductSummaryDto, StoreSummaryDto } from "@shared";
 import { formatDistance } from "@shared/distance";
 import { colors, palette, radius, spacing } from "@shared/theme";
 import { ProductCard } from "@/components/ProductCard";
-import { ProductGridSkeleton } from "@/components/ProductCardSkeleton";
+import { ProductGridSkeleton, ProductPageSkeleton } from "@/components/ProductCardSkeleton";
 import { AppText, EmptyState, ErrorState, NoticeStrip, Screen } from "@/components/ui";
 import { useStore, useStoreProducts } from "@/lib/queries";
 import { useLocation } from "@/lib/store";
@@ -21,11 +21,15 @@ import { PromoSlot } from "@/components/PromoBanner";
 import { useCartActions } from "@/lib/useCartActions";
 import { useGridColumns } from "@/lib/useGridColumns";
 import { storeSubtitle } from "@/screens/home/homeEngine";
+import { useGlobalClosedNotice } from "@/lib/globalOrdering";
 
 /** Room for MiniCartBar, which rests above the tab bar on this screen. */
 const MINI_CART_ROOM = 84;
 
 function StoreHeader({ store }: { store: StoreSummaryDto }) {
+  // "Open now" / "Opens at …" is this store's own status: shown only while
+  // the app takes orders (lib/closureDisplay.ts).
+  const showStatus = useGlobalClosedNotice() === null;
   return (
     <View style={styles.info}>
       <View style={styles.avatar}>
@@ -39,11 +43,13 @@ function StoreHeader({ store }: { store: StoreSummaryDto }) {
           {storeSubtitle(store)}
         </AppText>
         <View style={styles.metaRow}>
-          <View style={[styles.pill, store.isOpen ? styles.pillOpen : styles.pillClosed]}>
-            <AppText style={[styles.pillText, { color: store.isOpen ? palette.green700 : colors.textSecondary }]} numberOfLines={1}>
-              {store.isOpen ? "Open now" : store.nextOpenText ?? "Closed now"}
-            </AppText>
-          </View>
+          {showStatus && (
+            <View style={[styles.pill, store.isOpen ? styles.pillOpen : styles.pillClosed]}>
+              <AppText style={[styles.pillText, { color: store.isOpen ? palette.green700 : colors.textSecondary }]} numberOfLines={1}>
+                {store.isOpen ? "Open now" : store.nextOpenText ?? "Closed now"}
+              </AppText>
+            </View>
+          )}
           <AppText variant="caption" color={colors.textSecondary}>
             {store.productCount} {store.productCount === 1 ? "product" : "products"}
             {store.distanceKm !== null ? ` · ${formatDistance(store.distanceKm)}` : ""}
@@ -140,7 +146,8 @@ export default function StoreScreen({
           }
           ListEmptyComponent={<EmptyState title="Nothing here yet" hint="This store hasn't listed any products right now." />}
           ListFooterComponent={
-            products.isFetchingNextPage ? <ActivityIndicator color={colors.primary} style={{ margin: spacing.base }} /> : undefined
+            // The next page: one row of card skeletons under the loaded ones.
+            products.isFetchingNextPage ? <ProductPageSkeleton columns={columns} /> : undefined
           }
           onEndReached={loadMore}
           onEndReachedThreshold={0.6}

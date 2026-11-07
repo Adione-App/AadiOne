@@ -28,8 +28,11 @@ import { api, resolveImageUrl } from "@/lib/api";
 import { requireAuth } from "@/lib/authGate";
 import { useProduct } from "@/lib/queries";
 import { pageVariantsOf, storeClosedHint } from "@/lib/cardVariant";
+import { shownStoreClosedHint } from "@/lib/closureDisplay";
+import { useGlobalClosedNotice } from "@/lib/globalOrdering";
 import { snapshotFromProduct, useCartActions } from "@/lib/useCartActions";
 import { flyToCart } from "@/lib/flyToCart";
+import { addAndFly, incrementAndFly } from "@/lib/addToCartFlow";
 import { quantityLimitOf } from "@/lib/quantityLimit";
 import { productDetailFooterHeight } from "@/lib/tabBarVisibility";
 import { useGridColumns } from "@/lib/useGridColumns";
@@ -48,6 +51,7 @@ import {
   QuantityStepper,
 } from "@/components/ProductCard";
 import ProductGallery from "@/components/ProductGallery";
+import { ProductGridSkeleton } from "@/components/ProductCardSkeleton";
 
 export default function ProductDetailScreen({
   productId,
@@ -63,6 +67,7 @@ export default function ProductDetailScreen({
   // last one changes what this page offers (the cached copy shows meanwhile).
   const product = useProduct(productId, { refetchOnMount: "always" });
   const cart = useCartActions();
+  const globalClosed = useGlobalClosedNotice() !== null;
   const relatedColumns = useGridColumns();
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(
     null,
@@ -127,7 +132,8 @@ export default function ProductDetailScreen({
   const detail = product.data;
   // Nothing can be bought because its store is not taking orders (when it
   // opens again, without naming the store), or because nothing is in stock.
-  const closedHint = storeClosedHint(allVariants);
+  // While the whole app is closed, not even when the store opens.
+  const closedHint = shownStoreClosedHint(storeClosedHint(allVariants), globalClosed);
   const storeClosed = closedHint !== null;
   const outOfStock = purchasable.length === 0 && !storeClosed;
   const optionWord =
@@ -173,7 +179,9 @@ export default function ProductDetailScreen({
           // settles changed the ScrollView's content-container size after
           // first paint — see HomeScreen's identical fix for why that's
           // exactly what caused the intermittent first-scroll jump/blink.
-          paddingBottom: 140 + 76,
+          // `insets.bottom`: the footer grows by the Android navigation
+          // bar's height (it pads itself by it), so the content clears it too.
+          paddingBottom: 140 + 76 + insets.bottom,
         }}
       >
         <ProductGallery
@@ -232,7 +240,7 @@ export default function ProductDetailScreen({
           {storeClosed && (
             <View
               style={[styles.storeStatus, styles.storeStatusClosed]}
-              accessibilityLabel={`Unavailable right now. ${closedHint}`}
+              accessibilityLabel={closedHint ? `Unavailable right now. ${closedHint}` : "Unavailable right now"}
             >
               <AppText variant="bodyStrong" color={colors.danger}>
                 Unavailable right now
@@ -342,6 +350,15 @@ export default function ProductDetailScreen({
             </Card>
           )}
 
+          {/* Still loading: one row of the shared product-card skeleton
+              under the real heading (never an empty gap that later jumps). */}
+          {related.isPending && (
+            <View style={{ marginTop: spacing.lg }}>
+              <AppText variant="h3">You may also like</AppText>
+              <ProductGridSkeleton columns={relatedColumns} count={relatedColumns} style={styles.relatedSkeleton} />
+            </View>
+          )}
+
           {(related.data?.length ?? 0) > 0 && (
             <View style={{ marginTop: spacing.lg }}>
               <AppText variant="h3">You may also like</AppText>
@@ -414,8 +431,10 @@ export default function ProductDetailScreen({
               three ways. */}
           {variant && (
             <View style={styles.footerPriceBlock}>
+              {/* Row 1: the selling price, then MRP and discount beside it.
+                  The price never shrinks; MRP / discount give way first. */}
               <View style={styles.footerPriceLine}>
-                <AppText variant="h2" numberOfLines={1}>
+                <AppText variant="h2" numberOfLines={1} style={styles.footerPrice}>
                   {fromPrice ? `From ${formatPaise(variant.pricePaise)}` : formatPaise(variant.pricePaise)}
                 </AppText>
                 {variant.mrpPaise > variant.pricePaise && (
@@ -428,22 +447,22 @@ export default function ProductDetailScreen({
                     {formatPaise(variant.mrpPaise)}
                   </AppText>
                 )}
-              </View>
-
-              <View style={styles.footerPriceLine}>
                 {variant.discountPercent > 0 && (
                   <AppText
                     variant="caption"
                     color={colors.discountBadgeText}
+                    numberOfLines={1}
                     style={styles.footerDiscount}
                   >
                     {variant.discountPercent}% OFF
                   </AppText>
                 )}
-                <AppText variant="caption" color={colors.textSecondary} numberOfLines={1}>
-                  {needsChoice && !chosen ? `Select a ${optionWord}` : variant.variantName}
-                </AppText>
               </View>
+
+              {/* Row 2: the weight / size alone, directly under the price. */}
+              <AppText variant="caption" color={colors.textSecondary} numberOfLines={1} style={styles.footerUnit}>
+                {needsChoice && !chosen ? `Select a ${optionWord}` : variant.variantName}
+              </AppText>
             </View>
           )}
 
@@ -469,8 +488,8 @@ export default function ProductDetailScreen({
                     max={quantityLimitOf(chosen).max}
                     busy={cart.isBusy(chosen.id)}
                     onIncrement={() => {
-                      // Only an accepted step flies into the cart.
-                      if (cart.increment(chosen.id)) flyToCart(flightImageUrl, chosen.id);
+                      // Only an accepted step flies into the cart (lib/addToCartFlow.ts).
+                      incrementAndFly(cart.increment, flyToCart, chosen.id, flightImageUrl);
                     }}
                     onDecrement={() => {
                       // No "leaving the cart" flight here — matches
@@ -487,7 +506,7 @@ export default function ProductDetailScreen({
                   <Button
                     label="Add to Cart"
                     onPress={() => {
-                      if (cart.add(chosen.id, snapshotFromProduct(detail, chosen))) flyToCart(flightImageUrl, chosen.id);
+                      addAndFly(cart.add, flyToCart, chosen.id, snapshotFromProduct(detail, chosen), flightImageUrl);
                     }}
                     style={[styles.footerAddButton, styles.footerRectShape]}
                   />
@@ -536,6 +555,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xs,
     paddingVertical: spacing.sm,
   },
+  // The skeleton grid sits exactly where `relatedGrid` will (its cells pad like `relatedCell`).
+  relatedSkeleton: {
+    padding: 0,
+    marginHorizontal: -spacing.xs,
+    marginTop: spacing.xs,
+  },
   priceRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -583,10 +608,15 @@ const styles = StyleSheet.create({
 
   // LEFT — price / discount / unit. Takes whatever width the fixed-width
   // action box on the right doesn't need.
-  footerPriceBlock: { flex: 1 },
-  footerPriceLine: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
-  footerMrp: { textDecorationLine: "line-through" },
-  footerDiscount: { fontWeight: "700" },
+  // `minWidth: 0` lets the block shrink beside the fixed action box instead
+  // of pushing it off a narrow screen; its lines then truncate.
+  footerPriceBlock: { flex: 1, minWidth: 0, justifyContent: "center" },
+  // Baseline: the small MRP / discount sit on the big price's text line.
+  footerPriceLine: { flexDirection: "row", alignItems: "baseline", gap: spacing.xs },
+  footerPrice: { flexShrink: 0 },
+  footerMrp: { textDecorationLine: "line-through", flexShrink: 1 },
+  footerDiscount: { fontWeight: "700", flexShrink: 1 },
+  footerUnit: { marginTop: 2 },
 
   // RIGHT — Add / the stepper it becomes. A fixed width (not flex:1 — there
   // is no longer a "Cart" button on this row to match widths with) so the

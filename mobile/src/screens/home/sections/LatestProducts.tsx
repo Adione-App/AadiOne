@@ -9,9 +9,9 @@
  *
  * Heading and count come from the Home Page Builder. Drawn with the shared
  * ProductShelf, so cards, wishlist, prices, variants and cart behave exactly
- * as everywhere else on Home. While it loads, when it fails, or when nothing
- * is in stock, the section is simply left out — Home never shows a broken
- * or empty shelf.
+ * as everywhere else on Home. While it loads: the shared shelf skeleton
+ * under its own heading. When it fails, or when nothing is in stock, the
+ * section is simply left out — Home never shows a broken or empty shelf.
  */
 
 import { memo, useMemo } from "react";
@@ -20,6 +20,7 @@ import { useRailProducts } from "@/lib/queries";
 import { purchasableVariantsOf } from "@/lib/cardVariant";
 import type { HomeAction, HomeSection } from "../homeEngine";
 import { ProductShelf } from "./ProductShelf";
+import { ShelfLoading } from "./HomeSkeleton";
 
 const LATEST_RAIL = "RECENTLY_ADDED" as const;
 
@@ -53,6 +54,7 @@ function LatestProductsImpl({
     };
   }, [query.data, maxItems, title, subtitle]);
 
+  if (query.isPending) return <ShelfLoading title={title} subtitle={subtitle} />;
   if (!section) return null;
   return <ProductShelf section={section} onOpenProduct={onOpenProduct} onAction={onAction} />;
 }

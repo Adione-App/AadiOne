@@ -8,37 +8,74 @@
  * style, shared with Categories, Food, menus and search.
  */
 
-import { StyleSheet, View } from "react-native";
+import { StyleSheet, View, useWindowDimensions } from "react-native";
 import type { SharedValue } from "react-native-reanimated";
 import { radius, spacing } from "@shared/theme";
 import { ProductCardSkeleton } from "@/components/ProductCardSkeleton";
 import { Bone, SkeletonGroup, useSkeletonPulse } from "@/components/Skeleton";
-import { PANEL_PADDING, SectionPanel } from "./SectionShell";
+import { productGridColumns, type ProductShelfDisplay } from "../homeLayout";
+import { PANEL_PADDING, SectionHeader, SectionPanel } from "./SectionShell";
 
-/** A shelf still loading: title bone + a row of product-card skeletons. */
+/** Home's standard carousel card width (ProductShelf's SHELF_CARD_WIDTH). */
+const STANDARD_CARD_WIDTH = 132;
+const STANDARD_GAP = 8;
+
+/**
+ * A shelf still loading: its header (the real title when known, else a
+ * bone), then product-card skeletons laid out exactly like the shelf's own
+ * cards — a carousel row at its card width and gap, or a grid at its
+ * columns — so the real shelf replaces it without moving.
+ */
 export function ShelfSkeleton({
   progress,
-  cardWidth,
+  cardWidth = STANDARD_CARD_WIDTH,
   count = 3,
+  title,
+  subtitle,
+  display,
 }: {
   progress: SharedValue<number>;
-  cardWidth: number;
+  cardWidth?: number;
   count?: number;
+  title?: string;
+  subtitle?: string | null;
+  /** The shelf's own layout (Home Page Builder shelves); absent = the standard carousel. */
+  display?: ProductShelfDisplay;
 }) {
+  const { width: screenWidth } = useWindowDimensions();
+  const gap = display?.gap ?? STANDARD_GAP;
+  const grid = display?.layout === "grid" ? productGridColumns(display.columns, screenWidth - PANEL_PADDING * 2, gap) : null;
+  const width = grid ? grid.cardWidth : (display?.cardWidth ?? cardWidth);
+  // A grid shows one row (never an oversized block); a carousel what fits.
+  const cards = grid ? grid.columns : count;
   return (
     <SectionPanel>
-      <View style={styles.headerRow}>
-        <Bone progress={progress} width={140} height={16} />
-        <Bone progress={progress} width={52} height={12} />
-      </View>
-      <View style={styles.cardRow}>
-        {Array.from({ length: count }, (_, index) => (
-          <View key={index} style={{ width: cardWidth }}>
+      {title ? (
+        <SectionHeader title={title} subtitle={subtitle} />
+      ) : (
+        <View style={styles.headerRow}>
+          <Bone progress={progress} width={140} height={16} />
+          <Bone progress={progress} width={52} height={12} />
+        </View>
+      )}
+      <View style={[grid ? styles.gridRow : styles.cardRow, { gap }]}>
+        {Array.from({ length: cards }, (_, index) => (
+          <View key={index} style={{ width }}>
             <ProductCardSkeleton progress={progress} />
           </View>
         ))}
       </View>
     </SectionPanel>
+  );
+}
+
+/** A single shelf loading on its own (Latest Products, a Home Page Builder shelf): its own pulse. */
+export function ShelfLoading(props: Omit<Parameters<typeof ShelfSkeleton>[0], "progress">) {
+  const progress = useSkeletonPulse();
+  return (
+    <SkeletonGroup label={props.title ? `Loading ${props.title}` : "Loading products"}>
+      <ShelfSkeleton progress={progress} {...props} />
+    </SkeletonGroup>
   );
 }
 
@@ -86,9 +123,12 @@ const styles = StyleSheet.create({
   },
   cardRow: {
     flexDirection: "row",
-    gap: spacing.sm,
     paddingHorizontal: PANEL_PADDING,
     overflow: "hidden",
+  },
+  gridRow: {
+    flexDirection: "row",
+    paddingHorizontal: PANEL_PADDING,
   },
   grid: {
     flexDirection: "row",

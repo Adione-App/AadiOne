@@ -30,10 +30,13 @@ import {
   snapshotFromProduct,
 } from "../lib/useCartActions";
 import { flyToCart } from "../lib/flyToCart";
+import { addAndFly, incrementAndFly } from "../lib/addToCartFlow";
 import { useWishlist } from "../lib/useWishlist";
 import { useVariantSheet } from "../lib/variantSheet";
 import { quantityLimitOf } from "../lib/quantityLimit";
 import { cardVariantsOf } from "../lib/cardVariant";
+import { notAddableLabel } from "../lib/closureDisplay";
+import { useGlobalClosedNotice } from "../lib/globalOrdering";
 import { AppText } from "./ui";
 
 
@@ -176,10 +179,13 @@ export function QuantityStepper({
   onDecrement,
   fullWidth,
   style,
+  increaseDisabled = false,
 }: {
   qty: number;
   /** The variant's limit (lib/quantityLimit.ts) — for the dimmed `+` only. */
   max: number;
+  /** + must not add at all (a closed seller's cart line): dimmed and disabled. */
+  increaseDisabled?: boolean;
   onIncrement: () => void;
   onDecrement: () => void;
   /** Accepted for callers' convenience; the cart actions themselves serialise changes per variant. */
@@ -187,7 +193,7 @@ export function QuantityStepper({
   fullWidth?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
-  const atMax = qty >= max;
+  const atMax = qty >= max || increaseDisabled;
   return (
     <View
       style={[
@@ -224,7 +230,9 @@ export function QuantityStepper({
         style={({ pressed }) => [styles.stepperButton, pressed && !atMax && styles.stepperButtonPressed]}
         accessibilityRole="button"
         accessibilityLabel="Increase quantity"
-        accessibilityHint={atMax ? "Maximum quantity reached" : undefined}
+        disabled={increaseDisabled}
+        accessibilityState={{ disabled: increaseDisabled }}
+        accessibilityHint={atMax && !increaseDisabled ? "Maximum quantity reached" : undefined}
       >
         <AppText
           variant="h3"
@@ -317,8 +325,12 @@ function ProductCardImpl({
   // The listing's store is not taking orders (closed, outside hours, admin):
   // still browsable, never addable. Absent (older server) = open.
   const storeClosed = variant?.sellerAcceptingOrders === false;
-  // Nothing can be bought: there is no Add / + on this card.
+  // Nothing can be bought: there is no Add / + on this card. "Store closed"
+  // while the app takes orders; while the whole app is closed a neutral
+  // "Unavailable" — its notice explains it (lib/closureDisplay.ts).
   const notAddable = addMode === "none";
+  const globalClosed = useGlobalClosedNotice() !== null;
+  const notAddableText = notAddableLabel(storeClosed, globalClosed, variant?.sellerClosedMessage);
 
   const imageUrl = resolveImageUrl(product.thumbUrl);
 
@@ -437,14 +449,14 @@ function ProductCardImpl({
             {notAddable ? (
               <View
                 style={styles.floatingOutOfStock}
-                accessibilityLabel={storeClosed ? variant?.sellerClosedMessage ?? "Store closed" : "Sold out"}
+                accessibilityLabel={notAddableText.accessibilityLabel}
               >
                 <AppText
                   variant="caption"
-                  color={storeClosed ? colors.danger : colors.textSecondary}
+                  color={notAddableText.tone === "danger" ? colors.danger : colors.textSecondary}
                   style={styles.floatingOutOfStockText}
                 >
-                  {storeClosed ? "Store closed" : "Sold Out"}
+                  {notAddableText.text}
                 </AppText>
               </View>
             ) : qtyInCart > 0 ? (
@@ -458,8 +470,8 @@ function ProductCardImpl({
                   // Several sizes in the cart: the customer picks which (sheet).
                   const target = hasOptions ? cartVariantId : variant.id;
                   if (!target) return openOptions();
-                  // Only an accepted step flies into the cart.
-                  if (onIncrement(target) !== false) flyToCart(imageUrl, target);
+                  // Only an accepted step flies into the cart (lib/addToCartFlow.ts).
+                  incrementAndFly(onIncrement, flyToCart, target, imageUrl);
                 }}
                 onDecrement={() => {
                   if (!variant) return;
@@ -491,7 +503,7 @@ function ProductCardImpl({
                   // Exactly one can be bought: that one — its own listing and
                   // price (the server re-checks both), never a blind default.
                   if (!direct) return;
-                  if (onAdd(direct.id, snapshotFromProduct(product, direct)) !== false) flyToCart(imageUrl, direct.id);
+                  addAndFly(onAdd, flyToCart, direct.id, snapshotFromProduct(product, direct), imageUrl);
                 }}
                 style={styles.floatingAddButton}
                 accessibilityRole="button"

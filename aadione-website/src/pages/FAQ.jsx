@@ -2,11 +2,9 @@ import Container from '../components/Container'
 import PageHero from '../components/PageHero'
 import FAQItem from '../components/FAQItem'
 import useSEO from '../lib/useSEO'
-import { serviceInfo, contact, site } from '../config/site'
+import { serviceInfo, site } from '../config/site'
 
-const contactLine = contact.supportEmail
-  ? `you can reach us at ${contact.supportEmail} or through the Contact page.`
-  : 'you can reach us through the Contact page.'
+const contactLine = 'you can reach us through the Contact page.'
 
 const categories = [
   {
@@ -48,11 +46,11 @@ const categories = [
     items: [
       {
         q: 'Where does Aadione deliver?',
-        a: `${site.name} currently serves locations within up to ${serviceInfo.deliveryRadiusKm} km of the store.`,
+        a: serviceInfo.areaNote,
       },
       {
         q: 'Is delivery free?',
-        a: `Orders of ${serviceInfo.currency}${serviceInfo.freeDeliveryThreshold} or above qualify for free delivery.`,
+        a: serviceInfo.deliveryChargeNote,
       },
       {
         q: 'How long does delivery take?',

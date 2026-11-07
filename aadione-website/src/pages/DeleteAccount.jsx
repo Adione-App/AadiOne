@@ -34,8 +34,9 @@ export default function DeleteAccount() {
                 What gets deleted
               </h3>
               <p className="mt-1.5 text-sm leading-relaxed text-ink-light/75">
-                Once your request is verified, we delete your account profile, saved addresses,
-                and other personal data associated with your {site.name} account.
+                Your name, email address, saved addresses, notifications, notification
+                registrations and active cart are deleted. Your mobile number is removed from the
+                account, you are signed out on every device, and the account can no longer be used.
               </p>
             </div>
 
@@ -47,9 +48,14 @@ export default function DeleteAccount() {
                 What may be retained
               </h3>
               <p className="mt-1.5 text-sm leading-relaxed text-ink-light/75">
-                Some information, such as order and transaction records, may be retained for a
-                period as required for legal, security, fraud-prevention or accounting purposes,
-                even after your account is deleted.
+                Records of past orders, payments and refunds — including the delivery name, mobile
+                number and address saved with each order — are kept because tax law and dispute
+                resolution require them. They are not used to contact you or for marketing. Your
+                wishlist and recent searches are only on your phone. See our{' '}
+                <Link to="/privacy-policy" className="text-leaf-700 underline underline-offset-2 hover:text-leaf-800">
+                  Privacy Policy
+                </Link>
+                .
               </p>
             </div>
 

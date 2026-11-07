@@ -32,7 +32,9 @@ async function callApi(path, { method = 'POST', body, accessToken } = {}) {
   }
 
   if (!response.ok || json?.success === false) {
-    throw new Error(json?.error?.message || 'Something went wrong. Please try again.')
+    const error = new Error(json?.error?.message || 'Something went wrong. Please try again.')
+    error.status = response.status
+    throw error
   }
 
   return json?.data ?? null
@@ -83,8 +85,17 @@ export default function DeleteAccountForm() {
     setError('')
     try {
       const data = await callApi('/auth/verify-otp', { body: { mobile: mobile.trim(), otp: otp.trim() } })
+      if (data.user?.isNewUser) {
+        // Verifying an unknown number signs it up (the app's sign-in has no
+        // separate sign-up step). There was no account to delete, so the empty
+        // one just created is removed straight away with the same deletion.
+        await callApi('/auth/me', { method: 'DELETE', accessToken: data.tokens.accessToken }).catch(() => undefined)
+        setIsNewUser(true)
+        setStep(STEP.SUCCESS)
+        return
+      }
       setAccessToken(data.tokens.accessToken)
-      setIsNewUser(Boolean(data.user?.isNewUser))
+      setIsNewUser(false)
       setStep(STEP.CONFIRM)
     } catch (err) {
       setError(err.message)
@@ -102,6 +113,15 @@ export default function DeleteAccountForm() {
       await callApi('/auth/me', { method: 'DELETE', accessToken })
       setStep(STEP.SUCCESS)
     } catch (err) {
+      if (err.status === 401) {
+        // The verification is valid for a short time only.
+        setAccessToken('')
+        setOtp('')
+        setConfirmed(false)
+        setStep(STEP.MOBILE)
+        setError('Your verification has expired. Please verify your mobile number again.')
+        return
+      }
       setError(err.message)
     } finally {
       setLoading(false)
@@ -125,7 +145,7 @@ export default function DeleteAccountForm() {
         <p className="mt-2 text-sm leading-relaxed text-ink-light/75">
           {isNewUser
             ? 'This mobile number was verified, but no existing Aadione account was found for it — so there was nothing to delete.'
-            : 'Your Aadione account and associated personal data have been permanently deleted. Some order records may be retained in anonymised form as described above.'}
+            : 'Your Aadione account has been deleted and you have been signed out everywhere. Records of past orders, payments and refunds are kept as described on this page and in our Privacy Policy.'}
         </p>
       </div>
     )
@@ -241,10 +261,9 @@ export default function DeleteAccountForm() {
           </div>
 
           <div className="mt-5 rounded-2xl bg-red-50 p-4 text-sm leading-relaxed text-red-800">
-            Account deletion is permanent and cannot be undone. Your account information and
-            associated data will be removed as described above. Some information may be retained
-            where required for legal, security, fraud-prevention, accounting or other legitimate
-            purposes.
+            Account deletion is permanent and cannot be undone. An account with an order still in
+            progress cannot be deleted until that order is delivered or cancelled. Records of past
+            orders, payments and refunds are kept, as described on this page.
           </div>
 
           <label className="mt-5 flex items-start gap-3 text-sm text-ink-light/80">

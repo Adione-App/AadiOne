@@ -52,6 +52,7 @@ import OtpVerifyScreen from "@/screens/auth/OtpVerifyScreen";
 
 import { MainTabs } from "@/navigation/MainTabs";
 import { navigationRef } from "@/navigation/navigationRef";
+import LegalConsentPrompt from "@/components/LegalConsentPrompt";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { installCrashHandlers } from "@/lib/crashReporter";
 import type { AuthStackParamList, RootStackParamList } from "@/navigation/types";
@@ -184,6 +185,8 @@ function RootNavigator({
           />
         </Root.Navigator>
       )}
+      {/* Signed-in customers only: asks for acceptance of newly published legal versions. */}
+      {status === "authenticated" && startupReady && !isRestoring ? <LegalConsentPrompt /> : null}
     </NavigationContainer>
   );
 }

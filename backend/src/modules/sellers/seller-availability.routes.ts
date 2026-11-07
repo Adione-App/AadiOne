@@ -18,6 +18,24 @@ import { requirePermission, requireUser } from '../../middleware/auth';
 import { attachSellerContext, requireSellerId } from '../../middleware/sellerAuth';
 import * as service from './seller-availability.service';
 import * as locationService from './admin-seller.service';
+import * as disclosureService from './seller-disclosure.service';
+
+/**
+ * The customer-care contact a seller publishes (seller-disclosure.service.ts).
+ * Empty string / null clears it. Shared with the admin route.
+ */
+export const customerCareSchema = z
+  .object({
+    customerCarePhone: z
+      .string()
+      .trim()
+      .max(15)
+      .refine((value) => value === '' || /^\+?[0-9][0-9 -]{6,13}$/.test(value), 'Enter a phone number, e.g. +91 98765 43210')
+      .nullable()
+      .optional(),
+    customerCareEmail: z.string().trim().max(160).refine((value) => value === '' || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value), 'Enter an email address').nullable().optional(),
+  })
+  .strict();
 
 const uuid = z.string().uuid();
 const time = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use 24-hour HH:mm.');
@@ -45,7 +63,7 @@ const hoursSchema = z.object({
 
 export const sellerAvailabilityRouter: Router = Router();
 
-for (const path of ['/availability', '/hours', '/closures', '/location']) {
+for (const path of ['/availability', '/hours', '/closures', '/location', '/disclosure']) {
   sellerAvailabilityRouter.use(path, attachSellerContext);
 }
 
@@ -211,5 +229,24 @@ adminAvailabilityRouter.delete(
   validate({ params: z.object({ sellerId: uuid, id: uuid }) }),
   asyncHandler(async (req: Request, res: Response) => {
     ok(res, await service.removeClosure(req.params['sellerId'] as string, req.params['id'] as string, requireUser(req).id));
+  }),
+);
+
+/* Seller disclosure (customer-care contact shown to customers) ------------- */
+
+sellerAvailabilityRouter.get(
+  '/disclosure',
+  requirePermission(Permission.SELLER_PROFILE_MANAGE),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await disclosureService.getSellerDisclosure(requireSellerId(req)));
+  }),
+);
+
+sellerAvailabilityRouter.patch(
+  '/disclosure',
+  requirePermission(Permission.SELLER_PROFILE_MANAGE),
+  validate({ body: customerCareSchema }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await disclosureService.updateSellerCustomerCare(requireSellerId(req), req.body, requireUser(req).id));
   }),
 );

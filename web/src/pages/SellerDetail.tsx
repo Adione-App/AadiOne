@@ -53,6 +53,7 @@ import SellerRestaurantTab from './SellerRestaurantTab';
 import SellerDeliveryArea from './SellerDeliveryArea';
 import StoreLocationPanel, { type SellerLocation, type StoreLocationSource } from '@/seller/StoreLocationPanel';
 import { SellerLoginPanel } from './SellerLoginPanel';
+import { SellerDisclosurePanel } from '@/components/SellerDisclosurePanel';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -363,6 +364,16 @@ function OverviewTab({
 
   return (
     <div className="grid gap-5 lg:grid-cols-2">
+      {/* The disclosure routes need Seller management, like the rest of this tab's edits. */}
+      {canManage ? <div className="lg:col-span-2">
+        <SellerDisclosurePanel
+          client={api}
+          path={`/admin/sellers/${seller.id}/disclosure`}
+          queryKey={['admin', 'seller', seller.id, 'disclosure']}
+          canEdit={canManage}
+          audience="admin"
+        />
+      </div> : null}
       <Panel title="Business">
         <dl className="divide-y divide-gray-100">
           <DetailRow label="Seller name">{seller.name}</DetailRow>

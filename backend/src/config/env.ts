@@ -7,6 +7,7 @@
  * payments, in-memory cache) are rejected outright in production.
  */
 
+import { parseCorsOrigins } from './cors';
 import fs from "node:fs";
 import path from "node:path";
 import dotenv from "dotenv";
@@ -625,7 +626,11 @@ export const isTest = env.NODE_ENV === "test";
 
 export const isDevelopment = env.NODE_ENV === "development";
 
-/** Parsed CORS allow-list. Empty means no browser origin permitted. */
-export const corsOrigins: string[] = env.CORS_ORIGINS.split(",")
-  .map((o) => o.trim())
-  .filter(Boolean);
+/**
+ * Parsed CORS allow-list (config/cors.ts): exact, normalised origins. Empty
+ * means no browser origin is permitted. Entries that are not plain http(s)
+ * origins are ignored and listed in `corsOriginsIgnored` (logged at startup).
+ */
+const parsedCorsOrigins = parseCorsOrigins(env.CORS_ORIGINS);
+export const corsOrigins: string[] = parsedCorsOrigins.origins;
+export const corsOriginsIgnored: string[] = parsedCorsOrigins.invalid;

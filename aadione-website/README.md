@@ -66,14 +66,17 @@ Almost everything business-specific lives in `src/config/site.js`:
 
 - `site` — brand name, tagline, description, canonical URL
 - `appLinks` — Play Store / App Store URLs (`#` until you have live listings)
-- `contact` — support email/phone/address; intentionally blank until you have real,
-  confirmed values (the site never displays invented contact details)
-- `business` — legal entity name, CIN/GSTIN, registered office, governing-law
-  jurisdiction, and "last updated" date for legal pages — bracketed placeholders
-  until finalised
-- `serviceInfo` — delivery radius (10 km), free-delivery threshold (₹299), and the
-  cancellation/COD/delivery-timing copy used across the site. No fixed delivery time
-  is claimed anywhere, per the brand's business rules.
+- **Legal pages, About, contact and business details are NOT in this file.** Privacy
+  Policy, Terms & Conditions and About are rendered from the Aadione API
+  (`GET /legal/privacy|terms|about`) — the same published text, "Last updated" date
+  and version the app shows; they are edited and published in the Admin Panel
+  (Information Pages). Support, grievance-officer, operator and social details come
+  from `GET /legal/business` (Admin Configuration); an empty setting is hidden.
+  `/cancellation-refund-policy` and `/delivery-policy` redirect to the matching
+  sections of the Terms. See `src/lib/publicApi.js`.
+- `serviceInfo` — general service wording only; no delivery radius, fee or threshold
+  numbers (those are admin settings). No fixed delivery time is claimed anywhere.
+- `apiBaseUrl` — the public API; override at build time with `VITE_API_BASE_URL`.
 - `deleteAccountApiUrl` — point this at the **existing** Aadione backend's
   account-deletion endpoint. Until it's set, the Delete Account form shows a clear
   "not yet connected" message instead of a fake success. If your backend's deletion

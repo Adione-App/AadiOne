@@ -102,6 +102,11 @@ export async function getStore(req: Request, res: Response): Promise<void> {
   );
 }
 
+/** GET /stores/:sellerId/details — the seller disclosure. */
+export async function getSellerDetails(req: Request, res: Response): Promise<void> {
+  ok(res, await storeDirectory.getSellerDetails(req.params['sellerId'] as string));
+}
+
 /** GET /products/previously-ordered — the signed-in customer's own past products. */
 export async function listPreviouslyOrdered(req: Request, res: Response): Promise<void> {
   ok(res, await catalogService.listPreviouslyOrderedProducts(requireUser(req).id));

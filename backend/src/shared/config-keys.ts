@@ -92,13 +92,22 @@ export const ConfigKey = {
   /* business identity & grievance officer (Privacy Policy, Terms, About) */
   BUSINESS_TRADE_NAME: "BUSINESS_TRADE_NAME",
   BUSINESS_LEGAL_NAME: "BUSINESS_LEGAL_NAME",
+  BUSINESS_PROPRIETOR_NAME: "BUSINESS_PROPRIETOR_NAME",
   BUSINESS_TYPE: "BUSINESS_TYPE",
   BUSINESS_ADDRESS: "BUSINESS_ADDRESS",
+  BUSINESS_WEBSITE: "BUSINESS_WEBSITE",
   GRIEVANCE_OFFICER_NAME: "GRIEVANCE_OFFICER_NAME",
   GRIEVANCE_OFFICER_DESIGNATION: "GRIEVANCE_OFFICER_DESIGNATION",
   GRIEVANCE_OFFICER_EMAIL: "GRIEVANCE_OFFICER_EMAIL",
   GRIEVANCE_OFFICER_PHONE: "GRIEVANCE_OFFICER_PHONE",
   GRIEVANCE_OFFICER_ADDRESS: "GRIEVANCE_OFFICER_ADDRESS",
+
+  /* official social media pages (website footer, About) */
+  SOCIAL_INSTAGRAM_URL: "SOCIAL_INSTAGRAM_URL",
+  SOCIAL_FACEBOOK_URL: "SOCIAL_FACEBOOK_URL",
+  SOCIAL_X_URL: "SOCIAL_X_URL",
+  SOCIAL_YOUTUBE_URL: "SOCIAL_YOUTUBE_URL",
+  SOCIAL_LINKEDIN_URL: "SOCIAL_LINKEDIN_URL",
 
   /* customer home page */
   HOME_CATEGORY_ORDER: "HOME_CATEGORY_ORDER",
@@ -248,13 +257,21 @@ export interface ConfigValues {
 
   BUSINESS_TRADE_NAME: string;
   BUSINESS_LEGAL_NAME: string;
+  BUSINESS_PROPRIETOR_NAME: string;
   BUSINESS_TYPE: string;
   BUSINESS_ADDRESS: string;
+  BUSINESS_WEBSITE: string;
   GRIEVANCE_OFFICER_NAME: string;
   GRIEVANCE_OFFICER_DESIGNATION: string;
   GRIEVANCE_OFFICER_EMAIL: string;
   GRIEVANCE_OFFICER_PHONE: string;
   GRIEVANCE_OFFICER_ADDRESS: string;
+
+  SOCIAL_INSTAGRAM_URL: string;
+  SOCIAL_FACEBOOK_URL: string;
+  SOCIAL_X_URL: string;
+  SOCIAL_YOUTUBE_URL: string;
+  SOCIAL_LINKEDIN_URL: string;
 
   /**
    * Top-level category paths (slugs, e.g. "grocery") the customer Home page
@@ -346,13 +363,22 @@ export const CONFIG_DEFAULTS: ConfigValues = {
   // The confirmed brand; everything else is entered by the owner.
   BUSINESS_TRADE_NAME: "Aadione",
   BUSINESS_LEGAL_NAME: "",
+  BUSINESS_PROPRIETOR_NAME: "",
   BUSINESS_TYPE: "",
   BUSINESS_ADDRESS: "",
+  BUSINESS_WEBSITE: "",
   GRIEVANCE_OFFICER_NAME: "",
   GRIEVANCE_OFFICER_DESIGNATION: "",
   GRIEVANCE_OFFICER_EMAIL: "",
   GRIEVANCE_OFFICER_PHONE: "",
   GRIEVANCE_OFFICER_ADDRESS: "",
+
+  // Shown only once the owner enters the official page's address.
+  SOCIAL_INSTAGRAM_URL: "",
+  SOCIAL_FACEBOOK_URL: "",
+  SOCIAL_X_URL: "",
+  SOCIAL_YOUTUBE_URL: "",
+  SOCIAL_LINKEDIN_URL: "",
 
   HOME_CATEGORY_ORDER: [],
 
@@ -536,7 +562,12 @@ export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
   BUSINESS_LEGAL_NAME:
     "The legal name of the person or entity that runs Aadione, exactly as on PAN / GST registration (for a sole proprietorship, the proprietor's name). Required before the Privacy Policy or Terms can be published.",
 
+  BUSINESS_PROPRIETOR_NAME:
+    "For a sole proprietorship: the proprietor's full name, exactly as on PAN. Shown in the legal pages and About; hidden when empty.",
+
   BUSINESS_TYPE: 'The business structure, e.g. "Sole Proprietorship". Shown in the legal pages; hidden when empty.',
+
+  BUSINESS_WEBSITE: 'The official website, e.g. "https://adione.in". Shown in the legal pages and About; hidden when empty.',
 
   BUSINESS_ADDRESS:
     "The principal place of business (postal address), as on GST registration. Required before the Privacy Policy or Terms can be published.",
@@ -550,6 +581,16 @@ export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
   GRIEVANCE_OFFICER_PHONE: "Phone number for the Grievance Officer (optional; hidden when empty).",
 
   GRIEVANCE_OFFICER_ADDRESS: "Postal address for the Grievance Officer (optional; the business address is shown when this is empty).",
+
+  SOCIAL_INSTAGRAM_URL: "Official Instagram page (https://…). Shown on the website and About; hidden when empty.",
+
+  SOCIAL_FACEBOOK_URL: "Official Facebook page (https://…). Shown on the website and About; hidden when empty.",
+
+  SOCIAL_X_URL: "Official X (Twitter) profile (https://…). Shown on the website and About; hidden when empty.",
+
+  SOCIAL_YOUTUBE_URL: "Official YouTube channel (https://…). Shown on the website and About; hidden when empty.",
+
+  SOCIAL_LINKEDIN_URL: "Official LinkedIn page (https://…). Shown on the website and About; hidden when empty.",
 
   DELIVERY_PROMISE_TEXT:
     'Marketing copy for delivery speed (e.g. "in 30 minutes"). Per-order ETA is always computed separately.',

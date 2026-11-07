@@ -2,8 +2,15 @@
  * Information Pages — Privacy Policy, Terms & Conditions, About Aadione.
  *
  * Edit → Save draft → Preview → Publish, with version history and restore
- * (lib/infoPages.ts; server: content/info-page.service.ts). Customers only
- * ever see the published page.
+ * (lib/infoPages.ts; server: content/info-page.service.ts). Customers — in the
+ * app, on the website and at the public link — only ever see the published
+ * page.
+ *
+ * Version and "Last updated" are set by the server when publishing (the next
+ * revision number; the publish day in India) — they are not typed here, a
+ * saved draft never moves them, and publishing a restored version creates a
+ * new version. The only date an admin sets is an optional FUTURE "takes
+ * effect" date, for wording published ahead of the day it applies from.
  *
  * The text is plain text only (headings, paragraphs, bullet lists) — nothing
  * typed here is ever treated as HTML. Business and contact details are never
@@ -19,8 +26,8 @@ import { Link } from 'react-router-dom';
 import {
   INFO_PAGE_SLUGS,
   INFO_PAGE_TITLES,
-  INFO_PAGE_UNCONFIRMED_MARKER,
   Permission,
+  infoPageUnconfirmed,
   roleHasPermission,
   type InfoPageBlock,
   type InfoPageContent,
@@ -30,15 +37,26 @@ import {
 import { Button, Card, ErrorBanner, Field, Modal, Panel, Pill, Spinner, inputClass } from '@/components/ui';
 import { useAuth } from '@/lib/auth';
 import { previewInfoPage, useInfoPageEditor } from '@/lib/infoPages';
+import { OWNER_FACTS, TECHNICAL_FACTS, type ChecklistItem } from '@/lib/legalChecklist';
 
 const errorText = (error: unknown): string | null => (error instanceof Error ? error.message : error ? 'Something went wrong.' : null);
 const dateTime = (iso: string | null) => (iso ? new Date(iso).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—');
 
 const UNPUBLISHED_NOTE: Record<InfoPageSlug, string> = {
-  privacy: 'Not published yet — customers see the built-in privacy wording until you publish.',
-  terms: 'Not published yet — customers see the built-in terms until you publish.',
-  about: 'Not published yet — the app shows its own About screen until you publish.',
+  privacy:
+    'Customers currently see the OLD built-in privacy wording, written for the earlier single-shop service. It is out of date (it describes direct UPI payments and an anonymised 8-year record that the system does not keep). Publish the reviewed policy to replace it in the app, on the website and at the public link.',
+  terms:
+    'Customers currently see the OLD built-in terms, written for the earlier single-shop service and out of date (for example direct UPI payments). Publish the reviewed terms to replace them in the app, on the website and at the public link.',
+  about: 'Not published yet — the app shows a short built-in introduction and the website shows no About text until you publish.',
 };
+
+/** Dates the legal wording has to keep up with (verify each against the official Gazette before relying on it). */
+const LEGAL_CALENDAR: { date: string; text: string }[] = [
+  { date: 'In force', text: 'IT Act 2000 + SPDI Rules 2011 (privacy); Consumer Protection (E-Commerce) Rules 2020 (seller details, grievance officer, 48 h / 1 month).' },
+  { date: '13/14 Nov 2026', text: 'DPDP Rules 2025 — consent-manager provisions (rule 4), one year after publication. Exact day: legal review.' },
+  { date: '1 Jan 2027', text: 'Consumer Protection (E-Commerce) (Amendment) Rules 2026 — PIB release of 10 Sep 2026 found; Gazette text (reported G.S.R. 789(E)) NOT read. Publish updated Terms with this "takes effect" date after legal review.' },
+  { date: 'May 2027', text: 'DPDP main duties (notice, consent, rights, breach reporting) — 18 months after the Rules were notified on 14 Nov 2025 (official PIB document). Exact day: legal review.' },
+];
 
 export default function InfoPagesPage() {
   const [slug, setSlug] = useState<InfoPageSlug>('privacy');
@@ -73,6 +91,8 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [confirm, setConfirm] = useState<null | 'publish' | 'template' | 'discard' | { restore: string; revision: number }>(null);
+  // Privacy / Terms: ask signed-in customers to accept the new version (the first time always).
+  const [askAcceptance, setAskAcceptance] = useState(false);
 
   if (doc.isLoading) return <Spinner />;
   if (doc.isError || !doc.data) return <ErrorBanner message={errorText(doc.error) ?? 'Could not load this page.'} />;
@@ -80,8 +100,7 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
 
   const busy = editor.save.isPending || editor.discard.isPending || editor.publish.isPending || editor.restore.isPending;
   const actionError = errorText(editor.save.error ?? editor.discard.error ?? editor.publish.error ?? editor.restore.error);
-  const unconfirmedCount = content ? JSON.stringify(content).split(INFO_PAGE_UNCONFIRMED_MARKER).length - 1 : 0;
-  const missingRequired = data.settings.filter((setting) => setting.required && !setting.filled);
+  const unconfirmed = content ? infoPageUnconfirmed(content) : [];
 
   async function runPreview() {
     if (!content) return;
@@ -100,29 +119,38 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
     <div className="space-y-5">
       <Card>
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-1 text-sm">
+          <div className="max-w-3xl space-y-1.5 text-sm">
             {data.published ? (
-              <p>
-                <Pill tone="brand">Published</Pill>{' '}
-                <span className="font-semibold">
-                  Version {data.published.version} · effective {data.published.effectiveDate}
-                </span>{' '}
-                <span className="text-gray-500">
-                  (revision {data.published.revision}, {dateTime(data.published.publishedAt)}
-                  {data.published.publishedBy ? ` by ${data.published.publishedBy}` : ''})
-                </span>
-              </p>
+              <>
+                <p>
+                  <Pill tone="brand">Live</Pill>{' '}
+                  <span className="font-semibold">
+                    Version {data.published.version} · Last updated {data.published.lastUpdatedLabel}
+                  </span>
+                  {data.published.effectiveDate ? <span className="text-gray-700"> · takes effect {data.published.effectiveDate}</span> : null}
+                </p>
+                <p className="text-gray-500">
+                  Published {dateTime(data.published.publishedAt)}
+                  {data.published.publishedBy ? ` by ${data.published.publishedBy}` : ''}
+                  {data.published.restoredFromVersion ? ` · re-published text of version ${data.published.restoredFromVersion}` : ''}
+                </p>
+              </>
             ) : (
-              <p>
-                <Pill tone="amber">Not published</Pill> <span className="text-gray-600">{UNPUBLISHED_NOTE[slug]}</span>
+              <p className={slug === 'about' ? 'text-gray-600' : 'rounded-xl bg-red-50 px-3 py-2 text-red-800'}>
+                <Pill tone={slug === 'about' ? 'amber' : 'red'}>Not published</Pill> {UNPUBLISHED_NOTE[slug]}
+                {data.live.lastUpdatedLabel ? ` (Built-in wording dated ${data.live.lastUpdatedLabel}.)` : ''}
               </p>
             )}
             {data.draft ? (
               <p className="text-gray-600">
                 Draft saved {dateTime(data.draft.updatedAt)}
-                {data.draft.updatedBy ? ` by ${data.draft.updatedBy}` : ''} — not visible to customers until published.
+                {data.draft.updatedBy ? ` by ${data.draft.updatedBy}` : ''} — not visible to customers. Saving a draft never changes the public date.
+                {data.draft.content.restoredFromVersion ? ` Based on the text of version ${data.draft.content.restoredFromVersion}.` : ''}
               </p>
             ) : null}
+            <p className="text-gray-500">
+              Publishing creates <span className="font-semibold text-gray-700">Version {data.nextVersion}</span>, with "Last updated" set to the day you publish.
+            </p>
             {dirty ? <p className="font-medium text-amber-700">You have unsaved changes.</p> : null}
           </div>
           {canEdit ? (
@@ -139,7 +167,13 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
               <Button variant="ghost" onClick={() => setConfirm('discard')} disabled={!data.draft || busy}>
                 Discard draft
               </Button>
-              <Button onClick={() => setConfirm('publish')} disabled={!data.draft || dirty || busy}>
+              <Button
+                onClick={() => {
+                  setAskAcceptance(slug !== 'about' && !data.acceptanceEverRequired);
+                  setConfirm('publish');
+                }}
+                disabled={!data.draft || dirty || busy}
+              >
                 Publish
               </Button>
             </div>
@@ -154,10 +188,16 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
         </div>
       </Card>
 
-      <SettingsPanel slug={slug} settings={data.settings} missingRequired={missingRequired.map((setting) => setting.label)} />
+      <SettingsPanel slug={slug} settings={data.settings} missingRequired={data.missingRequired} />
+
+      {content && unconfirmed.length > 0 ? <UnconfirmedPanel items={unconfirmed} /> : null}
+
+      {slug !== 'about' ? <PublishingChecklist settings={data.settings} /> : null}
+
+      {slug !== 'about' ? <LegalCalendarPanel /> : null}
 
       {content ? (
-        <ContentEditor content={content} canEdit={canEdit} update={editor.update} unconfirmedCount={unconfirmedCount} />
+        <ContentEditor content={content} canEdit={canEdit} update={editor.update} />
       ) : (
         <Card>
           <p className="text-sm text-gray-600">
@@ -180,15 +220,18 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
             {data.history.map((item) => (
               <li key={item.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                 <span>
-                  <span className="font-semibold">Version {item.version}</span> · effective {item.effectiveDate}{' '}
+                  <span className="font-semibold">Version {item.version}</span> · Last updated {item.lastUpdatedLabel}
+                  {item.effectiveDate ? ` · takes effect ${item.effectiveDate}` : ''}{' '}
                   <span className="text-gray-500">
-                    (revision {item.revision}, published {dateTime(item.publishedAt)}
-                    {item.publishedBy ? ` by ${item.publishedBy}` : ''})
+                    (published {dateTime(item.publishedAt)}
+                    {item.publishedBy ? ` by ${item.publishedBy}` : ''}
+                    {item.restoredFromVersion ? `; re-published text of version ${item.restoredFromVersion}` : ''}
+                    {item.requiresAcceptance ? '; customers asked to accept' : ''})
                   </span>
                 </span>
                 {canEdit ? (
                   <Button variant="secondary" onClick={() => setConfirm({ restore: item.id, revision: item.revision })} disabled={busy}>
-                    Restore to draft
+                    Restore text to draft
                   </Button>
                 ) : null}
               </li>
@@ -202,19 +245,37 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
       {confirm === 'publish' ? (
         <Modal
           title={`Publish ${INFO_PAGE_TITLES[slug]}?`}
-          subtitle={data.draft ? `Version ${data.draft.content.version}, effective ${data.draft.content.effectiveDate}` : undefined}
+          subtitle={`Becomes Version ${data.nextVersion}, last updated today${data.draft?.content.effectiveDate ? ` · takes effect ${data.draft.content.effectiveDate} if that is later` : ''}`}
           onClose={() => setConfirm(null)}
           footer={
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setConfirm(null)}>Cancel</Button>
-              <Button onClick={() => { setConfirm(null); editor.publish.mutate(); }}>Publish now</Button>
+              <Button onClick={() => { setConfirm(null); editor.publish.mutate(slug === 'about' ? undefined : askAcceptance); }}>Publish now</Button>
             </div>
           }
         >
           <p className="text-sm text-gray-700">
-            Customers see the published version immediately in the app and at the public page link. Make sure the wording has been reviewed (and, for the
-            Privacy Policy and Terms, approved by your legal adviser).
+            Customers see it in the app, on the website and at the public page link within about a minute. Only this page is published — the other pages are
+            not changed. Make sure the wording has been reviewed and, for the Privacy Policy and Terms, approved by a qualified legal adviser.
           </p>
+          {slug !== 'about' ? (
+            <label className="mt-4 flex items-start gap-3 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4"
+                checked={askAcceptance}
+                disabled={!data.acceptanceEverRequired}
+                onChange={(e) => setAskAcceptance(e.target.checked)}
+              />
+              <span>
+                Ask signed-in customers to accept this version in the app.
+                {data.acceptanceEverRequired
+                  ? ' Use it for significant changes; leave it off for corrections so customers are not asked again.'
+                  : ' The first published version is always accepted by customers once.'}
+                {' '}Customers are asked only when both the Privacy Policy and the Terms are published.
+              </span>
+            </label>
+          ) : null}
         </Modal>
       ) : null}
       {confirm === 'template' ? (
@@ -247,7 +308,7 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
       ) : null}
       {confirm && typeof confirm === 'object' ? (
         <Modal
-          title={`Restore revision ${confirm.revision} to the draft?`}
+          title={`Restore the text of version ${confirm.revision} to the draft?`}
           onClose={() => setConfirm(null)}
           footer={
             <div className="flex justify-end gap-2">
@@ -256,7 +317,10 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
             </div>
           }
         >
-          <p className="text-sm text-gray-700">That version becomes the draft. Customers keep seeing the current version until you publish.</p>
+          <p className="text-sm text-gray-700">
+            Its text becomes the draft; customers keep seeing the current version until you publish. Publishing it creates Version {data.nextVersion}, dated the
+            day you publish — version {confirm.revision} keeps its own date in the history.
+          </p>
         </Modal>
       ) : null}
     </div>
@@ -321,34 +385,121 @@ function move<T>(list: T[], index: number, delta: number): void {
   list.splice(target, 0, item!);
 }
 
+function UnconfirmedPanel({ items }: { items: { section: string; text: string }[] }) {
+  return (
+    <Panel title={`Unresolved items (${items.length})`}>
+      <p className="mb-3 text-sm text-amber-800">
+        Each «TO CONFIRM» note needs the owner's decision (and legal review) — replace it with the final wording. The page cannot be published while any is left.
+      </p>
+      <ol className="list-decimal space-y-2 pl-5 text-sm text-gray-700">
+        {items.map((item, i) => (
+          <li key={i}>
+            <span className="font-semibold">{item.section}:</span> {item.text}
+          </li>
+        ))}
+      </ol>
+    </Panel>
+  );
+}
+
+function PublishingChecklist({ settings }: { settings: { configKey: string; filled: boolean }[] }) {
+  const filled = new Map(settings.map((setting) => [setting.configKey, setting.filled]));
+  const settingState = (item: ChecklistItem): 'done' | 'missing' | null => {
+    if (!item.settings) return null;
+    const known = item.settings.filter((key) => filled.has(key));
+    if (known.length === 0) return null;
+    // "email or phone" style items count as done when any is filled.
+    const anyOf = item.label.includes(' or ');
+    const done = anyOf ? known.some((key) => filled.get(key)) : known.every((key) => filled.get(key));
+    return done ? 'done' : 'missing';
+  };
+  return (
+    <Panel title="Publishing checklist">
+      <p className="mb-3 text-xs text-gray-500">
+        Nothing here is invented: each open item needs the proprietor's answer, a check in a hosting dashboard, or legal review. «TO CONFIRM» notes stay in
+        the draft — and block publishing — until replaced with the confirmed wording.
+      </p>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <section>
+          <h3 className="mb-2 text-sm font-semibold text-gray-900">A. Proprietor to confirm</h3>
+          <ul className="space-y-2 text-sm">
+            {OWNER_FACTS.map((item) => {
+              const state = settingState(item);
+              return (
+                <li key={item.label} className="flex gap-2">
+                  <span className="mt-0.5 shrink-0">
+                    {state === 'done' ? <Pill tone="brand">Entered</Pill> : state === 'missing' ? <Pill tone="amber">Missing</Pill> : <Pill tone="gray">Decide</Pill>}
+                  </span>
+                  <span>
+                    <span className="font-medium text-gray-900">{item.label}</span>
+                    <span className="block text-xs text-gray-500">{item.note}</span>
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+        <section>
+          <h3 className="mb-2 text-sm font-semibold text-gray-900">B. Technical facts (audit of 7 November 2026)</h3>
+          <ul className="space-y-2 text-sm">
+            {TECHNICAL_FACTS.map((item) => (
+              <li key={item.label} className="flex gap-2">
+                <span className="mt-0.5 shrink-0">{item.status === 'verified' ? <Pill tone="brand">Verified</Pill> : <Pill tone="amber">Open</Pill>}</span>
+                <span>
+                  <span className="font-medium text-gray-900">{item.label}</span>
+                  <span className="block text-xs text-gray-500">{item.note}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      </div>
+    </Panel>
+  );
+}
+
+function LegalCalendarPanel() {
+  return (
+    <Panel title="Legal calendar">
+      <p className="mb-2 text-xs text-gray-500">
+        Wording must not present rules that have not started as already in force. For a future change, publish the reviewed page with a "takes effect" date.
+      </p>
+      <ul className="space-y-1.5 text-sm text-gray-700">
+        {LEGAL_CALENDAR.map((row) => (
+          <li key={row.date} className="flex gap-3">
+            <span className="w-24 shrink-0 font-semibold text-gray-900">{row.date}</span>
+            <span>{row.text}</span>
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  );
+}
+
 function ContentEditor({
   content,
   canEdit,
   update,
-  unconfirmedCount,
 }: {
   content: InfoPageContent;
   canEdit: boolean;
   update: (change: (draft: InfoPageContent) => void) => void;
-  unconfirmedCount: number;
 }) {
   return (
     <Card>
       <fieldset disabled={!canEdit} className="space-y-5">
-        {unconfirmedCount > 0 ? (
-          <p className="rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
-            {unconfirmedCount} «TO CONFIRM» note{unconfirmedCount === 1 ? '' : 's'} left — replace each with the final wording. A page with any left cannot be published.
-          </p>
-        ) : null}
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2">
           <Field label="Title" required>
             <input className={inputClass} value={content.title} maxLength={120} onChange={(e) => update((d) => { d.title = e.target.value; })} />
           </Field>
-          <Field label="Version" required hint="e.g. 2.0 — raise it for every change you publish">
-            <input className={inputClass} value={content.version} maxLength={20} onChange={(e) => update((d) => { d.version = e.target.value; })} />
-          </Field>
-          <Field label="Effective date" required>
-            <input type="date" className={inputClass} value={content.effectiveDate} onChange={(e) => update((d) => { d.effectiveDate = e.target.value; })} />
+          <Field
+            label="Takes effect on (optional)"
+            hint="Leave empty: applies from publication. A future date is shown to customers as 'takes effect on'; an earlier date is ignored — pages are never backdated."
+          >
+            <div className="flex gap-2">
+              <input type="date" className={inputClass} value={content.effectiveDate} onChange={(e) => update((d) => { d.effectiveDate = e.target.value; })} />
+              {content.effectiveDate ? <Button variant="ghost" onClick={() => update((d) => { d.effectiveDate = ''; })}>Clear</Button> : null}
+            </div>
           </Field>
         </div>
 
@@ -436,7 +587,12 @@ function BlockEditor({
 function PreviewModal({ preview, onClose }: { preview: InfoPagePreviewDto; onClose: () => void }) {
   const { page } = preview;
   return (
-    <Modal title={`Preview — ${page.title}`} subtitle={`Version ${page.version} · effective ${page.effectiveDate} · with today's settings`} onClose={onClose} wide>
+    <Modal
+      title={`Preview — ${page.title}`}
+      subtitle={`If published now: Last updated ${preview.onPublish.lastUpdatedLabel} · Version ${preview.onPublish.version}${preview.onPublish.effectiveLabel ? ` · takes effect ${preview.onPublish.effectiveLabel}` : ''} · with today's settings. Not public.`}
+      onClose={onClose}
+      wide
+    >
       <div className="space-y-3">
         {preview.missingRequired.length > 0 ? (
           <p className="rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">

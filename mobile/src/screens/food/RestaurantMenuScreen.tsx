@@ -1,5 +1,6 @@
 
 
+import { SoldBy } from "@/components/SellerDetails";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Pressable,
@@ -307,6 +308,8 @@ function RestaurantHero({
               </AppText>
             </View>
           ) : null}
+          {/* Business name, address, customer care and FSSAI (E-Commerce Rules seller disclosure). */}
+          <SoldBy sellerId={restaurant.sellerId} sellerName={restaurant.name} label="Food by" />
         </View>
       </View>
     </View>

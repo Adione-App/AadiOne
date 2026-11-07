@@ -488,6 +488,7 @@ model User {
   orders             Order[]
   notifications      Notification[]
   deviceTokens       DeviceToken[]
+  legalConsents      LegalConsent[]
   couponRedemptions  CouponRedemption[]
   stockLedgerEntries StockLedger[]
   statusChanges      OrderStatusHistory[]
@@ -655,6 +656,11 @@ model Seller {
   latitude    Float
   longitude   Float
   phone       String? @db.VarChar(15)
+  /// The customer-care contact the seller chooses to show customers (E-Commerce
+  /// Rules 2020 seller disclosure). Never filled from `phone`, which holds the
+  /// owner's personal mobile from sign-up. Empty = no seller contact shown.
+  customerCarePhone String? @map("customer_care_phone") @db.VarChar(15)
+  customerCareEmail String? @map("customer_care_email") @db.VarChar(160)
 
   /// Opening hours are evaluated in THIS timezone, never server UTC.
   timezone String @default("Asia/Kolkata") @db.VarChar(60)
@@ -2894,4 +2900,25 @@ model RefundCorrection {
   refund Refund @relation(fields: [refundId], references: [id], onDelete: Restrict)
 
   @@map("refund_corrections")
+}
+
+/// A signed-in customer's explicit acceptance of the published Privacy Policy
+/// and Terms (never inferred from signing in). Append-only: a new acceptance
+/// adds a row; history is never changed. No IP / device identifiers.
+model LegalConsent {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @map("user_id") @db.Uuid
+  privacyVersion    Int      @map("privacy_version")
+  termsVersion      Int      @map("terms_version")
+  privacyDocumentId String?  @map("privacy_document_id") @db.Uuid
+  termsDocumentId   String?  @map("terms_document_id") @db.Uuid
+  /// ANDROID | IOS | WEB
+  source            String   @db.VarChar(16)
+  appVersion        String?  @map("app_version") @db.VarChar(20)
+  acceptedAt        DateTime @default(now()) @map("accepted_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, acceptedAt])
+  @@map("legal_consents")
 }

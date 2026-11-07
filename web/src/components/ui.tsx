@@ -555,7 +555,18 @@ export function Td({ children, className = '' }: { children?: ReactNode; classNa
  * never shows. `size="lg"` is the larger tile for order lines, where the
  * picture is how the item is recognised at a glance.
  */
-export function Thumb({ src, alt, size = 'md' }: { src?: string | null; alt: string; size?: 'md' | 'lg' }) {
+export function Thumb({
+  src,
+  alt,
+  size = 'md',
+  fit = 'cover',
+}: {
+  src?: string | null;
+  alt: string;
+  size?: 'md' | 'lg';
+  /** `contain`: the whole product photo, never cropped (order lines). */
+  fit?: 'cover' | 'contain';
+}) {
   // Rewritten to a same-origin path — see lib/image.ts for why that matters.
   const resolved = imageSrc(src);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
@@ -574,7 +585,7 @@ export function Thumb({ src, alt, size = 'md' }: { src?: string | null; alt: str
       alt={alt}
       loading="lazy"
       onError={() => setFailedSrc(resolved)}
-      className={`shrink-0 border border-gray-200 bg-white object-cover ${box}`}
+      className={`shrink-0 border border-gray-200 bg-white ${fit === 'contain' ? 'object-contain p-1' : 'object-cover'} ${box}`}
     />
   );
 }

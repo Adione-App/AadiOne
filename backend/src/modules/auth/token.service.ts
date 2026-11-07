@@ -224,10 +224,14 @@ export async function rotateRefreshToken(
  * Logout. Revokes the whole family, so every device sharing this session ends.
  * Logout is a server-side act, not "the client deleted its copy".
  */
-export async function revokeSession(presentedToken: string): Promise<void> {
+/** Revokes the session; returns whose it was (null for an unknown token). Idempotent. */
+export async function revokeSession(presentedToken: string): Promise<string | null> {
   const stored = await repository.findRefreshTokenByHash(sha256(presentedToken));
-  if (!stored) return; // Already gone — logging out twice is not an error.
+  if (!stored) return null; // Already gone — logging out twice is not an error.
+  // Revoking an already-revoked family changes nothing, so a retried logout
+  // still identifies the account (to remove this phone's push token).
   await repository.revokeTokenFamily(stored.familyId);
+  return stored.userId;
 }
 
 export async function revokeAllSessions(userId: string): Promise<number> {

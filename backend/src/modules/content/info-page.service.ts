@@ -3,13 +3,20 @@
  * ("legal_terms") and About Aadione ("page_about") — on the same
  * content_documents revisions as the Home layout (home-layout.service.ts):
  *
- *   draft      saved freely by an admin; never shown to customers
+ *   draft      saved freely by an admin; never shown to customers, and
+ *              saving it never changes the public "Last updated" date
  *   publish    validates the draft (shared validateInfoPage), refuses a page
  *              still containing «TO CONFIRM» wording, and refuses a LEGAL
- *              page while a required setting (operator, address, grievance
- *              officer) is empty; then archives the current revision and makes
- *              the draft revision N+1 in ONE transaction
- *   restore    copies an earlier revision into the draft (publish to apply)
+ *              page while a requirement (operator, address, customer-care
+ *              contact, grievance officer) is unmet; then archives the current
+ *              revision and makes the draft revision N+1 in ONE transaction.
+ *              N+1 is the public Version, and the server clock's publish
+ *              moment is the public "Last updated" date (India). A "takes
+ *              effect" date on or before the publish day is dropped — a page
+ *              is never backdated
+ *   restore    copies an earlier revision's TEXT into the draft (publish to
+ *              apply). Publishing it creates a NEW version dated that day;
+ *              the earlier version's own dates stay untouched in the history
  *
  * Customers get the published revision, with its {{TOKENS}} filled from
  * Admin Configuration on every read (shared resolveInfoPage: a line whose
@@ -31,14 +38,23 @@ import {
   ConfigKey,
   ErrorCode,
   INFO_PAGE_KEYS,
-  INFO_PAGE_REQUIRED_TOKENS,
+  INFO_PAGE_LIMITS,
+  INFO_PAGE_REQUIREMENTS,
   INFO_PAGE_TOKENS,
+  SOCIAL_NETWORK_LABELS,
+  effectiveDateAfter,
+  formatInfoPageDate,
   formatPaise,
+  indiaDateOf,
   infoPageBodyLines,
   infoPageUnconfirmed,
+  infoPageUnmetRequirements,
+  infoSectionAnchors,
   resolveInfoPage,
   validateInfoPage,
+  webHref,
   type AdminInfoPageDto,
+  type BusinessInfoDto,
   type InfoPageContent,
   type InfoPageDto,
   type InfoPagePreviewDto,
@@ -47,6 +63,7 @@ import {
   type InfoPageSlug,
   type InfoPageToken,
   type InfoPageValues,
+  type SocialNetwork,
 } from '../../shared';
 import { AppError } from '../../common/errors';
 import { moduleLogger } from '../../common/logger';
@@ -70,8 +87,10 @@ const cacheKey = (slug: InfoPageSlug) => `content:${INFO_PAGE_KEYS[slug]}`;
 const TOKEN_SOURCES: Readonly<Record<InfoPageToken, { configKey: string; label: string }>> = {
   BUSINESS_TRADE_NAME: { configKey: ConfigKey.BUSINESS_TRADE_NAME, label: 'Brand name' },
   BUSINESS_LEGAL_NAME: { configKey: ConfigKey.BUSINESS_LEGAL_NAME, label: 'Legal name (as on PAN / GST)' },
+  BUSINESS_PROPRIETOR_NAME: { configKey: ConfigKey.BUSINESS_PROPRIETOR_NAME, label: 'Proprietor name' },
   BUSINESS_TYPE: { configKey: ConfigKey.BUSINESS_TYPE, label: 'Business structure' },
   BUSINESS_ADDRESS: { configKey: ConfigKey.BUSINESS_ADDRESS, label: 'Principal place of business' },
+  BUSINESS_WEBSITE: { configKey: ConfigKey.BUSINESS_WEBSITE, label: 'Website' },
   GSTIN: { configKey: ConfigKey.STORE_GSTIN, label: 'GSTIN' },
   SUPPORT_EMAIL: { configKey: ConfigKey.SUPPORT_EMAIL, label: 'Support email' },
   SUPPORT_PHONE: { configKey: ConfigKey.SUPPORT_PHONE, label: 'Support phone' },
@@ -88,14 +107,25 @@ const TOKEN_SOURCES: Readonly<Record<InfoPageToken, { configKey: string; label: 
 };
 
 const money = (paise: number): string => (Number.isFinite(paise) && paise > 0 ? formatPaise(paise) : '');
+const text = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
+
+const SOCIAL_KEYS: Readonly<Record<SocialNetwork, ConfigKey>> = {
+  instagram: ConfigKey.SOCIAL_INSTAGRAM_URL,
+  facebook: ConfigKey.SOCIAL_FACEBOOK_URL,
+  x: ConfigKey.SOCIAL_X_URL,
+  youtube: ConfigKey.SOCIAL_YOUTUBE_URL,
+  linkedin: ConfigKey.SOCIAL_LINKEDIN_URL,
+};
 
 /** Today's token values, from Admin Configuration. An empty setting is an empty value (its lines are left out). */
 export async function infoPageValues(): Promise<InfoPageValues> {
   const c = await configService.getMany([
     ConfigKey.BUSINESS_TRADE_NAME,
     ConfigKey.BUSINESS_LEGAL_NAME,
+    ConfigKey.BUSINESS_PROPRIETOR_NAME,
     ConfigKey.BUSINESS_TYPE,
     ConfigKey.BUSINESS_ADDRESS,
+    ConfigKey.BUSINESS_WEBSITE,
     ConfigKey.STORE_GSTIN,
     ConfigKey.SUPPORT_EMAIL,
     ConfigKey.SUPPORT_PHONE,
@@ -110,12 +140,13 @@ export async function infoPageValues(): Promise<InfoPageValues> {
     ConfigKey.FREE_DELIVERY_THRESHOLD_PAISE,
     ConfigKey.PLATFORM_FEE_PAISE,
   ]);
-  const text = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
   return {
     BUSINESS_TRADE_NAME: text(c.BUSINESS_TRADE_NAME),
     BUSINESS_LEGAL_NAME: text(c.BUSINESS_LEGAL_NAME),
+    BUSINESS_PROPRIETOR_NAME: text(c.BUSINESS_PROPRIETOR_NAME),
     BUSINESS_TYPE: text(c.BUSINESS_TYPE),
     BUSINESS_ADDRESS: text(c.BUSINESS_ADDRESS),
+    BUSINESS_WEBSITE: text(c.BUSINESS_WEBSITE),
     GSTIN: text(c.STORE_GSTIN),
     SUPPORT_EMAIL: text(c.SUPPORT_EMAIL),
     SUPPORT_PHONE: text(c.SUPPORT_PHONE),
@@ -133,8 +164,45 @@ export async function infoPageValues(): Promise<InfoPageValues> {
   };
 }
 
+/**
+ * GET /legal/business — who runs Aadione and how to reach them, for the app's
+ * About screen and the website. Every value is a Configuration setting; an
+ * empty one is null (hidden by the reader), never a stand-in.
+ */
+export async function getBusinessInfo(): Promise<BusinessInfoDto> {
+  const [values, socials] = await Promise.all([infoPageValues(), configService.getMany(Object.values(SOCIAL_KEYS))]);
+  const value = (token: InfoPageToken): string | null => values[token]?.trim() || null;
+  const website = value('BUSINESS_WEBSITE');
+  return {
+    tradeName: value('BUSINESS_TRADE_NAME') ?? 'Aadione',
+    legalName: value('BUSINESS_LEGAL_NAME'),
+    proprietorName: value('BUSINESS_PROPRIETOR_NAME'),
+    businessType: value('BUSINESS_TYPE'),
+    address: value('BUSINESS_ADDRESS'),
+    gstin: value('GSTIN'),
+    website: website && webHref(website) ? website : null,
+    support: { email: value('SUPPORT_EMAIL'), phone: value('SUPPORT_PHONE'), whatsapp: value('SUPPORT_WHATSAPP'), hours: value('SUPPORT_HOURS') },
+    grievanceOfficer: {
+      name: value('GRIEVANCE_OFFICER_NAME'),
+      designation: value('GRIEVANCE_OFFICER_DESIGNATION'),
+      email: value('GRIEVANCE_OFFICER_EMAIL'),
+      phone: value('GRIEVANCE_OFFICER_PHONE'),
+      address: value('GRIEVANCE_OFFICER_ADDRESS'),
+    },
+    socials: (Object.keys(SOCIAL_KEYS) as SocialNetwork[]).flatMap((network) => {
+      const url = text((socials as Record<string, unknown>)[SOCIAL_KEYS[network]]);
+      return url.startsWith('https://') ? [{ network, label: SOCIAL_NETWORK_LABELS[network], url }] : [];
+    }),
+  };
+}
+
+/** Unmet publishing requirements as labels ("Support email or Support phone"). */
+function missingRequired(slug: InfoPageSlug, values: InfoPageValues): string[] {
+  return infoPageUnmetRequirements(slug, values).map((anyOf) => anyOf.map((token) => TOKEN_SOURCES[token].label).join(' or '));
+}
+
 function settingsDto(slug: InfoPageSlug, values: InfoPageValues): InfoPageSettingDto[] {
-  const required = new Set(INFO_PAGE_REQUIRED_TOKENS[slug]);
+  const required = new Set<InfoPageToken>(INFO_PAGE_REQUIREMENTS[slug].flat());
   return INFO_PAGE_TOKENS.map((token) => ({
     token,
     configKey: TOKEN_SOURCES[token].configKey,
@@ -152,18 +220,24 @@ function toPublicDto(
   slug: InfoPageSlug,
   content: InfoPageContent,
   values: InfoPageValues,
-  meta: { revision: number; updatedAt: string; source: InfoPageDto['source']; versioned: boolean },
+  meta: { revision: number; updatedAt: string; publishedAt: string | null; source: InfoPageDto['source'] },
 ): InfoPageDto {
   const page = resolveInfoPage(content, values);
+  const published = meta.source === 'published';
+  const effectiveDate = published ? effectiveDateAfter(page.effectiveDate, meta.updatedAt) : null;
+  const anchors = infoSectionAnchors(page.sections.map((section) => section.heading));
   return {
     slug,
     title: page.title,
     updatedAt: meta.updatedAt,
-    version: meta.versioned ? page.version : null,
-    effectiveDate: meta.versioned ? page.effectiveDate : null,
+    lastUpdatedLabel: formatInfoPageDate(meta.updatedAt),
+    publishedAt: meta.publishedAt,
+    version: published ? String(meta.revision) : null,
+    effectiveDate,
+    effectiveLabel: effectiveDate ? formatInfoPageDate(effectiveDate) : null,
     revision: meta.revision,
     source: meta.source,
-    sections: page.sections.map((section) => ({ heading: section.heading, body: infoPageBodyLines(section), blocks: section.blocks })),
+    sections: page.sections.map((section, s) => ({ id: anchors[s]!, heading: section.heading, body: infoPageBodyLines(section), blocks: section.blocks })),
   };
 }
 
@@ -203,14 +277,15 @@ export async function getPublicInfoPage(slug: InfoPageSlug): Promise<InfoPageDto
   if (published) {
     return toPublicDto(slug, published.content, values, {
       revision: published.revision,
-      updatedAt: published.publishedAt?.slice(0, 10) ?? published.content.effectiveDate,
+      // The India calendar day of the server's publish moment.
+      updatedAt: indiaDateOf(published.publishedAt ?? new Date()),
+      publishedAt: published.publishedAt,
       source: 'published',
-      versioned: true,
     });
   }
   const builtin = BUILTIN_INFO_PAGES[slug];
   if (!builtin) return null;
-  return toPublicDto(slug, builtin.content, values, { revision: 0, updatedAt: builtin.updatedAt, source: 'builtin', versioned: false });
+  return toPublicDto(slug, builtin.content, values, { revision: 0, updatedAt: builtin.updatedAt, publishedAt: null, source: 'builtin' });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -235,25 +310,47 @@ const revisionDto = (slug: InfoPageSlug, row: ContentDocument, names: Map<string
   return {
     id: row.id,
     revision: row.revision,
-    version: content.version,
+    version: String(row.revision),
     effectiveDate: content.effectiveDate,
     publishedAt: row.publishedAt?.toISOString() ?? null,
+    lastUpdatedLabel: row.publishedAt ? formatInfoPageDate(indiaDateOf(row.publishedAt)) : '',
     publishedBy: row.publishedByUserId ? names.get(row.publishedByUserId) ?? null : null,
+    restoredFromVersion: content.restoredFromVersion ?? null,
+    requiresAcceptance: content.requiresAcceptance === true,
   };
 };
 
-/** The template, dated today (India) so a fresh draft does not start with a stale date. */
+/** The template as a starting draft: it applies from its publication (no date to go stale). */
 function templateFor(slug: InfoPageSlug): InfoPageContent {
-  const today = new Date(Date.now() + 5.5 * 3_600_000).toISOString().slice(0, 10);
-  return { ...INFO_PAGE_TEMPLATES[slug], effectiveDate: today };
+  return structuredClone({ ...INFO_PAGE_TEMPLATES[slug], effectiveDate: '' });
+}
+
+/** The revision number the next publish of a page gets (every earlier one, archived or live, counts). */
+async function nextRevision(db: Pick<Prisma.TransactionClient, 'contentDocument'>, key: string): Promise<number> {
+  const max = await db.contentDocument.aggregate({ where: { key, status: { not: ContentDocumentStatus.DRAFT } }, _max: { revision: true } });
+  return (max._max.revision ?? 0) + 1;
+}
+
+/** The "takes effect" date a page is published with on `today`: a later date, or '' (from publication). */
+function effectiveOnPublish(content: InfoPageContent, today: string): string {
+  return effectiveDateAfter(content.effectiveDate, today) ?? '';
+}
+
+function assertEffectiveDateInRange(content: InfoPageContent, today: string): void {
+  if (!content.effectiveDate) return;
+  const limit = indiaDateOf(new Date(Date.parse(`${today}T00:00:00Z`) + INFO_PAGE_LIMITS.effectiveDaysAhead * 86_400_000));
+  if (content.effectiveDate > limit) {
+    throw new AppError(ErrorCode.VALIDATION_ERROR, { message: `The "takes effect" date can be at most ${INFO_PAGE_LIMITS.effectiveDaysAhead} days ahead.` });
+  }
 }
 
 /** GET /admin/content/pages/:slug — published, draft, history, template and the settings it uses. */
 export async function getAdminInfoPage(slug: InfoPageSlug): Promise<AdminInfoPageDto> {
   const key = INFO_PAGE_KEYS[slug];
-  const [rows, values] = await Promise.all([
+  const [rows, values, nextVersion] = await Promise.all([
     prisma.contentDocument.findMany({ where: { key }, orderBy: [{ revision: 'desc' }, { createdAt: 'desc' }], take: HISTORY_LIMIT + 2 }),
     infoPageValues(),
+    nextRevision(prisma, key),
   ]);
   const published = rows.find((row) => row.status === ContentDocumentStatus.PUBLISHED) ?? null;
   const draft = rows.find((row) => row.status === ContentDocumentStatus.DRAFT) ?? null;
@@ -271,6 +368,12 @@ export async function getAdminInfoPage(slug: InfoPageSlug): Promise<AdminInfoPag
         }
       : null,
     history: archived.map((row) => revisionDto(slug, row, names)),
+    live: published
+      ? { source: 'published', version: String(published.revision), lastUpdatedLabel: formatInfoPageDate(indiaDateOf(published.publishedAt ?? published.updatedAt)) }
+      : { source: 'builtin', version: null, lastUpdatedLabel: formatInfoPageDate(BUILTIN_INFO_PAGES[slug]?.updatedAt) },
+    nextVersion,
+    acceptanceEverRequired: rows.some((row) => row.status !== ContentDocumentStatus.DRAFT && storedContent(slug, row).requiresAcceptance === true),
+    missingRequired: missingRequired(slug, values),
     template: templateFor(slug),
     settings: settingsDto(slug, values),
   };
@@ -286,15 +389,18 @@ function assertValid(input: unknown): InfoPageContent {
   });
 }
 
-function missingRequired(slug: InfoPageSlug, values: InfoPageValues): InfoPageToken[] {
-  return INFO_PAGE_REQUIRED_TOKENS[slug].filter((token) => !values[token]?.trim());
-}
-
-/** POST /admin/content/pages/:slug/preview — any page (the unsaved one on screen) as customers would see it now. */
+/** POST /admin/content/pages/:slug/preview — any page (the unsaved one on screen) as customers would see it if published now. Nothing is stored. */
 export async function previewInfoPage(slug: InfoPageSlug, input: unknown): Promise<InfoPagePreviewDto> {
   const content = assertValid(input);
-  const values = await infoPageValues();
-  return { page: resolveInfoPage(content, values), missingRequired: missingRequired(slug, values), unconfirmed: infoPageUnconfirmed(content) };
+  const [values, version] = await Promise.all([infoPageValues(), nextRevision(prisma, INFO_PAGE_KEYS[slug])]);
+  const today = indiaDateOf(new Date());
+  const effective = effectiveOnPublish(content, today);
+  return {
+    page: resolveInfoPage(content, values),
+    missingRequired: missingRequired(slug, values),
+    unconfirmed: infoPageUnconfirmed(content),
+    onPublish: { version: String(version), lastUpdatedLabel: formatInfoPageDate(today), effectiveLabel: effective ? formatInfoPageDate(effective) : null },
+  };
 }
 
 async function audit(tx: Prisma.TransactionClient, actorUserId: string, action: string, entityId: string, before: unknown, after: unknown) {
@@ -359,7 +465,12 @@ export async function discardInfoPageDraft(slug: InfoPageSlug, actorUserId: stri
  * still be the live revision: if someone else published meanwhile, nothing
  * changes and the admin is asked to reload.
  */
-export async function publishInfoPage(slug: InfoPageSlug, basedOnRevision: number, actorUserId: string): Promise<AdminInfoPageDto> {
+export async function publishInfoPage(
+  slug: InfoPageSlug,
+  basedOnRevision: number,
+  actorUserId: string,
+  requireAcceptance?: boolean,
+): Promise<AdminInfoPageDto> {
   const key = INFO_PAGE_KEYS[slug];
   const draft = await prisma.contentDocument.findFirst({ where: { key, status: ContentDocumentStatus.DRAFT } });
   if (!draft) throw new AppError(ErrorCode.VALIDATION_ERROR, { message: 'There are no unpublished changes to publish.' });
@@ -369,16 +480,30 @@ export async function publishInfoPage(slug: InfoPageSlug, basedOnRevision: numbe
   if (unconfirmed.length > 0) {
     throw new AppError(ErrorCode.VALIDATION_ERROR, {
       message: `Replace every «TO CONFIRM» note with the final wording before publishing (${unconfirmed.length} left).`,
-      details: unconfirmed.slice(0, 20).map((text) => ({ field: 'content', message: text.slice(0, 200) })),
+      details: unconfirmed.slice(0, 20).map((item) => ({ field: item.section, message: item.text.slice(0, 200) })),
     });
   }
-  const missing = missingRequired(slug, await infoPageValues());
-  if (missing.length > 0) {
+  const values = await infoPageValues();
+  const unmet = infoPageUnmetRequirements(slug, values);
+  if (unmet.length > 0) {
     throw new AppError(ErrorCode.VALIDATION_ERROR, {
-      message: `Fill these settings in Configuration → Business & Grievance Officer before publishing: ${missing.map((token) => TOKEN_SOURCES[token].label).join(', ')}.`,
-      details: missing.map((token) => ({ field: TOKEN_SOURCES[token].configKey, message: 'required' })),
+      message: `Fill these settings in Configuration → Business, Support & Grievance Officer before publishing: ${missingRequired(slug, values).join(', ')}.`,
+      details: unmet.map((anyOf) => ({ field: anyOf.map((token) => TOKEN_SOURCES[token].configKey).join(' | '), message: 'required' })),
     });
   }
+  const today = indiaDateOf(new Date());
+  assertEffectiveDateInRange(content, today);
+  // Privacy / Terms: ask signed-in customers to accept this version? The
+  // admin decides; a page's FIRST acceptance always asks. Never for About.
+  const isLegal = slug !== 'about';
+  const askedBefore =
+    isLegal &&
+    (await prisma.contentDocument.findMany({ where: { key, status: { not: ContentDocumentStatus.DRAFT } }, select: { content: true } })).some(
+      (row) => (row.content as { requiresAcceptance?: unknown } | null)?.requiresAcceptance === true,
+    );
+  const asks = isLegal && (requireAcceptance ?? !askedBefore);
+  const { requiresAcceptance: _ignored, ...rest } = content;
+  const finalContent: InfoPageContent = { ...rest, effectiveDate: effectiveOnPublish(content, today), ...(asks ? { requiresAcceptance: true } : {}) };
 
   await prisma.$transaction(async (tx) => {
     await lockDocument(tx, key);
@@ -393,25 +518,35 @@ export async function publishInfoPage(slug: InfoPageSlug, basedOnRevision: numbe
     if (basedOnRevision !== liveRevision || draft.revision !== liveRevision) {
       throw new AppError(ErrorCode.CONTENT_CHANGED, { message: 'Someone published a newer version meanwhile. Reload to see it before publishing.' });
     }
-    const maxRevision = await tx.contentDocument.aggregate({ where: { key, status: { not: ContentDocumentStatus.DRAFT } }, _max: { revision: true } });
-    const next = (maxRevision._max.revision ?? 0) + 1;
+    const next = await nextRevision(tx, key);
+    // The server's clock, never a date typed by an admin.
+    const publishedAt = new Date();
     if (current) await tx.contentDocument.update({ where: { id: current.id }, data: { status: ContentDocumentStatus.ARCHIVED } });
     await tx.contentDocument.update({
       where: { id: draft.id },
-      data: { status: ContentDocumentStatus.PUBLISHED, revision: next, content: asJson(content), publishedAt: new Date(), publishedByUserId: actorUserId },
+      data: { status: ContentDocumentStatus.PUBLISHED, revision: next, content: asJson(finalContent), publishedAt, publishedByUserId: actorUserId },
     });
     await audit(tx, actorUserId, 'content.publish', draft.id, current ? { key, revision: current.revision } : null, {
       key,
       revision: next,
-      version: content.version,
-      effectiveDate: content.effectiveDate,
+      version: String(next),
+      publishedAt: publishedAt.toISOString(),
+      lastUpdated: indiaDateOf(publishedAt),
+      effectiveDate: finalContent.effectiveDate || null,
+      restoredFromVersion: finalContent.restoredFromVersion ?? null,
+      requiresAcceptance: asks,
     });
   });
   await cache.delete(cacheKey(slug)).catch((error: unknown) => log.warn({ err: error }, 'information page cache not cleared — refreshes within a minute'));
   return getAdminInfoPage(slug);
 }
 
-/** POST /admin/content/pages/:slug/restore/:id — an earlier revision becomes the draft (publish to apply it). */
+/**
+ * POST /admin/content/pages/:slug/restore/:id — an earlier revision's text
+ * becomes the draft (publish to apply it). Its old "takes effect" date is
+ * dropped and the draft remembers where it came from; publishing it creates a
+ * new version dated that day, and the earlier version keeps its own dates.
+ */
 export async function restoreInfoPageRevision(slug: InfoPageSlug, id: string, actorUserId: string): Promise<AdminInfoPageDto> {
   const key = INFO_PAGE_KEYS[slug];
   await prisma.$transaction(async (tx) => {
@@ -422,7 +557,7 @@ export async function restoreInfoPageRevision(slug: InfoPageSlug, id: string, ac
       tx.contentDocument.findFirst({ where: { key, status: ContentDocumentStatus.DRAFT } }),
       tx.contentDocument.findFirst({ where: { key, status: ContentDocumentStatus.PUBLISHED }, select: { revision: true } }),
     ]);
-    const content = asJson(storedContent(slug, source));
+    const content = asJson({ ...storedContent(slug, source), effectiveDate: '', restoredFromVersion: source.revision });
     const base = published?.revision ?? 0;
     const row = draft
       ? await tx.contentDocument.update({ where: { id: draft.id }, data: { content, revision: base, updatedByUserId: actorUserId } })
@@ -430,4 +565,29 @@ export async function restoreInfoPageRevision(slug: InfoPageSlug, id: string, ac
     await audit(tx, actorUserId, 'content.draft.restore', row.id, null, { key, fromRevision: source.revision });
   });
   return getAdminInfoPage(slug);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Versions customers accept (legal/legal-consent.service.ts)                  */
+/* -------------------------------------------------------------------------- */
+
+export interface LegalPageVersions {
+  /** The published revision now, and its row. */
+  current: { revision: number; documentId: string };
+  /** The latest revision an admin marked as needing acceptance (or the first published one). */
+  required: number;
+}
+
+/** Privacy or Terms: what is published and which version customers must have accepted; null while unpublished. */
+export async function legalPageVersions(slug: 'privacy' | 'terms'): Promise<LegalPageVersions | null> {
+  const rows = await prisma.contentDocument.findMany({
+    where: { key: INFO_PAGE_KEYS[slug], status: { not: ContentDocumentStatus.DRAFT } },
+    select: { id: true, revision: true, status: true, content: true },
+    orderBy: { revision: 'asc' },
+  });
+  const current = rows.find((row) => row.status === ContentDocumentStatus.PUBLISHED);
+  if (!current) return null;
+  const flagged = rows.filter((row) => (row.content as { requiresAcceptance?: unknown } | null)?.requiresAcceptance === true);
+  const required = flagged.length > 0 ? flagged[flagged.length - 1]!.revision : rows[0]!.revision;
+  return { current: { revision: current.revision, documentId: current.id }, required };
 }

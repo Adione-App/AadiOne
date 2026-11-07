@@ -100,6 +100,14 @@ catalogRouter.get(
   asyncHandler(controller.getStore),
 );
 
+// The seller disclosure (business name, address, customer care, FSSAI) shown
+// from a product, a restaurant or an order — public, like the store itself.
+catalogRouter.get(
+  '/stores/:sellerId/details',
+  validate({ params: storeParamsSchema }),
+  asyncHandler(controller.getSellerDetails),
+);
+
 /**
  * POST /products/:variantId/notify-me
  *

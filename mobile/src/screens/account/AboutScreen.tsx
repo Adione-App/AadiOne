@@ -1,211 +1,107 @@
 /**
- * About Aadione (Task 14.14 companion).
+ * About Aadione.
  *
  * The page itself is the admin-published "About Aadione" content (Admin Panel
- * → Information Pages; GET /legal/about), whose business / contact details
- * come from Admin Configuration. Until it is published — or while offline
- * with nothing cached — this screen shows its own built-in introduction.
+ * → Information Pages; GET /legal/about) — the same text the website shows —
+ * whose business / contact details come from Admin Configuration. Until it is
+ * published, this screen shows only a short, claim-free introduction and the
+ * support contacts that are configured (GET /legal/business; an empty setting
+ * has no row).
  *
- * The delivery promise, support email and support numbers come from public
- * configuration, not from constants in the binary. The mockups contradicted
- * themselves on this (10 minutes on one screen, 30 on another), and a promise
- * compiled into an APK cannot be corrected without a Play Store release.
+ * No delivery-time promises, "best price" or "always available" claims are
+ * written into the app: anything the business says about itself is published
+ * text an admin can correct without a store release.
  */
 
-import { Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useQuery } from '@tanstack/react-query';
 import Constants from 'expo-constants';
-import { Headphones, ShieldCheck, Tag, Zap, type LucideIcon } from 'lucide-react-native';
-import type { PublicConfig } from '@shared';
-import { colors, radius, spacing } from '@shared/theme';
-import { api } from '@/lib/api';
+import { colors, spacing } from '@shared/theme';
 import { useTabBarClearance } from '@/lib/tabBarVisibility';
-import { AppText, Card, Loading, Screen } from '@/components/ui';
+import { AppText, Screen } from '@/components/ui';
 import BrandMark from '@/components/BrandMark';
-import { InfoPageSections } from '@/components/InfoPageView';
-import { useInfoPage } from '@/lib/infoPages';
-
-// Vector icons, not emoji — emoji render inconsistently across Android OEM
-// fonts (the same reason CategoryIcon moved off them); this keeps the About
-// page's icon language consistent with the rest of the app.
-const FEATURES: { icon: LucideIcon; title: string; body: (promise: string) => string }[] = [
-  {
-    icon: Zap,
-    title: 'Fast Delivery',
-    body: (promise: string) => `Get your order delivered to your doorstep ${promise}.`,
-  },
-  {
-    icon: ShieldCheck,
-    title: 'Trusted & Safe',
-    body: () => 'We ensure quality products and safe delivery every time.',
-  },
-  {
-    icon: Tag,
-    title: 'Best Prices',
-    body: () => 'Quality products at the best prices.',
-  },
-  {
-    icon: Headphones,
-    title: 'Customer Support',
-    body: () => 'We are always here to help you.',
-  },
-];
+import { ContactRows, InfoPageHeading, InfoPageSections, InfoPageSkeleton, LinkedText } from '@/components/InfoPageView';
+import { useBusinessInfo, useInfoPage } from '@/lib/infoPages';
+import { supportContactRows } from '@/lib/infoPageFormat';
 
 export default function AboutScreen({ onBack }: { onBack: () => void }) {
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
-
-  const { data } = useQuery({
-    queryKey: ['public-config'],
-    queryFn: () => api.get<PublicConfig>('/config/public'),
-    staleTime: 5 * 60_000,
-  });
-
-  const promise = data?.DELIVERY_PROMISE_TEXT ?? 'fast';
   const about = useInfoPage('about');
+  const business = useBusinessInfo();
   const published = about.data ?? null;
-  const supportEmail = data?.SUPPORT_EMAIL ?? '';
-  const supportPhone = data?.SUPPORT_PHONE ?? '';
+  const contactRows = supportContactRows(business.data);
+  const appVersion = Constants.expoConfig?.version ?? null;
+
+  const refresh = () => {
+    void about.refetch();
+    void business.refetch();
+  };
 
   return (
     <Screen>
       <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
-        <Pressable onPress={onBack} hitSlop={12} style={styles.back}>
+        <Pressable onPress={onBack} hitSlop={12} style={styles.back} accessibilityRole="button" accessibilityLabel="Back">
           <AppText variant="h2">←</AppText>
         </Pressable>
         <AppText variant="h3">About Aadione</AppText>
       </View>
 
       <ScrollView
-        contentContainerStyle={{
-          padding: spacing.base,
-          // The tab bar floats over this screen now (see MainTabs.tsx's
+        contentContainerStyle={[
+          styles.content,
+          // The tab bar floats over this screen (MainTabs.tsx's
           // `AnimatedTabBar`) rather than reserving its own flex space.
-          paddingBottom: tabBarClearance + spacing.xxl,
-        }}
+          { paddingBottom: tabBarClearance + spacing.xxl },
+        ]}
+        refreshControl={
+          <RefreshControl refreshing={about.isRefetching || business.isRefetching} onRefresh={refresh} tintColor={colors.primary} colors={[colors.primary]} />
+        }
       >
-        <View style={{ alignItems: 'center' }}>
-          <View style={styles.logoRing}>
-            <BrandMark size={88} />
-          </View>
-
-          <AppText variant="displayLarge" style={{ marginTop: spacing.md }}>
-            <AppText variant="displayLarge" color="#0E441C">
+        <View style={styles.brand}>
+          <BrandMark size={48} />
+          <AppText variant="display" style={styles.wordmark}>
+            <AppText variant="display" color="#0E441C">
               Aadi
             </AppText>
-            <AppText variant="displayLarge" color={colors.primary}>
+            <AppText variant="display" color={colors.primary}>
               one
             </AppText>
           </AppText>
         </View>
 
         {about.isLoading ? (
-          <Loading />
+          <InfoPageSkeleton />
         ) : published ? (
-          <InfoPageSections page={published} />
+          <>
+            <InfoPageHeading title={published.title} page={published} />
+            <InfoPageSections page={published} />
+          </>
         ) : (
           <>
-          <View style={{ alignItems: 'center' }}>
-            <AppText variant="bodyLarge" style={{ marginTop: spacing.sm, textAlign: 'center' }}>
-              Your daily essentials, delivered{' '}
-              <AppText variant="bodyLarge" color={colors.primary}>
-                {promise}
-              </AppText>
-            </AppText>
-
-            <AppText
-              variant="body"
-              color={colors.textSecondary}
-              style={{ marginTop: spacing.md, textAlign: 'center' }}
-            >
-              Aadione is your trusted quick delivery app for groceries and daily essentials. We aim
-              to make your shopping experience easy, fast and reliable.
-            </AppText>
-          </View>
-
-          <Card style={{ marginTop: spacing.lg, padding: 0 }}>
-            {FEATURES.map((feature, index) => (
-              <View
-                key={feature.title}
-                style={[styles.featureRow, index === FEATURES.length - 1 && { borderBottomWidth: 0 }]}
-              >
-                <View style={styles.featureIcon}>
-                  <feature.icon size={22} color={colors.primary} strokeWidth={2} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <AppText variant="bodyStrong">{feature.title}</AppText>
-                  <AppText
-                    variant="body"
-                    color={colors.textSecondary}
-                    style={{ marginTop: spacing.xxs }}
-                  >
-                    {feature.body(promise)}
-                  </AppText>
-                </View>
+            <LinkedText
+              text="Aadione is a hyperlocal marketplace: it brings the shops, restaurants and other local businesses around you into one app, so you can order from them in one place."
+              style={styles.intro}
+            />
+            {contactRows.length > 0 ? (
+              <View style={styles.block}>
+                <AppText variant="h3" style={styles.blockTitle}>
+                  Contact us
+                </AppText>
+                <ContactRows rows={contactRows} />
               </View>
-            ))}
-          </Card>
+            ) : null}
           </>
         )}
 
-        <Card style={{ marginTop: spacing.lg }}>
-          <AppText variant="h3">App Information</AppText>
-
-          <InfoRow label="Version" value={Constants.expoConfig?.version ?? '1.0.0'} />
-
-          {supportPhone !== '' && (
-            <InfoRow
-              label="Support Phone"
-              value={supportPhone}
-              onPress={() => void Linking.openURL(`tel:${supportPhone}`)}
-            />
-          )}
-
-          {supportEmail !== '' && (
-            <InfoRow
-              label="Contact Email"
-              value={supportEmail}
-              onPress={() => void Linking.openURL(`mailto:${supportEmail}`)}
-              last
-            />
-          )}
-        </Card>
-
-        <Card style={{ marginTop: spacing.lg, backgroundColor: colors.primarySurface }}>
-          <AppText variant="bodyStrong">Made with care in India</AppText>
-          <AppText variant="body" color={colors.textSecondary} style={{ marginTop: spacing.xxs }}>
-            Thank you for choosing Aadione.
+        {appVersion ? (
+          <AppText variant="caption" color={colors.textSecondary} style={styles.version}>
+            App version {appVersion}
           </AppText>
-        </Card>
+        ) : null}
       </ScrollView>
     </Screen>
   );
-}
-
-function InfoRow({
-  label,
-  value,
-  onPress,
-  last,
-}: {
-  label: string;
-  value: string;
-  onPress?: () => void;
-  last?: boolean;
-}) {
-  const content = (
-    <View style={[styles.infoRow, last && { borderBottomWidth: 0 }]}>
-      <AppText variant="body" color={colors.textSecondary}>
-        {label}
-      </AppText>
-      <AppText variant="body" color={onPress ? colors.primary : colors.textPrimary}>
-        {value}
-      </AppText>
-    </View>
-  );
-
-  return onPress ? <Pressable onPress={onPress}>{content}</Pressable> : content;
 }
 
 const styles = StyleSheet.create({
@@ -220,35 +116,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   back: { width: 40, height: 40, justifyContent: 'center' },
-  logoRing: {
-    width: 120,
-    height: 120,
-    borderRadius: radius.circle,
-    backgroundColor: colors.primarySurface,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  featureRow: {
-    flexDirection: 'row',
-    gap: spacing.base,
-    padding: spacing.base,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
-  },
-  featureIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: radius.circle,
-    backgroundColor: colors.primarySurface,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  infoRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    minHeight: 48,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
-  },
+  content: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg },
+  brand: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.base },
+  wordmark: { flexShrink: 1 },
+  intro: { marginTop: spacing.sm },
+  block: { marginTop: spacing.xl },
+  blockTitle: { marginBottom: spacing.sm },
+  version: { marginTop: spacing.xxl, textAlign: 'center' },
 });

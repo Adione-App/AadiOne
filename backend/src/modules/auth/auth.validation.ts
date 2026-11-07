@@ -47,6 +47,8 @@ export const refreshSchema = z.object({
 
 export const logoutSchema = z.object({
   refreshToken: z.string().min(20).optional(),
+  /** This phone's push token: removed from the signed-out account only (never another phone's, never another user's). */
+  deviceToken: z.string().trim().min(10).max(400).optional(),
 });
 
 export const emailSchema = z

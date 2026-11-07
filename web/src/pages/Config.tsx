@@ -101,13 +101,20 @@ const DISPLAY_LABELS: Partial<Record<ConfigKey, string>> = {
 
   BUSINESS_TRADE_NAME: "Brand Name",
   BUSINESS_LEGAL_NAME: "Legal Name (as on PAN / GST)",
+  BUSINESS_PROPRIETOR_NAME: "Proprietor Name",
   BUSINESS_TYPE: "Business Structure",
   BUSINESS_ADDRESS: "Principal Place of Business",
+  BUSINESS_WEBSITE: "Website",
   GRIEVANCE_OFFICER_NAME: "Grievance Officer Name",
   GRIEVANCE_OFFICER_DESIGNATION: "Grievance Officer Designation",
   GRIEVANCE_OFFICER_EMAIL: "Grievance Officer Email",
   GRIEVANCE_OFFICER_PHONE: "Grievance Officer Phone",
   GRIEVANCE_OFFICER_ADDRESS: "Grievance Officer Address",
+  SOCIAL_INSTAGRAM_URL: "Instagram Page",
+  SOCIAL_FACEBOOK_URL: "Facebook Page",
+  SOCIAL_X_URL: "X (Twitter) Profile",
+  SOCIAL_YOUTUBE_URL: "YouTube Channel",
+  SOCIAL_LINKEDIN_URL: "LinkedIn Page",
 };
 
 /**
@@ -225,7 +232,11 @@ const DISPLAY_DESCRIPTIONS: Partial<Record<ConfigKey, string>> = {
 
   BUSINESS_LEGAL_NAME: "Exactly as on PAN / GST registration (for a sole proprietorship, the proprietor's name). Required to publish the Privacy Policy and Terms.",
 
+  BUSINESS_PROPRIETOR_NAME: "For a sole proprietorship: the proprietor's full name, exactly as on PAN. Hidden when empty.",
+
   BUSINESS_TYPE: 'e.g. "Sole Proprietorship". Hidden when empty.',
+
+  BUSINESS_WEBSITE: 'e.g. "https://adione.in". Shown in the legal pages and About; hidden when empty.',
 
   BUSINESS_ADDRESS: "Postal address of the principal place of business, as on GST registration. Required to publish the Privacy Policy and Terms.",
 
@@ -238,6 +249,16 @@ const DISPLAY_DESCRIPTIONS: Partial<Record<ConfigKey, string>> = {
   GRIEVANCE_OFFICER_PHONE: "Optional; hidden when empty.",
 
   GRIEVANCE_OFFICER_ADDRESS: "Optional; the business address is shown when this is empty.",
+
+  SOCIAL_INSTAGRAM_URL: "Official page only (https://instagram.com/…). Shown on the website and About; hidden when empty.",
+
+  SOCIAL_FACEBOOK_URL: "Official page only (https://facebook.com/…). Hidden when empty.",
+
+  SOCIAL_X_URL: "Official profile only (https://x.com/…). Hidden when empty.",
+
+  SOCIAL_YOUTUBE_URL: "Official channel only (https://youtube.com/…). Hidden when empty.",
+
+  SOCIAL_LINKEDIN_URL: "Official page only (https://linkedin.com/…). Hidden when empty.",
 
   DELIVERY_PROMISE_TEXT:
     "Marketing copy for delivery speed. Per-order ETA is computed separately.",
@@ -432,13 +453,16 @@ const GROUPS: {
   },
   {
     // Everything the Privacy Policy, Terms & Conditions and About pages show
-    // (Information Pages). Changes appear in those pages at once.
+    // (Information Pages), in the app, on the website and at the public links.
+    // Changes appear there within about a minute, without republishing.
     title: "Business, Support & Grievance Officer",
     keys: [
       "BUSINESS_TRADE_NAME",
       "BUSINESS_LEGAL_NAME",
+      "BUSINESS_PROPRIETOR_NAME",
       "BUSINESS_TYPE",
       "BUSINESS_ADDRESS",
+      "BUSINESS_WEBSITE",
       "STORE_GSTIN",
       "SUPPORT_EMAIL",
       "SUPPORT_PHONE",
@@ -449,6 +473,11 @@ const GROUPS: {
       "GRIEVANCE_OFFICER_EMAIL",
       "GRIEVANCE_OFFICER_PHONE",
       "GRIEVANCE_OFFICER_ADDRESS",
+      "SOCIAL_INSTAGRAM_URL",
+      "SOCIAL_FACEBOOK_URL",
+      "SOCIAL_X_URL",
+      "SOCIAL_YOUTUBE_URL",
+      "SOCIAL_LINKEDIN_URL",
     ],
   },
   {

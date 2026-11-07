@@ -17,7 +17,7 @@
 
 import type { Server as HttpServer } from 'node:http';
 import { Server, type Socket } from 'socket.io';
-import { corsOrigins } from '../config/env';
+import { corsOrigins, isProduction } from '../config/env';
 import { moduleLogger } from '../common/logger';
 import { verifyAccessToken } from '../modules/auth/token.service';
 import { prisma } from '../infra/db/prisma';
@@ -35,7 +35,9 @@ export const rooms = {
 
 export function initRealtime(httpServer: HttpServer): Server {
   io = new Server(httpServer, {
-    cors: { origin: corsOrigins.length > 0 ? corsOrigins : true, credentials: true },
+    // Exact origins only. An empty list allows any origin in development, never
+    // in production (credentials are on, so "any" would mean any website).
+    cors: { origin: corsOrigins.length > 0 ? corsOrigins : !isProduction, credentials: true },
     // Polling first, upgrading to websocket: some Indian mobile networks and
     // corporate proxies block websocket upgrades outright, and falling back
     // silently is better than a dead tracking screen.

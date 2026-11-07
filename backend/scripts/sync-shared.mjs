@@ -15,6 +15,10 @@
  * Design tokens (theme.ts) go to both clients. Everything else is the domain
  * contract, which all three need.
  *
+ * The public website (aadione-website/) gets ONLY info-pages.ts: it renders
+ * the published Privacy Policy, Terms and About pages from the same API as
+ * the app, with the same link and date rules (Vite compiles the .ts file).
+ *
  * Usage:  npm run sync:shared        (from backend/)
  *         npm run sync:shared -- --check   (CI: fail if copies are stale)
  */
@@ -29,8 +33,9 @@ const repoRoot = resolve(backendRoot, '..');
 
 const SOURCE_DIR = join(backendRoot, 'src', 'shared');
 const TARGETS = [
-  join(repoRoot, 'web', 'src', 'shared'),
-  join(repoRoot, 'mobile', 'src', 'shared'),
+  { dir: join(repoRoot, 'web', 'src', 'shared'), only: null },
+  { dir: join(repoRoot, 'mobile', 'src', 'shared'), only: null },
+  { dir: join(repoRoot, 'aadione-website', 'src', 'shared'), only: ['info-pages.ts'] },
 ];
 
 const BANNER = `/**
@@ -58,7 +63,7 @@ if (files.length === 0) {
 let stale = 0;
 let written = 0;
 
-for (const targetDir of TARGETS) {
+for (const { dir: targetDir, only } of TARGETS) {
   // A client folder that does not exist yet (mobile before Phase 14) is skipped
   // rather than treated as an error.
   const clientRoot = resolve(targetDir, '..', '..');
@@ -70,6 +75,7 @@ for (const targetDir of TARGETS) {
   mkdirSync(targetDir, { recursive: true });
 
   for (const file of files) {
+    if (only && !only.includes(file)) continue;
     const contents = BANNER + readFileSync(join(SOURCE_DIR, file), 'utf8');
     const destination = join(targetDir, file);
     const current = existsSync(destination) ? readFileSync(destination, 'utf8') : null;

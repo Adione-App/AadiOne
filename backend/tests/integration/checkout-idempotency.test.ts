@@ -152,7 +152,13 @@ describe('POST /orders idempotency', () => {
     const { addToCart, place } = await setup();
     await addToCart();
     const results = await Promise.all([place(randomUUID()), place(randomUUID())]);
-    expect(results.filter((r) => r.status === 201)).toHaveLength(1);
+    // Overlapping, the second is refused (ORDER_IN_PROGRESS). Under load the
+    // two can run one after the other instead; then the second is the same
+    // checkout again and REUSES the first order (open-checkout.ts) — also 201,
+    // same order. Either way: one order, one Cashfree order.
+    for (const r of results) expect([201, 409]).toContain(r.status);
+    const ids = new Set(results.filter((r) => r.status === 201).map((r) => expectSuccess<Placed>(r.body).data.order.id));
+    expect(ids.size).toBe(1);
     expect(await prisma.order.count()).toBe(1);
     expect(cashfreeOrderCreates()).toBe(1);
   });

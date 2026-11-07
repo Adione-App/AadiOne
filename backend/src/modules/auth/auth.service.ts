@@ -27,6 +27,7 @@ import { moduleLogger } from '../../common/logger';
 import * as repository from './auth.repository';
 import * as otpService from './otp.service';
 import * as tokenService from './token.service';
+import * as notificationService from '../notifications/notification.service';
 
 const log = moduleLogger('auth');
 
@@ -478,8 +479,19 @@ export async function refresh(
   return { user: toUserDto(user), tokens };
 }
 
-export async function logout(refreshToken: string): Promise<void> {
-  await tokenService.revokeSession(refreshToken);
+/**
+ * Ends one session. With `deviceToken`, that phone's push token is detached
+ * from the account the session belonged to, so the next person signing in on
+ * the phone never gets this account's notifications. Only that one token of
+ * that one account is removed: the account's other phones keep theirs, and a
+ * token that has since moved to another account (someone else signed in on
+ * the phone) is left alone. Safe to retry — the app retries a logout that
+ * could not reach the server.
+ */
+export async function logout(refreshToken: string | undefined, deviceToken?: string, sessionUserId?: string): Promise<void> {
+  const owner = refreshToken ? await tokenService.revokeSession(refreshToken) : null;
+  const userId = owner ?? sessionUserId ?? null;
+  if (userId && deviceToken) await notificationService.removeDevice(userId, deviceToken);
 }
 
 export async function logoutEverywhere(userId: string): Promise<number> {

@@ -1,12 +1,21 @@
 import { Link } from 'react-router-dom'
-import { Mail, Phone, Instagram, Facebook, Twitter, Linkedin } from 'lucide-react'
+import { Mail, Phone, MessageCircle, Instagram, Facebook, Twitter, Linkedin, Youtube } from 'lucide-react'
 import Container from './Container'
 import AppStoreButtons from './AppStoreButtons'
-import { companyNav, legalNav, contact, socials, site } from '../config/site'
+import { companyNav, legalNav, site } from '../config/site'
+import { useBusinessInfo } from '../lib/publicApi'
+import { telHref, whatsappHref } from '../shared/info-pages'
 
+const SOCIAL_ICONS = { instagram: Instagram, facebook: Facebook, x: Twitter, youtube: Youtube, linkedin: Linkedin }
+
+// Contact, operator and social details come from Admin Configuration via the
+// public API (same values the app shows); an empty setting is simply not shown.
 export default function Footer() {
   const year = new Date().getFullYear()
-  const hasSocials = socials.instagram || socials.facebook || socials.twitter || socials.linkedin
+  const { data: business } = useBusinessInfo()
+  const support = business?.support ?? {}
+  const socials = business?.socials ?? []
+  const operator = [business?.legalName, business?.address, business?.gstin ? `GSTIN ${business.gstin}` : null].filter(Boolean)
 
   return (
     <footer className="border-t border-leaf-100 bg-ink text-cream-100">
@@ -20,12 +29,11 @@ export default function Footer() {
             <p className="mt-4 max-w-xs text-sm leading-relaxed text-cream-100/70">
               {site.description}
             </p>
-            {hasSocials && (
+            {socials.length > 0 && (
               <div className="mt-6 flex items-center gap-3">
-                {socials.instagram && <SocialIcon href={socials.instagram} label="Instagram" Icon={Instagram} />}
-                {socials.facebook && <SocialIcon href={socials.facebook} label="Facebook" Icon={Facebook} />}
-                {socials.twitter && <SocialIcon href={socials.twitter} label="Twitter" Icon={Twitter} />}
-                {socials.linkedin && <SocialIcon href={socials.linkedin} label="LinkedIn" Icon={Linkedin} />}
+                {socials.map((social) => (
+                  <SocialIcon key={social.network} href={social.url} label={social.label} Icon={SOCIAL_ICONS[social.network] ?? Instagram} />
+                ))}
               </div>
             )}
           </div>
@@ -69,27 +77,36 @@ export default function Footer() {
               Get in touch
             </h3>
             <ul className="mt-4 space-y-3 text-sm text-cream-100/80">
-              {contact.supportEmail ? (
+              {support.email && (
                 <li className="flex items-start gap-2.5">
                   <Mail size={17} className="mt-0.5 shrink-0 text-leaf-300" />
-                  <a href={`mailto:${contact.supportEmail}`} className="hover:text-white">
-                    {contact.supportEmail}
+                  <a href={`mailto:${support.email}`} className="break-all hover:text-white">
+                    {support.email}
                   </a>
                 </li>
-              ) : (
-                <li className="flex items-start gap-2.5 text-cream-100/50">
-                  <Mail size={17} className="mt-0.5 shrink-0 text-leaf-300" />
-                  <Link to="/contact" className="hover:text-white">
-                    Contact form
-                  </Link>
-                </li>
               )}
-              {contact.phone && (
+              {support.phone && (
                 <li className="flex items-start gap-2.5">
                   <Phone size={17} className="mt-0.5 shrink-0 text-leaf-300" />
-                  <span>{contact.phone}</span>
+                  <a href={telHref(support.phone)} className="hover:text-white">
+                    {support.phone}
+                  </a>
                 </li>
               )}
+              {support.whatsapp && (
+                <li className="flex items-start gap-2.5">
+                  <MessageCircle size={17} className="mt-0.5 shrink-0 text-leaf-300" />
+                  <a href={whatsappHref(support.whatsapp)} target="_blank" rel="noopener noreferrer" className="hover:text-white">
+                    WhatsApp {support.whatsapp}
+                  </a>
+                </li>
+              )}
+              {support.hours && <li className="text-cream-100/60">Support hours: {support.hours}</li>}
+              <li>
+                <Link to="/contact" className="hover:text-white">
+                  All contact options
+                </Link>
+              </li>
             </ul>
             <div className="mt-6">
               <AppStoreButtons />
@@ -98,9 +115,12 @@ export default function Footer() {
         </div>
 
         <div className="mt-14 flex flex-col items-center justify-between gap-4 border-t border-white/10 pt-8 text-xs text-cream-100/60 sm:flex-row">
-          <p>
-            © {year} {site.name}. All rights reserved.
-          </p>
+          <div className="space-y-1 text-center sm:text-left">
+            <p>
+              © {year} {business?.tradeName || site.name}. All rights reserved.
+            </p>
+            {operator.length > 0 && <p className="text-cream-100/50">{operator.join(' · ')}</p>}
+          </div>
           <p>{site.tagline}</p>
         </div>
       </Container>

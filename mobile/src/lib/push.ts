@@ -22,6 +22,7 @@
 import { Platform } from "react-native";
 import Constants from "expo-constants";
 import { isRunningInExpoGo } from "expo";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { api } from "./api";
 
 type NotificationsModule = typeof import("expo-notifications");
@@ -41,6 +42,53 @@ Notifications?.setNotificationHandler({
 });
 
 let registeredToken: string | null = null;
+
+/**
+ * The token this phone last registered for the signed-in account, kept on
+ * disk so that signing out after a restart can still tell the server which
+ * token to detach (POST /auth/logout { deviceToken }). Not secret: a push
+ * token only lets a server send to this app.
+ */
+const TOKEN_KEY = "adione.push-token";
+
+/** This phone's registered push token, if any (memory first, then disk). */
+export async function currentPushToken(): Promise<string | null> {
+  if (registeredToken) return registeredToken;
+  try {
+    return await AsyncStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+async function postToken(token: string): Promise<void> {
+  await api.post("/devices", {
+    token,
+    platform: Platform.OS === "ios" ? "IOS" : "ANDROID",
+    appVersion: Constants.expoConfig?.version ?? "1.0.0",
+  });
+  registeredToken = token;
+  await AsyncStorage.setItem(TOKEN_KEY, token).catch(() => undefined);
+}
+
+/**
+ * Firebase can rotate a token at any time. While signed in, the new one is
+ * registered at once (the server moves pushes to it); signed out, it is not
+ * sent anywhere — the next sign-in registers it.
+ */
+let tokenListening = false;
+let isSignedIn: () => boolean = () => false;
+
+export function followTokenChanges(signedIn: () => boolean): void {
+  isSignedIn = signedIn;
+  if (!Notifications || tokenListening) return;
+  tokenListening = true;
+  Notifications.addPushTokenListener((event) => {
+    const token = typeof event.data === "string" ? event.data : null;
+    if (!token || token === registeredToken || !isSignedIn()) return;
+    void postToken(token).catch(() => undefined);
+  });
+}
 
 export async function registerForPush(): Promise<void> {
   // Expo Go: push is unavailable by design (see note above) — shopping still
@@ -84,18 +132,14 @@ export async function registerForPush(): Promise<void> {
     // connection where every request costs the customer.
     if (token === registeredToken) return;
 
-    await api.post("/devices", {
-      token,
-      platform: Platform.OS === "ios" ? "IOS" : "ANDROID",
-      appVersion: Constants.expoConfig?.version ?? "1.0.0",
-    });
-
-    registeredToken = token;
+    await postToken(token);
   } catch {
     // Silent: notifications are a convenience, not a requirement to shop.
   }
 }
 
+/** Signed out: this phone no longer has a token registered for an account. */
 export function forgetPushRegistration(): void {
   registeredToken = null;
+  void AsyncStorage.removeItem(TOKEN_KEY).catch(() => undefined);
 }

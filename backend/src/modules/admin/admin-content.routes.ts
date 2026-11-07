@@ -589,13 +589,17 @@ adminContentRouter.delete(
   }),
 );
 
-/** `basedOnRevision`: the published revision the admin's screen showed (0 = none). */
+/**
+ * `basedOnRevision`: the published revision the admin's screen showed (0 = none).
+ * `requireAcceptance` (Privacy / Terms): ask signed-in customers to accept this
+ * version; omitted = only when no version has asked before.
+ */
 adminContentRouter.post(
   '/content/pages/:slug/publish',
   requirePermission(Permission.CONFIG_WRITE),
-  validate({ params: infoPageParams, body: z.object({ basedOnRevision: z.number().int().min(0) }).strict() }),
+  validate({ params: infoPageParams, body: z.object({ basedOnRevision: z.number().int().min(0), requireAcceptance: z.boolean().optional() }).strict() }),
   asyncHandler(async (req: Request, res: Response) => {
-    ok(res, await infoPages.publishInfoPage(slugOf(req), req.body.basedOnRevision, requireUser(req).id));
+    ok(res, await infoPages.publishInfoPage(slugOf(req), req.body.basedOnRevision, requireUser(req).id, req.body.requireAcceptance));
   }),
 );
 

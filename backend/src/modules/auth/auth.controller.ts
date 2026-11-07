@@ -152,12 +152,13 @@ export async function refresh(req: Request, res: Response): Promise<void> {
  * logging out twice is not an error.
  */
 export async function logout(req: Request, res: Response): Promise<void> {
-  const { refreshToken } = (req.body ?? {}) as { refreshToken?: string };
+  const { refreshToken, deviceToken } = (req.body ?? {}) as { refreshToken?: string; deviceToken?: string };
 
   if (refreshToken) {
-    await authService.logout(refreshToken);
+    await authService.logout(refreshToken, deviceToken);
   } else if (req.user) {
     await authService.logoutEverywhere(req.user.id);
+    if (deviceToken) await authService.logout(undefined, deviceToken, req.user.id);
   }
 
   noContent(res);

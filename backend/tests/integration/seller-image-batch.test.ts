@@ -28,8 +28,13 @@ import * as otpService from '../../src/modules/auth/otp.service';
 
 let queries = 0;
 let counting = false;
-(prisma as unknown as { $on: (event: 'query', cb: () => void) => void }).$on('query', () => {
-  if (counting) queries += 1;
+// Prisma checks a pooled connection that has sat idle with a bare `SELECT 1`
+// before handing it out. That probe is the pool's, not the attach path's: it
+// appears only when an earlier test left a connection idle (seen as 16 vs 15),
+// so it is not counted.
+const isPoolProbe = (query: string) => query.trim() === 'SELECT 1';
+(prisma as unknown as { $on: (event: 'query', cb: (e: { query: string }) => void) => void }).$on('query', (e) => {
+  if (counting && !isPoolProbe(e.query)) queries += 1;
 });
 
 interface Seller {

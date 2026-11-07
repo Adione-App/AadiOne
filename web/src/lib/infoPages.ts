@@ -23,8 +23,8 @@ export function useAdminInfoPage(slug: InfoPageSlug) {
 
 const saveDraft = (slug: InfoPageSlug, content: InfoPageContent) => api.put<AdminInfoPageDto>(`/admin/content/pages/${slug}/draft`, { content });
 const discardDraft = (slug: InfoPageSlug) => api.delete<AdminInfoPageDto>(`/admin/content/pages/${slug}/draft`);
-const publishPage = (slug: InfoPageSlug, basedOnRevision: number) =>
-  api.post<AdminInfoPageDto>(`/admin/content/pages/${slug}/publish`, { basedOnRevision });
+const publishPage = (slug: InfoPageSlug, basedOnRevision: number, requireAcceptance?: boolean) =>
+  api.post<AdminInfoPageDto>(`/admin/content/pages/${slug}/publish`, { basedOnRevision, ...(requireAcceptance === undefined ? {} : { requireAcceptance }) });
 const restoreRevision = (slug: InfoPageSlug, id: string) => api.post<AdminInfoPageDto>(`/admin/content/pages/${slug}/restore/${id}`, {});
 export const previewInfoPage = (slug: InfoPageSlug, content: InfoPageContent) =>
   api.post<InfoPagePreviewDto>(`/admin/content/pages/${slug}/preview`, { content });
@@ -73,7 +73,10 @@ export function useInfoPageEditor(slug: InfoPageSlug) {
   const apply = (next: AdminInfoPageDto) => queryClient.setQueryData(infoPageKeys.page(slug), next);
   const save = useMutation({ mutationFn: () => saveDraft(slug, content!), onSuccess: apply });
   const discard = useMutation({ mutationFn: () => discardDraft(slug), onSuccess: apply });
-  const publish = useMutation({ mutationFn: () => publishPage(slug, basedOnRevision(doc.data)), onSuccess: apply });
+  const publish = useMutation({
+    mutationFn: (requireAcceptance?: boolean) => publishPage(slug, basedOnRevision(doc.data), requireAcceptance),
+    onSuccess: apply,
+  });
   const restore = useMutation({ mutationFn: (id: string) => restoreRevision(slug, id), onSuccess: apply });
   const reload = () => queryClient.invalidateQueries({ queryKey: infoPageKeys.page(slug) });
 

@@ -598,6 +598,15 @@ export async function markAllRead(scope: FeedScope): Promise<{ updated: number }
   return { updated: count };
 }
 
+/**
+ * Detaches one push token from one account (sign-out on that phone). A token
+ * now registered to someone else is not touched. Returns how many rows went.
+ */
+export async function removeDevice(userId: string, token: string): Promise<number> {
+  const { count } = await prisma.deviceToken.deleteMany({ where: { userId, token } });
+  return count;
+}
+
 export async function registerDevice(input: {
   userId: string;
   token: string;

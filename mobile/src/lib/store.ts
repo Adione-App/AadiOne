@@ -14,7 +14,9 @@ import { isValidCoordinates } from '@shared/distance';
 import { api, ApiRequestError, readRefreshToken, saveRefreshToken, setAccessToken } from './api';
 import { refreshFailureKind } from './guestAccess';
 import { connectSocket, disconnectSocket } from './socket';
-import { forgetPushRegistration, registerForPush } from './push';
+import { currentPushToken, followTokenChanges, forgetPushRegistration, registerForPush } from './push';
+import { flushPendingLogouts, isRetryableLogoutFailure, queuePendingLogout, type PendingLogout } from './pendingLogout';
+import { resetConsentDismissal } from './legalConsent';
 import type { GpsStatus } from './currentLocation';
 
 /* -------------------------------------------------------------------------- */
@@ -73,6 +75,7 @@ export const useAuth = create<AuthState>((set, get) => ({
    * could not be asked about (offline, 5xx, rate limit) is kept for a retry.
    */
   async restore() {
+    void retryPendingLogouts();
     const refreshToken = await readRefreshToken();
     if (!refreshToken) {
       restoreInterrupted = false;
@@ -104,8 +107,18 @@ export const useAuth = create<AuthState>((set, get) => ({
 
   async logout() {
     const refreshToken = await readRefreshToken();
-    // Revoked server-side — clearing the device alone leaves the session live.
-    await api.post('/auth/logout', { refreshToken }).catch(() => undefined);
+    const deviceToken = await currentPushToken();
+    // Revoked server-side — clearing the device alone leaves the session live
+    // — and this phone's push token is detached from the account, so its
+    // order updates stop arriving here. If the server cannot be reached, the
+    // request is queued and retried (pendingLogout.ts); signing out on the
+    // phone below happens either way.
+    try {
+      await sendLogout({ refreshToken, deviceToken });
+    } catch (error) {
+      const status = error instanceof ApiRequestError ? error.status : null;
+      if (isRetryableLogoutFailure(status)) await queuePendingLogout({ refreshToken, deviceToken });
+    }
     setAccessToken(null);
     await saveRefreshToken(null);
     disconnectSocket();
@@ -114,6 +127,8 @@ export const useAuth = create<AuthState>((set, get) => ({
     forgetPushRegistration();
     // …nor offer them the previous customer's recipient / address.
     useLocation.getState().forgetPersonalChoice();
+    // The next person on this phone decides about the legal pages themselves.
+    resetConsentDismissal();
     restoreInterrupted = false;
     set({ user: null, status: 'anonymous', sessionExpired: false });
   },
@@ -126,6 +141,8 @@ export const useAuth = create<AuthState>((set, get) => ({
     // updates to whoever logs in next.
     forgetPushRegistration();
     useLocation.getState().forgetPersonalChoice();
+    // The next person on this phone decides about the legal pages themselves.
+    resetConsentDismissal();
     restoreInterrupted = false;
     set({ user: null, status: 'anonymous', sessionExpired: false });
   },
@@ -136,8 +153,24 @@ export const useAuth = create<AuthState>((set, get) => ({
   },
 }));
 
+function sendLogout(entry: PendingLogout): Promise<void> {
+  return api.post('/auth/logout', {
+    ...(entry.refreshToken ? { refreshToken: entry.refreshToken } : {}),
+    ...(entry.deviceToken ? { deviceToken: entry.deviceToken } : {}),
+  });
+}
+
+/** Sends sign-outs that could not reach the server earlier (launch, return to the app). */
+export function retryPendingLogouts(): Promise<void> {
+  return flushPendingLogouts(sendLogout, (error) => (error instanceof ApiRequestError ? error.status : null));
+}
+
+// A token Firebase rotates while signed in is registered at once.
+followTokenChanges(() => useAuth.getState().status === 'authenticated');
+
 /** Re-tries a launch restore that never reached the server (see `restoreInterrupted`). */
 export function retryInterruptedRestore(): void {
+  void retryPendingLogouts();
   if (restoreInterrupted && useAuth.getState().status === 'anonymous') {
     restoreInterrupted = false;
     void useAuth.getState().restore();

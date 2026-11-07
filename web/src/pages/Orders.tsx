@@ -28,30 +28,42 @@ import {
   EmptyState,
   ErrorBanner,
   Icon,
+  Pill,
   SearchInput,
   Spinner,
   StatusPill,
   Surface,
+  Thumb,
 } from "@/components/ui";
 import { useOrderSocket } from "@/lib/socket";
 import { useMarkOrderRead } from "@/lib/orderAlerts";
 import { PaidNotPlacedAlert } from "@/components/PaidNotPlacedAlert";
 import { useDebouncedValue } from "@/seller/sellerQueries";
+import { AdminOrderDetail } from "./AdminOrderDetail";
 import {
   PARENT_NEXT_ACTION,
   SELLER_ORDER_NEXT_ACTION,
   SellerOrderStatus,
   V2OrderStatus,
   orderBadgeTabs,
+  paymentStatusView,
   resolveAdminOrderTab,
-  sellerOrderStatusLabel,
   visibleAdminOrderTabs,
-  sellerOrderStatusStyle,
   toAdminOrderDetailView,
   type AdminOrderSummaryV2,
   type SellerOrderView,
   type V2AdminOrderTab,
 } from "@/lib/v2Orders";
+
+/** When an order was placed, in India time ("7 Nov 2026, 9:42 am"). */
+const placedAtFormat = new Intl.DateTimeFormat("en-IN", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZone: "Asia/Kolkata",
+});
 
 /**
  * One tab's list request. The key matches the Customers page's per-tab
@@ -475,19 +487,14 @@ export default function OrdersPage() {
 
                       <StatusPill status={order.status} />
 
-                      <span
-                        className={`rounded px-2 py-0.5 text-xs font-semibold ${
-                          order.paymentMethod === PaymentMethod.COD
-                            ? "bg-warn-50 text-warn-500"
-                            : order.paymentStatus === "PAID"
-                              ? "bg-brand-50 text-brand-600"
-                              : "bg-danger-50 text-danger-500"
-                        }`}
-                      >
-                        {order.paymentMethod === PaymentMethod.COD
-                          ? "COD"
-                          : `${manualPayments ? "UPI" : "Online"} · ${order.paymentStatus}`}
+                      {/* Method and status are two separate facts; the status is the
+                          server's (PAID only once it verified the payment). */}
+                      <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-700">
+                        {order.paymentMethod === PaymentMethod.COD ? "COD" : manualPayments ? "UPI" : "Online"}
                       </span>
+                      <Pill tone={paymentStatusView(order.paymentMethod, order.paymentStatus).tone}>
+                        {paymentStatusView(order.paymentMethod, order.paymentStatus).label}
+                      </Pill>
 
                       <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-600">
                         {order.sellerCount} seller{order.sellerCount === 1 ? "" : "s"}
@@ -529,11 +536,29 @@ export default function OrdersPage() {
                     </p>
 
                     <p className="mt-1 text-xs text-gray-500">
-                      {order.itemCount} items · {order.distanceKm.toFixed(1)} km
-                      · {formatRelativeTime(new Date(order.placedAt))}
+                      {/* Products (lines) and units (their quantities) — never mixed up. */}
+                      {order.lineItemCount} product{order.lineItemCount === 1 ? "" : "s"} · {order.itemCount} unit
+                      {order.itemCount === 1 ? "" : "s"} · {order.distanceKm.toFixed(1)} km ·{" "}
+                      <time dateTime={order.placedAt} title={formatRelativeTime(new Date(order.placedAt))}>
+                        {placedAtFormat.format(new Date(order.placedAt))}
+                      </time>
                       {order.deliveryAgentName &&
                         ` · ${order.deliveryAgentName}`}
                     </p>
+
+                    {/* The order's first product photos, as ordered. */}
+                    {order.itemThumbnails.length > 0 && (
+                      <div className="mt-2 flex gap-1.5">
+                        {order.itemThumbnails.map((url, index) => (
+                          <Thumb key={`${url}-${index}`} src={url} alt="" fit="contain" />
+                        ))}
+                        {order.lineItemCount > order.itemThumbnails.length && (
+                          <span className="flex h-11 items-center px-1 text-xs font-semibold text-gray-500">
+                            +{order.lineItemCount - order.itemThumbnails.length}
+                          </span>
+                        )}
+                      </div>
+                    )}
 
                     {/*
                      * UPI payment claim.
@@ -573,7 +598,7 @@ export default function OrdersPage() {
                       aria-expanded={isExpanded}
                       className="mt-2 inline-flex items-center gap-1 text-sm font-semibold text-brand-600 hover:text-brand-700"
                     >
-                      {isExpanded ? "Hide" : "Show"} seller orders ({order.sellerCount})
+                      {isExpanded ? "Hide order details" : "View order details"}
                       <Icon
                         name="chevronDown"
                         className={`h-4 w-4 transition ${isExpanded ? "rotate-180" : ""}`}
@@ -766,7 +791,7 @@ function SellerOrdersPanel({
   if (detail.isPending) {
     return (
       <div className="mt-3 border-t border-gray-100">
-        <Spinner label="Loading seller orders…" />
+        <Spinner label="Loading order details…" />
       </div>
     );
   }
@@ -775,7 +800,7 @@ function SellerOrdersPanel({
     return (
       <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-gray-100 pt-3">
         <p className="text-sm text-danger-600">
-          Could not load this order's seller orders: {detail.error.message}
+          Could not load this order's details: {detail.error.message}
         </p>
         <Button variant="secondary" onClick={() => void detail.refetch()}>
           Try again
@@ -784,88 +809,37 @@ function SellerOrdersPanel({
     );
   }
 
-  const view = detail.data;
-
+  // The complete order (AdminOrderDetail.tsx); each seller's part keeps its
+  // existing actions, unchanged.
   return (
-    <div className="mt-3 space-y-3 border-t border-gray-100 pt-3">
-      <div className="flex flex-wrap justify-between gap-2 text-xs text-gray-500">
-        <span>Order total {formatPaise(view.totalPaise)}</span>
-        <span>Payable now {formatPaise(view.currentPayablePaise)}</span>
-      </div>
-
-      {view.sellerOrders.map((sellerOrder) => {
+    <AdminOrderDetail
+      view={detail.data}
+      sellerActions={(sellerOrder) => {
         const next = SELLER_ORDER_NEXT_ACTION[sellerOrder.status];
         const busy = busySellerOrderId === sellerOrder.id;
-
         return (
-          <div key={sellerOrder.id} className="rounded-xl border border-gray-200 p-3">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-semibold text-gray-900">{sellerOrder.sellerName}</span>
-                  <span
-                    className={`inline-block whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${sellerOrderStatusStyle(sellerOrder.status)}`}
-                  >
-                    {sellerOrderStatusLabel(sellerOrder.status)}
-                  </span>
-                </div>
+          <>
+            {sellerOrder.status === SellerOrderStatus.NEW && (
+              <Button
+                variant="secondary"
+                disabled={actionsDisabled}
+                onClick={() => onAction(orderId, sellerOrder, SellerOrderStatus.REJECTED)}
+              >
+                Reject
+              </Button>
+            )}
 
-                {sellerOrder.items.length > 0 && (
-                  <ul className="mt-2 space-y-0.5 text-sm text-gray-600">
-                    {sellerOrder.items.map((item) => (
-                      <li key={item.id} className="flex justify-between gap-4">
-                        <span>
-                          {item.qty} × {item.productName}
-                          {item.variantName && ` · ${item.variantName}`}
-                        </span>
-                        <span className="text-gray-500">{formatPaise(item.lineTotalPaise)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-
-                {sellerOrder.rejectionReason && (
-                  <p className="mt-2 text-sm text-danger-600">
-                    Rejected: {sellerOrder.rejectionReason}
-                  </p>
-                )}
-                {sellerOrder.cancellationReason && (
-                  <p className="mt-2 text-sm text-danger-600">
-                    Cancelled: {sellerOrder.cancellationReason}
-                  </p>
-                )}
-              </div>
-
-              <div className="flex flex-col items-end gap-2">
-                <span className="font-semibold text-gray-900">
-                  {formatPaise(sellerOrder.subtotalPaise)}
-                </span>
-
-                <div className="flex flex-wrap justify-end gap-2">
-                  {sellerOrder.status === SellerOrderStatus.NEW && (
-                    <Button
-                      variant="secondary"
-                      disabled={actionsDisabled}
-                      onClick={() => onAction(orderId, sellerOrder, SellerOrderStatus.REJECTED)}
-                    >
-                      Reject
-                    </Button>
-                  )}
-
-                  {next && (
-                    <Button
-                      disabled={actionsDisabled}
-                      onClick={() => onAction(orderId, sellerOrder, next.to)}
-                    >
-                      {busy ? "Updating…" : next.label}
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
+            {next && (
+              <Button
+                disabled={actionsDisabled}
+                onClick={() => onAction(orderId, sellerOrder, next.to)}
+              >
+                {busy ? "Updating…" : next.label}
+              </Button>
+            )}
+          </>
         );
-      })}
-    </div>
+      }}
+    />
   );
 }

@@ -31,7 +31,7 @@ const steps = [
   {
     Icon: PackageCheck,
     title: 'Add to cart',
-    description: `Build your order and check out. Orders of ${serviceInfo.currency}${serviceInfo.freeDeliveryThreshold} or more get free delivery.`,
+    description: 'Build your order and check out. Every charge, including any delivery charge, is shown before you pay.',
   },
   {
     Icon: ShieldCheck,
@@ -41,7 +41,7 @@ const steps = [
   {
     Icon: Truck,
     title: 'Delivered to your door',
-    description: `Your order is delivered within the supported service area, up to ${serviceInfo.deliveryRadiusKm} km.`,
+    description: serviceInfo.areaNote,
   },
 ]
 
@@ -76,7 +76,7 @@ const faqPreview = [
   },
   {
     question: 'Is delivery free?',
-    answer: `Orders of ${serviceInfo.currency}${serviceInfo.freeDeliveryThreshold} or more qualify for free delivery.`,
+    answer: serviceInfo.deliveryChargeNote,
   },
   {
     question: 'How long does delivery take?',
@@ -133,12 +133,11 @@ export default function Home() {
             <div className="mt-8 flex flex-wrap items-center gap-x-8 gap-y-3 text-sm text-cream-100/70">
               <span className="flex items-center gap-2">
                 <MapPin size={16} className="text-leaf-300" />
-                Serving up to {serviceInfo.deliveryRadiusKm} km locally
+                Serving local villages and towns
               </span>
               <span className="flex items-center gap-2">
                 <Wallet size={16} className="text-leaf-300" />
-                Free delivery over {serviceInfo.currency}
-                {serviceInfo.freeDeliveryThreshold}
+                Every charge shown before you pay
               </span>
             </div>
           </div>
@@ -161,9 +160,9 @@ export default function Home() {
       <section className="bg-white py-16 sm:py-20">
         <Container>
           <div className="grid grid-cols-2 gap-8 sm:grid-cols-4">
-            <Stat value={`${serviceInfo.deliveryRadiusKm} km`} label="Local delivery radius" />
+            <Stat value="Local" label="Shops and restaurants near you" />
             <Stat value={`${categories.length - 1}+`} label="Everyday product categories" />
-            <Stat value="Free" label={`Delivery above ${serviceInfo.currency}${serviceInfo.freeDeliveryThreshold}`} />
+            <Stat value="Clear" label="Charges shown before you pay" />
             <Stat value="OTP" label="Simple mobile sign-in" />
           </div>
         </Container>
@@ -215,19 +214,19 @@ export default function Home() {
             <SectionHeading
               eyebrow="Serving your local community"
               title="Focused on your neighbourhood, done well."
-              description={`${site.name} currently provides delivery within a service radius of up to ${serviceInfo.deliveryRadiusKm} km from the store. Availability depends on your delivery location and the current service area.`}
+              description={`${site.name} delivers to the villages and towns shown as served in the app. Availability depends on your delivery address and on the sellers serving your area.`}
             />
 
             <div className="mt-8 space-y-1">
               <FeatureRow
                 Icon={MapPin}
-                title={`Delivery within ${serviceInfo.deliveryRadiusKm} km`}
+                title="Delivery to served areas"
                 description="Availability depends on your delivery location and the current service area."
               />
               <FeatureRow
                 Icon={Wallet}
-                title={`Free delivery on orders of ${serviceInfo.currency}${serviceInfo.freeDeliveryThreshold}+`}
-                description="Orders below this amount may carry a delivery charge shown at checkout."
+                title="Clear delivery charges"
+                description={serviceInfo.deliveryChargeNote}
                 tone="mango"
               />
               <FeatureRow
@@ -251,7 +250,7 @@ export default function Home() {
               <MapPin size={30} />
             </div>
             <span className="absolute bottom-6 right-8 rounded-full bg-white px-3 py-1 text-xs font-semibold text-leaf-700 shadow-card">
-              {serviceInfo.deliveryRadiusKm} km radius
+              Local delivery
             </span>
           </div>
         </Container>

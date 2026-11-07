@@ -48,6 +48,7 @@ import { sellerKeys } from '../sellerQueries';
 import { useSellerAuth } from '../sellerAuth';
 import { CheckState, SkeletonBlock } from '../sellerUi';
 import StoreLocationPanel from '../StoreLocationPanel';
+import { SellerDisclosurePanel } from '@/components/SellerDisclosurePanel';
 import {
   DOCUMENT_TYPE_LABEL,
   DocumentNumber,
@@ -308,6 +309,9 @@ export default function SellerProfilePage() {
       />
 
       <PasswordPanel />
+
+      {/* What customers see about this store, and its customer-care contact. */}
+      <SellerDisclosurePanel client={sellerApi} path="/seller/disclosure" queryKey={['seller', 'disclosure']} canEdit audience="seller" />
 
       {/* 1. Onboarding status */}
       <Panel title="Onboarding Status" action={<Pill tone={status.tone}>{status.label}</Pill>}>

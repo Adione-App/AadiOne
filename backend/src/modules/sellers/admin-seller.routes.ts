@@ -25,7 +25,8 @@ import * as settlementService from './seller-settlement.service';
 import * as orderFinancials from '../orders/order-financials.service';
 import * as storeLocationService from './admin-seller.service';
 import * as deliveryAreaService from './delivery-area.service';
-import { locationSchema } from './seller-availability.routes';
+import { customerCareSchema, locationSchema } from './seller-availability.routes';
+import * as disclosureService from './seller-disclosure.service';
 import * as sellerLoginService from './seller-login.service';
 import { sendDocumentFile } from './document-response';
 
@@ -186,6 +187,25 @@ adminSellerRouter.post(
  * password — the seller alone manages it (seller-login.service.ts).
  */
 const sellerIdParams = z.object({ sellerId: z.string().uuid() });
+
+/** The seller disclosure customers see, what is missing, and its customer-care contact. */
+adminSellerRouter.get(
+  '/sellers/:sellerId/disclosure',
+  requirePermission(Permission.SELLER_MANAGE),
+  validate({ params: sellerIdParams }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await disclosureService.getSellerDisclosure(req.params['sellerId'] as string));
+  }),
+);
+
+adminSellerRouter.patch(
+  '/sellers/:sellerId/disclosure',
+  requirePermission(Permission.SELLER_MANAGE),
+  validate({ params: sellerIdParams, body: customerCareSchema }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await disclosureService.updateSellerCustomerCare(req.params['sellerId'] as string, req.body, requireUser(req).id));
+  }),
+);
 
 adminSellerRouter.get(
   '/sellers/:sellerId/login-credentials',

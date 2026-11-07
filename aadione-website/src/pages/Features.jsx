@@ -59,7 +59,7 @@ const groupTwo = [
   {
     Icon: Truck,
     title: 'Local Delivery',
-    description: `Get your order delivered within the supported service area, up to ${serviceInfo.deliveryRadiusKm} km.`,
+    description: serviceInfo.areaNote,
   },
 ]
 

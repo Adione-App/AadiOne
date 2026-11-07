@@ -53,7 +53,7 @@ const rules = [
   {
     Icon: Wallet,
     title: 'Free delivery',
-    description: `Orders of ${serviceInfo.currency}${serviceInfo.freeDeliveryThreshold} or more qualify for free delivery.`,
+    description: serviceInfo.deliveryChargeNote,
   },
   {
     Icon: Ban,

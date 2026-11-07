@@ -233,6 +233,12 @@ export const LEGAL_DOCUMENTS: Record<string, LegalDocument> = {
 /**
  * The wording above, in the information-page format, served while an admin
  * has not yet published a page of their own (content/info-page.service.ts).
+ *
+ * OUTDATED (2026-11-07 audit): it describes the earlier single-shop service
+ * ("AdiOne", direct UPI to the shop, an 8-year anonymised retention that the
+ * system does not perform). It is kept only so the public privacy URL never
+ * breaks; the admin page warns about it, and publishing the reviewed Aadione
+ * pages replaces it everywhere at once.
  * The text is unchanged; its contact details now come from Admin
  * Configuration with NO invented fallback (a line whose setting is empty is
  * left out), and the business-name token is the configured brand.
@@ -247,8 +253,7 @@ const legacyText = (text: string): string =>
 function legacyContent(document: LegalDocument): InfoPageContent {
   return {
     title: document.title,
-    version: '1.0',
-    effectiveDate: document.updatedAt,
+    effectiveDate: '',
     sections: document.sections.map((section) => ({
       heading: section.heading,
       blocks: section.body.map((text) => ({ type: 'paragraph' as const, text: legacyText(text) })),

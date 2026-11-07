@@ -1,3 +1,4 @@
+import { SoldBy } from "@/components/SellerDetails";
 import { useEffect, useState } from "react";
 import {
   Alert,
@@ -542,19 +543,19 @@ export default function OrderTrackingScreen({
 
                 <View style={styles.orderStoreText}>
                   <AppText variant="body" color={colors.textPrimary}>
-                    Store
+                    {order.sellerOrders.length > 1 ? "Sellers" : "Seller"}
                   </AppText>
 
+                  {/* The order's own seller(s) — never a fixed name. */}
                   <AppText
                     variant="bodyStrong"
                     color={colors.textPrimary}
                     style={styles.storeName}
+                    numberOfLines={2}
                   >
-                    AadiOne
-                  </AppText>
-
-                  <AppText variant="caption" color={colors.textSecondary}>
-                    Railmagra
+                    {order.sellerOrders.length === 1
+                      ? order.sellerOrders[0]!.sellerName
+                      : `${order.sellerOrders.length} sellers`}
                   </AppText>
                 </View>
               </View>
@@ -883,6 +884,14 @@ export default function OrderTrackingScreen({
             </View>
 
             <StatusBadge status={order.status} />
+          </View>
+
+          {/* SELLERS — who each part of the order is from, with their
+              details (E-Commerce Rules seller disclosure). */}
+          <View style={styles.sellerList}>
+            {order.sellerOrders.map((sellerOrder) => (
+              <SoldBy key={sellerOrder.id} sellerId={sellerOrder.sellerId} sellerName={sellerOrder.sellerName} />
+            ))}
           </View>
 
           {/* PRODUCTS */}
@@ -1226,6 +1235,9 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
 
+  sellerList: {
+    marginTop: spacing.sm,
+  },
   storeName: {
     marginTop: 2,
   },

@@ -2,22 +2,23 @@ import { useState } from 'react'
 import {
   Mail,
   Phone,
+  MessageCircle,
+  Scale,
   Headset,
   PackageSearch,
   RotateCcw,
   UserCog,
   ShieldCheck,
   Briefcase,
-  Loader2,
   CheckCircle2,
-  AlertTriangle,
   Send,
 } from 'lucide-react'
 import Container from '../components/Container'
 import PageHero from '../components/PageHero'
 import Button from '../components/Button'
 import useSEO from '../lib/useSEO'
-import { contact } from '../config/site'
+import { useBusinessInfo } from '../lib/publicApi'
+import { telHref, whatsappHref } from '../shared/info-pages'
 
 const TOPICS = [
   { Icon: Headset, title: 'Customer Support', description: 'General questions about using the Aadione app.' },
@@ -28,7 +29,8 @@ const TOPICS = [
   { Icon: Briefcase, title: 'Business Enquiries', description: 'Partnerships and other business queries.' },
 ]
 
-const STATUS = { IDLE: 'idle', LOADING: 'loading', SUCCESS: 'success', ERROR: 'error' }
+const cardClass =
+  'flex items-center gap-3 rounded-2xl border border-leaf-100 bg-cream p-4 text-sm font-medium text-ink hover:border-leaf-300 break-all'
 
 export default function Contact() {
   useSEO({
@@ -38,22 +40,23 @@ export default function Contact() {
     path: '/contact',
   })
 
-  const [form, setForm] = useState({ name: '', email: '', topic: TOPICS[0].title, message: '' })
-  const [status, setStatus] = useState(STATUS.IDLE)
+  const { status: loadStatus, data: business } = useBusinessInfo()
+  const support = business?.support ?? {}
+  const grievance = business?.grievanceOfficer ?? {}
+  const [form, setForm] = useState({ name: '', topic: TOPICS[0].title, message: '' })
+  const [opened, setOpened] = useState(false)
 
   const update = (field) => (e) => setForm((f) => ({ ...f, [field]: e.target.value }))
 
-  // Frontend-only for now — no backend endpoint is wired up yet. Kept async
-  // so a real API call can be dropped in later without changing the UI.
-  async function handleSubmit(e) {
+  // There is no message inbox behind this website: the form only prepares an
+  // email to the configured support address in the visitor's own email app.
+  // It never claims a message was sent. Without a support email it is hidden.
+  function handleSubmit(e) {
     e.preventDefault()
-    setStatus(STATUS.LOADING)
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 900))
-      setStatus(STATUS.SUCCESS)
-    } catch {
-      setStatus(STATUS.ERROR)
-    }
+    if (!support.email) return
+    const subject = `${form.topic} — ${form.name}`.slice(0, 120)
+    window.location.href = `mailto:${support.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(form.message)}`
+    setOpened(true)
   }
 
   return (
@@ -61,7 +64,7 @@ export default function Contact() {
       <PageHero
         eyebrow="Contact"
         title="We're happy to help."
-        description="Whatever you need help with, we're here for it. Choose a topic below or send us a message directly."
+        description="Choose a topic below, then reach our support team directly. For complaints, you can also write to our Grievance Officer."
       />
 
       <section className="bg-white py-20 sm:py-28">
@@ -82,53 +85,108 @@ export default function Contact() {
             <div>
               <h2 className="font-display text-xl font-semibold text-ink">Reach us directly</h2>
               <div className="mt-4 space-y-3">
-                {contact.supportEmail ? (
-                  <a
-                    href={`mailto:${contact.supportEmail}`}
-                    className="flex items-center gap-3 rounded-2xl border border-leaf-100 bg-cream p-4 text-sm font-medium text-ink hover:border-leaf-300"
-                  >
-                    <Mail size={18} className="text-leaf-700" />
-                    {contact.supportEmail}
+                {support.email && (
+                  <a href={`mailto:${support.email}`} className={cardClass}>
+                    <Mail size={18} className="shrink-0 text-leaf-700" />
+                    {support.email}
                   </a>
-                ) : (
+                )}
+                {support.phone && (
+                  <a href={telHref(support.phone)} className={cardClass}>
+                    <Phone size={18} className="shrink-0 text-leaf-700" />
+                    {support.phone}
+                  </a>
+                )}
+                {support.whatsapp && (
+                  <a href={whatsappHref(support.whatsapp)} target="_blank" rel="noopener noreferrer" className={cardClass}>
+                    <MessageCircle size={18} className="shrink-0 text-leaf-700" />
+                    WhatsApp {support.whatsapp}
+                  </a>
+                )}
+                {support.hours && <p className="px-1 text-sm text-ink-light/70">Support hours: {support.hours}</p>}
+                {loadStatus === 'ready' && !support.email && !support.phone && !support.whatsapp && (
                   <p className="rounded-2xl border border-dashed border-leaf-200 bg-cream p-4 text-sm text-ink-light/70">
-                    Please use the contact form to reach our support team.
+                    Please contact us from the Help section of the Aadione app.
                   </p>
                 )}
-                {contact.phone && (
-                  <a
-                    href={`tel:${contact.phone.replace(/\s+/g, '')}`}
-                    className="flex items-center gap-3 rounded-2xl border border-leaf-100 bg-cream p-4 text-sm font-medium text-ink hover:border-leaf-300"
-                  >
-                    <Phone size={18} className="text-leaf-700" />
-                    {contact.phone}
-                  </a>
+                {loadStatus === 'error' && (
+                  <p className="rounded-2xl border border-dashed border-leaf-200 bg-cream p-4 text-sm text-ink-light/70">
+                    Contact details could not be loaded. Please try again, or use the Help section of the Aadione app.
+                  </p>
                 )}
               </div>
+
+              {grievance.name && (
+                <div className="mt-10">
+                  <h2 className="flex items-center gap-2 font-display text-xl font-semibold text-ink">
+                    <Scale size={20} className="text-leaf-700" /> Grievance Officer
+                  </h2>
+                  <dl className="mt-4 space-y-1.5 text-sm text-ink-light/80">
+                    <div>
+                      <dt className="sr-only">Name</dt>
+                      <dd className="font-semibold text-ink">
+                        {grievance.name}
+                        {grievance.designation ? `, ${grievance.designation}` : ''}
+                      </dd>
+                    </div>
+                    {grievance.email && (
+                      <div>
+                        <dt className="inline">Email: </dt>
+                        <dd className="inline break-all">
+                          <a className="text-leaf-700 underline" href={`mailto:${grievance.email}`}>
+                            {grievance.email}
+                          </a>
+                        </dd>
+                      </div>
+                    )}
+                    {grievance.phone && (
+                      <div>
+                        <dt className="inline">Phone: </dt>
+                        <dd className="inline">
+                          <a className="text-leaf-700 underline" href={telHref(grievance.phone)}>
+                            {grievance.phone}
+                          </a>
+                        </dd>
+                      </div>
+                    )}
+                    {grievance.address && (
+                      <div>
+                        <dt className="inline">Address: </dt>
+                        <dd className="inline">{grievance.address}</dd>
+                      </div>
+                    )}
+                  </dl>
+                  <p className="mt-3 text-xs text-ink-light/60">
+                    How complaints are handled is described in our{' '}
+                    <a className="underline" href="/terms-and-conditions#complaints-and-grievance-redressal">
+                      Terms &amp; Conditions
+                    </a>
+                    .
+                  </p>
+                </div>
+              )}
             </div>
 
             <div>
-              {status === STATUS.SUCCESS ? (
+              {!support.email ? null : opened ? (
                 <div className="rounded-3xl border border-leaf-100 bg-cream p-8 text-center">
                   <CheckCircle2 size={40} className="mx-auto text-leaf-700" />
-                  <h3 className="mt-4 font-display text-lg font-semibold text-ink">Message Sent</h3>
+                  <h3 className="mt-4 font-display text-lg font-semibold text-ink">Your email app should now be open</h3>
                   <p className="mt-2 text-sm text-ink-light/70">
-                    Thanks for reaching out. Our team will get back to you soon.
+                    Your message is not sent until you press Send in your email app. If nothing opened, write to{' '}
+                    <a className="text-leaf-700 underline" href={`mailto:${support.email}`}>
+                      {support.email}
+                    </a>
+                    .
                   </p>
+                  <button type="button" onClick={() => setOpened(false)} className="mt-4 text-sm font-semibold text-leaf-700 underline">
+                    Back to the form
+                  </button>
                 </div>
               ) : (
-                <form onSubmit={handleSubmit} className="rounded-3xl border border-leaf-100 bg-cream p-8">
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    <Field label="Name" name="name" value={form.name} onChange={update('name')} required />
-                    <Field
-                      label="Email"
-                      name="email"
-                      type="email"
-                      value={form.email}
-                      onChange={update('email')}
-                      required
-                    />
-                  </div>
+                <form onSubmit={handleSubmit} className="rounded-3xl border border-leaf-100 bg-cream p-6 sm:p-8">
+                  <p className="mb-5 text-sm text-ink-light/70">This prepares an email to our support team in your own email app.</p>
+                  <Field label="Name" name="name" value={form.name} onChange={update('name')} required />
 
                   <div className="mt-5">
                     <label htmlFor="topic" className="mb-1.5 block text-sm font-medium text-ink">
@@ -163,23 +221,8 @@ export default function Contact() {
                     />
                   </div>
 
-                  {status === STATUS.ERROR && (
-                    <div className="mt-5 flex items-start gap-2.5 rounded-2xl bg-red-50 p-4 text-sm text-red-700">
-                      <AlertTriangle size={18} className="mt-0.5 shrink-0" />
-                      <span>Something went wrong. Please try again.</span>
-                    </div>
-                  )}
-
-                  <Button
-                    type="submit"
-                    variant="primary"
-                    size="lg"
-                    icon={status === STATUS.LOADING ? Loader2 : Send}
-                    iconClassName={status === STATUS.LOADING ? 'animate-spin' : ''}
-                    disabled={status === STATUS.LOADING}
-                    className={`mt-6 w-full ${status === STATUS.LOADING ? 'opacity-70' : ''}`}
-                  >
-                    {status === STATUS.LOADING ? 'Sending…' : 'Send Message'}
+                  <Button type="submit" variant="primary" size="lg" icon={Send} className="mt-6 w-full">
+                    Open in my email app
                   </Button>
                 </form>
               )}

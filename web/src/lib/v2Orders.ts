@@ -223,12 +223,30 @@ export const SELLER_ORDER_NEXT_ACTION: Partial<
 /* Safe order detail                                                          */
 /* -------------------------------------------------------------------------- */
 
+/** A line's measurable size from its variant's structured unit (GET /admin/orders/:id `measure`). */
+export interface OrderMeasure {
+  unit: string;
+  unitValue: number;
+}
+
 export interface SellerOrderItemView {
   id: string;
   productName: string;
+  /** The size / pack the customer chose, as ordered ("500 g", "1 kg", "Pack of 6"). */
   variantName: string;
+  brandName: string | null;
+  /** The product photo as it was when ordered (order item snapshot). */
+  imageUrl: string | null;
+  /** Option picks as ordered — [["Size", "M"], ["Color", "Black"]]; [] for a simple item. */
+  options: [string, string][];
+  sku: string | null;
+  /** How many of that size were ordered. */
   qty: number;
+  mrpPaise: number;
+  unitPricePaise: number;
   lineTotalPaise: number;
+  /** Null when the size is not a measurable weight / volume, or the variant changed since. */
+  measure: OrderMeasure | null;
 }
 
 export interface SellerOrderView {
@@ -241,13 +259,93 @@ export interface SellerOrderView {
   cancellationReason: string | null;
 }
 
+export interface AdminOrderBillView {
+  /** Items at their selling prices. */
+  itemsSubtotalPaise: number;
+  /** What the customer saved against MRP (already inside the selling prices). */
+  mrpSavingsPaise: number;
+  couponCode: string | null;
+  couponDiscountPaise: number;
+  deliveryFeePaise: number;
+  platformFeePaise: number;
+  /** Tax included in the item prices (shown for information, never added again). */
+  taxPaise: number;
+  totalPaise: number;
+}
+
+export interface AdminPaymentAttemptView {
+  id: string;
+  provider: string;
+  /** upi / card / wallet / netbanking … as the gateway reported it; null when not known. */
+  method: string | null;
+  status: string;
+  amountPaise: number;
+  /** The gateway's payment id, else its order id. */
+  reference: string | null;
+  failureReason: string | null;
+  capturedAt: string | null;
+  createdAt: string;
+}
+
+export interface AdminRefundRowView {
+  id: string;
+  amountPaise: number;
+  status: string;
+  component: string | null;
+  reason: string | null;
+  failureReason: string | null;
+  reference: string | null;
+  createdAt: string;
+  completedAt: string | null;
+  groupId: string | null;
+  retryOfId: string | null;
+}
+
+export interface AdminHistoryEntryView {
+  id: string;
+  at: string;
+  /** "Order" for the whole order, else the seller's name. */
+  scope: string;
+  fromStatus: string | null;
+  toStatus: string;
+  actorType: string;
+  actorName: string | null;
+  reason: string | null;
+}
+
 export interface AdminOrderDetailView {
   id: string;
   orderNumber: string;
   status: string;
+  paymentMethod: string;
+  paymentStatus: string;
+  /** When it was placed (placedAt, else when it was created). */
+  placedAt: string;
   totalPaise: number;
   currentPayablePaise: number;
+  bill: AdminOrderBillView;
+  customer: { name: string | null; mobile: string | null; email: string | null };
+  delivery: {
+    name: string;
+    mobile: string;
+    label: string | null;
+    addressLine: string;
+    landmark: string | null;
+    city: string;
+    district: string | null;
+    state: string;
+    pincode: string;
+    mode: string;
+    latitude: number | null;
+    longitude: number | null;
+    notes: string | null;
+    agentName: string | null;
+  };
+  cancellationReason: string | null;
   sellerOrders: SellerOrderView[];
+  payments: AdminPaymentAttemptView[];
+  refunds: AdminRefundRowView[];
+  history: AdminHistoryEntryView[];
 }
 
 export class OrderDetailShapeError extends Error {
@@ -273,44 +371,312 @@ function num(value: unknown): number {
 function strOrNull(value: unknown): string | null {
   return typeof value === 'string' && value !== '' ? value : null;
 }
+/** Optional money / counts: older orders may not carry the field — 0, never NaN. */
+function numOr0(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+function numOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+function records(value: unknown): Json[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function toMeasure(value: unknown): OrderMeasure | null {
+  if (!isRecord(value)) return null;
+  const unit = strOrNull(value['unit']);
+  const unitValue = numOrNull(value['unitValue']);
+  return unit && unitValue !== null && unitValue > 0 ? { unit, unitValue } : null;
+}
+
+function toItem(item: unknown): SellerOrderItemView {
+  if (!isRecord(item)) throw new OrderDetailShapeError();
+  return {
+    id: str(item['id']),
+    productName: str(item['productName']),
+    variantName: typeof item['variantName'] === 'string' ? item['variantName'] : '',
+    brandName: strOrNull(item['brandName']),
+    imageUrl: strOrNull(item['imageUrl']),
+    options: isRecord(item['optionValues'])
+      ? Object.entries(item['optionValues']).filter(
+          (entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '',
+        )
+      : [],
+    sku: strOrNull(item['sku']),
+    qty: num(item['qty']),
+    mrpPaise: numOr0(item['mrpPaise']),
+    unitPricePaise: numOr0(item['unitPricePaise']),
+    lineTotalPaise: num(item['lineTotalPaise']),
+    measure: toMeasure(item['measure']),
+  };
+}
+
+function actorOf(entry: Json): { actorType: string; actorName: string | null } {
+  const actor = isRecord(entry['actor']) ? entry['actor'] : null;
+  return { actorType: strOrNull(entry['actorType']) ?? 'SYSTEM', actorName: strOrNull(actor?.['fullName']) };
+}
 
 /**
  * GET /admin/orders/:id answers with the full database record — including
- * fields such as `deliveryOtpHash`, `idempotencyKey`, payments and the user
- * row. This keeps ONLY what the Orders screen shows, so nothing else is held
- * in the query cache or can reach the UI.
+ * fields such as `deliveryOtpHash`, `idempotencyKey`, payment payloads and
+ * whole user rows (history actors). This keeps ONLY what the order details
+ * show, so nothing else is held in the query cache or can reach the UI:
+ * never a payment's raw payload, an OTP hash or an actor's account fields
+ * beyond the name.
  */
 export function toAdminOrderDetailView(raw: unknown): AdminOrderDetailView {
   if (!isRecord(raw) || !Array.isArray(raw['sellerOrders'])) throw new OrderDetailShapeError();
+
+  const user = isRecord(raw['user']) ? raw['user'] : null;
+  const sellerOrderRecords = records(raw['sellerOrders']);
+  const sellerNameById = new Map<string, string>();
+
+  const sellerOrders = raw['sellerOrders'].map((so: unknown): SellerOrderView => {
+    if (!isRecord(so)) throw new OrderDetailShapeError();
+    const seller = isRecord(so['seller']) ? so['seller'] : null;
+    const sellerName = strOrNull(seller?.['name']) ?? 'Seller';
+    sellerNameById.set(str(so['id']), sellerName);
+    return {
+      id: str(so['id']),
+      sellerName,
+      status: str(so['status']),
+      subtotalPaise: num(so['subtotalPaise']),
+      items: (Array.isArray(so['items']) ? so['items'] : []).map(toItem),
+      rejectionReason: strOrNull(so['rejectionReason']),
+      cancellationReason: strOrNull(so['cancellationReason']),
+    };
+  });
+
+  const history: AdminHistoryEntryView[] = [
+    ...records(raw['statusHistory']).map((entry) => ({
+      id: str(entry['id']),
+      at: str(entry['createdAt']),
+      scope: 'Order',
+      fromStatus: strOrNull(entry['fromStatus']),
+      toStatus: str(entry['toStatus']),
+      ...actorOf(entry),
+      reason: strOrNull(entry['reason']),
+    })),
+    ...sellerOrderRecords.flatMap((so) =>
+      records(so['statusHistory']).map((entry) => ({
+        id: str(entry['id']),
+        at: str(entry['createdAt']),
+        scope: sellerNameById.get(str(so['id'])) ?? 'Seller',
+        fromStatus: strOrNull(entry['fromStatus']),
+        toStatus: str(entry['toStatus']),
+        ...actorOf(entry),
+        reason: strOrNull(entry['reason']),
+      })),
+    ),
+  ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+
+  const deliveryTask = records(raw['deliveryTasks'])[0];
+  const agent = deliveryTask && isRecord(deliveryTask['agent']) ? deliveryTask['agent'] : null;
 
   return {
     id: str(raw['id']),
     orderNumber: str(raw['orderNumber']),
     status: str(raw['status']),
+    paymentMethod: strOrNull(raw['paymentMethod']) ?? 'COD',
+    paymentStatus: strOrNull(raw['paymentStatus']) ?? 'PENDING',
+    placedAt: strOrNull(raw['placedAt']) ?? str(raw['createdAt']),
     totalPaise: num(raw['totalPaise']),
     currentPayablePaise: num(raw['currentPayablePaise']),
-    sellerOrders: raw['sellerOrders'].map((so: unknown): SellerOrderView => {
-      if (!isRecord(so)) throw new OrderDetailShapeError();
-      const seller = isRecord(so['seller']) ? so['seller'] : null;
-      const items = Array.isArray(so['items']) ? so['items'] : [];
-      return {
-        id: str(so['id']),
-        sellerName: strOrNull(seller?.['name']) ?? 'Seller',
-        status: str(so['status']),
-        subtotalPaise: num(so['subtotalPaise']),
-        items: items.map((item: unknown): SellerOrderItemView => {
-          if (!isRecord(item)) throw new OrderDetailShapeError();
-          return {
-            id: str(item['id']),
-            productName: str(item['productName']),
-            variantName: typeof item['variantName'] === 'string' ? item['variantName'] : '',
-            qty: num(item['qty']),
-            lineTotalPaise: num(item['lineTotalPaise']),
-          };
-        }),
-        rejectionReason: strOrNull(so['rejectionReason']),
-        cancellationReason: strOrNull(so['cancellationReason']),
-      };
-    }),
+    bill: {
+      itemsSubtotalPaise: numOr0(raw['itemsSubtotalPaise']),
+      mrpSavingsPaise: numOr0(raw['itemDiscountPaise']),
+      couponCode: strOrNull(raw['couponCode']),
+      couponDiscountPaise: numOr0(raw['couponDiscountPaise']),
+      deliveryFeePaise: numOr0(raw['deliveryFeePaise']),
+      platformFeePaise: numOr0(raw['platformFeePaise']),
+      taxPaise: numOr0(raw['taxPaise']),
+      totalPaise: num(raw['totalPaise']),
+    },
+    customer: {
+      name: strOrNull(user?.['fullName']),
+      mobile: strOrNull(user?.['mobile']),
+      email: strOrNull(user?.['email']),
+    },
+    delivery: {
+      name: strOrNull(raw['deliveryFullName']) ?? '',
+      mobile: strOrNull(raw['deliveryMobile']) ?? '',
+      label: strOrNull(raw['deliveryLabel']),
+      addressLine: strOrNull(raw['deliveryAddressLine']) ?? '',
+      landmark: strOrNull(raw['deliveryLandmark']),
+      city: strOrNull(raw['deliveryCity']) ?? '',
+      district: strOrNull(raw['deliveryDistrict']),
+      state: strOrNull(raw['deliveryState']) ?? '',
+      pincode: strOrNull(raw['deliveryPincode']) ?? '',
+      mode: strOrNull(raw['deliveryMode']) ?? 'SAVED_ADDRESS',
+      latitude: numOrNull(raw['deliveryLatitude']),
+      longitude: numOrNull(raw['deliveryLongitude']),
+      notes: strOrNull(raw['notes']),
+      agentName: strOrNull(agent?.['name']),
+    },
+    cancellationReason: strOrNull(raw['cancellationReason']),
+    sellerOrders,
+    payments: records(raw['payments'])
+      .map((payment) => ({
+        id: str(payment['id']),
+        provider: strOrNull(payment['provider']) ?? '',
+        method: strOrNull(payment['method']),
+        status: str(payment['status']),
+        amountPaise: numOr0(payment['amountPaise']),
+        reference: strOrNull(payment['providerPaymentId']) ?? strOrNull(payment['providerOrderId']),
+        failureReason: strOrNull(payment['failureReason']),
+        capturedAt: strOrNull(payment['capturedAt']),
+        createdAt: str(payment['createdAt']),
+      }))
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)),
+    refunds: records(raw['refunds'])
+      .map((refund) => ({
+        id: str(refund['id']),
+        amountPaise: numOr0(refund['amountPaise']),
+        status: str(refund['status']),
+        component: strOrNull(refund['componentType']),
+        reason: strOrNull(refund['reason']),
+        failureReason: strOrNull(refund['failureReason']),
+        reference: strOrNull(refund['providerRefundId']),
+        createdAt: str(refund['createdAt']),
+        completedAt: strOrNull(refund['completedAt']),
+        groupId: strOrNull(refund['groupId']),
+        retryOfId: strOrNull(refund['retryOfId']),
+      }))
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)),
+    history,
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Display rules (pure)                                                       */
+/* -------------------------------------------------------------------------- */
+
+const MEASURED: Record<string, { base: string; big: string }> = {
+  G: { base: 'g', big: 'kg' },
+  KG: { base: 'g', big: 'kg' },
+  ML: { base: 'ml', big: 'L' },
+  L: { base: 'ml', big: 'L' },
+};
+
+function trimNumber(value: number): string {
+  return String(Math.round(value * 1000) / 1000);
+}
+
+/**
+ * The total weight / volume of a line — its size × the ordered quantity
+ * ("500 g" × 2 = "1 kg", "250 ml" × 3 = "750 ml") — from the variant's
+ * structured unit, never from a name. Null when the size is not a weight or
+ * volume (pieces, packs: the quantity already says it) or not known.
+ */
+export function lineTotalMeasure(measure: OrderMeasure | null, qty: number): string | null {
+  if (!measure || qty <= 0) return null;
+  const kind = MEASURED[measure.unit];
+  if (!kind) return null;
+  const inBase = measure.unit === 'KG' || measure.unit === 'L' ? measure.unitValue * 1000 * qty : measure.unitValue * qty;
+  return inBase >= 1000 ? `${trimNumber(inBase / 1000)} ${kind.big}` : `${trimNumber(inBase)} ${kind.base}`;
+}
+
+const INSTRUMENT_LABELS: Record<string, string> = {
+  upi: 'UPI',
+  card: 'Card',
+  credit_card: 'Credit card',
+  debit_card: 'Debit card',
+  wallet: 'Wallet',
+  app: 'Wallet',
+  netbanking: 'Net banking',
+  net_banking: 'Net banking',
+  emi: 'EMI',
+  paylater: 'Pay later',
+  pay_later: 'Pay later',
+};
+
+/** "Cash on Delivery", or "Online · UPI" when the gateway said how it was paid. */
+export function paymentMethodLabel(paymentMethod: string, payments: readonly Pick<AdminPaymentAttemptView, 'method' | 'status'>[]): string {
+  if (paymentMethod === 'COD') return 'Cash on Delivery';
+  // The instrument of the payment that went through, else the latest attempt that names one.
+  const captured = payments.find((payment) => payment.status === 'CAPTURED' && payment.method);
+  const named = captured ?? [...payments].reverse().find((payment) => payment.method);
+  const method = named?.method?.toLowerCase();
+  return method ? `Online · ${INSTRUMENT_LABELS[method] ?? humanize(method)}` : 'Online payment';
+}
+
+const PAYMENT_STATUS_LABELS: Record<string, { label: string; tone: 'brand' | 'amber' | 'red' | 'gray' }> = {
+  PENDING: { label: 'Pending', tone: 'amber' },
+  PAID: { label: 'Paid', tone: 'brand' },
+  FAILED: { label: 'Failed', tone: 'red' },
+  REFUNDED: { label: 'Refunded', tone: 'gray' },
+  PARTIALLY_REFUNDED: { label: 'Partially refunded', tone: 'gray' },
+};
+
+/**
+ * The ORDER's payment status as the server decided it (Order.paymentStatus —
+ * PAID only after the server verified the payment), never an attempt's.
+ * Cash on delivery not yet collected reads "To collect on delivery".
+ */
+export function paymentStatusView(paymentMethod: string, paymentStatus: string): { label: string; tone: 'brand' | 'amber' | 'red' | 'gray' } {
+  if (paymentMethod === 'COD' && paymentStatus === 'PENDING') return { label: 'To collect on delivery', tone: 'amber' };
+  return PAYMENT_STATUS_LABELS[paymentStatus] ?? { label: humanize(paymentStatus), tone: 'gray' };
+}
+
+export interface CustomerRefundView {
+  id: string;
+  amountPaise: number;
+  status: 'COMPLETED' | 'PENDING' | 'FAILED';
+  /** What the refund was for, from its parts (Items, Delivery fee, Platform fee …). */
+  parts: string[];
+  reason: string | null;
+  reference: string | null;
+  at: string;
+}
+
+const COMPONENT_LABELS: Record<string, string> = {
+  SELLER_PRODUCT: 'Items',
+  DELIVERY_FEE: 'Delivery fee',
+  PLATFORM_FEE: 'Platform fee',
+  ORDER_FEES: 'Fees',
+  FULL_ORDER: 'Whole order',
+  ORPHAN_PAYMENT: 'Payment without an order',
+};
+
+/**
+ * The refunds as the CUSTOMER got them: one entry per refund the customer
+ * receives (a refund group's parts — items of each seller, delivery fee,
+ * platform fee — together), a failed attempt that was retried counted once
+ * (by its retry), and the totals of what was refunded and what is still on
+ * its way. Seller-side deductions are not refunds and never appear here.
+ */
+export function customerRefunds(rows: readonly AdminRefundRowView[]): {
+  refunds: CustomerRefundView[];
+  refundedPaise: number;
+  pendingPaise: number;
+} {
+  const retried = new Set(rows.map((row) => row.retryOfId).filter((id): id is string => id !== null));
+  const live = rows.filter((row) => !retried.has(row.id));
+  const groups = new Map<string, AdminRefundRowView[]>();
+  for (const row of live) {
+    const key = row.groupId ?? row.id;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  const statusOf = (parts: AdminRefundRowView[]): CustomerRefundView['status'] =>
+    parts.every((part) => part.status === 'COMPLETED') ? 'COMPLETED' : parts.some((part) => part.status === 'FAILED') ? 'FAILED' : 'PENDING';
+  const refunds = [...groups.entries()].map(([key, parts]) => ({
+    id: key,
+    amountPaise: parts.reduce((sum, part) => sum + part.amountPaise, 0),
+    status: statusOf(parts),
+    parts: [...new Set(parts.map((part) => (part.component ? COMPONENT_LABELS[part.component] ?? humanize(part.component) : 'Refund')))],
+    reason: parts.find((part) => part.reason)?.reason ?? null,
+    reference: parts.length === 1 ? parts[0]!.reference : null,
+    at: parts.reduce((latest, part) => (part.completedAt ?? part.createdAt) > latest ? (part.completedAt ?? part.createdAt) : latest, ''),
+  }));
+  return {
+    refunds,
+    refundedPaise: live.filter((row) => row.status === 'COMPLETED').reduce((sum, row) => sum + row.amountPaise, 0),
+    pendingPaise: live.filter((row) => row.status === 'PENDING' || row.status === 'PROCESSING').reduce((sum, row) => sum + row.amountPaise, 0),
+  };
+}
+
+/** Distinct products and total units across an order's lines. */
+export function orderItemTotals(sellerOrders: readonly Pick<SellerOrderView, 'items'>[]): { products: number; units: number } {
+  const items = sellerOrders.flatMap((so) => so.items);
+  return { products: items.length, units: items.reduce((sum, item) => sum + item.qty, 0) };
 }

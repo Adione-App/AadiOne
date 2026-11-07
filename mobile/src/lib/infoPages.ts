@@ -2,17 +2,21 @@
  * Privacy Policy, Terms & Conditions and About Aadione — fetched from the
  * server (GET /legal/:slug), never bundled into the app: the wording and the
  * business / contact details it shows (Admin Configuration) are corrected
- * without a store release. Public content, so it works for guests too.
+ * without a store release, and the website reads the very same published
+ * page. Public content, so it works for guests too.
  *
- * Refreshed every few minutes and on each visit after that, so a newly
- * published page or changed phone number reaches the app quickly. A page that
- * has not been published yet (the About page before its first publish) is
- * `null`, not an error — the screen shows its own fallback.
+ * Cached for a minute (the server's own cache is cleared on publish), and
+ * refetched on every visit after that and on pull-to-refresh, so a newly
+ * published page or changed phone number reaches the app within about a
+ * minute. A page that has not been published yet (the About page before its
+ * first publish) is `null`, not an error — the screen shows its own fallback.
  */
 
 import { useQuery } from '@tanstack/react-query';
-import { ErrorCode, type InfoPageDto, type InfoPageSlug } from '@shared';
+import { ErrorCode, type BusinessInfoDto, type InfoPageDto, type InfoPageSlug } from '@shared';
 import { api, ApiRequestError } from './api';
+
+const FRESH_FOR_MS = 60_000;
 
 export function useInfoPage(slug: InfoPageSlug) {
   return useQuery({
@@ -25,6 +29,15 @@ export function useInfoPage(slug: InfoPageSlug) {
         throw error;
       }
     },
-    staleTime: 5 * 60_000,
+    staleTime: FRESH_FOR_MS,
+  });
+}
+
+/** Who runs Aadione and how to reach them (GET /legal/business); empty settings are null. */
+export function useBusinessInfo() {
+  return useQuery({
+    queryKey: ['legal', 'business'],
+    queryFn: () => api.get<BusinessInfoDto>('/legal/business'),
+    staleTime: FRESH_FOR_MS,
   });
 }

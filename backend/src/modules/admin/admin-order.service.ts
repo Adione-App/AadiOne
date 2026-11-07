@@ -382,6 +382,76 @@ export async function listOrders(options: {
   };
 }
 
+/** The words a size may be written with, per base unit (grams / millilitres). */
+const MASS_WORDS = { small: ['g', 'gm', 'gms', 'gram', 'grams', 'gr'], big: ['kg', 'kgs', 'kilo', 'kilos', 'kilogram', 'kilograms'] };
+const VOLUME_WORDS = { small: ['ml', 'mls', 'millilitre', 'millilitres', 'milliliter', 'milliliters'], big: ['l', 'lt', 'ltr', 'ltrs', 'litre', 'litres', 'liter', 'liters'] };
+
+const plainNumber = (value: number) => String(Math.round(value * 1000) / 1000);
+
+/**
+ * Whether a variant's NAME states the same size as its structured unit —
+ * "500 g" / "0.5 kg" for 500 G, "1 L" / "1000 ml" for 1 L. The seller types
+ * the name separately from the unit fields, so they can disagree ("1 kg"
+ * saved with 500 G); a total is only shown when they agree. A whole number
+ * followed by its unit word, so "1500 g" never reads as "500 g".
+ */
+export function sizeNameAgrees(variantName: string, unit: string, unitValue: number): boolean {
+  const words = unit === 'G' || unit === 'KG' ? MASS_WORDS : unit === 'ML' || unit === 'L' ? VOLUME_WORDS : null;
+  if (!words) return false;
+  const base = unit === 'KG' || unit === 'L' ? unitValue * 1000 : unitValue;
+  const name = variantName.toLowerCase().replace(/(\d)\.0+(?!\d)/g, '$1');
+  const written = (amount: number, unitWords: string[]) =>
+    new RegExp(`(^|[^0-9.])${plainNumber(amount).replace('.', '\\.')}\\s*(${unitWords.join('|')})(?![a-z])`).test(name);
+  return written(base, words.small) || written(base / 1000, words.big);
+}
+
+/**
+ * An order line's measurable size — the variant's own structured unit
+ * (500 G, 1 KG, 250 ML …), so the panel can show "2 × 500 g = 1 kg". Only
+ * when all of these hold, else null and the panel shows the ordered size and
+ * quantity alone (never a total that could be wrong):
+ *   - the live variant still carries the SAME name the line was ordered
+ *     under (renamed / resized / gone since = no longer what was ordered);
+ *   - it is a weight or volume with a positive size;
+ *   - that name states the same size as the structured unit (sizeNameAgrees).
+ * The total itself always comes from the structured unit × the quantity.
+ */
+export function orderItemMeasure(
+  item: { variantName: string },
+  variant: { variantName: string; unit: string; unitValue: number } | null,
+): { unit: string; unitValue: number } | null {
+  if (!variant || variant.variantName !== item.variantName) return null;
+  if (!Number.isFinite(variant.unitValue) || variant.unitValue <= 0) return null;
+  if (!sizeNameAgrees(item.variantName, variant.unit, variant.unitValue)) return null;
+  return { unit: variant.unit, unitValue: variant.unitValue };
+}
+
+/**
+ * Who made a status change, as the panel may see it: the name and role only
+ * — never the account row (password hash, phone, email, referral code).
+ */
+const HISTORY_ACTOR = { select: { fullName: true, role: true } } as const;
+
+/**
+ * A payment attempt without its gateway payload (`rawPayload`): the panel
+ * shows the method, status, amount, references and failure reason only.
+ */
+const PAYMENT_FIELDS = {
+  id: true,
+  provider: true,
+  providerOrderId: true,
+  providerPaymentId: true,
+  method: true,
+  amountPaise: true,
+  currency: true,
+  status: true,
+  failureCode: true,
+  failureReason: true,
+  capturedAt: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
 export async function getOrderForAdmin(orderId: string) {
   const order = await prisma.order.findUnique({
     where: { id: orderId },
@@ -389,23 +459,33 @@ export async function getOrderForAdmin(orderId: string) {
       sellerOrders: {
         include: {
           seller: { select: { id: true, name: true } },
-          items: true,
-          statusHistory: { orderBy: { createdAt: "asc" }, include: { actor: true } },
+          items: { include: { variant: { select: { variantName: true, unit: true, unitValue: true } } } },
+          statusHistory: { orderBy: { createdAt: "asc" }, include: { actor: HISTORY_ACTOR } },
         },
       },
-      statusHistory: { orderBy: { createdAt: "asc" }, include: { actor: true } },
-      payments: true,
+      statusHistory: { orderBy: { createdAt: "asc" }, include: { actor: HISTORY_ACTOR } },
+      payments: { select: PAYMENT_FIELDS, orderBy: { createdAt: "asc" } },
       refunds: true,
       user: { select: { id: true, fullName: true, mobile: true, email: true } },
       deliveryTasks: {
-        include: { agent: true },
+        include: { agent: { select: { id: true, name: true, mobile: true } } },
         orderBy: { assignedAt: "desc" },
       },
     },
   });
   if (!order)
     throw new AppError(ErrorCode.NOT_FOUND, { message: "Order not found." });
-  return order;
+  // Never sent: the delivery OTP's hash and the checkout's idempotency key.
+  // Each line keeps its ordered snapshot; the live variant row is read only
+  // for `measure` and is not sent.
+  const { deliveryOtpHash: _otpHash, idempotencyKey: _idempotencyKey, ...safe } = order;
+  return {
+    ...safe,
+    sellerOrders: order.sellerOrders.map((sellerOrder) => ({
+      ...sellerOrder,
+      items: sellerOrder.items.map(({ variant, ...item }) => ({ ...item, measure: orderItemMeasure(item, variant) })),
+    })),
+  };
 }
 
 /* -------------------------------------------------------------------------- */

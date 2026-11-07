@@ -20,52 +20,28 @@ export const appLinks = {
   appStore: '#',
 }
 
-export const contact = {
-  supportEmail: 'adione.app@gmail.com',
-  phone: '+91 97760 29985',
-  address: 'Aadione, Dhan Mandi, Nathdwara Road, Railmagra - 313329, Rajsamand, Rajasthan, India',
-  hours: '',
-}
+// Contact, business, grievance-officer and social details are NOT kept here.
+// They come from Admin Configuration through the public API
+// (GET {apiBaseUrl}/legal/business — see src/lib/publicApi.js), exactly as the
+// app shows them; an empty setting is hidden, never replaced by a placeholder.
+// The legal pages' text, "Last updated" date and version come from the same
+// API (GET {apiBaseUrl}/legal/privacy | terms | about).
 
-// Business / legal details referenced across the legal pages.
-// CIN/GSTIN are left bracketed until a real registration number is provided —
-// never invent one.
-export const business = {
-  legalEntityName: 'Aadione',
-  brandName: 'Aadione',
-  cin: '[CIN / Registration Number]',
-  gstin: '[GSTIN]',
-  registeredOffice: contact.address,
-  jurisdiction: 'Rajsamand, Rajasthan, India',
-  grievanceOfficer: {
-    name: '[Grievance Officer Name]',
-    email: '',
-    phone: '',
-  },
-}
-
-// Per-policy "Last Updated" dates — update the relevant one whenever that
-// specific policy's text changes. Keep the format human-readable (e.g. "15
-// September 2026") since it is shown directly on each legal page.
-export const legalDates = {
-  privacyLastUpdated: '15 September 2026',
-  termsLastUpdated: '15 September 2026',
-  refundLastUpdated: '15 September 2026',
-  deliveryLastUpdated: '15 September 2026',
-}
-
-// V1 operating parameters — shown across Home, How It Works, Features & FAQ.
-// Keep in sync with the values referenced throughout the legal pages.
+// General service wording used across Home, How It Works, Features & FAQ.
+// No numbers here: the delivery area (approved villages and PIN codes),
+// delivery charges, minimum order and free-delivery amount are admin settings
+// shown in the app and in the published Terms & Conditions.
 export const serviceInfo = {
-  model: 'Local multi-category shopping platform',
-  deliveryRadiusKm: 10,
-  freeDeliveryThreshold: 299,
-  currency: '₹',
+  model: 'Hyperlocal multi-seller marketplace',
+  areaNote:
+    'Aadione delivers to the villages and towns shown as served in the app. The app checks your address before you order.',
+  deliveryChargeNote:
+    'Any delivery charge depends on the distance to your address and is shown in your cart before you pay. Orders above an amount shown in the app may get free delivery.',
   cancellationNote:
-    'Cancellation availability depends on the order status. Once the store accepts an order, cancellation may no longer be available.',
-  codNote: 'Cash on Delivery (COD) availability depends on product and order eligibility.',
+    'You can cancel an order in the app until the seller starts preparing it. If you paid online, the amount is refunded to your original payment method.',
+  codNote: 'Cash on Delivery is available where it is shown at checkout; it may be limited by order value, seller or product.',
   deliveryTimingNote:
-    'Delivery timing may vary depending on location, order conditions and operational factors.',
+    'Delivery times shown in the app are estimates. They depend on your location, the seller and operational conditions.',
 }
 
 // Public base URL of the existing Aadione backend API (same one the mobile
@@ -81,15 +57,8 @@ export const serviceInfo = {
 //
 // This means deletion is never possible from a phone number alone — it
 // requires a live OTP proof exactly like logging into the app would.
-export const apiBaseUrl = 'https://api.adione.in/api/v1'
-
-// Leave blank to hide a social link in the footer.
-export const socials = {
-  instagram: '',
-  facebook: '',
-  twitter: '',
-  linkedin: '',
-}
+// VITE_API_BASE_URL (build-time) points a staging or local build elsewhere.
+export const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'https://api.adione.in/api/v1'
 
 export const nav = [
   { label: 'Home', to: '/' },
@@ -111,11 +80,13 @@ export const companyNav = [
   { label: 'Support', to: '/support' },
 ]
 
+// Cancellation, refund and delivery rules are sections of the published
+// Terms & Conditions; the old policy addresses redirect there.
 export const legalNav = [
   { label: 'Privacy Policy', to: '/privacy-policy' },
   { label: 'Terms & Conditions', to: '/terms-and-conditions' },
-  { label: 'Cancellation & Refund Policy', to: '/cancellation-refund-policy' },
-  { label: 'Delivery Policy', to: '/delivery-policy' },
+  { label: 'Cancellations & Refunds', to: '/terms-and-conditions#cancelling-an-order' },
+  { label: 'Delivery', to: '/terms-and-conditions#delivery-area-charges-and-timing' },
   { label: 'Delete Account', to: '/delete-account' },
 ]
 

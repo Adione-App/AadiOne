@@ -13,7 +13,8 @@
  * returned, largest catalogue first.
  */
 
-import { ErrorCode, isFoodSellerType, type StoreSummaryDto } from "../../shared";
+import { ErrorCode, formatSellerAddress, isFoodSellerType, type SellerDetailsDto, type StoreSummaryDto } from "../../shared";
+import { prisma } from "../../infra/db/prisma";
 import { AppError } from "../../common/errors";
 import { findLiveSellers, findSellerById, type SellerWithHours } from "../sellers/seller.repository";
 import { checkServiceability, getSellerOpenState } from "../sellers/seller.service";
@@ -91,6 +92,44 @@ function openFirst(stores: StoreSummaryDto[]): StoreSummaryDto[] {
 }
 
 /** One store; a seller that is not a live, stocked marketplace store is NOT_FOUND. */
+/**
+ * GET /stores/:sellerId/details — the seller disclosure customers see from a
+ * product, a restaurant or an order (shared/seller-disclosure.ts). Any
+ * approved, not-deleted seller — grocery, food or other — so a past order's
+ * seller can still be looked up after the shop closes. Only the disclosure
+ * fields are read; nothing personal leaves the server.
+ */
+export async function getSellerDetails(sellerId: string): Promise<SellerDetailsDto> {
+  const seller = await prisma.seller.findFirst({
+    where: { id: sellerId, deletedAt: null, onboardingStatus: "APPROVED" },
+    select: {
+      id: true,
+      name: true,
+      sellerType: true,
+      addressLine: true,
+      locality: true,
+      city: true,
+      district: true,
+      state: true,
+      pincode: true,
+      customerCarePhone: true,
+      customerCareEmail: true,
+      profile: { select: { businessName: true, fssaiNumber: true } },
+    },
+  });
+  if (!seller) throw new AppError(ErrorCode.NOT_FOUND, { message: "Seller not found." });
+  const businessName = seller.profile?.businessName?.trim() || null;
+  return {
+    sellerId: seller.id,
+    displayName: seller.name,
+    businessName: businessName && businessName.toLowerCase() !== seller.name.trim().toLowerCase() ? businessName : null,
+    sellerType: seller.sellerType,
+    address: formatSellerAddress(seller),
+    customerCare: { phone: seller.customerCarePhone?.trim() || null, email: seller.customerCareEmail?.trim() || null },
+    fssaiNumber: isFoodSellerType(seller.sellerType) ? seller.profile?.fssaiNumber?.trim() || null : null,
+  };
+}
+
 export async function getStore(sellerId: string, location: CustomerLocation | null): Promise<StoreSummaryDto> {
   const seller = await findSellerById(sellerId);
   const stats = seller && isMarketplaceSeller(seller) ? (await sellerCatalogueStats([seller.id])).get(seller.id) : undefined;

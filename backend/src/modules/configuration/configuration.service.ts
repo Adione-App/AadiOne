@@ -252,14 +252,41 @@ const CONTACT_TEXT_LIMITS: Partial<Record<keyof ConfigValues, number>> = {
   [ConfigKey.STORE_GSTIN]: 15,
   [ConfigKey.BUSINESS_TRADE_NAME]: 80,
   [ConfigKey.BUSINESS_LEGAL_NAME]: 160,
+  [ConfigKey.BUSINESS_PROPRIETOR_NAME]: 120,
   [ConfigKey.BUSINESS_TYPE]: 80,
   [ConfigKey.BUSINESS_ADDRESS]: 500,
+  [ConfigKey.BUSINESS_WEBSITE]: 200,
   [ConfigKey.GRIEVANCE_OFFICER_NAME]: 120,
   [ConfigKey.GRIEVANCE_OFFICER_DESIGNATION]: 120,
   [ConfigKey.GRIEVANCE_OFFICER_EMAIL]: 160,
   [ConfigKey.GRIEVANCE_OFFICER_PHONE]: 20,
   [ConfigKey.GRIEVANCE_OFFICER_ADDRESS]: 500,
+  [ConfigKey.SOCIAL_INSTAGRAM_URL]: 200,
+  [ConfigKey.SOCIAL_FACEBOOK_URL]: 200,
+  [ConfigKey.SOCIAL_X_URL]: 200,
+  [ConfigKey.SOCIAL_YOUTUBE_URL]: 200,
+  [ConfigKey.SOCIAL_LINKEDIN_URL]: 200,
 };
+/** Web addresses shown as links: https only; a social page must be on that network's own site. */
+const URL_KEY_HOSTS: Partial<Record<keyof ConfigValues, readonly string[] | null>> = {
+  [ConfigKey.BUSINESS_WEBSITE]: null,
+  [ConfigKey.SOCIAL_INSTAGRAM_URL]: ['instagram.com'],
+  [ConfigKey.SOCIAL_FACEBOOK_URL]: ['facebook.com', 'fb.com'],
+  [ConfigKey.SOCIAL_X_URL]: ['x.com', 'twitter.com'],
+  [ConfigKey.SOCIAL_YOUTUBE_URL]: ['youtube.com', 'youtu.be'],
+  [ConfigKey.SOCIAL_LINKEDIN_URL]: ['linkedin.com'],
+};
+
+function isAllowedWebAddress(text: string, hosts: readonly string[] | null): boolean {
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:' || !url.hostname.includes('.') || url.username || url.password) return false;
+  return hosts === null || hosts.some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`));
+}
 const EMAIL_KEYS: readonly (keyof ConfigValues)[] = [ConfigKey.SUPPORT_EMAIL, ConfigKey.GRIEVANCE_OFFICER_EMAIL];
 const PHONE_KEYS: readonly (keyof ConfigValues)[] = [ConfigKey.SUPPORT_PHONE, ConfigKey.SUPPORT_WHATSAPP, ConfigKey.GRIEVANCE_OFFICER_PHONE];
 
@@ -279,6 +306,10 @@ function validateValue(key: keyof ConfigValues, value: unknown): void {
     if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(text)) fail('contains characters that are not allowed');
     if (text && EMAIL_KEYS.includes(key) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) fail('must be an email address, e.g. help@example.com');
     if (text && PHONE_KEYS.includes(key) && !/^\+?[0-9][0-9 -]{6,18}$/.test(text)) fail('must be a phone number, e.g. +91 98765 43210');
+    const hosts = URL_KEY_HOSTS[key];
+    if (text && hosts !== undefined && !isAllowedWebAddress(text, hosts)) {
+      fail(hosts === null ? 'must be a web address starting with https://' : `must be an https:// address on ${hosts[0]}`);
+    }
     if (text && key === ConfigKey.STORE_GSTIN && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(text)) {
       fail('must be a 15-character GSTIN, e.g. 08ABCDE1234F1Z5');
     }

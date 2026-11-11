@@ -39,6 +39,7 @@ import PaymentsPage from '@/pages/Payments';
 import RefundsPage from '@/pages/Refunds';
 import CommissionPage from '@/pages/Commission';
 import SettlementsPage from '@/pages/Settlements';
+import FinancialOverviewPage from '@/pages/FinancialOverview';
 import NotificationsPage from '@/pages/Notifications';
 import AuditLogsPage from '@/pages/AuditLogs';
 import { AadioneWordmark } from '@/components/PartnerLogin';
@@ -165,6 +166,16 @@ const NAV: NavItem[] = [
   },
   { to: '/inventory', label: 'Inventory', icon: 'inventory', section: 'MARKETPLACE', title: 'Inventory', subtitle: 'Stock across every seller' },
   { to: '/customers', label: 'Customers', icon: 'customers', section: 'USERS', title: 'Customers', subtitle: 'People who order on Aadione' },
+  {
+    to: '/finance',
+    label: 'Financial Overview',
+    icon: 'rupee',
+    section: 'FINANCE',
+    title: 'Financial Overview',
+    subtitle: 'Revenue, seller earnings and Aadione earnings for any period or seller',
+    // SETTLEMENT_READ: Admin and Super Admin only — Staff never see commission or seller payouts.
+    permission: Permission.SETTLEMENT_READ,
+  },
   {
     to: '/commission',
     label: 'Commission',
@@ -492,6 +503,7 @@ function AdminApp() {
         <Route path="/refunds" element={<RefundsPage />} />
         <Route path="/commission" element={<CommissionPage />} />
         <Route path="/settlements" element={<SettlementsPage />} />
+        <Route path="/finance" element={<FinancialOverviewPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/audit-logs" element={<AuditLogsPage />} />
         <Route path="/app-updates" element={<AppUpdatesPage />} />

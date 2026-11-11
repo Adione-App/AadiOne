@@ -235,3 +235,65 @@ export function compactRupees(paise: number): string {
   if (abs >= 1e3) return `${sign}₹${fmt(abs / 1e3)}K`;
   return `${sign}₹${fmt(abs)}`;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Chart geometry — real pixels (the SVG is drawn at its container's width)   */
+/* -------------------------------------------------------------------------- */
+
+/** Chart canvas height: fixed, never derived from the screen or card height. */
+export const CHART_HEIGHT = { desktop: 280, mobile: 232 } as const;
+/** Containers narrower than this use the mobile height. */
+export const CHART_MOBILE_MAX_WIDTH = 560;
+/** Widest bar of a stacked chart; each bar of a side-by-side group. */
+export const MAX_BAR_PX = 22;
+export const MAX_GROUPED_BAR_PX = 12;
+/** Axis label size (px) — the same on every screen. */
+export const AXIS_FONT_PX = 11;
+
+export const chartHeight = (containerWidth: number) =>
+  containerWidth < CHART_MOBILE_MAX_WIDTH ? CHART_HEIGHT.mobile : CHART_HEIGHT.desktop;
+
+/**
+ * Bar positions inside one bucket slot. Bars take at most ~55% of the slot
+ * (the rest is the gap between buckets) and never exceed the max width.
+ */
+export function barGeometry(buckets: number, plotWidth: number, seriesCount: number, stacked: boolean) {
+  const slot = plotWidth / Math.max(1, buckets);
+  const usable = slot * 0.55;
+  const bar = stacked
+    ? Math.max(2, Math.min(MAX_BAR_PX, usable))
+    : Math.max(2, Math.min(MAX_GROUPED_BAR_PX, (usable - (seriesCount - 1) * 2) / seriesCount));
+  const gap = stacked ? 0 : 2;
+  const group = stacked ? bar : bar * seriesCount + gap * (seriesCount - 1);
+  return { slot, bar, gap, group };
+}
+
+/** Show every n-th x-axis label so labels (≈44 px each) never overlap. */
+export function labelStride(buckets: number, plotWidth: number, minLabelPx = 44): number {
+  const fit = Math.max(1, Math.floor(plotWidth / minLabelPx));
+  return Math.max(1, Math.ceil(buckets / fit));
+}
+
+/** 1, 2, 2.5 or 5 × a power of ten — at or above `raw`. */
+function niceStep(raw: number): number {
+  if (raw <= 0) return 1;
+  const power = 10 ** Math.floor(Math.log10(raw));
+  for (const m of [1, 2, 2.5, 5, 10]) if (raw <= m * power) return m * power;
+  return 10 * power;
+}
+
+/**
+ * Round axis ticks (paise) covering [min, max] with about `count` steps above
+ * zero: e.g. max ₹1,730 → 0, 500, 1,000, 1,500, 2,000 (in rupees). Zero is
+ * always a tick; negative values (after refunds) get ticks below it.
+ */
+export function niceTicks(min: number, max: number, count = 4): { ticks: number[]; top: number; bottom: number } {
+  const hi = Math.max(0, max);
+  const lo = Math.min(0, min);
+  const step = niceStep((hi - lo) / count || 100);
+  const top = Math.max(step, Math.ceil(hi / step) * step);
+  const bottom = Math.floor(lo / step) * step;
+  const ticks: number[] = [];
+  for (let v = bottom; v <= top + step / 2; v += step) ticks.push(Math.round(v));
+  return { ticks, top, bottom };
+}

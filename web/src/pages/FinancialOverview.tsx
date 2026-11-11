@@ -361,39 +361,49 @@ function Overview({ v, stale, scale, onScale, onSeller }: { v: FinanceOverview; 
         </Panel>
       </div>
 
-      <Panel
-        title="Earnings trend"
-        action={
-          <div className="flex gap-1 rounded-xl bg-gray-100 p-1" role="group" aria-label="Chart scale">
-            {(['daily', 'weekly', 'monthly'] as const).map((s) => (
-              <button key={s} type="button" onClick={() => onScale(s)} aria-pressed={scale === s} className={`min-h-9 rounded-lg px-3 text-xs font-semibold capitalize ${scale === s ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600'}`}>
-                {s}
-              </button>
-            ))}
-          </div>
-        }
-      >
-        <p className="mb-2 text-xs text-gray-500">Aadione earnings by {scale === 'daily' ? 'day' : scale === 'weekly' ? 'week (from Monday)' : 'month'}: delivery charges, platform fees and commission.{hidden > 0 && ` Showing the latest ${points.length}; ${hidden} earlier are in the PDF.`}</p>
-        <BarChart
-          stacked
-          data={bars}
-          series={[
-            { key: 'deliveryPaise', label: 'Delivery charges', colour: COLOURS.delivery },
-            { key: 'platformPaise', label: 'Platform fees', colour: COLOURS.platform },
-            { key: 'commissionPaise', label: 'Commission', colour: COLOURS.commission },
-          ]}
-        />
-      </Panel>
+      {/* The two trend charts: side by side on wide screens, stacked below that; same scale, same height. */}
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Panel
+          title="Earnings trend"
+          bodyClass="px-5 pb-4"
+          action={
+            <div className="flex gap-0.5 rounded-lg bg-gray-100 p-0.5" role="group" aria-label="Chart scale">
+              {(['daily', 'weekly', 'monthly'] as const).map((s) => (
+                <button key={s} type="button" onClick={() => onScale(s)} aria-pressed={scale === s} className={`min-h-8 rounded-md px-2.5 text-xs font-semibold capitalize ${scale === s ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600'}`}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          }
+        >
+          <p className="mb-2 truncate text-xs text-gray-500" title={hidden > 0 ? `${hidden} earlier periods are in the PDF.` : undefined}>
+            Aadione earnings by {scale === 'daily' ? 'day' : scale === 'weekly' ? 'week (from Monday)' : 'month'}{hidden > 0 && ` · latest ${points.length} shown`}
+          </p>
+          <BarChart
+            stacked
+            data={bars}
+            series={[
+              { key: 'deliveryPaise', label: 'Delivery charges', colour: COLOURS.delivery },
+              { key: 'platformPaise', label: 'Platform fees', colour: COLOURS.platform },
+              { key: 'commissionPaise', label: 'Commission', colour: COLOURS.commission },
+            ]}
+          />
+        </Panel>
 
-      <Panel title="Seller earnings vs Aadione earnings">
-        <BarChart
-          data={bars}
-          series={[
-            { key: 'sellerNetPaise', label: 'Net seller earnings', colour: COLOURS.seller },
-            { key: 'aadioneNetPaise', label: 'Net Aadione earnings', colour: COLOURS.commission },
-          ]}
-        />
-      </Panel>
+        {/* Same header height as the trend chart's (its scale switch), so both charts line up. */}
+        <Panel title="Seller earnings vs Aadione earnings" bodyClass="px-5 pb-4" action={<span aria-hidden="true" className="block h-9" />}>
+          <p className="mb-2 truncate text-xs text-gray-500">
+            Net, by {scale === 'daily' ? 'day' : scale === 'weekly' ? 'week' : 'month'} · same Daily / Weekly / Monthly choice{hidden > 0 && ` · latest ${points.length} shown`}
+          </p>
+          <BarChart
+            data={bars}
+            series={[
+              { key: 'sellerNetPaise', label: 'Net seller earnings', colour: COLOURS.seller },
+              { key: 'aadioneNetPaise', label: 'Net Aadione earnings', colour: COLOURS.commission },
+            ]}
+          />
+        </Panel>
+      </div>
 
       <Panel title={v.seller ? 'This seller' : `Sellers (${v.sellers.length})`} bodyClass="p-0">
         <SellerTable v={v} onSeller={onSeller} />

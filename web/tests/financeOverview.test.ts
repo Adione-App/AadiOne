@@ -11,6 +11,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  AXIS_FONT_PX,
+  barGeometry,
+  CHART_HEIGHT,
+  chartHeight,
+  labelStride,
+  MAX_BAR_PX,
+  MAX_GROUPED_BAR_PX,
+  niceTicks,
   bucketLabel,
   chartSeries,
   compactRupees,
@@ -95,6 +103,56 @@ describe("charts", () => {
     assert.equal(compactRupees(3_40_000_00), "₹3.4L");
     assert.equal(compactRupees(1_10_00_000_00), "₹1.1Cr");
     assert.equal(compactRupees(-2_000_00), "−₹2K");
+  });
+});
+
+describe("compact charts", () => {
+  it("fixed heights: 280 px on desktop, 232 px on phones — never the screen height", () => {
+    assert.equal(chartHeight(1100), CHART_HEIGHT.desktop);
+    assert.equal(chartHeight(360), CHART_HEIGHT.mobile);
+    assert.ok(CHART_HEIGHT.desktop >= 260 && CHART_HEIGHT.desktop <= 300);
+    assert.ok(CHART_HEIGHT.mobile >= 220 && CHART_HEIGHT.mobile <= 240);
+    assert.ok(AXIS_FONT_PX >= 11 && AXIS_FONT_PX <= 12);
+  });
+
+  it("bars stay slim with gaps between them, however few buckets there are", () => {
+    for (const buckets of [1, 3, 7, 31]) {
+      for (const width of [300, 560, 1100]) {
+        const stacked = barGeometry(buckets, width, 3, true);
+        assert.ok(stacked.bar <= MAX_BAR_PX, `stacked ${buckets}@${width}`);
+        assert.ok(stacked.group <= stacked.slot * 0.6, "a gap is always left between buckets");
+        const grouped = barGeometry(buckets, width, 2, false);
+        assert.ok(grouped.bar <= MAX_GROUPED_BAR_PX);
+        assert.ok(grouped.group <= Math.max(grouped.slot * 0.6, 6));
+      }
+    }
+    assert.equal(barGeometry(1, 1100, 3, true).bar, MAX_BAR_PX); // one bucket on a wide card: still 22 px
+  });
+
+  it("round, compact axis ticks; labels thinned so they never overlap", () => {
+    assert.deepEqual(niceTicks(0, 173_000).ticks, [0, 50_000, 100_000, 150_000, 200_000]);
+    const withLoss = niceTicks(-20_000, 90_000);
+    assert.ok(withLoss.ticks.includes(0) && withLoss.bottom < 0 && withLoss.top >= 90_000);
+    assert.ok(niceTicks(0, 0).ticks.length >= 2);
+    assert.equal(labelStride(7, 900), 1);
+    assert.equal(labelStride(31, 300), 6);
+  });
+
+  it("the SVG is drawn at the measured width and a fixed height — not stretched to the card", () => {
+    const charts = read("src/components/FinanceCharts.tsx");
+    assert.match(charts, /<svg width=\{width\} height=\{height\}/);
+    assert.doesNotMatch(charts, /h-auto w-full/);
+    assert.doesNotMatch(charts, /overflow-x-auto/);
+    assert.match(charts, /new ResizeObserver\(update\)/);
+    assert.match(charts, /fontSize=\{AXIS_FONT_PX\}/);
+  });
+
+  it("the two trend charts share one Daily / Weekly / Monthly switch and sit side by side on wide screens", () => {
+    const page = read("src/pages/FinancialOverview.tsx");
+    assert.match(page, /<div className="grid gap-5 xl:grid-cols-2">\n\s+<Panel\n\s+title="Earnings trend"/);
+    assert.match(page, /\(\['daily', 'weekly', 'monthly'\] as const\)/);
+    assert.equal((page.match(/<BarChart/g) ?? []).length, 2);
+    assert.equal((page.match(/<DonutChart/g) ?? []).length, 2);
   });
 });
 

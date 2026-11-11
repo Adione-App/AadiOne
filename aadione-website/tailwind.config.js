@@ -9,11 +9,12 @@ export default {
     extend: {
       colors: {
         // Aadione brand tokens
+        // White and very light mint backgrounds (the brief: white + mint).
         cream: {
-          DEFAULT: '#FCFBF6',
+          DEFAULT: '#F5FBF6',
           50: '#FFFFFF',
-          100: '#FCFBF6',
-          200: '#F5F2E9',
+          100: '#F5FBF6',
+          200: '#E8F4EA',
         },
         ink: {
           DEFAULT: '#0E2E22',
@@ -38,7 +39,7 @@ export default {
         },
       },
       fontFamily: {
-        display: ['"Fraunces"', 'ui-serif', 'Georgia', 'serif'],
+        display: ['"Manrope"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
         sans: ['"Manrope"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
       },
       borderRadius: {

@@ -1,10 +1,12 @@
 import { Link } from 'react-router-dom'
-import { Mail, Phone, MessageCircle, Instagram, Facebook, Twitter, Linkedin, Youtube } from 'lucide-react'
+import { Mail, Phone, MessageCircle, Clock, Instagram, Facebook, Twitter, Linkedin, Youtube } from 'lucide-react'
 import Container from './Container'
-import AppStoreButtons from './AppStoreButtons'
+import Logo from './Logo'
+import { StoreBadge } from './AppStoreButtons'
+import { tidyHours } from './SupportDetails'
 import { companyNav, legalNav, site } from '../config/site'
 import { useBusinessInfo } from '../lib/publicApi'
-import { telHref, whatsappHref } from '../shared/info-pages'
+import { officialSocials, phoneHref, whatsappLink } from '../lib/business'
 
 const SOCIAL_ICONS = { instagram: Instagram, facebook: Facebook, x: Twitter, youtube: Youtube, linkedin: Linkedin }
 
@@ -14,21 +16,31 @@ export default function Footer() {
   const year = new Date().getFullYear()
   const { data: business } = useBusinessInfo()
   const support = business?.support ?? {}
-  const socials = business?.socials ?? []
-  const operator = [business?.legalName, business?.address, business?.gstin ? `GSTIN ${business.gstin}` : null].filter(Boolean)
+  const socials = officialSocials(business?.socials)
+  const phoneLink = phoneHref(support.phone)
+  // WhatsApp: the Admin "Support WhatsApp" field only, never the phone number.
+  const whatsapp = whatsappLink(support.whatsapp)
+  const operator = [
+    business?.legalName ? `Operated by ${business.legalName}${business.businessType ? ` (${business.businessType})` : ''}` : null,
+    business?.address,
+    business?.gstin ? `GSTIN ${business.gstin}` : null,
+  ].filter(Boolean)
 
   return (
     <footer className="border-t border-leaf-100 bg-ink text-cream-100">
-      <Container className="py-16">
-        <div className="grid grid-cols-1 gap-12 md:grid-cols-2 lg:grid-cols-[1.3fr_1fr_1fr_1.2fr]">
+      <Container className="py-14 sm:py-16">
+        <div className="grid grid-cols-1 gap-10 sm:grid-cols-2 lg:grid-cols-[1.4fr_1fr_1.1fr_1.3fr]">
           <div>
-            <Link to="/" className="flex items-center gap-2.5">
-              <img src="/assets/logo-white.svg" alt="Aadione" className="h-9 w-9" />
-              <span className="font-display text-2xl font-semibold text-white">Aadione</span>
+            <Link to="/" aria-label="Aadione home" className="inline-flex">
+              <Logo className="h-9" onDark />
             </Link>
-            <p className="mt-4 max-w-xs text-sm leading-relaxed text-cream-100/70">
-              {site.description}
+            <p className="mt-5 max-w-xs text-sm leading-relaxed text-cream-100/70">
+              {site.tagline} Groceries, fresh produce and food from local restaurants, delivered in Aadione&rsquo;s approved delivery areas.
             </p>
+            <div className="mt-6 flex flex-wrap gap-2.5">
+              <StoreBadge store="android" height={40} />
+              <StoreBadge store="ios" height={40} />
+            </div>
             {socials.length > 0 && (
               <div className="mt-6 flex items-center gap-3">
                 {socials.map((social) => (
@@ -38,48 +50,15 @@ export default function Footer() {
             )}
           </div>
 
-          <div>
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-white/50">
-              Company
-            </h3>
-            <ul className="mt-4 space-y-3">
-              {companyNav.map((item) => (
-                <li key={item.to}>
-                  <Link
-                    to={item.to}
-                    className="text-sm text-cream-100/80 transition-colors hover:text-white"
-                  >
-                    {item.label}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </div>
+          <FooterLinks title="Aadione" items={companyNav} />
+          <FooterLinks title="Legal" items={legalNav} />
 
           <div>
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-white/50">Legal</h3>
-            <ul className="mt-4 space-y-3">
-              {legalNav.map((item) => (
-                <li key={item.to}>
-                  <Link
-                    to={item.to}
-                    className="text-sm text-cream-100/80 transition-colors hover:text-white"
-                  >
-                    {item.label}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div>
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-white/50">
-              Get in touch
-            </h3>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-white/50">Customer support</h3>
             <ul className="mt-4 space-y-3 text-sm text-cream-100/80">
               {support.email && (
                 <li className="flex items-start gap-2.5">
-                  <Mail size={17} className="mt-0.5 shrink-0 text-leaf-300" />
+                  <Mail size={17} className="mt-0.5 shrink-0 text-leaf-300" aria-hidden="true" />
                   <a href={`mailto:${support.email}`} className="break-all hover:text-white">
                     {support.email}
                   </a>
@@ -87,44 +66,67 @@ export default function Footer() {
               )}
               {support.phone && (
                 <li className="flex items-start gap-2.5">
-                  <Phone size={17} className="mt-0.5 shrink-0 text-leaf-300" />
-                  <a href={telHref(support.phone)} className="hover:text-white">
-                    {support.phone}
-                  </a>
+                  <Phone size={17} className="mt-0.5 shrink-0 text-leaf-300" aria-hidden="true" />
+                  {phoneLink ? (
+                    <a href={phoneLink} className="hover:text-white">
+                      {support.phone}
+                    </a>
+                  ) : (
+                    support.phone
+                  )}
                 </li>
               )}
-              {support.whatsapp && (
+              {whatsapp && (
                 <li className="flex items-start gap-2.5">
-                  <MessageCircle size={17} className="mt-0.5 shrink-0 text-leaf-300" />
-                  <a href={whatsappHref(support.whatsapp)} target="_blank" rel="noopener noreferrer" className="hover:text-white">
+                  <MessageCircle size={17} className="mt-0.5 shrink-0 text-leaf-300" aria-hidden="true" />
+                  <a href={whatsapp} target="_blank" rel="noopener noreferrer" className="hover:text-white">
                     WhatsApp {support.whatsapp}
                   </a>
                 </li>
               )}
-              {support.hours && <li className="text-cream-100/60">Support hours: {support.hours}</li>}
+              {support.hours && (
+                <li className="flex items-start gap-2.5 text-cream-100/60">
+                  <Clock size={17} className="mt-0.5 shrink-0 text-leaf-300" aria-hidden="true" />
+                  {tidyHours(support.hours)}
+                </li>
+              )}
               <li>
-                <Link to="/contact" className="hover:text-white">
-                  All contact options
+                <Link to="/support" className="font-semibold text-leaf-200 hover:text-white">
+                  Help with an order
                 </Link>
               </li>
             </ul>
-            <div className="mt-6">
-              <AppStoreButtons />
-            </div>
           </div>
         </div>
 
-        <div className="mt-14 flex flex-col items-center justify-between gap-4 border-t border-white/10 pt-8 text-xs text-cream-100/60 sm:flex-row">
-          <div className="space-y-1 text-center sm:text-left">
+        <div className="mt-12 flex flex-col gap-3 border-t border-white/10 pt-7 text-xs text-cream-100/55 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1">
             <p>
               © {year} {business?.tradeName || site.name}. All rights reserved.
             </p>
-            {operator.length > 0 && <p className="text-cream-100/50">{operator.join(' · ')}</p>}
+            {operator.length > 0 && <p>{operator.join(' · ')}</p>}
           </div>
-          <p>{site.tagline}</p>
+          <p className="sm:text-right">Google Play and the Google Play logo are trademarks of Google LLC. App Store is a service mark of Apple Inc.</p>
         </div>
       </Container>
     </footer>
+  )
+}
+
+function FooterLinks({ title, items }) {
+  return (
+    <div>
+      <h3 className="text-xs font-bold uppercase tracking-wider text-white/50">{title}</h3>
+      <ul className="mt-4 space-y-3">
+        {items.map((item) => (
+          <li key={item.to}>
+            <Link to={item.to} className="text-sm text-cream-100/80 transition-colors hover:text-white">
+              {item.label}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 
@@ -134,10 +136,10 @@ function SocialIcon({ href, label, Icon }) {
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      aria-label={label}
+      aria-label={`${label} (opens in a new tab)`}
       className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white/80 transition-colors hover:bg-leaf-600 hover:text-white"
     >
-      <Icon size={17} />
+      <Icon size={17} aria-hidden="true" />
     </a>
   )
 }

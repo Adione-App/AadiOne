@@ -7,6 +7,12 @@
  *                                                 or → FAILED (→ PENDING to retry)
  *   GET   /admin/sellers/:id/settlements/eligible preview the next period
  *   POST  /admin/sellers/:id/settlements          create it (SETTLEMENT_MANAGE)
+ *   GET   /admin/settlements/:id/statement.pdf    the statement PDF (download / share)
+ *   POST  /admin/settlements/:id/payout-proof     attach the payment screenshot / receipt
+ *   GET   /admin/settlements/:id/payout-proof     view it
+ *
+ * Payouts are MANUAL (bank / UPI outside the app): "Mark paid" only records
+ * the transaction / UPI reference and, optionally, a proof - no money moves.
  *
  * Every amount is the server's. Orders with a refund are held back from
  * settlement by the backend, so a settlement's net is gross − commission.
@@ -23,6 +29,7 @@ import { useSellerPermissions } from '@/lib/sellers';
 import { adminErrorMessage, shortDate, shortDateTime, useSellerOptions } from '@/lib/marketplace';
 import { Button, ErrorBanner, Icon, Modal, Pill, Surface, type Tone } from '@/components/ui';
 import { SellerLink } from '@/components/MarketplaceUi';
+import { PROOF_ACCEPT, SettlementFileButtons, proofFileProblem, proofFormData } from '@/components/SettlementFiles';
 import { ChipTabs, EmptyPanel, FilterSelect, LoadError, SkeletonList } from '@/seller/sellerUi';
 
 interface SettlementRow {
@@ -36,6 +43,10 @@ interface SettlementRow {
   netPayablePaise: number;
   status: 'PENDING' | 'PROCESSING' | 'PAID' | 'FAILED';
   paidAt: string | null;
+  /** Transaction / UPI reference recorded when marked PAID. */
+  payoutReference?: string | null;
+  /** A payment screenshot / receipt is attached. */
+  hasPayoutProof?: boolean;
   createdAt: string;
 }
 
@@ -193,11 +204,18 @@ export default function SettlementsPage() {
                       <td className="px-3 py-3">
                         <Pill tone={STATUS_LOOK[row.status]?.tone ?? 'gray'}>{STATUS_LOOK[row.status]?.label ?? row.status}</Pill>
                       </td>
-                      <td className="whitespace-nowrap px-3 py-3 text-gray-600">{row.paidAt ? shortDate.format(new Date(row.paidAt)) : '—'}</td>
+                      <td className="whitespace-nowrap px-3 py-3 text-gray-600">
+                        {row.paidAt ? shortDate.format(new Date(row.paidAt)) : '—'}
+                        {row.payoutReference && (
+                          <span className="block max-w-[11rem] truncate font-mono text-xs text-gray-500" title={row.payoutReference}>
+                            {row.payoutReference}
+                          </span>
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap justify-end gap-1">
                           <Button variant="ghost" className="min-h-9 px-3 text-xs" onClick={() => setOpen(open === row.id ? null : row.id)}>
-                            {open === row.id ? 'Hide orders' : 'Orders'}
+                            {open === row.id ? 'Hide details' : 'Details'}
                           </Button>
                           {canManage &&
                             NEXT[row.status]?.map((action) => (
@@ -216,7 +234,7 @@ export default function SettlementsPage() {
                     {open === row.id && (
                       <tr>
                         <td colSpan={8} className="bg-gray-50/60 px-4 pb-4">
-                          <SettlementOrders id={row.id} />
+                          <SettlementOrders id={row.id} canManage={canManage} />
                         </td>
                       </tr>
                     )}
@@ -271,28 +289,89 @@ function OrdersTable({ orders }: { orders: SettlementOrder[] }) {
   );
 }
 
-function SettlementOrders({ id }: { id: string }) {
+function SettlementOrders({ id, canManage }: { id: string; canManage: boolean }) {
   const detail = useQuery({
     queryKey: ['admin', 'settlements', 'detail', id],
     queryFn: () => api.get<SettlementRow & { sellerOrders: SettlementOrder[] }>(`/admin/settlements/${id}`),
   });
   if (detail.isPending) return <SkeletonList rows={1} label="Loading settlement…" />;
   if (detail.isError) return <LoadError message={adminErrorMessage(detail.error)} onRetry={() => void detail.refetch()} />;
+  const d = detail.data;
   return (
     <div className="pt-2">
-      <p className="text-xs text-gray-500">
-        Created {shortDateTime.format(new Date(detail.data.createdAt))} · {detail.data.sellerOrders.length} order
-        {detail.data.sellerOrders.length === 1 ? '' : 's'}
-      </p>
-      <OrdersTable orders={detail.data.sellerOrders} />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-0.5 text-xs text-gray-500">
+          <p>
+            Created {shortDateTime.format(new Date(d.createdAt))} · {d.sellerOrders.length} order{d.sellerOrders.length === 1 ? '' : 's'}
+          </p>
+          {d.status === 'PAID' && (
+            <p>
+              Paid {d.paidAt ? shortDateTime.format(new Date(d.paidAt)) : ''} · Transaction / UPI reference:{' '}
+              <span className="font-mono font-semibold text-gray-700">{d.payoutReference || 'not recorded'}</span>
+              {d.hasPayoutProof ? ' · proof attached' : ''}
+            </p>
+          )}
+        </div>
+        <SettlementFileButtons settlement={d} basePath="/admin/settlements" getBlob={api.getBlob} proofVisible compact />
+      </div>
+      {canManage && (d.status === 'PROCESSING' || d.status === 'PAID') && (
+        <AttachProof settlementId={d.id} sellerId={d.sellerId} hasProof={Boolean(d.hasPayoutProof)} />
+      )}
+      <OrdersTable orders={d.sellerOrders} />
+    </div>
+  );
+}
+
+/** Attach (or replace) the payment screenshot / receipt of a PROCESSING or PAID settlement. */
+function AttachProof({ settlementId, sellerId, hasProof }: { settlementId: string; sellerId: string; hasProof: boolean }) {
+  const queryClient = useQueryClient();
+  const [file, setFile] = useState<File | null>(null);
+  const problem = proofFileProblem(file);
+  const upload = useMutation({
+    mutationFn: (chosen: File) => api.postForm(`/admin/settlements/${settlementId}/payout-proof`, proofFormData(chosen)),
+    onSuccess: () => {
+      setFile(null);
+      void queryClient.invalidateQueries({ queryKey: ['admin', 'settlements'] });
+      void queryClient.invalidateQueries({ queryKey: ['admin', 'sellers', sellerId] });
+    },
+  });
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-dashed border-gray-300 bg-white p-3 text-xs">
+      <label className="font-semibold text-gray-700" htmlFor={`proof-${settlementId}`}>
+        {hasProof ? 'Replace payment proof' : 'Attach payment proof'}
+      </label>
+      <input id={`proof-${settlementId}`} type="file" accept={PROOF_ACCEPT} onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="text-xs" />
+      <Button
+        variant="soft"
+        className="min-h-9 px-3 text-xs"
+        disabled={!file || Boolean(problem) || upload.isPending}
+        onClick={() => file && upload.mutate(file)}
+      >
+        {upload.isPending ? 'Uploading…' : 'Upload'}
+      </Button>
+      <span className="text-gray-500">JPEG, PNG, WebP or PDF · max 5 MB</span>
+      {problem && <span role="alert" className="text-red-700">{problem}</span>}
+      {upload.isError && <span role="alert" className="text-red-700">{adminErrorMessage(upload.error)}</span>}
+      {upload.isSuccess && <span className="text-emerald-700">Proof saved.</span>}
     </div>
   );
 }
 
 function StatusModal({ row, to, label, onClose }: { row: SettlementRow; to: SettlementRow['status']; label: string; onClose: () => void }) {
   const queryClient = useQueryClient();
+  const paying = to === 'PAID';
+  const [reference, setReference] = useState('');
+  const [proof, setProof] = useState<File | null>(null);
+  const trimmed = reference.trim();
+  const referenceProblem = paying && trimmed.length > 0 && (trimmed.length < 3 || trimmed.length > 80) ? 'A reference is 3 to 80 characters.' : null;
+  const proofProblem = paying ? proofFileProblem(proof) : null;
   const change = useMutation({
-    mutationFn: () => api.patch(`/admin/settlements/${row.id}/status`, { status: to }),
+    mutationFn: async () => {
+      // The proof is attached first, while the settlement is still PROCESSING:
+      // if the upload fails, nothing is marked paid and the admin can retry.
+      if (paying && proof) await api.postForm(`/admin/settlements/${row.id}/payout-proof`, proofFormData(proof));
+      return api.patch(`/admin/settlements/${row.id}/status`, { status: to, ...(paying && trimmed ? { reference: trimmed } : {}) });
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['admin', 'settlements'] });
       void queryClient.invalidateQueries({ queryKey: ['admin', 'sellers', row.sellerId] });
@@ -309,7 +388,11 @@ function StatusModal({ row, to, label, onClose }: { row: SettlementRow; to: Sett
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant={to === 'FAILED' ? 'danger' : 'primary'} disabled={change.isPending} onClick={() => change.mutate()}>
+          <Button
+            variant={to === 'FAILED' ? 'danger' : 'primary'}
+            disabled={change.isPending || Boolean(referenceProblem) || Boolean(proofProblem)}
+            onClick={() => change.mutate()}
+          >
             {change.isPending ? 'Saving…' : label}
           </Button>
         </>
@@ -317,12 +400,38 @@ function StatusModal({ row, to, label, onClose }: { row: SettlementRow; to: Sett
     >
       <ErrorBanner message={change.isError ? adminErrorMessage(change.error) : null} />
       <p className="text-sm text-gray-600">
-        {to === 'PAID'
-          ? 'Only mark it paid once the money has actually reached the seller. The seller sees it as paid straight away.'
+        {paying
+          ? 'Only mark it paid once you have transferred the money yourself (bank / UPI, outside the app). The seller sees it as paid straight away. Aadione never sends this payment automatically.'
           : to === 'FAILED'
             ? 'The seller sees this payout as failed. You can put it back to pending to retry.'
             : 'The seller sees the new status in their Settlements screen.'}
       </p>
+      {paying && (
+        <div className="mt-4 space-y-4">
+          <div>
+            <label htmlFor="payout-reference" className="mb-1 block text-sm font-semibold text-gray-800">
+              Transaction ID / UPI reference <span className="font-normal text-gray-500">(optional)</span>
+            </label>
+            <input
+              id="payout-reference"
+              value={reference}
+              onChange={(e) => setReference(e.target.value)}
+              maxLength={80}
+              placeholder="e.g. UTR 412355667788 or UPI ref. 612345678901"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm outline-none focus:border-emerald-600"
+            />
+            {referenceProblem && <p role="alert" className="mt-1 text-xs text-red-700">{referenceProblem}</p>}
+          </div>
+          <div>
+            <label htmlFor="payout-proof" className="mb-1 block text-sm font-semibold text-gray-800">
+              Payment screenshot / receipt <span className="font-normal text-gray-500">(optional)</span>
+            </label>
+            <input id="payout-proof" type="file" accept={PROOF_ACCEPT} onChange={(e) => setProof(e.target.files?.[0] ?? null)} className="text-sm" />
+            <p className="mt-1 text-xs text-gray-500">JPEG, PNG, WebP or PDF, up to 5 MB. Stored privately; the seller can view it once paid.</p>
+            {proofProblem && <p role="alert" className="mt-1 text-xs text-red-700">{proofProblem}</p>}
+          </div>
+        </div>
+      )}
     </Modal>
   );
 }

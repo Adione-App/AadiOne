@@ -13,7 +13,7 @@ import Container from '../components/Container'
 import PageHero from '../components/PageHero'
 import SectionHeading from '../components/SectionHeading'
 import FeatureRow from '../components/FeatureRow'
-import AppStoreButtons from '../components/AppStoreButtons'
+import DownloadSection from '../components/DownloadSection'
 import useSEO from '../lib/useSEO'
 import { serviceInfo, site } from '../config/site'
 
@@ -94,10 +94,15 @@ export default function Features() {
               aria-hidden="true"
               className="absolute inset-x-6 -bottom-6 top-10 rounded-blob bg-leaf-100 blur-2xl"
             />
+            {/* Genuine category artwork from the app — not a mock-up of an app screen. */}
             <img
-              src="/assets/app-screenshot-hero.svg"
-              alt="Aadione app catalog screen"
-              className="relative w-full drop-shadow-2xl"
+              src="/images/fruits-vegetables.webp"
+              alt="Fresh fruits and vegetables on Aadione"
+              width="720"
+              height="720"
+              loading="lazy"
+              decoding="async"
+              className="relative w-full rounded-[2rem] shadow-soft"
             />
           </div>
         </Container>
@@ -110,11 +115,11 @@ export default function Features() {
               aria-hidden="true"
               className="absolute inset-x-6 -bottom-6 top-10 rounded-blob bg-mango-light/60 blur-2xl"
             />
-            <img
-              src="/assets/app-screenshot-track.svg"
-              alt="Aadione order status screen"
-              className="relative w-full drop-shadow-2xl"
-            />
+            <div className="relative flex flex-col items-center gap-4 rounded-[2rem] bg-white p-10 text-center shadow-soft">
+              <img src="/images/app-icon-320.webp" alt="" width="320" height="320" loading="lazy" className="h-32 w-32 rounded-[1.75rem] shadow-card" />
+              <span className="font-display text-lg font-bold text-ink">Follow every order in the app</span>
+              <span className="-mt-2 text-sm text-ink-light/70">Android &amp; iPhone</span>
+            </div>
           </div>
           <div>
             <SectionHeading eyebrow="Ordering & delivery" title="Simple, secure, and easy to track." />
@@ -134,14 +139,7 @@ export default function Features() {
         </Container>
       </section>
 
-      <section className="bg-leaf-900 py-16 sm:py-20">
-        <Container className="flex flex-col items-center gap-6 text-center">
-          <h2 className="max-w-lg text-balance font-display text-2xl font-semibold text-white sm:text-3xl">
-            See these features in action.
-          </h2>
-          <AppStoreButtons />
-        </Container>
-      </section>
+      <DownloadSection />
     </>
   )
 }

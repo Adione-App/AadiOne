@@ -672,6 +672,8 @@ interface SettlementRow {
   status: SettlementStatus;
   paidAt: Date | null;
   payoutReference: string | null;
+  payoutProofKey?: string | null;
+  payoutProofUploadedAt?: Date | null;
   createdAt: Date;
 }
 
@@ -692,6 +694,9 @@ function toSettlementDto(settlement: SettlementRow, sellerName: string) {
     paidAt: settlement.paidAt?.toISOString() ?? null,
     /** Bank / UPI reference recorded when the payout was marked PAID. */
     payoutReference: settlement.payoutReference,
+    /** A payment proof (screenshot / receipt) is attached — read it via the payout-proof endpoint. */
+    hasPayoutProof: Boolean(settlement.payoutProofKey),
+    payoutProofUploadedAt: settlement.payoutProofUploadedAt?.toISOString() ?? null,
     createdAt: settlement.createdAt.toISOString(),
   };
 }

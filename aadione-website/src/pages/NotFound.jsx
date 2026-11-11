@@ -8,6 +8,7 @@ export default function NotFound() {
     title: 'Page not found',
     description: 'The page you are looking for could not be found.',
     path: '/404',
+    noindex: true,
   })
 
   return (

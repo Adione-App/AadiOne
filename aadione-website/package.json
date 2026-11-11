@@ -9,7 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "test": "node --test tests/legalPages.test.mjs"
+    "test": "node --test tests/legalPages.test.mjs tests/website.test.mjs tests/functional.test.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.469.0",

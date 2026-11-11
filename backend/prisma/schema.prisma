@@ -2075,6 +2075,12 @@ model SellerSettlement {
   /// The bank / UPI transfer reference recorded when the payout is marked
   /// PAID (e.g. a UTR). Null until then, and for payouts recorded before it existed.
   payoutReference String? @map("payout_reference") @db.VarChar(80)
+  /// Optional payment proof (screenshot / receipt) for the manual payout: a
+  /// server-generated key in PRIVATE storage, never a URL. Shown to admins,
+  /// and to the seller once the settlement is PAID.
+  payoutProofKey         String?   @map("payout_proof_key") @db.VarChar(255)
+  payoutProofContentType String?   @map("payout_proof_content_type") @db.VarChar(40)
+  payoutProofUploadedAt  DateTime? @map("payout_proof_uploaded_at") @db.Timestamptz(3)
 
   status SettlementStatus @default(PENDING)
   paidAt DateTime?        @map("paid_at") @db.Timestamptz(3)

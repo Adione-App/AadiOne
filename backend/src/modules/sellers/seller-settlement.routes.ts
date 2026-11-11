@@ -1,7 +1,7 @@
 /**
  * Seller self-service earnings/settlement views — mounted at `/seller`,
- * alongside seller-order/seller-catalog/seller-onboarding. Read-only: a
- * seller never creates or pays its own settlement (that's
+ * alongside seller-order/seller-catalog/seller-onboarding. Read-only (incl.
+ * the statement PDF and the payment proof): a seller never creates or pays its own settlement (that's
  * `SETTLEMENT_MANAGE`, admin-only — see admin-order.routes.ts).
  */
 
@@ -14,6 +14,9 @@ import { requirePermission } from '../../middleware/auth';
 import { attachSellerContext, requireSellerId } from '../../middleware/sellerAuth';
 import * as service from './seller-settlement.service';
 import { listSellerDeductions } from './seller-deduction.service';
+import { statementPdfFile } from './seller-statement.service';
+import { proofFileName, readPayoutProof } from './settlement-proof.service';
+import { sendDocumentFile } from './document-response';
 
 const uuid = z.string().uuid();
 
@@ -72,5 +75,27 @@ sellerSettlementRouter.get(
   validate({ params: z.object({ id: uuid }) }),
   asyncHandler(async (req: Request, res: Response) => {
     ok(res, await service.getSettlementDetail(req.params['id'] as string, requireSellerId(req)));
+  }),
+);
+
+/** The seller's OWN settlement statement as a PDF (another seller's is NOT_FOUND). */
+sellerSettlementRouter.get(
+  '/settlements/:id/statement.pdf',
+  requirePermission(Permission.SELLER_SETTLEMENT_READ),
+  validate({ params: z.object({ id: uuid }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    sendDocumentFile(res, await statementPdfFile(req.params['id'] as string, requireSellerId(req)), 'attachment');
+  }),
+);
+
+/** The payment proof of the seller's OWN settlement — only once it is PAID. */
+sellerSettlementRouter.get(
+  '/settlements/:id/payout-proof',
+  requirePermission(Permission.SELLER_SETTLEMENT_READ),
+  validate({ params: z.object({ id: uuid }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const id = req.params['id'] as string;
+    const proof = await readPayoutProof(id, requireSellerId(req));
+    sendDocumentFile(res, { fileName: proofFileName(id, proof.contentType), contentType: proof.contentType, body: proof.body });
   }),
 );

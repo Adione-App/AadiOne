@@ -10,6 +10,7 @@
  */
 
 import { Fragment, useState } from 'react';
+import { SettlementFileButtons, type SettlementFileInfo } from '@/components/SettlementFiles';
 import { useQuery } from '@tanstack/react-query';
 import { Button, Icon, Surface } from '@/components/ui';
 import {
@@ -216,8 +217,20 @@ function SettlementDetail({ id }: { id: string }) {
         <div className="flex justify-between gap-3"><dt className="text-gray-600">Created</dt><dd>{dateTime(d.createdAt)}</dd></div>
         <div className="flex justify-between gap-3"><dt className="font-semibold text-gray-900">Payout</dt><dd className="font-bold text-brand-600">{inr(d.netPayablePaise)}</dd></div>
         {d.paidAt && <div className="flex justify-between gap-3"><dt className="text-gray-600">Paid on</dt><dd>{dateTime(d.paidAt)}</dd></div>}
+        {d.status === 'PAID' && (
+          <div className="flex justify-between gap-3">
+            <dt className="text-gray-600">Transaction / UPI ref.</dt>
+            <dd className="break-all text-right font-mono font-semibold">{d.payoutReference || 'Not recorded'}</dd>
+          </div>
+        )}
       </dl>
       {note && <p className="text-xs text-gray-500">{note}</p>}
+      <SettlementFileButtons
+        settlement={{ ...d, status: d.status as SettlementFileInfo['status'] }}
+        basePath="/seller/settlements"
+        getBlob={sellerApi.getBlob}
+        proofVisible={d.status === 'PAID'}
+      />
       <div>
         <p className="text-sm font-semibold text-gray-900">Orders in this settlement ({d.orders.length})</p>
         {d.orders.length === 0 ? (

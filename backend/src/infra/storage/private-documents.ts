@@ -1,5 +1,6 @@
 /**
- * PRIVATE document storage — seller onboarding PDFs (PAN, Aadhaar, GST, …).
+ * PRIVATE document storage — seller onboarding PDFs (PAN, Aadhaar, GST, …),
+ * refund evidence photos and settlement payment proofs.
  *
  * Unlike product images (index.ts), nothing here is ever public:
  *   - local: files live under `storage-private/`, which is NOT the folder the
@@ -44,7 +45,17 @@ export function buildRefundEvidenceKey(requestId: string, contentType: keyof typ
   return `refund-evidence/${requestId}/${randomUUID()}.${EVIDENCE_EXTENSION[contentType]}`;
 }
 
-const KEY_PATTERN = /^(seller-documents\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.pdf|refund-evidence\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.(jpg|png|webp))$/i;
+const PROOF_EXTENSION = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'application/pdf': 'pdf' } as const;
+export type PayoutProofContentType = keyof typeof PROOF_EXTENSION;
+
+/** Server-generated key for a settlement's payment proof: `settlement-proofs/<settlementId>/<uuid>.<ext>`. */
+export function buildPayoutProofKey(settlementId: string, contentType: PayoutProofContentType): string {
+  if (!/^[0-9a-f-]{36}$/i.test(settlementId)) throw new Error('invalid settlement id for a payout proof key');
+  return `settlement-proofs/${settlementId}/${randomUUID()}.${PROOF_EXTENSION[contentType]}`;
+}
+
+const KEY_PATTERN =
+  /^(seller-documents\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.pdf|refund-evidence\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.(jpg|png|webp)|settlement-proofs\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.(jpg|png|webp|pdf))$/i;
 
 function assertDocumentKey(key: string): void {
   if (!KEY_PATTERN.test(key)) {

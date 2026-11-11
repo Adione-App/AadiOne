@@ -9,7 +9,7 @@ export default function SectionHeading({
   return (
     <div className={`flex max-w-2xl flex-col gap-4 ${alignment} ${className}`}>
       {eyebrow && <span className="text-sm font-semibold text-leaf-600">{eyebrow}</span>}
-      <h2 className="text-balance font-display text-3xl font-semibold text-ink sm:text-4xl">
+      <h2 className="text-balance font-display text-3xl font-extrabold tracking-tight text-ink sm:text-4xl">
         {title}
       </h2>
       {description && (

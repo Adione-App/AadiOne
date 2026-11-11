@@ -883,6 +883,10 @@ export interface SellerSettlement {
   netPayablePaise: number;
   status: 'PENDING' | 'PROCESSING' | 'PAID' | 'FAILED' | string;
   paidAt: string | null;
+  /** Transaction / UPI reference Aadione recorded when it paid this settlement. */
+  payoutReference?: string | null;
+  /** Aadione attached a payment screenshot / receipt (viewable once PAID). */
+  hasPayoutProof?: boolean;
   createdAt: string;
 }
 
@@ -957,6 +961,8 @@ function toSettlement(raw: SellerSettlement): SellerSettlement {
     netPayablePaise: raw.netPayablePaise,
     status: raw.status,
     paidAt: raw.paidAt,
+    payoutReference: raw.payoutReference ?? null,
+    hasPayoutProof: Boolean(raw.hasPayoutProof),
     createdAt: raw.createdAt,
   };
 }

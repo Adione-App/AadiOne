@@ -45,10 +45,10 @@ describe('one source for legal and contact content', () => {
     }
   })
 
-  it('the contact form never claims a message was sent', () => {
+  it('the contact page has no form that pretends to send; each topic is an email with its subject', () => {
     const contact = read('src/pages/Contact.jsx')
-    assert.doesNotMatch(contact, /Message Sent|setTimeout/)
-    assert.match(contact, /mailto:\$\{support\.email\}\?subject=/)
+    assert.doesNotMatch(contact, /<form|Message Sent|setTimeout|onSubmit/)
+    assert.match(contact, /mailto:\$\{email\}\?subject=/)
   })
 
   it('links in page text come only from the shared link rules', () => {
@@ -62,14 +62,15 @@ describe('delete account', () => {
   const page = read('src/pages/DeleteAccount.jsx')
 
   it('uses the app\'s own OTP sign-in and deletion, and handles an expired verification', () => {
-    assert.match(form, /callApi\('\/auth\/send-otp'/)
-    assert.match(form, /callApi\('\/auth\/verify-otp'/)
-    assert.match(form, /callApi\('\/auth\/me', \{ method: 'DELETE'/)
+    const api = read('src/lib/accountApi.js')
+    assert.match(api, /callApi\('\/auth\/send-otp'/)
+    assert.match(api, /callApi\('\/auth\/verify-otp'/)
+    assert.match(api, /callApi\('\/auth\/me', \{ \.\.\.opts, method: 'DELETE'/)
     assert.match(form, /err\.status === 401/)
   })
 
   it('removes the empty account a verification creates for an unknown number', () => {
-    assert.match(form, /if \(data\.user\?\.isNewUser\) \{[\s\S]*method: 'DELETE'/)
+    assert.match(form, /if \(created\) \{[\s\S]*await deleteAccount\(token\)/)
   })
 
   it('never claims records are anonymised; says what is kept', () => {

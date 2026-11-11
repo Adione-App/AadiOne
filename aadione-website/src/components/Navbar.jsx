@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
-import { Menu, X, Smartphone } from 'lucide-react'
+import { Menu, X } from 'lucide-react'
 import Container from './Container'
-import Button from './Button'
-import { nav, appLinks } from '../config/site'
+import Logo from './Logo'
+import AppStoreButtons, { DownloadAppButton } from './AppStoreButtons'
+import { nav } from '../config/site'
 
 export default function Navbar() {
   const [open, setOpen] = useState(false)
@@ -22,26 +23,23 @@ export default function Navbar() {
   return (
     <header
       className={`sticky top-0 z-50 border-b transition-colors ${
-        scrolled ? 'border-leaf-100 bg-cream/90 backdrop-blur-md' : 'border-transparent bg-cream'
+        scrolled || open ? 'border-leaf-100 bg-white/90 backdrop-blur-md' : 'border-transparent bg-white'
       }`}
     >
-      <Container className="flex h-20 items-center justify-between">
-        <Link to="/" className="flex items-center gap-2.5 shrink-0">
-          <img src="/assets/logo.svg" alt="Aadione" className="h-9 w-9" />
-          <span className="font-display text-2xl font-semibold text-ink">Aadione</span>
+      <Container className="flex h-[72px] items-center justify-between gap-4">
+        <Link to="/" className="flex shrink-0 items-center" aria-label="Aadione home">
+          <Logo className="h-9 sm:h-10" />
         </Link>
 
-        <nav className="hidden items-center gap-1 lg:flex">
+        <nav className="hidden items-center gap-1 lg:flex" aria-label="Main">
           {nav.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.to === '/'}
               className={({ isActive }) =>
-                `rounded-full px-4 py-2 text-sm font-medium transition-colors ${
-                  isActive
-                    ? 'bg-leaf-100 text-leaf-800'
-                    : 'text-ink-light/80 hover:bg-leaf-50 hover:text-ink'
+                `rounded-full px-3.5 py-2 text-sm font-semibold transition-colors ${
+                  isActive ? 'bg-leaf-50 text-leaf-800' : 'text-ink-light/80 hover:bg-leaf-50 hover:text-ink'
                 }`
               }
             >
@@ -50,24 +48,23 @@ export default function Navbar() {
           ))}
         </nav>
 
-        <div className="hidden lg:block">
-          <Button href={appLinks.playStore} variant="primary" size="md" icon={Smartphone}>
-            Download App
-          </Button>
+        <div className="flex items-center gap-2">
+          <DownloadAppButton className="px-4 sm:px-5" />
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="inline-flex items-center justify-center rounded-full p-2 text-ink hover:bg-leaf-50 lg:hidden"
+            aria-label={open ? 'Close menu' : 'Open menu'}
+            aria-expanded={open}
+            aria-controls="mobile-menu"
+          >
+            {open ? <X size={26} /> : <Menu size={26} />}
+          </button>
         </div>
-
-        <button
-          onClick={() => setOpen((v) => !v)}
-          className="inline-flex items-center justify-center rounded-full p-2 text-ink lg:hidden"
-          aria-label={open ? 'Close menu' : 'Open menu'}
-          aria-expanded={open}
-        >
-          {open ? <X size={26} /> : <Menu size={26} />}
-        </button>
       </Container>
 
       {open && (
-        <div className="border-t border-leaf-100 bg-cream lg:hidden">
+        <div id="mobile-menu" className="border-t border-leaf-100 bg-white lg:hidden">
           <Container className="flex flex-col gap-1 py-4">
             {nav.map((item) => (
               <NavLink
@@ -75,17 +72,16 @@ export default function Navbar() {
                 to={item.to}
                 end={item.to === '/'}
                 className={({ isActive }) =>
-                  `rounded-xl px-4 py-3 text-base font-medium ${
-                    isActive ? 'bg-leaf-100 text-leaf-800' : 'text-ink-light/90 hover:bg-leaf-50'
-                  }`
+                  `rounded-xl px-4 py-3 text-base font-semibold ${isActive ? 'bg-leaf-50 text-leaf-800' : 'text-ink-light/90 hover:bg-leaf-50'}`
                 }
               >
                 {item.label}
               </NavLink>
             ))}
-            <Button href={appLinks.playStore} variant="primary" size="md" className="mt-2 w-full">
-              Download App
-            </Button>
+            <div className="mt-3 border-t border-leaf-100 px-4 pt-4">
+              <p className="mb-3 text-sm font-semibold text-ink">Get the app</p>
+              <AppStoreButtons />
+            </div>
           </Container>
         </div>
       )}

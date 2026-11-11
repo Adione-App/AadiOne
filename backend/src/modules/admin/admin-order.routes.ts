@@ -27,6 +27,11 @@ import * as service from "./admin-order.service";
 import * as orderAlerts from "./admin-order-alerts.service";
 import * as sellerOrderService from "../orders/seller-order.service";
 import * as settlementService from "../sellers/seller-settlement.service";
+import * as statementService from "../sellers/seller-statement.service";
+import * as settlementProofService from "../sellers/settlement-proof.service";
+import { proofFileName } from "../sellers/settlement-proof.service";
+import { sendDocumentFile } from "../sellers/document-response";
+import { payoutProofUpload } from "../../middleware/payoutProofUpload";
 import * as orderFinancials from "../orders/order-financials.service";
 import { emitStoreAvailabilityChanged } from "../../realtime/socket";
 import { ActorType, SellerOrderStatus, SettlementStatus } from "../../shared";
@@ -447,6 +452,45 @@ adminOrderRouter.patch(
         reference ?? null,
       ),
     );
+  }),
+);
+
+/**
+ * GET /admin/settlements/:id/statement.pdf — the seller settlement statement
+ * (read-only; generating it never moves money).
+ */
+adminOrderRouter.get(
+  "/settlements/:id/statement.pdf",
+  requirePermission(Permission.SETTLEMENT_READ),
+  validate({ params: idParams }),
+  asyncHandler(async (req: Request, res: Response) => {
+    sendDocumentFile(res, await statementService.statementPdfFile(req.params["id"] as string), "attachment");
+  }),
+);
+
+/**
+ * POST /admin/settlements/:id/payout-proof — attach the screenshot / receipt
+ * of the MANUAL payout (multipart field `file`; JPEG/PNG/WebP/PDF, 5 MB).
+ * Allowed while PROCESSING or PAID. A record only — no money moves.
+ */
+adminOrderRouter.post(
+  "/settlements/:id/payout-proof",
+  requirePermission(Permission.SETTLEMENT_MANAGE),
+  validate({ params: idParams }),
+  payoutProofUpload,
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await settlementProofService.attachPayoutProof(req.params["id"] as string, req.file?.buffer, requireUser(req).id));
+  }),
+);
+
+/** GET /admin/settlements/:id/payout-proof — the attached proof, streamed from private storage. */
+adminOrderRouter.get(
+  "/settlements/:id/payout-proof",
+  requirePermission(Permission.SETTLEMENT_READ),
+  validate({ params: idParams }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const proof = await settlementProofService.readPayoutProof(req.params["id"] as string);
+    sendDocumentFile(res, { fileName: proofFileName(req.params["id"] as string, proof.contentType), contentType: proof.contentType, body: proof.body });
   }),
 );
 

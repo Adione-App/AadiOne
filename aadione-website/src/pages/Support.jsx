@@ -15,7 +15,7 @@ import SectionHeading from '../components/SectionHeading'
 import Button from '../components/Button'
 import useSEO from '../lib/useSEO'
 import { site } from '../config/site'
-import { useBusinessInfo } from '../lib/publicApi'
+import SupportDetails from '../components/SupportDetails'
 
 const TOPICS = [
   { Icon: PackageSearch, title: 'Order issues', description: 'Help with an order that hasn\u2019t gone as expected.' },
@@ -30,7 +30,6 @@ const TOPICS = [
 ]
 
 export default function Support() {
-  const supportEmail = useBusinessInfo().data?.support?.email ?? null
   useSEO({
     title: 'Support',
     description: 'Get help with orders, refunds, account issues, delivery and privacy requests on Aadione.',
@@ -69,18 +68,9 @@ export default function Support() {
               Still need help?
             </h3>
             <p className="mt-2 max-w-xl text-sm leading-relaxed text-ink-light/75">
-              {supportEmail ? (
-                <>
-                  Reach our support team at{' '}
-                  <a className="text-leaf-700 underline" href={`mailto:${supportEmail}`}>
-                    {supportEmail}
-                  </a>
-                  , or use the links below.
-                </>
-              ) : (
-                'Reach our support team using the links below.'
-              )}
+              Reach our support team directly, or use the links below.
             </p>
+            <SupportDetails className="mt-5 max-w-xl" />
             <div className="mt-6 flex flex-wrap gap-3">
               <Button to="/faq" variant="secondary">FAQ</Button>
               <Button to="/contact" variant="secondary">Contact</Button>

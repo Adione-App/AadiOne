@@ -23,7 +23,7 @@ export const SETTLEMENT_STATUS: Record<string, { label: string; tone: Tone; icon
   PENDING: { label: 'Pending', tone: 'amber', icon: 'clock', note: 'Created — waiting to be processed by Aadione.' },
   PROCESSING: { label: 'Processing', tone: 'blue', icon: 'clock', note: 'Aadione is sending this payout.' },
   PAID: { label: 'Paid', tone: 'brand', icon: 'check' },
-  FAILED: { label: 'Failed', tone: 'red', icon: 'alert', note: 'This payout did not go through. Aadione will retry it — contact Aadione if you have questions.' },
+  FAILED: { label: 'Failed', tone: 'red', icon: 'alert', note: 'Aadione has recorded that this manual payment was not completed. Contact Aadione if you have questions.' },
 };
 
 const BADGE: Record<Tone, string> = {

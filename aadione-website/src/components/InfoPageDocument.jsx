@@ -65,12 +65,23 @@ export function PageSections({ page }) {
   ))
 }
 
+// The site links to sections of the CURRENT Terms template. Until a Terms
+// version is published from the Admin Panel, the API serves the older built-in
+// wording, whose sections are named differently — a link then lands on the
+// matching older section instead of the top of the page.
+export const SECTION_ALIASES = {
+  'cancelling-an-order': ['cancellations-and-refunds'],
+  'delivery-area-charges-and-timing': ['where-we-deliver', 'delivery-time'],
+  'complaints-and-grievance-redressal': ['changes-and-contact'],
+}
+
 /** Scrolls to the #section in the address once the page's content is on screen. */
 function useScrollToHash(ready) {
   const { hash } = useLocation()
   useEffect(() => {
     if (!ready || !hash) return
-    const target = document.getElementById(decodeURIComponent(hash.slice(1)))
+    const id = decodeURIComponent(hash.slice(1))
+    const target = [id, ...(SECTION_ALIASES[id] ?? [])].map((key) => document.getElementById(key)).find(Boolean)
     if (target) target.scrollIntoView({ block: 'start' })
   }, [ready, hash])
 }

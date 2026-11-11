@@ -39,6 +39,8 @@ COPY --from=build --chown=adione:adione /app/dist ./dist
 # V2 schema + migrations for `prisma migrate deploy`, the V1-database guard it
 # runs first (see docker-compose.prod.yml), and the seed sources.
 COPY --from=build --chown=adione:adione /app/prisma ./prisma
+# Fonts for generated PDFs (seller statements) — Noto Sans + Devanagari, SIL OFL.
+COPY --chown=adione:adione assets ./assets
 COPY --chown=adione:adione scripts/assert-v2-database.mjs ./scripts/assert-v2-database.mjs
 COPY --chown=adione:adione package*.json ./
 

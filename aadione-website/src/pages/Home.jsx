@@ -1,320 +1,203 @@
-import {
-  MapPin,
-  Wallet,
-  Truck,
-  ShieldCheck,
-  Search,
-  PackageCheck,
-  LayoutGrid,
-  MousePointerClick,
-  Sparkles,
-  ArrowRight,
-} from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { ArrowRight, BadgeCheck, Headset, MapPin, PackageSearch, ReceiptText, ShieldCheck, Store } from 'lucide-react'
 import Container from '../components/Container'
-import Button from '../components/Button'
-import AppStoreButtons from '../components/AppStoreButtons'
 import SectionHeading from '../components/SectionHeading'
-import StepCard from '../components/StepCard'
-import FeatureRow from '../components/FeatureRow'
-import FAQItem from '../components/FAQItem'
-import Stat from '../components/Stat'
-import CategoryCard from '../components/CategoryCard'
+import AppStoreButtons from '../components/AppStoreButtons'
+import DownloadSection from '../components/DownloadSection'
+import HowSteps from '../components/HowSteps'
+import DeliveryAreas from '../components/DeliveryAreas'
+import SupportDetails from '../components/SupportDetails'
+import { LiveCategories, LiveRestaurants, MarketplaceKinds } from '../components/LiveCatalogue'
 import useSEO from '../lib/useSEO'
-import { serviceInfo, categories, site } from '../config/site'
 
-const steps = [
-  {
-    Icon: Search,
-    title: 'Explore products',
-    description: 'Open Aadione and browse groceries, fresh produce and everyday essentials by category.',
-  },
-  {
-    Icon: PackageCheck,
-    title: 'Add to cart',
-    description: 'Build your order and check out. Every charge, including any delivery charge, is shown before you pay.',
-  },
-  {
-    Icon: ShieldCheck,
-    title: 'Store accepts your order',
-    description: 'Your order is reviewed and prepared as soon as it is accepted.',
-  },
-  {
-    Icon: Truck,
-    title: 'Delivered to your door',
-    description: serviceInfo.areaNote,
-  },
+// Every claim on this page is something the app does today. What is for sale,
+// which restaurants are listed and where Aadione delivers are read live from
+// the API — nothing here is a number typed into the website.
+const WHY = [
+  { Icon: Store, title: 'Your local shops in one app', description: 'Grocery stores, fresh produce sellers, restaurants and cafés from your own area.' },
+  { Icon: ReceiptText, title: 'Every charge before you pay', description: 'Item prices, any delivery charge and the total are shown in your cart before you order.' },
+  { Icon: MapPin, title: 'Clear delivery areas', description: 'Aadione delivers to approved villages and PIN codes, and checks your address before you order.' },
+  { Icon: PackageSearch, title: 'Track every order', description: 'Follow your order’s status in the app from the moment you place it.' },
+  { Icon: ShieldCheck, title: 'Simple, secure sign-in', description: 'Sign in with your mobile number and a one-time code — no password to remember.' },
+  { Icon: Headset, title: 'Real support', description: 'Reach the Aadione team by email or phone, and a Grievance Officer for complaints.' },
 ]
 
-const whyCards = [
-  {
-    Icon: Sparkles,
-    title: 'Everyday Essentials',
-    description: 'Shop products you need for everyday life.',
-  },
-  {
-    Icon: LayoutGrid,
-    title: 'Multiple Categories',
-    description: 'Explore groceries, fresh produce, household items, clothing, electronics and more.',
-  },
-  {
-    Icon: MousePointerClick,
-    title: 'Easy Ordering',
-    description: 'Browse products, add them to your cart and place your order easily.',
-  },
-  {
-    Icon: Truck,
-    title: 'Convenient Local Delivery',
-    description: 'Get your order delivered within the supported Aadione service area.',
-  },
-]
-
-const faqPreview = [
-  {
-    question: 'What can I buy on Aadione?',
-    answer:
-      'Customers can explore available groceries, fruits and vegetables, household essentials, personal care products, clothing, electronics and other everyday products depending on current availability.',
-  },
-  {
-    question: 'Is delivery free?',
-    answer: serviceInfo.deliveryChargeNote,
-  },
-  {
-    question: 'How long does delivery take?',
-    answer: serviceInfo.deliveryTimingNote,
-  },
-  {
-    question: 'Can I cancel my order after placing it?',
-    answer: serviceInfo.cancellationNote,
-  },
-]
+function HeroVisual() {
+  return (
+    <div className="relative mx-auto w-full max-w-md lg:max-w-none" aria-hidden="true">
+      <div className="absolute -inset-6 rounded-[3rem] bg-gradient-to-br from-leaf-200/60 via-leaf-100/40 to-transparent blur-2xl" />
+      <div className="relative grid grid-cols-2 gap-4">
+        <div className="col-span-2 overflow-hidden rounded-[2rem] shadow-soft">
+          <img src="/images/restaurants.webp" alt="" width="1200" height="452" className="w-full" fetchpriority="high" decoding="async" />
+        </div>
+        <div className="overflow-hidden rounded-[2rem] shadow-soft">
+          <img src="/images/fruits-vegetables.webp" alt="" width="720" height="720" className="w-full" decoding="async" />
+        </div>
+        <div className="flex flex-col items-center justify-center gap-4 rounded-[2rem] bg-white p-6 shadow-soft">
+          <img src="/images/app-icon-320.webp" alt="" width="320" height="320" className="h-24 w-24 rounded-[1.6rem] shadow-card motion-safe:animate-floaty sm:h-28 sm:w-28" decoding="async" />
+          <span className="text-center text-sm font-bold text-ink">The Aadione app</span>
+          <span className="-mt-3 text-center text-xs text-ink-light/60">Android &amp; iPhone</span>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export default function Home() {
   useSEO({
-    title: undefined,
-    description: site.description,
+    description:
+      'Aadione is a local shopping app: order groceries, fresh fruits and vegetables and food from local restaurants, delivered to your doorstep in approved villages. Download on Google Play and the App Store.',
     path: '/',
   })
 
   return (
     <>
       {/* Hero */}
-      <section className="relative overflow-hidden bg-leaf-900 pb-24 pt-16 sm:pb-32 sm:pt-20">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -right-32 top-10 h-96 w-96 rounded-blob bg-leaf-700/50 blur-3xl"
-        />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -left-24 bottom-0 h-72 w-72 rounded-blob bg-mango/25 blur-3xl"
-        />
-
-        <Container className="relative grid grid-cols-1 items-center gap-14 lg:grid-cols-2 lg:gap-10">
-          <div className="animate-riseIn">
-            <span className="inline-flex items-center gap-2 rounded-full bg-white/10 px-4 py-1.5 text-sm font-medium text-leaf-100">
-              Local quick-commerce, everyday made simple
+      <section className="relative overflow-hidden bg-gradient-to-b from-leaf-50 via-white to-white pb-10 pt-10 sm:pb-14 sm:pt-16">
+        <div aria-hidden="true" className="pointer-events-none absolute -right-40 -top-40 h-[28rem] w-[28rem] rounded-full bg-leaf-100/70 blur-3xl" />
+        <Container className="relative grid grid-cols-1 items-center gap-12 lg:grid-cols-[1.05fr_0.95fr] lg:gap-14">
+          <div className="motion-safe:animate-riseIn">
+            <span className="inline-flex items-center gap-2 rounded-full border border-leaf-200 bg-white px-4 py-1.5 text-sm font-semibold text-leaf-800 shadow-sm">
+              <BadgeCheck size={16} className="text-leaf-600" aria-hidden="true" /> Local shopping, delivered to your door
             </span>
-            <h1 className="mt-6 max-w-xl text-balance font-display text-4xl font-semibold leading-[1.1] text-white sm:text-5xl lg:text-[3.4rem]">
-              {site.tagline}
+            <h1 className="mt-6 max-w-xl text-balance font-display text-[2.6rem] font-extrabold leading-[1.05] tracking-tight text-ink sm:text-6xl">
+              Everything You Need, <span className="text-leaf-700">Delivered.</span>
             </h1>
-            <p className="mt-6 max-w-lg text-balance text-base leading-relaxed text-cream-100/80 sm:text-lg">
-              Shop groceries, fresh produce, daily essentials and more — all from {site.name}.
+            <p className="mt-6 max-w-lg text-lg leading-relaxed text-ink-light/80">
+              Groceries, fresh fruits and vegetables, and food from local restaurants — from the shops in your own area, ordered in
+              one app and delivered to your doorstep.
             </p>
-
-            <div className="mt-9 flex flex-wrap items-center gap-3">
-              <AppStoreButtons size="lg" />
-            </div>
-
-            <div className="mt-6">
-              <Button to="/categories" variant="inverse" icon={ArrowRight}>
-                Explore Categories
-              </Button>
-            </div>
-
-            <div className="mt-8 flex flex-wrap items-center gap-x-8 gap-y-3 text-sm text-cream-100/70">
-              <span className="flex items-center gap-2">
-                <MapPin size={16} className="text-leaf-300" />
-                Serving local villages and towns
-              </span>
-              <span className="flex items-center gap-2">
-                <Wallet size={16} className="text-leaf-300" />
-                Every charge shown before you pay
-              </span>
+            <AppStoreButtons size="lg" className="mt-8" />
+            <div className="mt-7 flex flex-wrap items-center gap-x-6 gap-y-3 text-sm font-semibold">
+              <Link to="/categories" className="inline-flex items-center gap-1.5 text-leaf-700 hover:text-leaf-800">
+                Explore categories <ArrowRight size={16} aria-hidden="true" />
+              </Link>
+              <Link to="/delivery-areas" className="inline-flex items-center gap-1.5 text-leaf-700 hover:text-leaf-800">
+                Check delivery areas <ArrowRight size={16} aria-hidden="true" />
+              </Link>
             </div>
           </div>
-
-          <div className="relative mx-auto w-full max-w-xs animate-riseIn [animation-delay:150ms] lg:max-w-sm">
-            <div
-              aria-hidden="true"
-              className="absolute inset-x-6 -bottom-6 top-10 rounded-blob bg-leaf-500/30 blur-2xl"
-            />
-            <img
-              src="/assets/app-screenshot-hero.svg"
-              alt="Aadione app screen showing shopping categories"
-              className="relative w-full animate-floaty drop-shadow-2xl"
-            />
+          <div className="motion-safe:animate-riseIn [animation-delay:120ms]">
+            <HeroVisual />
           </div>
         </Container>
       </section>
 
-      {/* Trust / quick facts */}
-      <section className="bg-white py-16 sm:py-20">
-        <Container>
-          <div className="grid grid-cols-2 gap-8 sm:grid-cols-4">
-            <Stat value="Local" label="Shops and restaurants near you" />
-            <Stat value={`${categories.length - 1}+`} label="Everyday product categories" />
-            <Stat value="Clear" label="Charges shown before you pay" />
-            <Stat value="OTP" label="Simple mobile sign-in" />
-          </div>
-        </Container>
-      </section>
-
-      {/* Shop by category */}
-      <section className="bg-cream py-20 sm:py-28">
+      {/* 1–2. Everyday essentials: the live categories */}
+      <section id="shop" className="scroll-mt-24 bg-white py-16 sm:py-24">
         <Container>
           <div className="flex flex-col justify-between gap-6 sm:flex-row sm:items-end">
             <SectionHeading
-              eyebrow="Shop by category"
-              title="Everything you need, in one app."
-              description="Explore a growing range of everyday products, from fresh groceries to electronics."
+              eyebrow="Shop everyday essentials"
+              title="Groceries, fruits & vegetables — in the app now."
+              description="These are the categories you can order from today, with everything inside them. New categories appear here as local sellers add them."
             />
-            <Button to="/categories" variant="secondary" icon={ArrowRight}>
-              View all categories
-            </Button>
+            <Link to="/categories" className="inline-flex shrink-0 items-center gap-1.5 text-sm font-semibold text-leaf-700 hover:text-leaf-800">
+              All categories <ArrowRight size={16} aria-hidden="true" />
+            </Link>
           </div>
-
-          <div className="mt-12 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-            {categories.slice(0, 8).map((cat) => (
-              <CategoryCard key={cat.id} name={cat.name} description={cat.description} />
-            ))}
+          <div className="mt-10">
+            <LiveCategories />
           </div>
         </Container>
       </section>
 
-      {/* Why Aadione */}
-      <section className="bg-white py-20 sm:py-28">
+      {/* 3. Food from local restaurants */}
+      <section className="bg-leaf-50/60 py-16 sm:py-24">
+        <Container className="grid grid-cols-1 items-start gap-10 lg:grid-cols-[0.8fr_1.2fr]">
+          <SectionHeading
+            eyebrow="Food from local restaurants"
+            title="Order from restaurants and cafés near you."
+            description="The Food section of the app lists local restaurants and cafés with their menus, and shows whether each one is open right now."
+          />
+          <LiveRestaurants cards />
+        </Container>
+      </section>
+
+      {/* 4–6. Electronics, clothing and more — marked from the live catalogue */}
+      <section className="bg-white py-16 sm:py-24">
         <Container>
           <SectionHeading
-            eyebrow="Why Aadione"
-            title="Everything you need in one place."
-            align="center"
-            className="mx-auto"
+            eyebrow="Electronics, fashion and more"
+            title="Built for every kind of local shop."
+            description="Aadione is a marketplace for local sellers of all kinds. A category is marked “In the app now” only when you can order from it today."
           />
-          <div className="mx-auto mt-14 grid max-w-4xl grid-cols-1 gap-x-10 sm:grid-cols-2">
-            {whyCards.map((card) => (
-              <FeatureRow key={card.title} {...card} />
-            ))}
+          <div className="mt-10">
+            <MarketplaceKinds only={['clothing-fashion', 'electronics-accessories', 'beauty-wellness', 'home-kitchen']} columns={4} />
           </div>
         </Container>
       </section>
 
-      {/* Service area / V1 details */}
-      <section className="bg-cream py-20 sm:py-28">
-        <Container className="grid grid-cols-1 items-center gap-14 lg:grid-cols-2">
-          <div>
-            <SectionHeading
-              eyebrow="Serving your local community"
-              title="Focused on your neighbourhood, done well."
-              description={`${site.name} delivers to the villages and towns shown as served in the app. Availability depends on your delivery address and on the sellers serving your area.`}
-            />
-
-            <div className="mt-8 space-y-1">
-              <FeatureRow
-                Icon={MapPin}
-                title="Delivery to served areas"
-                description="Availability depends on your delivery location and the current service area."
-              />
-              <FeatureRow
-                Icon={Wallet}
-                title="Clear delivery charges"
-                description={serviceInfo.deliveryChargeNote}
-                tone="mango"
-              />
-              <FeatureRow
-                Icon={ShieldCheck}
-                title="Straightforward cancellations"
-                description={serviceInfo.cancellationNote}
-              />
-              <FeatureRow
-                Icon={Truck}
-                title="Cash on Delivery, where eligible"
-                description={serviceInfo.codNote}
-              />
-            </div>
-          </div>
-
-          <div className="relative mx-auto flex aspect-square w-full max-w-md items-center justify-center">
-            <div className="absolute inset-0 rounded-full border border-leaf-100" />
-            <div className="absolute inset-8 rounded-full border border-leaf-200" />
-            <div className="absolute inset-16 rounded-full border border-dashed border-leaf-300" />
-            <div className="relative flex h-24 w-24 items-center justify-center rounded-full bg-leaf-700 text-white shadow-soft">
-              <MapPin size={30} />
-            </div>
-            <span className="absolute bottom-6 right-8 rounded-full bg-white px-3 py-1 text-xs font-semibold text-leaf-700 shadow-card">
-              Local delivery
-            </span>
-          </div>
-        </Container>
-      </section>
-
-      {/* How it works preview */}
-      <section className="bg-white py-20 sm:py-28">
+      {/* 7. How it works */}
+      <section className="bg-leaf-50/60 py-16 sm:py-24">
         <Container>
           <div className="flex flex-col justify-between gap-6 sm:flex-row sm:items-end">
-            <SectionHeading
-              eyebrow="How it works"
-              title="From browsing to your door, in four simple steps."
-              description="See the full six-step process on our How It Works page."
-            />
-            <Button to="/how-it-works" variant="secondary" icon={ArrowRight}>
-              See full process
-            </Button>
+            <SectionHeading eyebrow="How Aadione works" title="From your phone to your doorstep." />
+            <Link to="/how-it-works" className="inline-flex shrink-0 items-center gap-1.5 text-sm font-semibold text-leaf-700 hover:text-leaf-800">
+              More about ordering <ArrowRight size={16} aria-hidden="true" />
+            </Link>
           </div>
-
-          <div className="mt-12 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            {steps.map((step, i) => (
-              <StepCard
-                key={step.title}
-                number={String(i + 1).padStart(2, '0')}
-                Icon={step.Icon}
-                title={step.title}
-                description={step.description}
-              />
-            ))}
+          <div className="mt-10">
+            <HowSteps />
           </div>
         </Container>
       </section>
 
-      {/* FAQ preview */}
-      <section className="bg-cream py-20 sm:py-28">
-        <Container className="grid grid-cols-1 gap-12 lg:grid-cols-[0.9fr_1.1fr]">
+      {/* 8. Delivery availability */}
+      <section id="delivery" className="scroll-mt-24 bg-white py-16 sm:py-24">
+        <Container className="grid grid-cols-1 items-start gap-10 lg:grid-cols-[0.85fr_1.15fr]">
           <SectionHeading
-            eyebrow="Good to know"
-            title="Quick answers before you download."
-            description="A few things worth knowing about how Aadione works today. See the full FAQ for everything else."
+            eyebrow="Delivery availability"
+            title="Do we deliver to you?"
+            description="Aadione delivers to approved villages, each with its own PIN code. This is the same list the app uses — when you add your address, the app confirms it before you order."
           />
-          <div>
-            {faqPreview.map((item) => (
-              <FAQItem key={item.question} question={item.question} answer={item.answer} />
+          <DeliveryAreas />
+        </Container>
+      </section>
+
+      {/* 9. Why Aadione */}
+      <section className="bg-leaf-50/60 py-16 sm:py-24">
+        <Container>
+          <SectionHeading eyebrow="Why choose Aadione?" title="Simple, local and clear." align="center" className="mx-auto" />
+          <div className="mt-12 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {WHY.map(({ Icon, title, description }) => (
+              <div key={title} className="rounded-3xl border border-leaf-100 bg-white p-6 transition-shadow hover:shadow-card">
+                <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-leaf-700 text-white">
+                  <Icon size={20} aria-hidden="true" />
+                </span>
+                <h3 className="mt-4 font-display text-lg font-bold text-ink">{title}</h3>
+                <p className="mt-1.5 text-sm leading-relaxed text-ink-light/75">{description}</p>
+              </div>
             ))}
-            <Button to="/faq" variant="ghost" icon={ArrowRight} className="mt-5 px-0">
-              View all FAQs
-            </Button>
           </div>
         </Container>
       </section>
 
-      {/* Final CTA */}
-      <section className="bg-leaf-900 py-20 sm:py-24">
-        <Container className="flex flex-col items-center gap-8 text-center">
-          <h2 className="max-w-xl text-balance font-display text-3xl font-semibold text-white sm:text-4xl">
-            Get Aadione on Your Phone
-          </h2>
-          <p className="max-w-md text-balance text-cream-100/75">
-            Make everyday shopping simpler with {site.name}.
-          </p>
-          <AppStoreButtons size="lg" />
+      {/* 10. Download */}
+      <DownloadSection />
+
+      {/* 11. Customer support */}
+      <section className="bg-white py-16 sm:py-24">
+        <Container className="grid grid-cols-1 items-start gap-10 lg:grid-cols-2">
+          <div>
+            <SectionHeading
+              eyebrow="Customer support"
+              title="We’re here to help."
+              description="Questions about an order, a payment or your account? Contact the Aadione team. For a complaint, you can also write to our Grievance Officer."
+            />
+            <div className="mt-6 flex flex-wrap gap-x-6 gap-y-3 text-sm font-semibold">
+              <Link to="/contact" className="inline-flex items-center gap-1.5 text-leaf-700 hover:text-leaf-800">
+                Contact &amp; complaints <ArrowRight size={16} aria-hidden="true" />
+              </Link>
+              <Link to="/faq" className="inline-flex items-center gap-1.5 text-leaf-700 hover:text-leaf-800">
+                Frequently asked questions <ArrowRight size={16} aria-hidden="true" />
+              </Link>
+            </div>
+          </div>
+          <SupportDetails />
         </Container>
       </section>
     </>
   )
 }
+

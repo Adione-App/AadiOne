@@ -9,6 +9,7 @@
  */
 
 import { useQuery } from '@tanstack/react-query';
+import { SettlementFileButtons, type SettlementFileInfo } from '@/components/SettlementFiles';
 import { Link } from 'react-router-dom';
 import type { AdminSellerDetailDto } from '@shared';
 import { api } from '@/lib/api';
@@ -134,6 +135,8 @@ interface SettlementRow {
   netPayablePaise: number;
   status: string;
   paidAt: string | null;
+  payoutReference?: string | null;
+  hasPayoutProof?: boolean;
 }
 
 const SETTLEMENT_TONE: Record<string, Tone> = { PENDING: 'amber', PROCESSING: 'blue', PAID: 'brand', FAILED: 'red' };
@@ -210,11 +213,19 @@ export function SellerEarningsTab({ seller, section = 'earnings' }: { seller: Ad
                   </p>
                   <p className="text-xs text-gray-500">
                     Gross {formatPaise(row.grossSalesPaise)} · commission {formatPaise(row.commissionPaise)}
+                    {row.payoutReference ? ` · ref. ${row.payoutReference}` : ''}
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-end gap-2">
                   <span className="text-sm font-semibold text-gray-900">{formatPaise(row.netPayablePaise)}</span>
                   <Pill tone={SETTLEMENT_TONE[row.status] ?? 'gray'}>{row.status.charAt(0) + row.status.slice(1).toLowerCase()}</Pill>
+                  <SettlementFileButtons
+                    settlement={{ ...row, status: row.status as SettlementFileInfo['status'] }}
+                    basePath="/admin/settlements"
+                    getBlob={api.getBlob}
+                    proofVisible
+                    compact
+                  />
                 </div>
               </li>
             ))}

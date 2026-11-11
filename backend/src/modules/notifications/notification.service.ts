@@ -318,10 +318,12 @@ function compose(type: NotificationType, c: NotifyContext): { title: string; bod
       return { title: 'Settlement created', body: `A settlement of ${money(c.amountPaise)} has been created for you.` };
     case NotificationType.SELLER_SETTLEMENT_PROCESSING:
       return { title: 'Payout in progress', body: `Your payout of ${money(c.amountPaise)} is being processed.` };
+    // Seller payouts are made manually by Aadione outside the app: these only
+    // report what the admin recorded, never a transfer the app itself made.
     case NotificationType.SELLER_SETTLEMENT_PAID:
-      return { title: 'Payout sent', body: `${money(c.amountPaise)} has been paid to your bank account.` };
+      return { title: 'Payment recorded', body: `Aadione has recorded a manual payment of ${money(c.amountPaise)} for your settlement.` };
     case NotificationType.SELLER_SETTLEMENT_FAILED:
-      return { title: 'Payout failed', body: `Your payout of ${money(c.amountPaise)} failed. AdiOne will retry it.` };
+      return { title: 'Payment not completed', body: `Aadione has recorded that the manual payment of ${money(c.amountPaise)} for your settlement was not completed. Contact Aadione if you have questions.` };
 
     /* --- admin ------------------------------------------------------------ */
     case NotificationType.ADMIN_ONBOARDING_SUBMITTED:

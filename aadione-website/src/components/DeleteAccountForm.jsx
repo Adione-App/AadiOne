@@ -1,44 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Loader2, CheckCircle2, AlertTriangle, Phone, ShieldCheck, RotateCcw } from 'lucide-react'
 import Button from './Button'
-import { apiBaseUrl } from '../config/site'
+import { deleteAccount, isValidMobile, isValidOtp, sendOtp, verifyOtp } from '../lib/accountApi'
 
 const STEP = { MOBILE: 'mobile', OTP: 'otp', CONFIRM: 'confirm', SUCCESS: 'success' }
-
-/**
- * Calls the existing Aadione backend and surfaces its response.
- *
- * Every AppError the backend throws carries a `message` that is explicitly
- * documented as safe to show an end user (see backend/src/common/errors.ts),
- * so it is shown as-is rather than re-worded here.
- */
-async function callApi(path, { method = 'POST', body, accessToken } = {}) {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  })
-
-  if (response.status === 204) return null
-
-  let json = null
-  try {
-    json = await response.json()
-  } catch {
-    // No JSON body to parse.
-  }
-
-  if (!response.ok || json?.success === false) {
-    const error = new Error(json?.error?.message || 'Something went wrong. Please try again.')
-    error.status = response.status
-    throw error
-  }
-
-  return json?.data ?? null
-}
 
 export default function DeleteAccountForm() {
   const [step, setStep] = useState(STEP.MOBILE)
@@ -51,9 +16,12 @@ export default function DeleteAccountForm() {
   const [error, setError] = useState('')
   const [resendIn, setResendIn] = useState(0)
   const timerRef = useRef(null)
+  // A second tap (or Enter) while a request is in flight never sends it again —
+  // React state alone can lag a fast double tap.
+  const busy = useRef(false)
 
-  const mobileValid = /^[6-9]\d{9}$/.test(mobile.trim())
-  const otpValid = /^\d{4,8}$/.test(otp.trim())
+  const mobileValid = isValidMobile(mobile)
+  const otpValid = isValidOtp(otp)
 
   useEffect(() => {
     if (resendIn <= 0) return undefined
@@ -61,71 +29,75 @@ export default function DeleteAccountForm() {
     return () => clearInterval(timerRef.current)
   }, [resendIn])
 
-  async function requestOtp(e) {
-    e?.preventDefault()
-    if (!mobileValid || loading) return
+  async function run(task) {
+    if (busy.current) return
+    busy.current = true
     setLoading(true)
     setError('')
     try {
-      const data = await callApi('/auth/send-otp', { body: { mobile: mobile.trim() } })
-      setResendIn(data?.resendAfterSeconds ?? 30)
-      setOtp('')
-      setStep(STEP.OTP)
+      await task()
     } catch (err) {
       setError(err.message)
     } finally {
+      busy.current = false
       setLoading(false)
     }
   }
 
-  async function verifyOtp(e) {
+  function requestOtp(e) {
+    e?.preventDefault()
+    if (!mobileValid) return
+    return run(async () => {
+      const data = await sendOtp(mobile)
+      setResendIn(Math.max(30, data?.resendAfterSeconds ?? 30))
+      setOtp('')
+      setStep(STEP.OTP)
+    })
+  }
+
+  function checkOtp(e) {
     e.preventDefault()
-    if (!otpValid || loading) return
-    setLoading(true)
-    setError('')
-    try {
-      const data = await callApi('/auth/verify-otp', { body: { mobile: mobile.trim(), otp: otp.trim() } })
-      if (data.user?.isNewUser) {
-        // Verifying an unknown number signs it up (the app's sign-in has no
-        // separate sign-up step). There was no account to delete, so the empty
-        // one just created is removed straight away with the same deletion.
-        await callApi('/auth/me', { method: 'DELETE', accessToken: data.tokens.accessToken }).catch(() => undefined)
+    if (!otpValid) return
+    return run(async () => {
+      const { accessToken: token, isNewUser: created } = await verifyOtp(mobile, otp)
+      if (!token) throw new Error('Verification did not complete. Please try again.')
+      if (created) {
+        // Verifying a number with no account (or one already deleted) signs it
+        // up — the app's sign-in has no separate sign-up step. There was nothing
+        // to delete, so the empty account just created is removed at once with
+        // the same deletion; nothing else is touched.
+        await deleteAccount(token).catch(() => undefined)
         setIsNewUser(true)
         setStep(STEP.SUCCESS)
         return
       }
-      setAccessToken(data.tokens.accessToken)
+      setAccessToken(token)
       setIsNewUser(false)
+      setConfirmed(false)
       setStep(STEP.CONFIRM)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
+    })
   }
 
-  async function confirmDelete(e) {
+  function confirmDelete(e) {
     e.preventDefault()
-    if (!confirmed || loading) return
-    setLoading(true)
-    setError('')
-    try {
-      await callApi('/auth/me', { method: 'DELETE', accessToken })
-      setStep(STEP.SUCCESS)
-    } catch (err) {
-      if (err.status === 401) {
-        // The verification is valid for a short time only.
-        setAccessToken('')
-        setOtp('')
-        setConfirmed(false)
-        setStep(STEP.MOBILE)
-        setError('Your verification has expired. Please verify your mobile number again.')
-        return
+    if (!confirmed || !accessToken) return
+    return run(async () => {
+      try {
+        await deleteAccount(accessToken)
+      } catch (err) {
+        if (err.status === 401) {
+          // The verification is valid for a short time only.
+          setAccessToken('')
+          setOtp('')
+          setConfirmed(false)
+          setStep(STEP.MOBILE)
+        }
+        throw err
       }
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
+      // Success is shown only after the server answered 204 No Content.
+      setAccessToken('')
+      setStep(STEP.SUCCESS)
+    })
   }
 
   function changeNumber() {
@@ -137,14 +109,15 @@ export default function DeleteAccountForm() {
 
   if (step === STEP.SUCCESS) {
     return (
-      <div className="rounded-3xl border border-leaf-100 bg-leaf-50 p-8 text-center">
+      <div role="status" className="rounded-3xl border border-leaf-100 bg-leaf-50 p-8 text-center">
         <CheckCircle2 size={40} className="mx-auto text-leaf-700" aria-hidden="true" />
+        {/* role=status: read out once the server has confirmed. */}
         <h2 className="mt-4 font-display text-xl font-semibold text-ink">
-          {isNewUser ? 'No Account Found' : 'Account Deleted'}
+          {isNewUser ? 'No account found' : 'Account deleted'}
         </h2>
         <p className="mt-2 text-sm leading-relaxed text-ink-light/75">
           {isNewUser
-            ? 'This mobile number was verified, but no existing Aadione account was found for it — so there was nothing to delete.'
+            ? 'This mobile number was verified, but it has no Aadione account (it may already have been deleted). Nothing was deleted.'
             : 'Your Aadione account has been deleted and you have been signed out everywhere. Records of past orders, payments and refunds are kept as described on this page and in our Privacy Policy.'}
         </p>
       </div>
@@ -202,7 +175,7 @@ export default function DeleteAccountForm() {
       )}
 
       {step === STEP.OTP && (
-        <form onSubmit={verifyOtp} className="mt-6" noValidate>
+        <form onSubmit={checkOtp} className="mt-6" noValidate>
           <p className="text-sm text-ink-light/70">
             Enter the OTP sent to <span className="font-medium text-ink">{mobile}</span>.
           </p>
@@ -326,7 +299,7 @@ function Steps({ current }) {
 function ErrorBox({ message }) {
   if (!message) return null
   return (
-    <div className="mt-5 flex items-start gap-2.5 rounded-2xl bg-red-50 p-4 text-sm text-red-700">
+    <div role="alert" className="mt-5 flex items-start gap-2.5 rounded-2xl bg-red-50 p-4 text-sm text-red-700">
       <AlertTriangle size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
       <span>{message}</span>
     </div>

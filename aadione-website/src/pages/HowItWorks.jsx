@@ -1,58 +1,16 @@
-import {
-  Download,
-  LogIn,
-  Search,
-  ShoppingCart,
-  ClipboardCheck,
-  PackageCheck,
-  Wallet,
-  ShieldCheck,
-  Ban,
-} from 'lucide-react'
+import { Wallet, ShieldCheck, Ban } from 'lucide-react'
 import Container from '../components/Container'
 import PageHero from '../components/PageHero'
 import SectionHeading from '../components/SectionHeading'
-import AppStoreButtons from '../components/AppStoreButtons'
+import DownloadSection from '../components/DownloadSection'
+import HowSteps from '../components/HowSteps'
 import useSEO from '../lib/useSEO'
-import { serviceInfo, site } from '../config/site'
-
-const detailedSteps = [
-  {
-    Icon: Download,
-    title: `Download ${site.name}`,
-    description: `Install the ${site.name} mobile application from the Play Store or App Store.`,
-  },
-  {
-    Icon: LogIn,
-    title: 'Sign in',
-    description: 'Create or access your account using mobile OTP.',
-  },
-  {
-    Icon: Search,
-    title: 'Explore products',
-    description: 'Browse different categories and available products.',
-  },
-  {
-    Icon: ShoppingCart,
-    title: 'Add to cart',
-    description: 'Select the products you need.',
-  },
-  {
-    Icon: ClipboardCheck,
-    title: 'Place your order',
-    description: 'Review your order and complete checkout.',
-  },
-  {
-    Icon: PackageCheck,
-    title: 'Get your order',
-    description: 'Receive your order within the supported delivery area.',
-  },
-]
+import { serviceInfo } from '../config/site'
 
 const rules = [
   {
     Icon: Wallet,
-    title: 'Free delivery',
+    title: 'Delivery charges',
     description: serviceInfo.deliveryChargeNote,
   },
   {
@@ -78,37 +36,13 @@ export default function HowItWorks() {
     <>
       <PageHero
         eyebrow="How it works"
-        title="A simple, six-step process."
+        title="From your phone to your doorstep."
         description="Here's exactly what happens between opening the app and your order arriving."
       />
 
-      <section className="bg-white py-20 sm:py-28">
+      <section className="bg-white py-16 sm:py-24">
         <Container>
-          <div className="grid grid-cols-1 gap-x-10 gap-y-14 sm:grid-cols-2">
-            {detailedSteps.map((step, i) => (
-              <div key={step.title} className="flex gap-5">
-                <div className="flex flex-col items-center">
-                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-leaf-700 text-white">
-                    <step.Icon size={22} />
-                  </div>
-                  {i !== detailedSteps.length - 1 && (
-                    <span className="mt-2 hidden h-full w-px flex-1 bg-leaf-100 sm:block" />
-                  )}
-                </div>
-                <div className="pb-2">
-                  <span className="text-sm font-semibold text-leaf-600">
-                    Step {String(i + 1).padStart(2, '0')}
-                  </span>
-                  <h3 className="mt-1 font-display text-xl font-semibold text-ink">
-                    {step.title}
-                  </h3>
-                  <p className="mt-2 max-w-md text-sm leading-relaxed text-ink-light/75">
-                    {step.description}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
+          <HowSteps />
         </Container>
       </section>
 
@@ -137,14 +71,7 @@ export default function HowItWorks() {
         </Container>
       </section>
 
-      <section className="bg-leaf-900 py-16 sm:py-20">
-        <Container className="flex flex-col items-center gap-6 text-center">
-          <h2 className="max-w-lg text-balance font-display text-2xl font-semibold text-white sm:text-3xl">
-            Ready to get started?
-          </h2>
-          <AppStoreButtons />
-        </Container>
-      </section>
+      <DownloadSection />
     </>
   )
 }

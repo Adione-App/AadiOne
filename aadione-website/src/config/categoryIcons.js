@@ -1,32 +1,14 @@
-import {
-  ShoppingBasket,
-  Apple,
-  Milk,
-  CupSoda,
-  SprayCan,
-  HeartPulse,
-  Sparkles,
-  Shirt,
-  Cable,
-  UtensilsCrossed,
-  PackagePlus,
-  LayoutGrid,
-} from 'lucide-react'
+import { ShoppingBasket, Apple, UtensilsCrossed, Shirt, Cable, Sparkles, CookingPot, LayoutGrid } from 'lucide-react'
 
-// Maps `categories` ids (src/config/site.js) to a Lucide icon component.
+// Maps `marketplaceKinds` ids (src/config/site.js) to a Lucide icon component.
 export const CATEGORY_ICONS = {
-  'grocery-food': ShoppingBasket,
+  grocery: ShoppingBasket,
   'fruits-vegetables': Apple,
-  'dairy-bakery': Milk,
-  beverages: CupSoda,
-  'household-essentials': SprayCan,
-  'personal-care': HeartPulse,
-  'beauty-wellness': Sparkles,
+  food: UtensilsCrossed,
   'clothing-fashion': Shirt,
   'electronics-accessories': Cable,
-  'home-kitchen': UtensilsCrossed,
-  'daily-essentials': PackagePlus,
-  more: LayoutGrid,
+  'beauty-wellness': Sparkles,
+  'home-kitchen': CookingPot,
 }
 
 export const DefaultCategoryIcon = LayoutGrid

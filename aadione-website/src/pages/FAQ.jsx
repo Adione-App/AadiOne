@@ -16,7 +16,7 @@ const categories = [
       },
       {
         q: 'What can I buy on Aadione?',
-        a: 'Customers can explore available groceries, fruits and vegetables, household essentials, personal care products, clothing, electronics and other everyday products depending on current availability.',
+        a: 'Today: groceries, fruits and vegetables, and food from local restaurants and cafés. More kinds of shop — such as clothing or electronics — appear as local sellers join. The Categories page always shows what is in the app now.',
       },
       {
         q: 'How does login work?',
@@ -63,7 +63,7 @@ const categories = [
     items: [
       {
         q: 'How can I delete my account?',
-        a: `Users can submit an account deletion request through the ${site.name} Delete Account page.`,
+        a: `In the app, or on the ${site.name} Delete Account page: verify your mobile number with a one-time code and confirm. The page explains what is deleted and which records are kept.`,
       },
       {
         q: 'How can I contact Aadione?',
@@ -71,7 +71,7 @@ const categories = [
       },
       {
         q: 'Is my personal information safe?',
-        a: 'We collect only what is needed to fulfil your orders and improve your experience. See our Privacy Policy for full details on how your data is handled.',
+        a: 'Our Privacy Policy explains what we collect, why, who it is shared with and how long it is kept.',
       },
     ],
   },

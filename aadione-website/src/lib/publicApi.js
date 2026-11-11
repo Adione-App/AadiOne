@@ -11,21 +11,44 @@
 // ---------------------------------------------------------------------------
 
 import { useEffect, useState } from 'react'
-import { apiBaseUrl } from '../config/site'
+import { apiBaseUrl } from '../config/site.js'
 
 const FRESH_FOR_MS = 60_000
 const memory = new Map()
+
+export const PUBLIC_TIMEOUT_MS = 15_000
+
+/** One public GET. 404 = "nothing published" (null); a timeout or offline is an error, never data. */
+export async function fetchPublic(path, { fetchImpl = fetch, timeoutMs = PUBLIC_TIMEOUT_MS } = {}) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetchImpl(`${apiBaseUrl}${path}`, { headers: { Accept: 'application/json' }, signal: controller.signal })
+    const body = await response.json().catch(() => null)
+    if (response.status === 404) return null
+    if (!response.ok || !body?.success) {
+      const error = new Error(body?.error?.message || `Request failed (${response.status})`)
+      error.status = response.status
+      throw error
+    }
+    return body.data
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      const timeout = new Error('The request took too long.')
+      timeout.status = 408
+      throw timeout
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 async function getJson(path) {
   const cached = memory.get(path)
   if (cached && Date.now() - cached.at < FRESH_FOR_MS) return cached.promise
 
-  const promise = fetch(`${apiBaseUrl}${path}`, { headers: { Accept: 'application/json' } }).then(async (response) => {
-    const body = await response.json().catch(() => null)
-    if (response.status === 404) return null
-    if (!response.ok || !body?.success) throw new Error(body?.error?.message || `Request failed (${response.status})`)
-    return body.data
-  })
+  const promise = fetchPublic(path)
   memory.set(path, { at: Date.now(), promise })
   // A failure is not cached: the next visit tries again.
   promise.catch(() => memory.delete(path))
@@ -58,3 +81,24 @@ export const useInfoPage = (slug) => useResource(`/legal/${slug}`)
 
 /** Business and contact details; every empty setting is null and must be hidden. */
 export const useBusinessInfo = () => useResource('/legal/business')
+
+// ---------------------------------------------------------------------------
+// The live catalogue and delivery area, read from the same public endpoints
+// the app uses before sign-in. Nothing here is copied into the site: a
+// category, restaurant or village the admin adds appears here too.
+// ---------------------------------------------------------------------------
+
+/** Top-level categories customers can shop now (name, slug, image). */
+export const useCatalogueCategories = () => useResource('/categories')
+
+/** The subcategories inside one top-level category. */
+export const useSubcategories = (categoryId) => useResource(`/categories/${categoryId}/subcategories`)
+
+/** Restaurants and cafés listed in the app's Food section. */
+export const useRestaurants = () => useResource('/restaurants')
+
+/**
+ * The admin-approved delivery villages and their PIN codes — THE list the
+ * app's address form offers and the server checks every order against.
+ */
+export const useDeliveryAreas = () => useResource('/store/delivery-locations')

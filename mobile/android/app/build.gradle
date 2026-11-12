@@ -180,3 +180,7 @@ dependencies {
         implementation jscFlavor
     }
 }
+
+// Firebase (push): turns google-services.json into the resources FirebaseApp
+// starts from. Without it no build had a push token (see src/lib/push.ts).
+apply plugin: 'com.google.gms.google-services'

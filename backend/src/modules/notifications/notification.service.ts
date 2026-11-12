@@ -59,6 +59,67 @@ class ConsoleNotificationProvider implements NotificationProvider {
 const FCM_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const FCM_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging';
 
+/**
+ * The Android channel the customer app creates for order updates (mobile
+ * src/lib/push.ts, ORDERS_CHANNEL_ID). Without it Android shows the push on
+ * FCM's fallback "Miscellaneous" channel, without a heads-up banner.
+ */
+export const ANDROID_CHANNEL_ID = 'orders';
+
+/**
+ * How long FCM keeps trying to reach a phone that is off or offline. An order
+ * update ("Out for delivery") is worthless days later — FCM's default is four
+ * weeks; after this the push is dropped (the in-app feed still has it).
+ */
+export const FCM_TTL_SECONDS = 60 * 60;
+
+/** The FCM v1 `message` for one push. */
+export function fcmMessage(message: PushMessage) {
+  return {
+    token: message.token,
+    notification: { title: message.title, body: message.body },
+    data: message.data ?? {},
+    android: {
+      priority: 'high',
+      ttl: `${FCM_TTL_SECONDS}s`,
+      notification: { channel_id: ANDROID_CHANNEL_ID },
+    },
+  };
+}
+
+/**
+ * FCM refused the device token itself — the app was uninstalled, its data
+ * cleared, or the token is not an FCM token at all. Sending to it again can
+ * never work, so the device is switched off (`isActive: false`); the app
+ * turns it back on by registering again (registerDevice).
+ */
+export class PushTokenRejectedError extends Error {
+  constructor(readonly reason: string) {
+    super(`fcm token rejected: ${reason}`);
+  }
+}
+
+interface FcmErrorBody {
+  error?: { status?: string; message?: string; details?: { errorCode?: string }[] };
+}
+
+/**
+ * Sorts an FCM v1 error. Only an error about THE TOKEN switches a device off:
+ *   - UNREGISTERED (404): the token is no longer valid;
+ *   - INVALID_ARGUMENT about the registration token: not an FCM token.
+ * Anything else — bad credentials, SENDER_ID_MISMATCH (a server/project
+ * misconfiguration would otherwise switch off every phone), quota, outage —
+ * is a failed attempt, retried and recorded; the device is kept.
+ */
+export function classifyFcmError(httpStatus: number, body: FcmErrorBody): { tokenRejected: boolean; summary: string } {
+  const error = body.error ?? {};
+  const code = error.details?.map((d) => d.errorCode).find(Boolean) ?? error.status ?? 'UNKNOWN';
+  const message = (error.message ?? '').slice(0, 200);
+  const tokenRejected =
+    code === 'UNREGISTERED' || (code === 'INVALID_ARGUMENT' && /registration token/i.test(message));
+  return { tokenRejected, summary: `fcm ${httpStatus} ${code}: ${message}` };
+}
+
 class FcmNotificationProvider implements NotificationProvider {
   readonly name = 'fcm';
 
@@ -79,20 +140,17 @@ class FcmNotificationProvider implements NotificationProvider {
           Authorization: `Bearer ${await this.accessToken()}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          message: {
-            token: message.token,
-            notification: { title: message.title, body: message.body },
-            data: message.data ?? {},
-            android: { priority: 'high' },
-          },
-        }),
+        body: JSON.stringify({ message: fcmMessage(message) }),
         signal: AbortSignal.timeout(10_000),
       },
     );
 
     if (!response.ok) {
-      throw new Error(`fcm ${response.status}: ${await response.text()}`);
+      const { tokenRejected, summary } = classifyFcmError(
+        response.status,
+        (await response.json().catch(() => ({}))) as FcmErrorBody,
+      );
+      throw tokenRejected ? new PushTokenRejectedError(summary) : new Error(summary);
     }
     const body = (await response.json()) as { name?: string };
     return { messageId: body.name ?? null };
@@ -152,10 +210,11 @@ class FcmNotificationProvider implements NotificationProvider {
   }
 }
 
-const provider: NotificationProvider =
+/** Exported only so tests can stand in for the push gateway (`vi.spyOn(notificationProvider, 'send')`). */
+export const notificationProvider: NotificationProvider =
   env.NOTIFICATION_PROVIDER === 'fcm' ? new FcmNotificationProvider() : new ConsoleNotificationProvider();
 
-log.info({ provider: provider.name }, 'notification provider initialised');
+log.info({ provider: notificationProvider.name }, 'notification provider initialised');
 
 /* -------------------------------------------------------------------------- */
 /* Copy                                                                       */
@@ -453,17 +512,53 @@ export async function notifyAdmins(permission: Permission, input: FanOutInput): 
   return created;
 }
 
+/**
+ * A push is attempted only while its update is fresh. Older rows stay in the
+ * in-app feed but are never pushed — so an update that could not be sent
+ * (no phone registered yet, FCM down) never arrives late as a stale "Out for
+ * delivery". Measured from when the row was written.
+ */
+export const PUSH_RETRY_WINDOW_MS = 15 * 60_000;
+/** The first attempt runs straight after the row is written; the retry job leaves it this long. */
+export const PUSH_RETRY_MIN_AGE_MS = 60_000;
+export const PUSH_MAX_ATTEMPTS = 3;
+
+/**
+ * Which rows may be attempted: never tried (QUEUED, 0 attempts) or a finished
+ * failed attempt (FAILED). A row being sent right now is QUEUED with
+ * attempts ≥ 1 (see the claim below), so nobody else picks it up meanwhile.
+ */
+const attemptable = (row: { status: NotificationStatus; attempts: number }) =>
+  (row.status === NotificationStatus.QUEUED && row.attempts === 0) ||
+  (row.status === NotificationStatus.FAILED && row.attempts < PUSH_MAX_ATTEMPTS);
+
 async function dispatch(notificationId: string): Promise<void> {
   const notification = await prisma.notification.findUnique({
     where: { id: notificationId },
     include: { user: { include: { deviceTokens: { where: { isActive: true } } } } },
   });
-  if (!notification || notification.status !== NotificationStatus.QUEUED) return;
+  if (!notification || !attemptable(notification) || notification.createdAt.getTime() < Date.now() - PUSH_RETRY_WINDOW_MS) {
+    return;
+  }
+
+  // Claims this attempt (QUEUED = in flight): when the first attempt and the
+  // retry job — or two retry runs — reach the same row together, exactly one
+  // of them sends.
+  const claim = await prisma.notification.updateMany({
+    where: { id: notificationId, status: notification.status, attempts: notification.attempts },
+    data: { status: NotificationStatus.QUEUED, attempts: { increment: 1 } },
+  });
+  if (claim.count === 0) return;
 
   const tokens = notification.user.deviceTokens;
   if (tokens.length === 0) {
-    // No device registered yet. The row remains as the in-app feed entry —
-    // the user still sees the update when they open the app/panel.
+    // No device registered (yet). The row remains as the in-app feed entry —
+    // the user still sees the update when they open the app/panel — and a
+    // phone registered within the retry window still gets the push.
+    await prisma.notification.update({
+      where: { id: notificationId },
+      data: { status: NotificationStatus.FAILED, failureReason: 'no registered device' },
+    });
     return;
   }
 
@@ -472,7 +567,7 @@ async function dispatch(notificationId: string): Promise<void> {
 
   for (const device of tokens) {
     try {
-      const result = await provider.send({
+      const result = await notificationProvider.send({
         token: device.token,
         title: notification.title,
         body: notification.body,
@@ -481,7 +576,16 @@ async function dispatch(notificationId: string): Promise<void> {
       messageId ??= result.messageId;
     } catch (error) {
       failure = String(error).slice(0, 300);
-      log.warn({ err: error, deviceId: device.id }, 'push failed for device');
+      if (error instanceof PushTokenRejectedError) {
+        // Never sent to again until the app registers it afresh. Matched on
+        // the token too: a phone that re-registered meanwhile is left on.
+        await prisma.deviceToken
+          .updateMany({ where: { id: device.id, token: device.token }, data: { isActive: false } })
+          .catch((dbError) => log.error({ err: dbError, deviceId: device.id }, 'could not switch off rejected push token'));
+        log.info({ deviceId: device.id, reason: error.reason }, 'push token rejected by FCM — device switched off');
+      } else {
+        log.warn({ err: error, deviceId: device.id }, 'push failed for device');
+      }
     }
   }
 
@@ -492,15 +596,25 @@ async function dispatch(notificationId: string): Promise<void> {
       providerMessageId: messageId,
       failureReason: failure,
       sentAt: messageId ? new Date() : null,
-      attempts: { increment: 1 },
     },
   });
 }
 
-/** Retries queued/failed notifications. Called by the background job. */
+/**
+ * Retries pushes that have not gone out — never attempted (a restart before
+ * the first attempt) or failed — while still fresh (PUSH_RETRY_WINDOW_MS) and
+ * under PUSH_MAX_ATTEMPTS. Called by the background job every 2 minutes.
+ */
 export async function retryPending(limit = 50): Promise<number> {
+  const now = Date.now();
   const pending = await prisma.notification.findMany({
-    where: { status: NotificationStatus.QUEUED, attempts: { lt: 3 } },
+    where: {
+      OR: [
+        { status: NotificationStatus.QUEUED, attempts: 0 },
+        { status: NotificationStatus.FAILED, attempts: { lt: PUSH_MAX_ATTEMPTS } },
+      ],
+      createdAt: { gte: new Date(now - PUSH_RETRY_WINDOW_MS), lte: new Date(now - PUSH_RETRY_MIN_AGE_MS) },
+    },
     orderBy: { createdAt: 'asc' },
     take: limit,
     select: { id: true },

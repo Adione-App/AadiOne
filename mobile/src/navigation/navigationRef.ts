@@ -14,6 +14,24 @@ import { createNavigationContainerRef } from "@react-navigation/native";
 
 export const navigationRef = createNavigationContainerRef();
 
+/**
+ * Open one order's tracking from outside any screen (a tapped push): on the
+ * Home tab's stack — where the in-app Notifications feed opens orders too —
+ * with Home underneath, so "back" lands on Home. Waits briefly for the
+ * navigator if the tap launched the app and it is still mounting.
+ */
+export function navigateToOrderTracking(orderId: string, attempt = 0): void {
+  if (!navigationRef.isReady()) {
+    if (attempt < 20) setTimeout(() => navigateToOrderTracking(orderId, attempt + 1), 100);
+    return;
+  }
+  // Same untyped tab names as `navigateToCart` below.
+  (navigationRef.navigate as (name: string, params?: object) => void)("Main", {
+    screen: "Home",
+    params: { screen: "OrderTracking", params: { orderId }, initial: false },
+  });
+}
+
 /** Go to the Cart tab from anywhere, without needing a screen's own `navigation` prop. */
 export function navigateToCart(): void {
   if (!navigationRef.isReady()) return;

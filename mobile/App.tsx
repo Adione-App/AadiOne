@@ -51,7 +51,8 @@ import MobileEntryScreen from "@/screens/auth/MobileEntryScreen";
 import OtpVerifyScreen from "@/screens/auth/OtpVerifyScreen";
 
 import { MainTabs } from "@/navigation/MainTabs";
-import { navigationRef } from "@/navigation/navigationRef";
+import { navigateToOrderTracking, navigationRef } from "@/navigation/navigationRef";
+import { openOrdersFromPushTaps } from "@/lib/push";
 import LegalConsentPrompt from "@/components/LegalConsentPrompt";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { installCrashHandlers } from "@/lib/crashReporter";
@@ -161,6 +162,11 @@ function RootNavigator({
   const isRestoring = useIsRestoring();
   const updateRequired = useAppUpdate(selectUpdateRequired);
   const update = useAppUpdate((state) => state.check);
+
+  // A tapped order push opens that order — once the signed-in tabs are up
+  // (a tap that launched the app waits until then; see lib/push.ts).
+  const ordersOpenable = status === "authenticated" && startupReady && !isRestoring && !updateRequired;
+  useEffect(() => (ordersOpenable ? openOrdersFromPushTaps(navigateToOrderTracking) : undefined), [ordersOpenable]);
 
   // An update the installed version MUST take replaces the whole app — not a
   // modal over it: no navigator is mounted, so there is no screen to go back

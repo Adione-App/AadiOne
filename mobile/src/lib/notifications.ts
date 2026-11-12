@@ -157,6 +157,21 @@ export function notificationDestination(notification: NotificationDto): Notifica
   return notification.orderId ? { screen: "OrderTracking", orderId: notification.orderId } : null;
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The order a tapped PUSH is about — its `data` as the server sends it
+ * (notification.service.ts: `{ orderId, type, audience }`, all strings).
+ * Null when it names no order, or belongs to a seller / admin feed rather
+ * than this shopping app; then the tap just opens the app.
+ */
+export function orderIdFromPushData(data: unknown): string | null {
+  if (!data || typeof data !== "object") return null;
+  const { orderId, audience } = data as Record<string, unknown>;
+  if (audience !== undefined && audience !== "CUSTOMER") return null;
+  return typeof orderId === "string" && UUID.test(orderId) ? orderId : null;
+}
+
 /** "Just now", "5m ago", "3h ago", "Yesterday", then the full IST date/time. */
 export function formatNotificationTime(iso: string, now: number = Date.now()): string {
   const at = new Date(iso);

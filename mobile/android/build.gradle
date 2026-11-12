@@ -6,6 +6,10 @@ buildscript {
     mavenCentral()
   }
   dependencies {
+    // Firebase (push): reads app/google-services.json into the build. EAS uses
+    // this committed android/ as-is (no prebuild), so app.json's
+    // `googleServicesFile` alone never adds it.
+    classpath('com.google.gms:google-services:4.4.4')
     classpath('com.android.tools.build:gradle')
     classpath('com.facebook.react:react-native-gradle-plugin')
     def kotlinVersion = findProperty('android.kotlinVersion')

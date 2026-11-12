@@ -24,8 +24,10 @@ import Constants from "expo-constants";
 import { isRunningInExpoGo } from "expo";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { api } from "./api";
+import { orderIdFromPushData } from "./notifications";
 
 type NotificationsModule = typeof import("expo-notifications");
+type NotificationResponse = import("expo-notifications").NotificationResponse;
 
 const Notifications: NotificationsModule | null = isRunningInExpoGo()
   ? null
@@ -40,6 +42,9 @@ Notifications?.setNotificationHandler({
     shouldSetBadge: false,
   }),
 });
+
+/** The Android channel order updates are shown on — the server's pushes name it. */
+export const ORDERS_CHANNEL_ID = "orders";
 
 let registeredToken: string | null = null;
 
@@ -95,9 +100,25 @@ export async function registerForPush(): Promise<void> {
   // works, order updates are just not pushed until a real build is installed.
   if (!Notifications) return;
 
+  // Android only. The server sends through FCM v1, which accepts only an FCM
+  // registration token — on iOS `getDevicePushTokenAsync` returns an APNs
+  // token instead, which FCM rejects, so iOS (no Firebase iOS SDK) is not
+  // asked for permission it could not use.
+  // (No emulator check: `Constants.isDevice` no longer exists — it was always
+  // undefined, which made this return on every phone. An emulator without
+  // Google Play simply fails to fetch a token below, caught like any failure.)
+  if (Platform.OS !== "android") return;
+
   try {
-    // A simulator has no push service; asking would only produce an error.
-    if (!Constants.isDevice) return;
+    // Android 8+ ignores notifications without a channel. Created before the
+    // permission prompt (Expo's guidance for Android 13+); the server names
+    // this same id in every push (notification.service.ts, ANDROID_CHANNEL_ID),
+    // so order updates arrive as "Order updates" with a heads-up banner.
+    await Notifications.setNotificationChannelAsync(ORDERS_CHANNEL_ID, {
+      name: "Order updates",
+      importance: Notifications.AndroidImportance.HIGH,
+      vibrationPattern: [0, 250, 250, 250],
+    });
 
     const existing = await Notifications.getPermissionsAsync();
     let status = existing.status;
@@ -108,15 +129,6 @@ export async function registerForPush(): Promise<void> {
       status = (await Notifications.requestPermissionsAsync()).status;
     }
     if (status !== "granted") return;
-
-    if (Platform.OS === "android") {
-      // Android 8+ ignores notifications without a channel.
-      await Notifications.setNotificationChannelAsync("orders", {
-        name: "Order updates",
-        importance: Notifications.AndroidImportance.HIGH,
-        vibrationPattern: [0, 250, 250, 250],
-      });
-    }
 
     // The backend's FcmNotificationProvider calls Google's FCM v1 API
     // directly with its own service account (see notification.service.ts) —
@@ -136,6 +148,35 @@ export async function registerForPush(): Promise<void> {
   } catch {
     // Silent: notifications are a convenience, not a requirement to shop.
   }
+}
+
+/**
+ * Tapping a push about an order opens that order — including the tap that
+ * started the app from closed (`getLastNotificationResponse`, read once the
+ * caller subscribes). Each tap is acted on once, however often this is
+ * re-subscribed (sign-out and in again). Returns the unsubscribe.
+ */
+const handledTaps = new Set<string>();
+
+export function openOrdersFromPushTaps(openOrder: (orderId: string) => void): () => void {
+  const N = Notifications;
+  if (!N) return () => undefined;
+  const handle = (response: NotificationResponse | null) => {
+    if (!response || response.actionIdentifier !== N.DEFAULT_ACTION_IDENTIFIER) return;
+    const { request, date } = response.notification;
+    const key = `${request.identifier}:${date}`;
+    if (handledTaps.has(key)) return;
+    handledTaps.add(key);
+    const orderId = orderIdFromPushData(request.content.data);
+    if (orderId) openOrder(orderId);
+  };
+  const subscription = N.addNotificationResponseReceivedListener(handle);
+  try {
+    handle(N.getLastNotificationResponse());
+  } catch {
+    // No launch tap to read: nothing to open.
+  }
+  return () => subscription.remove();
 }
 
 /** Signed out: this phone no longer has a token registered for an account. */

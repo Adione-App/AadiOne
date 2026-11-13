@@ -12,6 +12,7 @@ import { Router } from 'express';
 import { publicApiLimit } from '../middleware/rateLimit';
 import { configurationRouter } from '../modules/configuration/configuration.routes';
 import { legalRouter } from '../modules/legal/legal.routes';
+import { sellerLegalRouter } from '../modules/legal/seller-legal.routes';
 import { authRouter } from '../modules/auth/auth.routes';
 import { sellerRouter } from '../modules/sellers/seller.routes';
 import { catalogRouter } from '../modules/catalog/catalog.routes';
@@ -38,7 +39,7 @@ import { authenticatedApiLimit } from '../middleware/rateLimit';
 import { paymentRouter } from '../modules/payments/payment.routes';
 import { appVersionRouter } from '../modules/app-version/app-version.routes';
 import { clientErrorRouter } from '../modules/client-errors/client-errors.routes';
-import { contentRouter } from '../modules/content/content.routes';
+import { contentRouter, brandingRouter } from '../modules/content/content.routes';
 import { platformAvailabilityRouter } from '../modules/platform/platform-availability.routes';
 import { requireSupportedAppVersion, requireSupportedAppVersionForPayments } from '../middleware/appVersion';
 import {
@@ -70,6 +71,7 @@ apiRouter.use('/offers', offerRouter);
 apiRouter.use('/banners', bannerRouter);
 // Public: the published Home page layout (Admin Panel → Home Page Builder).
 apiRouter.use('/content', contentRouter);
+apiRouter.use('/branding', brandingRouter);
 // Customer commerce routes refuse an app below the supported version
 // (middleware/appVersion.ts — requests without app headers, i.e. the admin and
 // seller panels, webhooks and integrations, pass untouched; payment
@@ -94,6 +96,7 @@ apiRouter.use(
   // applicants/onboarding sellers get /lifecycle + /onboarding only.
   requireSellerLifecycleAccess,
   sellerLifecycleRouter,
+  sellerLegalRouter,
   sellerOrderRouter,
   sellerCatalogRouter,
   sellerProductImportRouter,
@@ -115,7 +118,7 @@ apiRouter.get('/', (_req, res) => {
   res.json({
     success: true,
     data: {
-      name: 'AdiOne API',
+      name: 'Aadione API',
       version: 'v1',
       documentation: '/docs/04-api-reference.md',
     },

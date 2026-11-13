@@ -17,6 +17,8 @@
 import { SellerOrderStatus, SettlementStatus } from '../../shared';
 import { prisma } from '../../infra/db/prisma';
 import { getBusinessInfo } from '../content/info-page.service';
+import { brandedPdfLogo } from '../content/branding.service';
+import type { PdfLogo } from '../../infra/pdf/branded-pdf';
 import { getSettlementDetail } from './seller-settlement.service';
 
 export interface StatementOrderLine {
@@ -53,6 +55,8 @@ export interface StatementPaymentLine {
 export interface StatementData {
   generatedAt: string;
   issuer: {
+    /** The published main logo (Branding & Identity); absent = built-in. */
+    logo?: PdfLogo | null;
     tradeName: string;
     legalName: string | null;
     address: string | null;
@@ -222,6 +226,7 @@ export async function buildStatementData(settlementId: string, scopeSellerId?: s
   return {
     generatedAt: new Date().toISOString(),
     issuer: {
+      logo: await brandedPdfLogo(),
       tradeName: business.tradeName,
       legalName: business.legalName,
       address: business.address,

@@ -93,6 +93,9 @@ export type CartStackParamList = {
   ProductDetail: { productId: string };
 };
 
+/** Customer policies the app can show (Account → About). */
+export type CustomerLegalSlug = "privacy" | "terms" | "refund-policy" | "shipping-policy";
+
 export type AccountStackParamList = {
   AccountHome: undefined;
   Orders: undefined;
@@ -102,7 +105,7 @@ export type AccountStackParamList = {
   PersonalInfo: undefined;
   Help: undefined;
   About: undefined;
-  Legal: { slug: "privacy" | "terms" };
+  Legal: { slug: CustomerLegalSlug };
   ReferEarn: undefined;
 };
 

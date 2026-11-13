@@ -54,6 +54,7 @@ import { ConfigKey, ErrorCode, OrderPaymentStatus, OrderStatus } from '../../sha
 import * as configService from '../configuration/configuration.service';
 import { getBusinessInfo } from '../content/info-page.service';
 import type { DocumentIssuer } from '../../infra/pdf/branded-pdf';
+import { brandedPdfLogo } from '../content/branding.service';
 import {
   monthStart,
   PeriodError,
@@ -865,6 +866,7 @@ export async function buildFinanceReport(filter: FinanceFilter): Promise<Finance
   return {
     overview,
     issuer: {
+      logo: await brandedPdfLogo(),
       tradeName: business.tradeName,
       legalName: business.legalName,
       address: business.address,

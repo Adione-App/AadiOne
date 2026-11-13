@@ -34,6 +34,7 @@ import DeliveryPage from '@/pages/Delivery';
 import ReferralsPage from '@/pages/Referrals';
 import ConfigPage from '@/pages/Config';
 import InfoPagesPage from '@/pages/InfoPages';
+import BrandingPage from '@/pages/Branding';
 import AppUpdatesPage from '@/pages/AppUpdates';
 import PaymentsPage from '@/pages/Payments';
 import RefundsPage from '@/pages/Refunds';
@@ -42,10 +43,12 @@ import SettlementsPage from '@/pages/Settlements';
 import FinancialOverviewPage from '@/pages/FinancialOverview';
 import NotificationsPage from '@/pages/Notifications';
 import AuditLogsPage from '@/pages/AuditLogs';
-import { AadioneWordmark } from '@/components/PartnerLogin';
+import { BrandLogo } from '@/components/BrandLogo';
+import { useFaviconSync } from '@/lib/branding';
 import SellerApp from '@/seller/SellerApp';
+import { ScrollMemory } from '@/lib/scrollMemory';
 
-type NavSection = 'MAIN' | 'MARKETPLACE' | 'USERS' | 'FINANCE' | 'GROWTH' | 'SYSTEM';
+type NavSection = 'MAIN' | 'MARKETPLACE' | 'USERS' | 'FINANCE' | 'GROWTH' | 'SETTINGS' | 'SYSTEM';
 
 interface NavItem {
   to: string;
@@ -69,6 +72,7 @@ const SECTIONS: { key: NavSection; label: string }[] = [
   { key: 'USERS', label: 'Users' },
   { key: 'FINANCE', label: 'Finance' },
   { key: 'GROWTH', label: 'Growth' },
+  { key: 'SETTINGS', label: 'Settings' },
   { key: 'SYSTEM', label: 'System' },
 ];
 
@@ -206,12 +210,21 @@ const NAV: NavItem[] = [
     permission: Permission.CONFIG_WRITE,
   },
   {
+    to: '/branding',
+    label: 'Branding & Identity',
+    icon: 'image',
+    section: 'SETTINGS',
+    title: 'Branding & Identity',
+    subtitle: 'Logos, favicon and app icons for every Aadione surface — upload, preview, publish.',
+    permission: Permission.CONFIG_READ,
+  },
+  {
     to: '/info-pages',
-    label: 'Information Pages',
+    label: 'Legal & Policies',
     icon: 'clipboard',
-    section: 'SYSTEM',
-    title: 'Information Pages',
-    subtitle: 'Privacy Policy, Terms & Conditions and About Aadione — draft, preview, publish.',
+    section: 'SETTINGS',
+    title: 'Legal & Policies',
+    subtitle: 'Customer and seller policies and About Aadione — draft, preview, publish, version history.',
     permission: Permission.CONFIG_READ,
   },
   {
@@ -223,7 +236,7 @@ const NAV: NavItem[] = [
     subtitle: 'Optional and mandatory customer app updates',
     permission: Permission.CONFIG_READ,
   },
-  { to: '/settings', label: 'Configuration', icon: 'config', section: 'SYSTEM', title: 'Configuration', subtitle: 'Aadione app availability, main store location and platform settings' },
+  { to: '/settings', label: 'Configuration', icon: 'config', section: 'SETTINGS', title: 'Configuration', subtitle: 'Aadione app availability, main store location and platform settings' },
 ];
 
 /**
@@ -253,7 +266,7 @@ function Sidebar({ onNavigate }: { onNavigate: () => void }) {
   return (
     <div className="flex h-full flex-col bg-white">
       <div className="px-6 py-5">
-        <AadioneWordmark className="text-2xl" />
+        <BrandLogo use="light" className="h-8" wordmarkClassName="text-2xl" />
         <p className="mt-1 text-xs font-medium text-gray-500">Marketplace Admin</p>
       </div>
 
@@ -460,8 +473,15 @@ function Shell({ children }: { children: React.ReactNode }) {
  */
 export default function App() {
   const { pathname } = useLocation();
-  if (pathname === '/seller' || pathname.startsWith('/seller/')) return <SellerApp />;
-  return <AdminApp />;
+  // The tab icon follows the published favicon (Branding & Identity).
+  useFaviconSync();
+  return (
+    <>
+      {/* Back / Forward return to the same scroll position (lib/scrollMemory.ts). */}
+      <ScrollMemory />
+      {pathname === '/seller' || pathname.startsWith('/seller/') ? <SellerApp /> : <AdminApp />}
+    </>
+  );
 }
 
 function AdminApp() {
@@ -509,6 +529,8 @@ function AdminApp() {
         <Route path="/app-updates" element={<AppUpdatesPage />} />
         <Route path="/settings" element={<ConfigPage />} />
         <Route path="/info-pages" element={<InfoPagesPage />} />
+        <Route path="/legal-policies" element={<Navigate to="/info-pages" replace />} />
+        <Route path="/branding" element={<BrandingPage />} />
         {/* Old link: the app availability settings now live at the top of Configuration. */}
         <Route path="/global-availability" element={<Navigate to="/settings#app-availability" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />

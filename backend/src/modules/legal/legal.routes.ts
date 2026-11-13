@@ -1,12 +1,16 @@
 /**
- * Information pages — Privacy Policy, Terms & Conditions, About Aadione —
- * and the business / contact details they show.
+ * Information pages — the legal documents (customer and seller) and About
+ * Aadione — and the business / contact details they show.
  *
- * Three shapes from one source (content/info-page.service.ts):
- *   GET /legal/business     JSON: who runs Aadione and how to reach them
- *   GET /legal/:slug        JSON, for the app screens AND the website
- *   GET /legal/:slug/page   plain HTML at a public URL
- *   GET/POST /legal/consent the signed-in customer's acceptance (legal-consent.service.ts)
+ * Shapes from one source (content/info-page.service.ts):
+ *   GET /legal/business                       JSON: who runs Aadione and how to reach them
+ *   GET /legal/pages                          the pages a reader can open now (footers, menus)
+ *   GET /legal/:slug                          JSON, for the app screens AND the website
+ *   GET /legal/:slug/page                     plain HTML at a public URL
+ *   GET /legal/:slug/versions                 every published version (newest first)
+ *   GET /legal/:slug/versions/:version        one version, earlier ones included (JSON)
+ *   GET /legal/:slug/versions/:version/page   …as HTML
+ *   GET/POST /legal/consent                   the signed-in customer's acceptance (legal-consent.service.ts)
  *
  * The HTML page exists because Google Play requires a privacy policy reachable
  * without installing or logging into anything — a screen inside the app does
@@ -29,7 +33,7 @@ import {
   ErrorCode,
   LEGAL_CONSENT_SOURCES,
   UserRole,
-  INFO_PAGE_SLUGS,
+  INFO_PAGE_AUDIENCE,
   INFO_PAGE_TITLES,
   infoTextSegments,
   isInfoPageSlug,
@@ -42,7 +46,14 @@ import { AppError } from '../../common/errors';
 import { asyncHandler, ok } from '../../common/response';
 import { authenticate, requireRole, requireUser } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
-import { getBusinessInfo, getPublicInfoPage } from '../content/info-page.service';
+import {
+  availableInfoPageSlugs,
+  listAvailableInfoPages,
+  getBusinessInfo,
+  getPublicInfoPage,
+  getPublicInfoPageVersion,
+  listPublicInfoPageVersions,
+} from '../content/info-page.service';
 import * as consentService from './legal-consent.service';
 
 export const legalRouter: Router = Router();
@@ -77,10 +88,20 @@ const linkedText = (text: string): string =>
 const META_DESCRIPTIONS: Record<InfoPageSlug, string> = {
   privacy: 'What personal information Aadione collects, why, who it is shared with, how long it is kept and how to exercise your rights.',
   terms: 'The terms for using Aadione: accounts, orders, payments, delivery, cancellations, refunds, returns and complaints.',
+  'refund-policy': 'How to cancel an Aadione order, when you are refunded and how refunds reach you.',
+  'shipping-policy': 'Where and how Aadione delivers, delivery charges, delivery times and what to expect at your door.',
+  'cookie-policy': 'What the Aadione website and panels store in your browser.',
+  'seller-terms': 'The terms for selling on Aadione: onboarding, products, orders, commission, settlements and payouts.',
+  'seller-privacy': 'What information Aadione collects from sellers, why, who can see it and how long it is kept.',
   about: 'Aadione is a hyperlocal marketplace that brings the shops and restaurants of your town into one app.',
 };
 
-export function renderInfoPageHtml(page: InfoPageDto, business: BusinessInfoDto): string {
+/**
+ * The page as plain HTML. `related` = the other pages to link in the footer
+ * (those a reader can open now). An EARLIER version (isLatest false) says so
+ * and links to the latest.
+ */
+export function renderInfoPageHtml(page: InfoPageDto, business: BusinessInfoDto, related: readonly InfoPageSlug[] = []): string {
   const brand = escapeHtml(business.tradeName);
   const meta = [page.lastUpdatedLabel ? `Last updated ${page.lastUpdatedLabel}` : null, page.version ? `Version ${page.version}` : null]
     .filter(Boolean)
@@ -105,9 +126,16 @@ export function renderInfoPageHtml(page: InfoPageDto, business: BusinessInfoDto)
         '</section>',
     )
     .join('');
-  const otherPages = INFO_PAGE_SLUGS.filter((slug) => slug !== page.slug)
-    .map((slug) => `<a href="../${slug}/page">${escapeHtml(INFO_PAGE_TITLES[slug])}</a>`)
+  // Links work from /legal/:slug/page and from /legal/:slug/versions/:n/page alike.
+  const base = page.isLatest === false ? '../../../' : '../';
+  const otherPages = related
+    .filter((slug) => slug !== page.slug)
+    .map((slug) => `<a href="${base}${slug}/page">${escapeHtml(INFO_PAGE_TITLES[slug])}</a>`)
     .join('');
+  const earlier =
+    page.isLatest === false
+      ? `<p class="effective">This is an earlier version (version ${escapeHtml(page.version ?? '')}). <a href="${base}${page.slug}/page">Read the latest version</a>.</p>`
+      : '';
   const contact = [
     business.support.email ? `<a href="mailto:${escapeHtml(business.support.email)}">${escapeHtml(business.support.email)}</a>` : null,
     business.support.phone ? `<a href="${escapeHtml(telHref(business.support.phone))}">${escapeHtml(business.support.phone)}</a>` : null,
@@ -120,6 +148,7 @@ export function renderInfoPageHtml(page: InfoPageDto, business: BusinessInfoDto)
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(page.title)} | ${brand}</title>
 <meta name="description" content="${escapeHtml(META_DESCRIPTIONS[page.slug])}">
+${page.isLatest === false ? '<meta name="robots" content="noindex">' : ''}
 <meta name="color-scheme" content="light dark">
 <style>
   :root{--ink:#16201B;--muted:#5C6B63;--line:#E3E9E5;--brand:#1E8E3E;--bg:#FFFFFF;--soft:#F4F8F5}
@@ -147,6 +176,7 @@ export function renderInfoPageHtml(page: InfoPageDto, business: BusinessInfoDto)
 <main>
 <h1>${escapeHtml(page.title)}</h1>
 ${meta ? `<p class="meta">${escapeHtml(meta)}</p>` : ''}
+${earlier}
 ${page.effectiveLabel ? `<p class="effective">This version takes effect on ${escapeHtml(page.effectiveLabel)}.</p>` : ''}
 ${contents}
 ${sections}
@@ -199,6 +229,14 @@ legalRouter.post(
 );
 
 legalRouter.get(
+  '/pages',
+  asyncHandler(async (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', PUBLIC_CACHE_CONTROL);
+    ok(res, await listAvailableInfoPages());
+  }),
+);
+
+legalRouter.get(
   '/:slug',
   asyncHandler(async (req: Request, res: Response) => {
     const page = await findPage(req.params['slug'] as string);
@@ -207,11 +245,66 @@ legalRouter.get(
   }),
 );
 
+/** Footer links of a page: published pages for the same readers (customers or sellers) and general ones. */
+async function relatedPages(slug: InfoPageSlug): Promise<InfoPageSlug[]> {
+  const audience = INFO_PAGE_AUDIENCE[slug];
+  return (await availableInfoPageSlugs()).filter((other) => {
+    const theirs = INFO_PAGE_AUDIENCE[other];
+    if (theirs === 'general') return true;
+    return audience === 'general' ? theirs === 'customer' : theirs === audience;
+  });
+}
+
 legalRouter.get(
   '/:slug/page',
   asyncHandler(async (req: Request, res: Response) => {
-    const [page, business] = await Promise.all([findPage(req.params['slug'] as string), getBusinessInfo()]);
+    const page = await findPage(req.params['slug'] as string);
+    const [business, related] = await Promise.all([getBusinessInfo(), relatedPages(page.slug)]);
     res.setHeader('Cache-Control', PUBLIC_CACHE_CONTROL);
-    res.type('html').send(renderInfoPageHtml(page, business));
+    res.type('html').send(renderInfoPageHtml(page, business, related));
+  }),
+);
+
+/* Earlier versions — public, read-only ------------------------------------ */
+
+function slugParam(req: Request): InfoPageSlug {
+  const slug = req.params['slug'] as string;
+  if (!isInfoPageSlug(slug)) throw new AppError(ErrorCode.NOT_FOUND, { message: 'Page not found.' });
+  return slug;
+}
+
+async function findVersion(req: Request): Promise<InfoPageDto> {
+  const slug = slugParam(req);
+  const version = Number(req.params['version']);
+  const page = Number.isInteger(version) && version > 0 && version < 1_000_000 ? await getPublicInfoPageVersion(slug, version) : null;
+  if (!page) throw new AppError(ErrorCode.NOT_FOUND, { message: 'That version was not found.' });
+  return page;
+}
+
+legalRouter.get(
+  '/:slug/versions',
+  asyncHandler(async (req: Request, res: Response) => {
+    const slug = slugParam(req);
+    res.setHeader('Cache-Control', PUBLIC_CACHE_CONTROL);
+    ok(res, await listPublicInfoPageVersions(slug));
+  }),
+);
+
+legalRouter.get(
+  '/:slug/versions/:version',
+  asyncHandler(async (req: Request, res: Response) => {
+    const page = await findVersion(req);
+    res.setHeader('Cache-Control', PUBLIC_CACHE_CONTROL);
+    ok(res, page);
+  }),
+);
+
+legalRouter.get(
+  '/:slug/versions/:version/page',
+  asyncHandler(async (req: Request, res: Response) => {
+    const page = await findVersion(req);
+    const [business, related] = await Promise.all([getBusinessInfo(), relatedPages(page.slug)]);
+    res.setHeader('Cache-Control', PUBLIC_CACHE_CONTROL);
+    res.type('html').send(renderInfoPageHtml(page, business, related));
   }),
 );

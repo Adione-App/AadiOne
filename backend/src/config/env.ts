@@ -253,7 +253,7 @@ const envSchema = z
     UPI_VPA: z.string().optional(),
 
     /** Shown in the customer's UPI app as the payee. */
-    UPI_PAYEE_NAME: z.string().default("AdiOne"),
+    UPI_PAYEE_NAME: z.string().default("Aadione"),
 
     // Transactional email (seller password reset). `console` is the only
     // provider wired so far: outside production it logs the message (with
@@ -617,6 +617,27 @@ if (env.NODE_ENV === "production" && env.NOTIFICATION_PROVIDER !== "fcm") {
       "Every customer push notification (order placed, out for delivery, etc.) is being " +
       "logged only, not actually sent. Set NOTIFICATION_PROVIDER=fcm and FCM_PROJECT_ID / " +
       "FCM_CLIENT_EMAIL / FCM_PRIVATE_KEY to enable real push notifications.\n",
+  );
+}
+
+// The same kind of soft warning for seller password-reset email: `console` is
+// the only provider implemented (infra/email), and in production it delivers
+// nothing — a seller who uses "Forgot password?" never receives the link.
+if (env.NODE_ENV === "production" && env.EMAIL_PROVIDER === "console") {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "\n[Aadione] WARNING: EMAIL_PROVIDER is 'console' in production.\n" +
+      "Seller password-reset emails are NOT delivered (nothing is sent; the link is never logged). " +
+      "A real email provider has to be added in src/infra/email and configured before sellers can reset passwords by email.\n",
+  );
+}
+// Reset links are built from SELLER_PANEL_URL: its development default would
+// send sellers to localhost.
+if (env.NODE_ENV === "production" && /\/\/(localhost|127\.0\.0\.1)\b/.test(env.SELLER_PANEL_URL)) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "\n[Aadione] WARNING: SELLER_PANEL_URL points to localhost in production.\n" +
+      "Seller password-reset links would open localhost. Set SELLER_PANEL_URL to the public Seller Panel address.\n",
   );
 }
 

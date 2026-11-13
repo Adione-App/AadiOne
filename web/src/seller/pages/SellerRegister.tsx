@@ -14,6 +14,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { SellerType } from '@shared';
 import { ErrorBanner, Icon, inputClass } from '@/components/ui';
 import { LoginInput, PartnerLoginLayout, PasswordInput, SubmitButton } from '@/components/PartnerLogin';
+import { SellerLegalLinks } from '../sellerLegal';
 import { SELLER_TYPE_LABEL } from '@/components/SellerBadges';
 import { sellerErrorMessage } from '../sellerApi';
 import { useSellerAuth } from '../sellerAuth';
@@ -172,6 +173,8 @@ export default function SellerRegisterPage() {
             </select>
           </div>
         </div>
+        {/* Read here; accepted with "I agree" in the Seller Panel after signing in (sellerLegal.tsx). */}
+        <SellerLegalLinks intro="Before you apply, please read the" />
         <div className="pt-1">
           <SubmitButton busy={busy} busyLabel="Submitting application…">
             Submit Application

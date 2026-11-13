@@ -88,8 +88,9 @@ export const companyNav = [
 export const legalNav = [
   { label: 'Privacy Policy', to: '/privacy-policy' },
   { label: 'Terms & Conditions', to: '/terms-and-conditions' },
-  { label: 'Cancellations & Refunds', to: '/terms-and-conditions#cancelling-an-order' },
-  { label: 'Delivery', to: '/terms-and-conditions#delivery-area-charges-and-timing' },
+  // These pages show the stand-alone policy once published, else the Terms sections.
+  { label: 'Cancellations & Refunds', to: '/cancellation-refund-policy' },
+  { label: 'Shipping & Delivery', to: '/delivery-policy' },
   { label: 'Contact & Grievance Officer', to: '/contact#grievance-officer' },
   { label: 'Delete Account', to: '/delete-account' },
 ]

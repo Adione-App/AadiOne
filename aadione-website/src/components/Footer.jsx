@@ -5,7 +5,7 @@ import Logo from './Logo'
 import { StoreBadge } from './AppStoreButtons'
 import { tidyHours } from './SupportDetails'
 import { companyNav, legalNav, site } from '../config/site'
-import { useBusinessInfo } from '../lib/publicApi'
+import { useAvailablePages, useBusinessInfo } from '../lib/publicApi'
 import { officialSocials, phoneHref, whatsappLink } from '../lib/business'
 
 const SOCIAL_ICONS = { instagram: Instagram, facebook: Facebook, x: Twitter, youtube: Youtube, linkedin: Linkedin }
@@ -15,6 +15,15 @@ const SOCIAL_ICONS = { instagram: Instagram, facebook: Facebook, x: Twitter, you
 export default function Footer() {
   const year = new Date().getFullYear()
   const { data: business } = useBusinessInfo()
+  // Policies that have their own page only once published (Admin → Legal & Policies).
+  const { data: pages } = useAvailablePages()
+  const published = new Set((pages ?? []).filter((page) => page.source === 'published').map((page) => page.slug))
+  const legalItems = [
+    ...legalNav,
+    ...(published.has('cookie-policy') ? [{ label: 'Cookie Policy', to: '/cookie-policy' }] : []),
+    ...(published.has('seller-terms') ? [{ label: 'Seller Terms', to: '/seller-terms' }] : []),
+    ...(published.has('seller-privacy') ? [{ label: 'Seller Privacy Policy', to: '/seller-privacy' }] : []),
+  ]
   const support = business?.support ?? {}
   const socials = officialSocials(business?.socials)
   const phoneLink = phoneHref(support.phone)
@@ -51,7 +60,7 @@ export default function Footer() {
           </div>
 
           <FooterLinks title="Aadione" items={companyNav} />
-          <FooterLinks title="Legal" items={legalNav} />
+          <FooterLinks title="Legal" items={legalItems} />
 
           <div>
             <h3 className="text-xs font-bold uppercase tracking-wider text-white/50">Customer support</h3>

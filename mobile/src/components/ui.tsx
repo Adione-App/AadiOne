@@ -10,12 +10,12 @@
  */
 
 import type { ReactNode } from "react";
+import { BrandImage } from "./BrandMark";
 
 import {
   ActivityIndicator,
   Animated,
   Easing,
-  Image,
   Pressable,
   StyleSheet,
   Text,
@@ -363,10 +363,11 @@ export function Loading({ label }: { label?: string }) {
 /* -------------------------------------------------------------------------- */
 
 /**
- * AadiOne Startup Loading
+ * Aadione Startup Loading
  *
  * IMPORTANT:
- * - Uses the COMPLETE adione-start-logo.png.
+ * - Shows the start-up logo published in Branding & Identity (cached on the
+ *   phone), else the COMPLETE bundled adione-start-logo.png.
  * - No opacity animation.
  * - No scale animation.
  * - Logo is immediately fully visible.
@@ -410,13 +411,12 @@ export function StartupLoading() {
 
   return (
     <View style={styles.startupScreen}>
-      {/* Complete AadiOne logo */}
+      {/* Complete Aadione logo */}
       <View style={styles.startupLogoContainer}>
-        <Image
-          source={require("../../assets/adione-start-logo.png")}
+        <BrandImage
+          use="customerSplash"
+          fallback={require("../../assets/adione-start-logo.png")}
           style={styles.startupLogo}
-          resizeMode="contain"
-          accessibilityLabel="AadiOne"
         />
       </View>
 

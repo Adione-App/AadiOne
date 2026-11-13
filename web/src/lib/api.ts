@@ -30,6 +30,12 @@ import type { ApiError, ApiErrorBody, ApiResponse, ErrorCode } from "@shared";
 const BASE =
   (import.meta.env["VITE_API_URL"] as string | undefined) ?? "/api/v1";
 
+/** The API's absolute address (e.g. "https://api.adione.in/api/v1"), for public links shown to admins. */
+export function apiAbsoluteUrl(path: string): string {
+  const base = new URL(BASE.replace(/\/+$/, ""), typeof window === "undefined" ? "http://localhost" : window.location.origin).toString();
+  return `${base}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 const BASE_HEADERS: Record<string, string> = {
   "Content-Type": "application/json",
   "ngrok-skip-browser-warning": "true",

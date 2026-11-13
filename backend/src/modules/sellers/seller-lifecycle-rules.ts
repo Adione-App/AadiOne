@@ -135,6 +135,9 @@ export function sellerPanelAccess(status: SellerLifecycleStatus, method: string,
 
   if (normalised === '/lifecycle' && isRead) return { allowed: true };
 
+  // Reading and accepting the Seller Terms / Seller Privacy Policy: in every stage.
+  if (normalised === '/legal/consent') return { allowed: true };
+
   // Only a rejected applicant resubmits its application (the service re-checks the state).
   if (normalised === APPLICATION_RESUBMIT_PATH) {
     return status === SellerLifecycleStatus.APPLICATION_REJECTED && method.toUpperCase() === 'POST'

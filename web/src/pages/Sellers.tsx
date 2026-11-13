@@ -66,8 +66,6 @@ import {
   Panel,
   SearchInput,
   Spinner,
-  Td,
-  Th,
   inputClass,
 } from '@/components/ui';
 
@@ -263,18 +261,22 @@ export default function SellersPage() {
           </div>
         ) : (
           <>
-            <div className="overflow-x-auto border-t border-gray-100">
-              <table className="w-full min-w-[980px] text-sm">
-                <thead className="border-b border-gray-200 bg-gray-50">
+            {/* Below xl: one card per seller; xl+: a compact table sized to the page. */}
+            <ul aria-label="Sellers" className="divide-y divide-gray-100 border-t border-gray-100 xl:hidden">
+              {rows.map((row) => (
+                <SellerCard key={row.id} row={row} canManage={canManage} listSearch={location.search} onToggleStatus={() => setStatusTarget(row)} />
+              ))}
+            </ul>
+            <div className="hidden border-t border-gray-100 xl:block">
+              <table className="w-full text-sm">
+                <thead className="border-b border-gray-200 bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
                   <tr>
-                    <Th>Seller</Th>
-                    <Th>Type</Th>
-                    <Th>City</Th>
-                    <Th>Lifecycle</Th>
-                    <Th>Active</Th>
-                    <Th>Orders availability</Th>
-                    <Th>Created</Th>
-                    <Th className="text-right">Actions</Th>
+                    <th scope="col" className={cellX}>Seller</th>
+                    <th scope="col" className={cellX}>Type · City</th>
+                    <th scope="col" className={cellX}>Status</th>
+                    <th scope="col" className={cellX}>Orders availability</th>
+                    <th scope="col" className={cellX}>Created</th>
+                    <th scope="col" className={`${cellX} text-right`}>Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -366,28 +368,25 @@ function SellerRow({
   };
 
   return (
-    <tr className="cursor-pointer transition hover:bg-gray-50/60" onClick={openRow}>
-      <Td>
-        <Link to={to} state={state} className="font-medium text-gray-900 hover:text-brand-600 hover:underline">
+    <tr className="cursor-pointer align-middle transition hover:bg-gray-50/60" onClick={openRow}>
+      <td className={cellX}>
+        <Link to={to} state={state} className="break-words font-medium text-gray-900 hover:text-brand-600 hover:underline">
           {row.name}
         </Link>
-        <p className="mt-0.5 text-xs text-gray-500">
-          {row.code}
-        </p>
-      </Td>
-      <Td className="whitespace-nowrap text-gray-700">{TYPE_LABEL[row.sellerType] ?? row.sellerType}</Td>
-      <Td className="whitespace-nowrap text-gray-700">{row.city}</Td>
-      <Td>
-        <LifecyclePill status={row.lifecycleStatus} isActive={row.isActive} />
-      </Td>
-      <Td>
-        <ActivePill isActive={row.isActive} />
-      </Td>
-      <Td>
+        <p className="mt-0.5 text-xs text-gray-500">{row.code}</p>
+      </td>
+      <td className={`${cellX} text-gray-700`}>
+        {TYPE_LABEL[row.sellerType] ?? row.sellerType}
+        <span className="block text-xs text-gray-500">{row.city}</span>
+      </td>
+      <td className={cellX}>
+        <SellerPills row={row} />
+      </td>
+      <td className={cellX}>
         <SellerAvailability facts={row} />
-      </Td>
-      <Td className="whitespace-nowrap text-gray-600">{formatSellerDate(row.createdAt)}</Td>
-      <Td>
+      </td>
+      <td className={`${cellX} text-gray-600`}>{formatSellerDate(row.createdAt)}</td>
+      <td className={cellX}>
         <div className="flex justify-end">
           {canManage ? (
             <Button variant={row.isActive ? 'ghost' : 'soft'} onClick={onToggleStatus}>
@@ -395,8 +394,129 @@ function SellerRow({
             </Button>
           ) : null}
         </div>
-      </Td>
+      </td>
     </tr>
+  );
+}
+
+/** Cell spacing for the compact seller tables (the shared Th / Td are wider and never wrap). */
+const cellX = 'px-3 py-3';
+
+/* Application pieces shared by the table (xl+) and the cards (below xl). */
+
+function ApplicationContact({ row }: { row: AdminSellerApplicationDto }) {
+  return (
+    <div className="text-sm text-gray-700">
+      <span className="block whitespace-nowrap">{row.mobile ?? '—'}</span>
+      <span className="block break-all text-xs text-gray-500">{row.email ?? '—'}</span>
+    </div>
+  );
+}
+
+function ApplicationStatus({ row }: { row: AdminSellerApplicationDto }) {
+  return (
+    <div>
+      <LifecyclePill status={row.lifecycleStatus} />
+      {row.lifecycleStatus === 'APPLICATION_REJECTED' && row.lifecycleReason && (
+        <p className="mt-1 max-w-[16rem] break-words text-xs text-gray-500">{row.lifecycleReason}</p>
+      )}
+    </div>
+  );
+}
+
+function ApplicationActions({
+  row,
+  canReview,
+  busy,
+  onApprove,
+  onReject,
+}: {
+  row: AdminSellerApplicationDto;
+  canReview: boolean;
+  busy: boolean;
+  onApprove: () => void;
+  onReject: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap justify-end gap-2">
+      {canReview && row.lifecycleStatus === 'APPLICATION_PENDING' ? (
+        <>
+          <Button variant="soft" disabled={busy} onClick={onApprove}>
+            Approve
+          </Button>
+          <Button variant="ghost" disabled={busy} onClick={onReject}>
+            Reject
+          </Button>
+        </>
+      ) : (
+        <Link to={`/sellers/${row.sellerId}`} className="text-sm font-semibold text-brand-600 hover:underline">
+          Open
+        </Link>
+      )}
+    </div>
+  );
+}
+
+function SellerPills({ row }: { row: AdminSellerListRowDto }) {
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <span className="inline-flex">
+        <span className="sr-only">Lifecycle: </span>
+        <LifecyclePill status={row.lifecycleStatus} isActive={row.isActive} />
+      </span>
+      <span className="inline-flex">
+        <span className="sr-only">Active: </span>
+        <ActivePill isActive={row.isActive} />
+      </span>
+    </div>
+  );
+}
+
+/** The same seller as a card (below xl): the whole card opens the seller, like the row. */
+function SellerCard({
+  row,
+  canManage,
+  listSearch,
+  onToggleStatus,
+}: {
+  row: AdminSellerListRowDto;
+  canManage: boolean;
+  listSearch: string;
+  onToggleStatus: () => void;
+}) {
+  const navigate = useNavigate();
+  const to = `/sellers/${row.id}`;
+  const state = { listSearch };
+  const openCard = (event: MouseEvent<HTMLLIElement>) => {
+    if ((event.target as HTMLElement).closest('button, a')) return;
+    navigate(to, { state });
+  };
+  return (
+    <li className="cursor-pointer space-y-2.5 px-4 py-3.5 transition hover:bg-gray-50/60" onClick={openCard}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <Link to={to} state={state} className="break-words font-medium text-gray-900 hover:text-brand-600 hover:underline">
+            {row.name}
+          </Link>
+          <p className="mt-0.5 text-xs text-gray-500">
+            {row.code} · {TYPE_LABEL[row.sellerType] ?? row.sellerType} · {row.city}
+          </p>
+        </div>
+        {canManage ? (
+          <Button variant={row.isActive ? 'ghost' : 'soft'} className="shrink-0" onClick={onToggleStatus}>
+            {row.isActive ? 'Deactivate' : 'Activate'}
+          </Button>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <LifecyclePill status={row.lifecycleStatus} isActive={row.isActive} />
+        <ActivePill isActive={row.isActive} />
+      </div>
+      <div className="text-sm">
+        <SellerAvailability facts={row} />
+      </div>
+      <p className="text-xs text-gray-500">Created {formatSellerDate(row.createdAt)}</p>
+    </li>
   );
 }
 
@@ -477,58 +597,58 @@ function ApplicationsPanel({ onNotice }: { onNotice: (message: string) => void }
           />
         </div>
       ) : (
-        <div className="overflow-x-auto border-t border-gray-100">
-          <table className="w-full min-w-[860px] text-sm">
-            <thead className="border-b border-gray-200 bg-gray-50">
+        <div className="border-t border-gray-100">
+          {/* Below xl: one card per application; xl+: a compact table sized to the page. */}
+          <ul aria-label="Seller applications" className="divide-y divide-gray-100 xl:hidden">
+            {rows.map((row) => (
+              <li key={row.sellerId} className="space-y-2 px-4 py-3.5">
+                <div className="min-w-0">
+                  <Link to={`/sellers/${row.sellerId}`} state={{ listSearch: location.search }} className="break-words font-medium text-gray-900 hover:text-brand-600 hover:underline">
+                    {row.businessName}
+                  </Link>
+                  <p className="text-xs text-gray-500">
+                    {row.applicantName ?? '—'} · {TYPE_LABEL[row.sellerType] ?? row.sellerType} · applied {formatSellerDate(row.applicationSubmittedAt ?? row.createdAt)}
+                  </p>
+                </div>
+                <ApplicationContact row={row} />
+                <ApplicationStatus row={row} />
+                <ApplicationActions row={row} canReview={canReview} busy={review.isPending} onApprove={() => approve(row)} onReject={() => setRejecting(row)} />
+              </li>
+            ))}
+          </ul>
+          <table className="hidden w-full text-sm xl:table">
+            <thead className="border-b border-gray-200 bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
               <tr>
-                <Th>Applicant</Th>
-                <Th>Business / store</Th>
-                <Th>Contact</Th>
-                <Th>Seller type</Th>
-                <Th>Applied</Th>
-                <Th>Status</Th>
-                <Th className="text-right">Actions</Th>
+                <th scope="col" className={cellX}>Applicant</th>
+                <th scope="col" className={cellX}>Business / store</th>
+                <th scope="col" className={cellX}>Contact</th>
+                <th scope="col" className={cellX}>Type · Applied</th>
+                <th scope="col" className={cellX}>Status</th>
+                <th scope="col" className={`${cellX} text-right`}>Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {rows.map((row) => (
-                <tr key={row.sellerId}>
-                  <Td className="font-medium text-gray-900">{row.applicantName ?? '—'}</Td>
-                  <Td>
-                    <Link to={`/sellers/${row.sellerId}`} state={{ listSearch: location.search }} className="font-medium text-gray-900 hover:text-brand-600 hover:underline">
+                <tr key={row.sellerId} className="align-middle">
+                  <td className={`${cellX} break-words font-medium text-gray-900`}>{row.applicantName ?? '—'}</td>
+                  <td className={cellX}>
+                    <Link to={`/sellers/${row.sellerId}`} state={{ listSearch: location.search }} className="break-words font-medium text-gray-900 hover:text-brand-600 hover:underline">
                       {row.businessName}
                     </Link>
-                  </Td>
-                  <Td className="text-gray-700">
-                    <span className="block whitespace-nowrap">{row.mobile ?? '—'}</span>
-                    <span className="block break-all text-xs text-gray-500">{row.email ?? '—'}</span>
-                  </Td>
-                  <Td className="whitespace-nowrap text-gray-700">{TYPE_LABEL[row.sellerType] ?? row.sellerType}</Td>
-                  <Td className="whitespace-nowrap text-gray-600">{formatSellerDate(row.applicationSubmittedAt ?? row.createdAt)}</Td>
-                  <Td>
-                    <LifecyclePill status={row.lifecycleStatus} />
-                    {row.lifecycleStatus === 'APPLICATION_REJECTED' && row.lifecycleReason && (
-                      <p className="mt-1 max-w-[16rem] text-xs text-gray-500">{row.lifecycleReason}</p>
-                    )}
-                  </Td>
-                  <Td>
-                    <div className="flex justify-end gap-2">
-                      {canReview && row.lifecycleStatus === 'APPLICATION_PENDING' ? (
-                        <>
-                          <Button variant="soft" disabled={review.isPending} onClick={() => approve(row)}>
-                            Approve
-                          </Button>
-                          <Button variant="ghost" disabled={review.isPending} onClick={() => setRejecting(row)}>
-                            Reject
-                          </Button>
-                        </>
-                      ) : (
-                        <Link to={`/sellers/${row.sellerId}`} className="text-sm font-semibold text-brand-600 hover:underline">
-                          Open
-                        </Link>
-                      )}
-                    </div>
-                  </Td>
+                  </td>
+                  <td className={cellX}>
+                    <ApplicationContact row={row} />
+                  </td>
+                  <td className={`${cellX} text-gray-700`}>
+                    {TYPE_LABEL[row.sellerType] ?? row.sellerType}
+                    <span className="block text-xs text-gray-500">{formatSellerDate(row.applicationSubmittedAt ?? row.createdAt)}</span>
+                  </td>
+                  <td className={cellX}>
+                    <ApplicationStatus row={row} />
+                  </td>
+                  <td className={cellX}>
+                    <ApplicationActions row={row} canReview={canReview} busy={review.isPending} onApprove={() => approve(row)} onReject={() => setRejecting(row)} />
+                  </td>
                 </tr>
               ))}
             </tbody>

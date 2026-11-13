@@ -21,7 +21,19 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { formatPaise } from '@shared/money';
 import { api } from '@/lib/api';
-import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
+import { useLocation, useParams, useSearchParams } from 'react-router-dom';
+import { BackLink } from '@/components/BackLink';
+
+/** Lists that link to a seller; "← Back" returns to them with history Back. */
+const SELLER_DETAIL_BACK_FROM = [
+  { path: '/products', label: 'Products' },
+  { path: '/inventory', label: 'Inventory' },
+  { path: '/product-approvals', label: 'Product Approvals' },
+  { path: '/commission', label: 'Commission' },
+  { path: '/payments', label: 'Payments' },
+  { path: '/settlements', label: 'Settlements' },
+  { path: '/refunds', label: 'Refunds' },
+] as const;
 import { SellerStaffRole, isFoodSellerType, type AdminSellerDetailDto } from '@shared';
 import { ApiRequestError } from '@/lib/api';
 import {
@@ -163,13 +175,11 @@ function SellerDetailView() {
   const setTab = (next: TabKey) =>
     setParams(next === 'overview' ? {} : { tab: next }, { replace: true, state: location.state });
 
-  // "← Sellers" returns to the list exactly as it was filtered.
+  // "← Back" returns to the list it was opened from (Sellers, Products, …) as
+  // it was — filters and scroll position (BackLink); otherwise to Sellers,
+  // filtered as it was when the row was opened.
   const listSearch = (location.state as { listSearch?: string } | null)?.listSearch ?? '';
-  const back = (
-    <Link to={`/sellers${listSearch}`} className="inline-flex items-center gap-1 text-sm font-medium text-gray-600 hover:text-gray-900">
-      <span aria-hidden="true">←</span> Sellers
-    </Link>
-  );
+  const back = <BackLink to={`/sellers${listSearch}`} label="Sellers" from={SELLER_DETAIL_BACK_FROM} />;
 
   if (!perms.canRead) {
     return <EmptyState title="You don't have access to seller management." hint="Ask an administrator if you need it." />;

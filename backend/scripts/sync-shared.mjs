@@ -35,7 +35,7 @@ const SOURCE_DIR = join(backendRoot, 'src', 'shared');
 const TARGETS = [
   { dir: join(repoRoot, 'web', 'src', 'shared'), only: null },
   { dir: join(repoRoot, 'mobile', 'src', 'shared'), only: null },
-  { dir: join(repoRoot, 'aadione-website', 'src', 'shared'), only: ['info-pages.ts'] },
+  { dir: join(repoRoot, 'aadione-website', 'src', 'shared'), only: ['info-pages.ts', 'branding.ts'] },
 ];
 
 const BANNER = `/**

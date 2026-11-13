@@ -1,7 +1,7 @@
 {
-  "name": "AdiOne Store Panel",
-  "short_name": "AdiOne",
-  "description": "Manage orders, products, inventory and delivery for your AdiOne store.",
+  "name": "Aadione Admin & Seller Panel",
+  "short_name": "Aadione",
+  "description": "Manage orders, products, inventory and delivery on Aadione.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

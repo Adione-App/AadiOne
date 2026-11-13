@@ -8,47 +8,20 @@
 import { useId, useState, type InputHTMLAttributes, type ReactNode } from 'react';
 import { Icon, inputClass, type IconName } from '@/components/ui';
 import { LoginRoleSwitch, type LoginRole } from '@/components/LoginRoleSwitch';
+import { AadioneWordmark, BrandLogo } from '@/components/BrandLogo';
+
+// Kept here too: other screens import the built-in wordmark from this file.
+export { AadioneWordmark };
 
 /* -------------------------------------------------------------------------- */
 /* brand                                                                       */
 /* -------------------------------------------------------------------------- */
 
-function Leaf({ className }: { className?: string }) {
+/** The published logo of the panel being signed in to (Branding & Identity), else the built-in wordmark. */
+function Brand({ role, align = 'left', size = 'text-4xl' }: { role: LoginRole; align?: 'left' | 'center'; size?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
-      <path
-        fill="currentColor"
-        d="M21 2.5C11 2.5 4.5 7.6 4.5 14.8c0 2 .5 3.7 1.4 5 1.4-6.3 6-10.3 11-12.5-4.1 3-7.3 7-8.6 13 1 .4 2 .6 3.1.6 6.7 0 9.6-7.6 9.6-18.4z"
-      />
-    </svg>
-  );
-}
-
-/**
- * "Aadione" with a leaf for the dot of the i. The visible glyphs are
- * aria-hidden (the i is a dotless ı) and the whole mark is labelled once.
- */
-export function AadioneWordmark({ className = 'text-4xl' }: { className?: string }) {
-  return (
-    <span role="img" aria-label="Aadione" className={`inline-flex items-baseline font-bold leading-none tracking-tight ${className}`}>
-      <span aria-hidden="true" className="text-gray-900">
-        Aad
-      </span>
-      <span aria-hidden="true" className="relative text-brand-500">
-        ı
-        <Leaf className="absolute left-1/2 top-[-0.2em] h-[0.4em] w-[0.4em] -translate-x-[35%] text-brand-500" />
-      </span>
-      <span aria-hidden="true" className="text-brand-500">
-        one
-      </span>
-    </span>
-  );
-}
-
-function Brand({ align = 'left', size = 'text-4xl' }: { align?: 'left' | 'center'; size?: string }) {
-  return (
-    <div className={align === 'center' ? 'text-center' : ''}>
-      <AadioneWordmark className={size} />
+    <div className={align === 'center' ? 'flex flex-col items-center text-center' : ''}>
+      <BrandLogo use={role === 'seller' ? 'seller' : 'light'} className="h-11" wordmarkClassName={size} />
       <p className="mt-1.5 text-sm font-medium text-gray-500">Partner Portal</p>
     </div>
   );
@@ -330,7 +303,7 @@ export function PartnerLoginLayout({
           </svg>
 
           <div className="relative hidden lg:block">
-            <Brand />
+            <Brand role={role} />
           </div>
 
           <h2 className="relative text-3xl font-bold leading-[1.1] tracking-tight text-gray-900 sm:text-4xl lg:mt-[calc(48px_-_var(--login-squeeze)*0.156)] xl:text-5xl">
@@ -377,7 +350,7 @@ export function PartnerLoginLayout({
             window scrolls this panel from the top instead of clipping it. */}
         <main className="relative z-10 order-1 flex items-center justify-center bg-white px-5 py-8 sm:px-10 sm:py-10 lg:order-2 lg:min-h-0 lg:overflow-y-auto lg:rounded-l-[28px] lg:px-12 lg:py-[calc(32px_-_var(--login-squeeze)*0.111)] lg:shadow-[-20px_0_48px_-30px_rgba(18,92,37,0.35)] xl:px-16">
           <div className="my-auto w-full max-w-md">
-            <Brand align="center" size="text-4xl sm:text-5xl" />
+            <Brand role={role} align="center" size="text-4xl sm:text-5xl" />
 
             <div className="mt-7 lg:mt-[calc(28px_-_var(--login-squeeze)*0.067)]">
               <LoginRoleSwitch value={role} onChange={onRoleChange} />

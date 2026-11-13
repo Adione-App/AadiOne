@@ -19,7 +19,7 @@ import {
 import { api } from './api';
 import { uploadProductImage, type PresignedUpload } from './upload';
 
-export type AdminUploadPurpose = 'category' | 'banner' | 'restaurant';
+export type AdminUploadPurpose = 'category' | 'banner' | 'restaurant' | 'branding';
 
 /** POST /admin/uploads/presign, then the bytes; returns the key to attach. */
 export function uploadAdminImage(file: File, purpose: AdminUploadPurpose): Promise<string> {

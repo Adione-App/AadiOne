@@ -30,6 +30,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useEntryState } from '@/lib/scrollMemory';
 import { useMutation } from '@tanstack/react-query';
 import { formatPaise } from '@shared/money';
 import { isFoodSellerType } from '@shared';
@@ -209,7 +210,9 @@ export default function SellerProductsPage() {
   const stock = pick(STOCKS, params.get('stock'), 'ALL');
   const sort = pick(SORTS, params.get('sort'), 'UPDATED');
   const search = params.get('q') ?? '';
-  const [shown, setShown] = useState(PAGE);
+  // Kept per history entry: Back from a product shows as many rows as before,
+  // so the remembered scroll position lands on the same product.
+  const [shown, setShown] = useEntryState('shown', PAGE);
   const [adding, setAdding] = useState(false);
   const [starting, setStarting] = useState<SellerProductInventory | null>(null);
   const [confirmingSubmit, setConfirmingSubmit] = useState(false);
@@ -562,8 +565,8 @@ export default function SellerProductsPage() {
               </Button>
             </div>
           )}
-          {/* below lg: cards */}
-          <ul className="grid gap-3 md:grid-cols-2 lg:hidden" aria-label="Your products">
+          {/* below xl: cards */}
+          <ul className="grid gap-3 md:grid-cols-2 xl:hidden" aria-label="Your products">
             {visible.slice(0, shown).map((row) => (
               <li key={row.key}>
                 <Surface className="space-y-3 p-3.5">
@@ -576,8 +579,8 @@ export default function SellerProductsPage() {
                   <Link to={row.href} className="flex items-start gap-3 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-brand-400">
                     <ProductImage src={row.image} alt={row.name} size="h-16 w-16" />
                     <div className="min-w-0 flex-1">
-                      <p className="line-clamp-2 font-semibold leading-snug text-gray-900">{row.name}</p>
-                      <p className="mt-0.5 truncate text-xs text-gray-500">{row.category}</p>
+                      <p className="break-words font-semibold leading-snug text-gray-900">{row.name}</p>
+                      <p className="mt-0.5 break-words text-xs text-gray-500">{row.category}</p>
                       <div className="mt-1.5 flex flex-wrap gap-1.5">
                         {row.approval !== 'APPROVED' && <Pill tone={row.review.tone}>{row.review.label}</Pill>}
                         {!row.own && <Pill tone="gray">Catalogue</Pill>}
@@ -626,10 +629,11 @@ export default function SellerProductsPage() {
             ))}
           </ul>
 
-          {/* lg+: table — the image sits in the Product cell and approval + customer
-              status share one cell, so every column fits beside the sidebar. */}
-          <Surface className="hidden overflow-hidden lg:block">
-            <div className="overflow-x-auto">
+          {/* xl+: table sized to the page — the image sits in the Product cell,
+              approval + customer status share one cell and stock / reserved /
+              available share another, so every column fits beside the sidebar. */}
+          <Surface className="hidden overflow-hidden xl:block">
+            <div>
               <table className="w-full text-sm">
                 <caption className="sr-only">Your products</caption>
                 <thead className="border-b border-gray-200 bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
@@ -640,14 +644,12 @@ export default function SellerProductsPage() {
                         <PageCheckbox checked={allPageChosen} mixed={somePageChosen && !allPageChosen} onChange={selectPage} label={`Select all ${pageOwn.length} products shown`} />
                       )}
                     </th>
-                    <th scope="col" className="px-4 py-3">Product</th>
-                    <th scope="col" className="px-3 py-3">Price</th>
-                    <th scope="col" className="px-2 py-3 text-right">Stock</th>
-                    <th scope="col" className="px-2 py-3 text-right">Reserved</th>
-                    <th scope="col" className="px-2 py-3 text-center">Available</th>
-                    <th scope="col" className="px-3 py-3">Status</th>
-                    <th scope="col" className="px-3 py-3">Updated</th>
-                    <th scope="col" className="px-4 py-3 text-right">Actions</th>
+                    <th scope="col" className="px-3 py-2.5">Product</th>
+                    <th scope="col" className="px-2.5 py-2.5">Price</th>
+                    <th scope="col" className="px-2.5 py-2.5 text-center">Stock</th>
+                    <th scope="col" className="px-2.5 py-2.5">Status</th>
+                    <th scope="col" className="px-2.5 py-2.5">Updated</th>
+                    <th scope="col" className="px-3 py-2.5 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -664,20 +666,20 @@ export default function SellerProductsPage() {
                           />
                         )}
                       </td>
-                      <td className="px-4 py-3">
-                        <div className="flex min-w-[12rem] items-center gap-3">
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-start gap-3">
                           <ProductImage src={row.image} alt={row.name} size="h-11 w-11" />
                           <div className="min-w-0">
-                            <Link to={row.href} className="line-clamp-2 font-semibold text-gray-900 outline-none hover:text-brand-600 focus-visible:underline">
+                            <Link to={row.href} className="break-words font-semibold leading-snug text-gray-900 outline-none hover:text-brand-600 focus-visible:underline">
                               {row.name}
                             </Link>
-                            <p className="truncate text-xs text-gray-500">{row.category}</p>
+                            <p className="break-words text-xs text-gray-500">{row.category}</p>
                             {!row.own && <p className="text-xs text-gray-400">Catalogue product</p>}
                             <SizeLine row={row} />
                           </div>
                         </div>
                       </td>
-                      <td className="whitespace-nowrap px-3 py-3">
+                      <td className="px-2.5 py-2.5">
                         {row.listing ? (
                           <>
                             <p className="font-semibold text-gray-900">
@@ -691,18 +693,14 @@ export default function SellerProductsPage() {
                           <span className="text-gray-400">—</span>
                         )}
                       </td>
-                      {row.listing && !row.listing.tracksStock ? (
-                        <td colSpan={3} className="px-2 py-3 text-center text-xs text-gray-500">
-                          Made to order · {row.listing.isAvailable ? 'available' : 'unavailable'}
-                        </td>
-                      ) : (
-                        <>
-                      <td className="px-2 py-3 text-right tabular-nums">{row.listing?.stockQty ?? '—'}</td>
-                      <td className="px-2 py-3 text-right tabular-nums">{row.listing?.reservedQty ?? '—'}</td>
-                      <td className="px-2 py-3">
-                        {row.listing && row.variantCount > 1 ? (
-                          <Link to={`${row.href}#variants`} className="block text-center text-sm">
+                      {/* Stock: available (−/+ for one size, a link for several), then stock · reserved. */}
+                      <td className="px-2.5 py-2.5 text-center">
+                        {row.listing && !row.listing.tracksStock ? (
+                          <span className="text-xs text-gray-500">Made to order · {row.listing.isAvailable ? 'available' : 'unavailable'}</span>
+                        ) : row.listing && row.variantCount > 1 ? (
+                          <Link to={`${row.href}#variants`} className="block text-sm">
                             <span className="font-semibold tabular-nums text-gray-900">{row.listing.availableQty}</span>
+                            <span className="text-xs text-gray-500"> available</span>
                             <span className="block text-xs font-semibold text-brand-700 hover:underline">Manage {row.variantCount} variants</span>
                           </Link>
                         ) : row.listing ? (
@@ -732,12 +730,15 @@ export default function SellerProductsPage() {
                             </button>
                           </div>
                         ) : (
-                          <span className="block text-center text-gray-400">—</span>
+                          <span className="block text-gray-400">—</span>
+                        )}
+                        {row.listing && row.listing.tracksStock && (
+                          <span className="mt-0.5 block text-[11px] tabular-nums text-gray-500">
+                            {row.listing.stockQty} stock · {row.listing.reservedQty} reserved
+                          </span>
                         )}
                       </td>
-                        </>
-                      )}
-                      <td className="px-3 py-3">
+                      <td className="px-2.5 py-2.5">
                         <div className="flex flex-col items-start gap-1">
                           <span className="inline-flex items-center gap-1">
                             <span className="sr-only">Approval:</span>
@@ -750,8 +751,8 @@ export default function SellerProductsPage() {
                           </span>
                         </div>
                       </td>
-                      <td className="whitespace-nowrap px-3 py-3 text-xs text-gray-500">{shortDate.format(new Date(row.updatedAt))}</td>
-                      <td className="px-4 py-3">
+                      <td className="px-2.5 py-2.5 text-xs text-gray-500">{shortDate.format(new Date(row.updatedAt))}</td>
+                      <td className="px-3 py-2.5">
                         <RowActions row={row} shown={isShown(row)} toggling={toggling(row)} onToggle={() => onToggle(row)} onStart={() => setStarting(row.product)} onDelete={() => askDelete(row)} compact />
                       </td>
                     </tr>

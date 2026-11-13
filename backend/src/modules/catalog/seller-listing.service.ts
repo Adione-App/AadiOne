@@ -238,7 +238,7 @@ export async function updateOwnListing(
   // An admin restriction is never lifted by the seller's on-sale switch.
   if (input.isAvailable === true && (product.status === ProductStatus.ARCHIVED || product.deletedAt !== null)) {
     throw new AppError(ErrorCode.FORBIDDEN, {
-      message: 'AdiOne has disabled this product, so it cannot be put back on sale. Contact support.',
+      message: 'Aadione has disabled this product, so it cannot be put back on sale. Contact support.',
       internalMessage: `seller ${sellerId} tried to re-enable admin-disabled listing ${listingId}`,
     });
   }
@@ -346,7 +346,7 @@ export async function listOwnStockMovements(sellerId: string, listingId: string,
     availableBefore: availableBefore(row.reason, row.delta, row.balanceAfter),
     note: row.note,
     // Never another person's name: your team, AdiOne, or the order system.
-    by: row.actorUserId ? (ownStaff.has(row.actorUserId) ? 'You' : 'AdiOne') : 'Orders',
+    by: row.actorUserId ? (ownStaff.has(row.actorUserId) ? 'You' : 'Aadione') : 'Orders',
     orderLinked: row.sellerOrderId !== null,
   }));
 }

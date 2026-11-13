@@ -37,6 +37,7 @@ import { isPrivateQueryKey } from "@/lib/guestAccess";
 import { forgetPrivateQueries, keys } from "@/lib/queries";
 import { useRecentSearches } from "@/lib/recentSearches";
 import { useWishlist } from "@/lib/useWishlist";
+import { useBranding } from "@/lib/branding";
 import { forgetCartAfterSignOut, hydrateCartFromDisk } from "@/lib/useCartActions";
 import { selectUpdateRequired, useAppUpdate } from "@/lib/appUpdate";
 import { AppUpdatePrompt } from "@/components/AppUpdatePrompt";
@@ -276,6 +277,8 @@ export default function App() {
           useLocation.getState().hydrate(),
           useRecentSearches.getState().hydrate(),
           useWishlist.getState().hydrate(),
+          // The last published branding (logos inside the app), read from the phone.
+          useBranding.getState().hydrate(),
           hydrateCartFromDisk(),
           // The last update answer for this installed version (offline launch).
           useAppUpdate.getState().hydrate(),
@@ -338,9 +341,12 @@ export default function App() {
   /* ------------------------------------------------------------------------ */
 
   useEffect(() => {
+    // Published branding: asked for at launch, and again on return (at most every 10 min).
+    void useBranding.getState().refresh({ force: true });
     const subscription = AppState.addEventListener("change", (next) => {
       if (next !== "active") return;
       void useAppUpdate.getState().refresh();
+      void useBranding.getState().refresh();
       // A saved session the launch could not verify (offline) gets another go.
       retryInterruptedRestore();
       // Stores may have opened or closed while the app was away (a cart kept

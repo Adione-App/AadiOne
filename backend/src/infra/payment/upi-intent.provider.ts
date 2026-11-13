@@ -80,7 +80,7 @@ export function buildUpiIntentUrl(input: {
 
   const params = new URLSearchParams({
     pa: input.vpa.trim(),
-    pn: input.payeeName.trim() || "AdiOne",
+    pn: input.payeeName.trim() || "Aadione",
 
     // UPI requires the amount in rupees, not paise.
     am: (input.amountPaise / 100).toFixed(2),
@@ -89,7 +89,7 @@ export function buildUpiIntentUrl(input: {
     tr: input.orderNumber.trim(),
 
     // Human-readable payment note.
-    tn: `AdiOne Order ${input.orderNumber.trim()}`,
+    tn: `Aadione Order ${input.orderNumber.trim()}`,
 
     cu: "INR",
   });

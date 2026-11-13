@@ -12,7 +12,6 @@
 
 import { useState } from "react";
 import {
-  Image,
   Keyboard,
   KeyboardAvoidingView,
   Pressable,
@@ -37,6 +36,7 @@ import { AppText, Button, Input } from "@/components/ui";
 import { BackgroundImage } from "@/components/BackgroundImage";
 
 import adioneLogo from "../../../assets/adione-logo.png";
+import { BrandImage } from "@/components/BrandMark";
 import mobileBackground from "../../../assets/mobile-no-background.png";
 
 const HIGHLIGHTS = [
@@ -165,12 +165,7 @@ export default function MobileEntryScreen({
                       Welcome to
                     </AppText>
 
-                    <Image
-                      source={adioneLogo}
-                      style={styles.logo}
-                      resizeMode="contain"
-                      accessibilityLabel="AdiOne"
-                    />
+                    <BrandImage use="light" fallback={adioneLogo} style={styles.logo} />
 
                     <AppText
                       variant="body"

@@ -15,6 +15,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatPaise } from '@shared/money';
 import { api } from '@/lib/api';
+import { useEntryState } from '@/lib/scrollMemory';
 import { useSellerPermissions } from '@/lib/sellers';
 import {
   adminErrorMessage,
@@ -60,15 +61,12 @@ export default function ProductsPage() {
   const stock = params.get('stock') ?? 'ALL';
   const page = Math.max(1, Number(params.get('page') ?? '1') || 1);
   const [moderating, setModerating] = useState<MarketplaceProductRow | null>(null);
-  // Grouped products whose variants are expanded underneath their row.
-  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
+  // Grouped products whose variants are expanded underneath their row — kept
+  // per history entry, so Back returns to the same rows, open as they were.
+  const [openKeys, setOpenKeys] = useEntryState<string[]>('open-variants', []);
+  const open: ReadonlySet<string> = new Set(openKeys);
   const toggleOpen = (key: string) =>
-    setOpen((current) => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+    setOpenKeys((current) => (current.includes(key) ? current.filter((k) => k !== key) : [...current, key]));
 
   const query = toQuery({
     q,
@@ -177,134 +175,99 @@ export default function ProductsPage() {
         <EmptyPanel icon="products" title="No products found" hint={filtered ? 'Try clearing your filters.' : 'Sellers have not added any products yet.'} />
       ) : (
         <>
-          <Surface className="overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1080px] text-sm">
-                <caption className="sr-only">Marketplace products</caption>
-                <thead className="border-b border-gray-200 bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
-                  <tr>
-                    <th scope="col" className="px-4 py-3">Product</th>
-                    <th scope="col" className="px-3 py-3">Seller</th>
-                    <th scope="col" className="px-3 py-3">Category</th>
-                    <th scope="col" className="px-3 py-3">Price</th>
-                    <th scope="col" className="px-3 py-3">Stock</th>
-                    <th scope="col" className="px-3 py-3">Approval</th>
-                    <th scope="col" className="px-3 py-3">Visibility</th>
-                    <th scope="col" className="px-3 py-3">Status</th>
-                    <th scope="col" className="px-3 py-3">Updated</th>
-                    <th scope="col" className="px-4 py-3 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {products.data.items.map((row) => (
-                    <Fragment key={row.key}>
-                    <tr className="align-middle hover:bg-gray-50/60">
-                      <td className="px-4 py-3">
-                        <div className="flex min-w-[13rem] items-center gap-3">
-                          <Thumb src={row.imageUrl} alt={row.productName} />
-                          <div className="min-w-0">
-                            <p className="line-clamp-2 font-semibold text-gray-900">{row.productName}</p>
-                            <p className="truncate text-xs text-gray-500">
-                              {row.variantName ?? '—'}
-                              {row.ownership === 'CATALOG' && ' · shared catalogue'}
-                            </p>
-                            {(row.variants?.length ?? 0) > 1 && (
-                              <button
-                                type="button"
-                                onClick={() => toggleOpen(row.key)}
-                                aria-expanded={open.has(row.key)}
-                                className="mt-0.5 text-xs font-semibold text-brand-600 hover:underline"
-                              >
-                                {open.has(row.key) ? 'Hide variants' : `Show ${row.variants!.length} variants`}
-                                {row.variants!.some((v) => v.approvalStatus === 'PENDING') && ' · new in review'}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-3 py-3">
+          {/* Below xl: one card per product — every figure and action, nothing scrolls sideways. */}
+          <ul aria-label="Marketplace products" className="grid gap-3 md:grid-cols-2 xl:hidden">
+            {products.data.items.map((row) => (
+              <li key={row.key} className="min-w-0">
+                <Surface className="space-y-3 p-3.5">
+                  <ProductName row={row} open={open.has(row.key)} onToggle={() => toggleOpen(row.key)} />
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-2.5 text-sm">
+                    <div className="min-w-0">
+                      <dt className="text-xs text-gray-500">Seller</dt>
+                      <dd className="break-words">
                         <SellerLink seller={row.seller} tab="products" />
+                      </dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-xs text-gray-500">Category</dt>
+                      <dd className="break-words text-gray-700">{row.category.name}</dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-xs text-gray-500">Price</dt>
+                      <dd>
+                        <ProductPrice row={row} />
+                      </dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-xs text-gray-500">Stock</dt>
+                      <dd>
+                        <ProductStock row={row} />
+                      </dd>
+                    </div>
+                  </dl>
+                  <ProductBadges row={row} />
+                  {open.has(row.key) && row.variants && row.variants.length > 1 && <VariantBreakdown row={row} stacked />}
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-2.5">
+                    <span className="text-xs text-gray-500">Updated {shortDate.format(new Date(row.updatedAt))}</span>
+                    <ProductActions row={row} canManage={perms.canManage} onModerate={() => setModerating(row)} />
+                  </div>
+                </Surface>
+              </li>
+            ))}
+          </ul>
+
+          {/* xl+: a compact table sized to the page — names wrap, related facts
+              share a cell (seller + category; approval + visibility + status). */}
+          <Surface className="hidden overflow-hidden xl:block">
+            <table className="w-full text-sm">
+              <caption className="sr-only">Marketplace products</caption>
+              <thead className="border-b border-gray-200 bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <tr>
+                  <th scope="col" className="px-3 py-2.5">Product</th>
+                  <th scope="col" className="px-2.5 py-2.5">Seller · Category</th>
+                  <th scope="col" className="px-2.5 py-2.5">Price</th>
+                  <th scope="col" className="px-2.5 py-2.5">Stock</th>
+                  <th scope="col" className="px-2.5 py-2.5">Status</th>
+                  <th scope="col" className="px-2.5 py-2.5">Updated</th>
+                  <th scope="col" className="px-3 py-2.5 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {products.data.items.map((row) => (
+                  <Fragment key={row.key}>
+                    <tr className="align-middle hover:bg-gray-50/60">
+                      <td className="px-3 py-2.5">
+                        <ProductName row={row} open={open.has(row.key)} onToggle={() => toggleOpen(row.key)} />
                       </td>
-                      <td className="px-3 py-3 text-gray-700">{row.category.name}</td>
-                      <td className="whitespace-nowrap px-3 py-3">
-                        {row.listing ? (
-                          <>
-                            <span className="font-semibold text-gray-900">
-                              {priceRangeOf(row) ?? (
-                                <>
-                                  {(row.variantCount ?? 1) > 1 && <span className="mr-1 text-xs font-medium text-gray-500">from</span>}
-                                  {formatPaise(row.listing.pricePaise)}
-                                </>
-                              )}
-                            </span>
-                            {!priceRangeOf(row) && row.listing.mrpPaise > row.listing.pricePaise && (
-                              <span className="block text-xs text-gray-400 line-through">{formatPaise(row.listing.mrpPaise)}</span>
-                            )}
-                          </>
-                        ) : (
-                          <span className="text-gray-400">Not listed</span>
-                        )}
+                      <td className="px-2.5 py-2.5">
+                        <SellerLink seller={row.seller} tab="products" />
+                        <p className="mt-0.5 text-xs text-gray-500">{row.category.name}</p>
                       </td>
-                      <td className="whitespace-nowrap px-3 py-3">
-                        {row.listing && row.listing.stock === 'MADE_TO_ORDER' ? (
-                          <StockBadge state="MADE_TO_ORDER" />
-                        ) : row.listing ? (
-                          <div className="space-y-1">
-                            <p className="tabular-nums text-gray-900">
-                              <span className="font-semibold">{row.listing.availableQty}</span> available
-                            </p>
-                            <p className="text-xs text-gray-500">
-                              {row.listing.stockQty} stock · {row.listing.reservedQty} reserved
-                            </p>
-                            {row.listing.stock !== 'IN_STOCK' && <StockBadge state={row.listing.stock} />}
-                          </div>
-                        ) : (
-                          <span className="text-gray-400">—</span>
-                        )}
+                      <td className="px-2.5 py-2.5">
+                        <ProductPrice row={row} />
                       </td>
-                      <td className="px-3 py-3">
-                        <ApprovalBadge status={row.approvalStatus} />
+                      <td className="px-2.5 py-2.5">
+                        <ProductStock row={row} />
                       </td>
-                      <td className="px-3 py-3">
-                        <VisibilityBadge reason={row.visibility.reason} />
+                      <td className="px-2.5 py-2.5">
+                        <ProductBadges row={row} stacked />
                       </td>
-                      <td className="px-3 py-3">
-                        <ProductStatusBadge status={row.productStatus} />
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-3 text-xs text-gray-500">{shortDate.format(new Date(row.updatedAt))}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-col items-end gap-1.5">
-                          <Link
-                            to={`/sellers/${row.seller.id}?tab=products`}
-                            className="text-xs font-semibold text-brand-600 hover:underline"
-                            aria-label={`View ${row.productName} in ${row.seller.name}'s products`}
-                          >
-                            Seller products
-                          </Link>
-                          {perms.canManage && (
-                            <Button
-                              variant={row.productStatus === 'ARCHIVED' ? 'soft' : 'secondary'}
-                              className="min-h-8 px-2.5 text-xs"
-                              onClick={() => setModerating(row)}
-                            >
-                              {row.productStatus === 'ARCHIVED' ? 'Enable' : 'Disable'}
-                            </Button>
-                          )}
-                        </div>
+                      <td className="px-2.5 py-2.5 text-xs text-gray-500">{shortDate.format(new Date(row.updatedAt))}</td>
+                      <td className="px-3 py-2.5">
+                        <ProductActions row={row} canManage={perms.canManage} onModerate={() => setModerating(row)} stacked />
                       </td>
                     </tr>
                     {open.has(row.key) && row.variants && row.variants.length > 1 && (
                       <tr className="bg-gray-50/70">
-                        <td colSpan={10} className="px-4 pb-3 pt-1">
+                        <td colSpan={7} className="px-3 pb-3 pt-1">
                           <VariantBreakdown row={row} />
                         </td>
                       </tr>
                     )}
-                    </Fragment>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
           </Surface>
           <Pager page={page} pageSize={PAGE_SIZE} total={products.data.total} onPage={(next) => update({ page: String(next) })} />
         </>
@@ -382,8 +345,147 @@ function priceRangeOf(row: MarketplaceProductRow): string | null {
   return low === high ? null : `${formatPaise(low)} – ${formatPaise(high)}`;
 }
 
-/** Every variant of one grouped product: its own price, stock, review and status. Read-only. */
-function VariantBreakdown({ row }: { row: MarketplaceProductRow }) {
+/* Row pieces shared by the table (xl+) and the cards (below xl). */
+
+/** Photo, the full name (wraps — English or Hindi, never cut off sideways), variant line, variants toggle. */
+function ProductName({ row, open, onToggle }: { row: MarketplaceProductRow; open: boolean; onToggle: () => void }) {
+  return (
+    <div className="flex min-w-0 items-start gap-3">
+      <Thumb src={row.imageUrl} alt={row.productName} />
+      <div className="min-w-0">
+        <p className="break-words font-semibold leading-snug text-gray-900">{row.productName}</p>
+        <p className="break-words text-xs text-gray-500">
+          {row.variantName ?? '—'}
+          {row.ownership === 'CATALOG' && ' · shared catalogue'}
+        </p>
+        {(row.variants?.length ?? 0) > 1 && (
+          <button type="button" onClick={onToggle} aria-expanded={open} className="mt-0.5 text-left text-xs font-semibold text-brand-600 hover:underline">
+            {open ? 'Hide variants' : `Show ${row.variants!.length} variants`}
+            {row.variants!.some((v) => v.approvalStatus === 'PENDING') && ' · new in review'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProductPrice({ row }: { row: MarketplaceProductRow }) {
+  if (!row.listing) return <span className="text-gray-400">Not listed</span>;
+  const range = priceRangeOf(row);
+  return (
+    <>
+      <span className="font-semibold text-gray-900">
+        {range ?? (
+          <>
+            {(row.variantCount ?? 1) > 1 && <span className="mr-1 text-xs font-medium text-gray-500">from</span>}
+            <span className="whitespace-nowrap">{formatPaise(row.listing.pricePaise)}</span>
+          </>
+        )}
+      </span>
+      {!range && row.listing.mrpPaise > row.listing.pricePaise && (
+        <span className="block text-xs text-gray-400 line-through">{formatPaise(row.listing.mrpPaise)}</span>
+      )}
+    </>
+  );
+}
+
+function ProductStock({ row }: { row: MarketplaceProductRow }) {
+  if (!row.listing) return <span className="text-gray-400">—</span>;
+  if (row.listing.stock === 'MADE_TO_ORDER') return <StockBadge state="MADE_TO_ORDER" />;
+  return (
+    <div className="space-y-1">
+      <p className="tabular-nums text-gray-900">
+        <span className="font-semibold">{row.listing.availableQty}</span> available
+      </p>
+      <p className="text-xs text-gray-500">
+        {row.listing.stockQty} stock · {row.listing.reservedQty} reserved
+      </p>
+      {row.listing.stock !== 'IN_STOCK' && <StockBadge state={row.listing.stock} />}
+    </div>
+  );
+}
+
+/** Approval, customer visibility and product status — labelled for screen readers. */
+function ProductBadges({ row, stacked = false }: { row: MarketplaceProductRow; stacked?: boolean }) {
+  return (
+    <div className={stacked ? 'flex flex-col items-start gap-1' : 'flex flex-wrap items-center gap-1.5'}>
+      <span className="inline-flex">
+        <span className="sr-only">Approval: </span>
+        <ApprovalBadge status={row.approvalStatus} />
+      </span>
+      <span className="inline-flex">
+        <span className="sr-only">Visibility: </span>
+        <VisibilityBadge reason={row.visibility.reason} />
+      </span>
+      <span className="inline-flex">
+        <span className="sr-only">Status: </span>
+        <ProductStatusBadge status={row.productStatus} />
+      </span>
+    </div>
+  );
+}
+
+function ProductActions({
+  row,
+  canManage,
+  onModerate,
+  stacked = false,
+}: {
+  row: MarketplaceProductRow;
+  canManage: boolean;
+  onModerate: () => void;
+  stacked?: boolean;
+}) {
+  return (
+    <div className={stacked ? 'flex flex-col items-end gap-1.5' : 'flex flex-wrap items-center justify-end gap-3'}>
+      <Link
+        to={`/sellers/${row.seller.id}?tab=products`}
+        className="text-right text-xs font-semibold text-brand-600 hover:underline"
+        aria-label={`View ${row.productName} in ${row.seller.name}'s products`}
+      >
+        Seller products
+      </Link>
+      {canManage && (
+        <Button variant={row.productStatus === 'ARCHIVED' ? 'soft' : 'secondary'} className="min-h-8 px-2.5 text-xs" onClick={onModerate}>
+          {row.productStatus === 'ARCHIVED' ? 'Enable' : 'Disable'}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Every variant of one grouped product: its own price, stock, review and
+ * status. Read-only. `stacked`: one block per variant (cards on narrow
+ * screens), where an eight-column table could not fit.
+ */
+function VariantBreakdown({ row, stacked = false }: { row: MarketplaceProductRow; stacked?: boolean }) {
+  if (stacked) {
+    return (
+      <ul aria-label={`Variants of ${row.productName}`} className="divide-y divide-gray-100 rounded-xl border border-gray-200 bg-gray-50/60 text-xs">
+        {row.variants!.map((v) => (
+          <li key={v.variantId} className="space-y-1.5 px-3 py-2">
+            <p className="font-semibold text-gray-900">
+              {v.variantName}
+              {v.isDefault && <span className="ml-1 font-normal text-gray-400">(default)</span>}
+            </p>
+            <p className="text-gray-700">
+              <span className="font-semibold">{formatPaise(v.listing.pricePaise)}</span>
+              <span className="text-gray-500"> · MRP {formatPaise(v.listing.mrpPaise)}</span>
+              {' · '}
+              {v.listing.stock === 'MADE_TO_ORDER'
+                ? 'Made to order'
+                : `${v.listing.availableQty} available (${v.listing.stockQty} stock · ${v.listing.reservedQty} reserved)`}
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              <ApprovalBadge status={v.approvalStatus} />
+              <VisibilityBadge reason={v.visibility.reason} />
+            </div>
+          </li>
+        ))}
+      </ul>
+    );
+  }
   return (
     <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
       <table className="w-full text-xs">

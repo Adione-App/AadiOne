@@ -72,7 +72,9 @@ describe('seller product page: the variant manager', () => {
 
 describe('admin products: grouped, with every variant underneath', () => {
   it('a grouped row expands into its variants with their own price, stock, review and status', () => {
-    assert.match(adminProducts, /\{open\.has\(row\.key\) \? 'Hide variants' : `Show \$\{row\.variants!\.length\} variants`\}/);
+    // The toggle sits in ProductName (shared by the cards and the table); `open` is that row's state.
+    assert.match(adminProducts, /\{open \? 'Hide variants' : `Show \$\{row\.variants!\.length\} variants`\}/);
+    assert.match(adminProducts, /<ProductName row=\{row\} open=\{open\.has\(row\.key\)\} onToggle=\{\(\) => toggleOpen\(row\.key\)\} \/>/);
     assert.match(adminProducts, /<VariantBreakdown row=\{row\} \/>/);
     assert.match(adminProducts, /<td className="px-3 py-2"><ApprovalBadge status=\{v\.approvalStatus\} \/><\/td>/);
     assert.match(adminProducts, /function priceRangeOf\(row: MarketplaceProductRow\): string \| null/);

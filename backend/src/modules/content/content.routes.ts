@@ -8,8 +8,26 @@
 import { Router, type Request, type Response } from 'express';
 import { asyncHandler, ok } from '../../common/response';
 import { getPublishedHomeLayout, getPublishedHomeShelves } from './home-layout.service';
+import { getPublicBranding } from './branding.service';
 
 export const contentRouter: Router = Router();
+
+/**
+ * GET /api/v1/branding — the published brand assets (Admin Panel → Branding &
+ * Identity) every client shows: Admin and Seller Panel, website, customer app.
+ * Public and read-only (any website may read it, without credentials — see
+ * app.ts); only the dynamic assets, never the native-build icons. Cacheable
+ * for a minute; the server's own copy is dropped the moment an admin publishes.
+ */
+export const brandingRouter: Router = Router();
+
+brandingRouter.get(
+  '/',
+  asyncHandler(async (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    ok(res, await getPublicBranding());
+  }),
+);
 
 contentRouter.get(
   '/home-layout',

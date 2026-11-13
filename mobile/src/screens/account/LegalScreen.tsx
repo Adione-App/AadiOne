@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { INFO_PAGE_TITLES } from '@shared';
 import { colors, spacing } from '@shared/theme';
 import { useInfoPage } from '@/lib/infoPages';
+import type { CustomerLegalSlug } from '@/navigation/types';
 import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, ErrorState, Screen } from '@/components/ui';
 import { InfoPageHeading, InfoPageSections, InfoPageSkeleton } from '@/components/InfoPageView';
@@ -23,7 +24,7 @@ export default function LegalScreen({
   slug,
   onBack,
 }: {
-  slug: 'privacy' | 'terms';
+  slug: CustomerLegalSlug;
   onBack: () => void;
 }) {
   const insets = useSafeAreaInsets();

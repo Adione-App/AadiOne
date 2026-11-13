@@ -128,9 +128,17 @@ describe('pages, SEO and legal links', () => {
   it('every page sets its own title, description and canonical path', () => {
     for (const file of sourceFiles('src/pages')) {
       const text = read(file)
-      // The two old policy addresses only redirect to sections of the Terms.
-      if (!/export default function/.test(text) || /legal[\\/](CancellationRefund|DeliveryPolicy)/.test(file)) continue
+      if (!/export default function/.test(text)) continue
       if (/LegalDocument slug=/.test(text)) continue // set inside LegalDocument
+      // Policy pages pass their own title, description and path to PolicyPage, which sets them.
+      if (/legal[\\/]PolicyPage\.jsx$/.test(file)) {
+        assert.match(text, /useSEO\(\{ title, description, path \}\)/, file)
+        continue
+      }
+      if (/<PolicyPage/.test(text)) {
+        assert.match(text, /title="[^"]+"[\s\S]*description="[^"]+"[\s\S]*path="\//, file)
+        continue
+      }
       assert.match(text, /useSEO\(\{[\s\S]*?description:[\s\S]*?path: '\//, file)
     }
     const seo = read('src/lib/useSEO.js')
@@ -155,11 +163,16 @@ describe('pages, SEO and legal links', () => {
     }
   })
 
-  it('the footer links Privacy, Terms, cancellations, contact & grievance and account deletion', () => {
+  it('the footer links Privacy, Terms, cancellations, delivery, contact & grievance and account deletion', () => {
     const site = read('src/config/site.js')
-    for (const to of ['/privacy-policy', '/terms-and-conditions', '/terms-and-conditions#cancelling-an-order', '/contact#grievance-officer', '/delete-account']) {
+    // Cancellations / delivery: the stand-alone policy once published, else the Terms sections (PolicyPage fallbackTo).
+    for (const to of ['/privacy-policy', '/terms-and-conditions', '/cancellation-refund-policy', '/delivery-policy', '/contact#grievance-officer', '/delete-account']) {
       assert.ok(site.includes(`to: '${to}'`), to)
     }
+    // Cookie Policy and seller documents: linked only once published (GET /legal/pages).
+    const footer = read('src/components/Footer.jsx')
+    assert.match(footer, /useAvailablePages\(\)/)
+    for (const slug of ['cookie-policy', 'seller-terms', 'seller-privacy']) assert.match(footer, new RegExp(`published\\.has\\('${slug}'\\)`), slug)
     assert.match(read('src/pages/Contact.jsx'), /id="grievance-officer"/)
   })
 

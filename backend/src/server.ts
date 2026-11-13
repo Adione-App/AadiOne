@@ -68,7 +68,7 @@ async function start(): Promise<void> {
         paymentProvider: env.PAYMENT_PROVIDER,
         storageProvider: env.STORAGE_PROVIDER,
       },
-      `AdiOne API listening on http://localhost:${env.PORT}`,
+      `Aadione API listening on http://localhost:${env.PORT}`,
     );
   });
 

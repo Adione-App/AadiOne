@@ -1,5 +1,8 @@
 /**
- * Information pages — Privacy Policy, Terms & Conditions, About Aadione.
+ * Information pages — the legal documents (customer Privacy Policy and Terms,
+ * Refund & Cancellation, Shipping & Delivery and Cookie policies, Seller
+ * Terms and Seller Privacy Policy) and About Aadione. Admin Panel → Settings →
+ * Legal & Policies.
  *
  * Each page is one `content_documents` key (draft → publish → archive, like
  * the Home layout). The content is STRUCTURED PLAIN TEXT — headings,
@@ -29,21 +32,73 @@
  * Pure and dependency-free (shared by backend, web admin, mobile and website).
  */
 
-export const INFO_PAGE_SLUGS = ['privacy', 'terms', 'about'] as const;
+export const INFO_PAGE_SLUGS = [
+  'privacy',
+  'terms',
+  'refund-policy',
+  'shipping-policy',
+  'cookie-policy',
+  'seller-terms',
+  'seller-privacy',
+  'about',
+] as const;
 export type InfoPageSlug = (typeof INFO_PAGE_SLUGS)[number];
 
 /** The content_documents key of each page. */
 export const INFO_PAGE_KEYS: Readonly<Record<InfoPageSlug, string>> = {
   privacy: 'legal_privacy',
   terms: 'legal_terms',
+  'refund-policy': 'legal_refund_cancellation',
+  'shipping-policy': 'legal_shipping_delivery',
+  'cookie-policy': 'legal_cookies',
+  'seller-terms': 'legal_seller_terms',
+  'seller-privacy': 'legal_seller_privacy',
   about: 'page_about',
 };
 
 export const INFO_PAGE_TITLES: Readonly<Record<InfoPageSlug, string>> = {
   privacy: 'Privacy Policy',
   terms: 'Terms & Conditions',
+  'refund-policy': 'Refund & Cancellation Policy',
+  'shipping-policy': 'Shipping & Delivery Policy',
+  'cookie-policy': 'Cookie Policy',
+  'seller-terms': 'Seller Terms & Conditions',
+  'seller-privacy': 'Seller Privacy Policy',
   about: 'About Aadione',
 };
+
+/**
+ * Who a page is for: customers (the app, the website), sellers (the Seller
+ * Panel), or everyone (About; the Cookie Policy covers every website).
+ */
+export type InfoPageAudience = 'customer' | 'seller' | 'general';
+export const INFO_PAGE_AUDIENCE: Readonly<Record<InfoPageSlug, InfoPageAudience>> = {
+  privacy: 'customer',
+  terms: 'customer',
+  'refund-policy': 'customer',
+  'shipping-policy': 'customer',
+  'cookie-policy': 'general',
+  'seller-terms': 'seller',
+  'seller-privacy': 'seller',
+  about: 'general',
+};
+
+/** Legal documents (everything but About): publishing needs the operator and grievance details. */
+export const LEGAL_DOCUMENT_SLUGS = INFO_PAGE_SLUGS.filter((slug) => slug !== 'about');
+
+/**
+ * Documents a signed-in user is asked to ACCEPT when an admin marks a new
+ * version as needing it — customers in the app, sellers in the Seller Panel.
+ * The other customer policies are part of what customers accept through the
+ * Terms.
+ */
+export const CUSTOMER_ACCEPTANCE_SLUGS = ['privacy', 'terms'] as const;
+export const SELLER_ACCEPTANCE_SLUGS = ['seller-terms', 'seller-privacy'] as const;
+export type AcceptanceSlug = (typeof CUSTOMER_ACCEPTANCE_SLUGS)[number] | (typeof SELLER_ACCEPTANCE_SLUGS)[number];
+
+export function asksForAcceptance(slug: InfoPageSlug): slug is AcceptanceSlug {
+  return (CUSTOMER_ACCEPTANCE_SLUGS as readonly string[]).includes(slug) || (SELLER_ACCEPTANCE_SLUGS as readonly string[]).includes(slug);
+}
 
 export function isInfoPageSlug(value: string): value is InfoPageSlug {
   return (INFO_PAGE_SLUGS as readonly string[]).includes(value);
@@ -69,9 +124,10 @@ export interface InfoPageContent {
   /** Set when the draft was restored from an earlier version (kept for the history). */
   restoredFromVersion?: number;
   /**
-   * Set at publish (Privacy Policy / Terms only): signed-in customers are asked
-   * to accept this version in the app. Off for corrections that change nothing
-   * material, so customers are not interrupted for every edit.
+   * Set at publish (documents in CUSTOMER_/SELLER_ACCEPTANCE_SLUGS only):
+   * signed-in customers (app) or sellers (Seller Panel) are asked to accept
+   * this version. Off for corrections that change nothing material, so nobody
+   * is interrupted for every edit.
    */
   requiresAcceptance?: boolean;
   sections: InfoPageSection[];
@@ -119,29 +175,28 @@ export type InfoPageToken = (typeof INFO_PAGE_TOKENS)[number];
 export type InfoPageValues = Partial<Record<InfoPageToken, string>>;
 
 /**
- * What a LEGAL page (privacy, terms) cannot be published without: who
- * operates the platform and where, a customer-care contact, and the
- * grievance officer customers can write to (Consumer Protection (E-Commerce)
- * Rules, 2020, rule 4). Each entry is met when ANY of its settings is filled.
- * The About page has no required settings.
+ * What a LEGAL document cannot be published without: who operates the
+ * platform and where, a customer-care contact, and the grievance officer
+ * users can write to (Consumer Protection (E-Commerce) Rules, 2020, rule 4).
+ * Each entry is met when ANY of its settings is filled. The About page has no
+ * required settings.
  */
+const LEGAL_REQUIREMENTS: readonly (readonly InfoPageToken[])[] = [
+  ['BUSINESS_LEGAL_NAME'],
+  ['BUSINESS_ADDRESS'],
+  ['SUPPORT_EMAIL', 'SUPPORT_PHONE'],
+  ['GRIEVANCE_OFFICER_NAME'],
+  ['GRIEVANCE_OFFICER_DESIGNATION'],
+  ['GRIEVANCE_OFFICER_EMAIL'],
+];
 export const INFO_PAGE_REQUIREMENTS: Readonly<Record<InfoPageSlug, readonly (readonly InfoPageToken[])[]>> = {
-  privacy: [
-    ['BUSINESS_LEGAL_NAME'],
-    ['BUSINESS_ADDRESS'],
-    ['SUPPORT_EMAIL', 'SUPPORT_PHONE'],
-    ['GRIEVANCE_OFFICER_NAME'],
-    ['GRIEVANCE_OFFICER_DESIGNATION'],
-    ['GRIEVANCE_OFFICER_EMAIL'],
-  ],
-  terms: [
-    ['BUSINESS_LEGAL_NAME'],
-    ['BUSINESS_ADDRESS'],
-    ['SUPPORT_EMAIL', 'SUPPORT_PHONE'],
-    ['GRIEVANCE_OFFICER_NAME'],
-    ['GRIEVANCE_OFFICER_DESIGNATION'],
-    ['GRIEVANCE_OFFICER_EMAIL'],
-  ],
+  privacy: LEGAL_REQUIREMENTS,
+  terms: LEGAL_REQUIREMENTS,
+  'refund-policy': LEGAL_REQUIREMENTS,
+  'shipping-policy': LEGAL_REQUIREMENTS,
+  'cookie-policy': LEGAL_REQUIREMENTS,
+  'seller-terms': LEGAL_REQUIREMENTS,
+  'seller-privacy': LEGAL_REQUIREMENTS,
   about: [],
 };
 
@@ -499,6 +554,26 @@ export interface InfoPageDto {
   revision: number;
   source: 'published' | 'builtin';
   sections: { id: string; heading: string; body: string[]; blocks: InfoPageBlock[] }[];
+  /**
+   * GET /legal/:slug/versions/:version only: false for an earlier version
+   * (kept readable — e.g. the version someone accepted), true for the latest.
+   */
+  isLatest?: boolean;
+}
+
+/** GET /legal/:slug/versions — every published version, newest first (public). */
+export interface InfoPageVersionSummaryDto {
+  version: string;
+  publishedAt: string | null;
+  /** "7 November 2026" (India). */
+  lastUpdatedLabel: string;
+  effectiveLabel: string | null;
+  isLatest: boolean;
+}
+
+/** The public address of a page (the HTML page the API serves), for the admin's "Public URL". */
+export function infoPagePublicPath(slug: InfoPageSlug, version?: number): string {
+  return version ? `/api/v1/legal/${slug}/versions/${version}/page` : `/api/v1/legal/${slug}/page`;
 }
 
 /** One publication event in the history. */
@@ -630,4 +705,38 @@ export function legalConsentRequired(
   if (!required) return false;
   if (!accepted) return true;
   return accepted.privacyVersion < required.privacy || accepted.termsVersion < required.terms;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Seller acceptance (GET / POST /seller/legal/consent)                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Whether the signed-in seller user must accept the current Seller Terms and
+ * Seller Privacy Policy. Only when BOTH are published, and only when the user
+ * has not accepted, for this seller, a version at least as new as the latest
+ * one an admin marked as needing acceptance.
+ */
+export interface SellerLegalConsentStatusDto {
+  required: boolean;
+  termsVersion: number | null;
+  privacyVersion: number | null;
+  accepted: { termsVersion: number; privacyVersion: number; acceptedAt: string } | null;
+}
+
+/** POST /seller/legal/consent — the versions the seller saw and accepted. */
+export interface AcceptSellerLegalRequest {
+  termsVersion: number;
+  privacyVersion: number;
+}
+
+/** GET /legal/pages — the pages a reader can open now (footers, menus): never an unpublished one. */
+export interface InfoPageIndexEntryDto {
+  slug: InfoPageSlug;
+  title: string;
+  audience: InfoPageAudience;
+  /** null for built-in wording (privacy / terms before their first publish). */
+  version: string | null;
+  lastUpdatedLabel: string;
+  source: 'published' | 'builtin';
 }

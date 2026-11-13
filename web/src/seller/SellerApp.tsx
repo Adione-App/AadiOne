@@ -20,7 +20,8 @@ import { Navigate, NavLink, Outlet, Route, Routes, useLocation } from 'react-rou
 import { useQueryClient } from '@tanstack/react-query';
 import { ErrorBanner, Icon, Spinner, type IconName } from '@/components/ui';
 import { NotificationBell } from '@/components/NotificationBell';
-import { AadioneWordmark } from '@/components/PartnerLogin';
+import { BrandLogo } from '@/components/BrandLogo';
+import { SellerLegalConsentPrompt } from './sellerLegal';
 import { formatUnreadBadge, useNotificationUnreadCount } from '@/lib/notifications';
 import { SELLER_QUERY_ROOT, sellerClient, sellerErrorMessage } from './sellerApi';
 import { useSellerAuth } from './sellerAuth';
@@ -177,14 +178,20 @@ function AuthenticatedSellerApp() {
 
   if (!lifecycle.data.panelUnlocked) {
     return (
-      <Routes>
-        <Route path="/seller/onboarding" element={<SellerOnboardingPage />} />
-        <Route path="*" element={<Navigate to="/seller/onboarding" replace />} />
-      </Routes>
+      <>
+        {/* Applicants and onboarding sellers accept the Seller Terms too. */}
+        <SellerLegalConsentPrompt />
+        <Routes>
+          <Route path="/seller/onboarding" element={<SellerOnboardingPage />} />
+          <Route path="*" element={<Navigate to="/seller/onboarding" replace />} />
+        </Routes>
+      </>
     );
   }
 
   return (
+    <>
+    <SellerLegalConsentPrompt />
     <Routes>
       <Route path="/seller/login" element={<Navigate to="/seller" replace />} />
       <Route path="/seller/register" element={<Navigate to="/seller" replace />} />
@@ -209,6 +216,7 @@ function AuthenticatedSellerApp() {
       </Route>
       <Route path="*" element={<Navigate to="/seller" replace />} />
     </Routes>
+    </>
   );
 }
 
@@ -254,7 +262,7 @@ function SellerSidebar({
           </span>
         ) : (
           <div>
-            <AadioneWordmark className="text-2xl" />
+            <BrandLogo use="seller" className="h-8" wordmarkClassName="text-2xl" />
             <p className="mt-1 text-xs font-medium text-gray-500">Seller Panel</p>
           </div>
         )}

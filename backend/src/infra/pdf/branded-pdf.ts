@@ -22,6 +22,22 @@ import PDFDocument from 'pdfkit';
 import { moduleLogger } from '../../common/logger';
 import { AADIONE_LOGO_PNG, AADIONE_LOGO_SIZE } from './aadione-logo';
 
+/** A logo drawn on a document: PNG bytes and their pixel size. */
+export interface PdfLogo {
+  png: Buffer;
+  width: number;
+  height: number;
+}
+
+/** The built-in Aadione wordmark — used when no main logo is published (Branding & Identity). */
+export const BUILTIN_PDF_LOGO: PdfLogo = { png: AADIONE_LOGO_PNG, width: AADIONE_LOGO_SIZE.width, height: AADIONE_LOGO_SIZE.height };
+
+/** The logo at `height` points, never wider than `maxWidth`. */
+function logoBox(logo: PdfLogo, height: number, maxWidth: number): { width: number; height: number } {
+  const width = (logo.width / logo.height) * height;
+  return width <= maxWidth ? { width, height } : { width: maxWidth, height: (logo.height / logo.width) * maxWidth };
+}
+
 const log = moduleLogger('branded-pdf');
 
 export const GREEN = '#176230';
@@ -205,6 +221,8 @@ export class Layout {
     /** The text of the running header on every page after the first. */
     private readonly runningTitle: string,
     trace?: Trace,
+    /** The published main logo (Branding & Identity), else the built-in one. */
+    readonly logo: PdfLogo = BUILTIN_PDF_LOGO,
   ) {
     this.t = new Typesetter(doc, trace);
   }
@@ -231,7 +249,7 @@ export class Layout {
 
   runningHeader() {
     const { doc } = this;
-    doc.image(AADIONE_LOGO_PNG, PAGE.margin, PAGE.margin - 6, { height: 22 });
+    doc.image(this.logo.png, PAGE.margin, PAGE.margin - 6, logoBox(this.logo, 22, 84));
     this.t.draw(this.runningTitle, PAGE.margin + 90, PAGE.margin, { size: 8.5, color: MUTED, width: this.width - 90, align: 'right' });
     doc.moveTo(PAGE.margin, PAGE.margin + 24).lineTo(PAGE.margin + this.width, PAGE.margin + 24).strokeColor(LINE).lineWidth(1).stroke();
     doc.x = PAGE.margin;
@@ -350,6 +368,8 @@ export class Layout {
 
 /** Who issues the document — shown under the logo on the first page. */
 export interface DocumentIssuer {
+  /** The published main logo; absent = the built-in Aadione logo. */
+  logo?: PdfLogo | null;
   tradeName: string;
   legalName: string | null;
   address: string | null;
@@ -362,8 +382,7 @@ export interface DocumentIssuer {
 /** Logo, title and up to two reference lines on the right, then the issuer block. */
 export function firstPageHeader(doc: Doc, layout: Layout, header: { title: string; lines: string[]; issuer: DocumentIssuer }) {
   const width = layout.width;
-  const logoHeight = 44;
-  doc.image(AADIONE_LOGO_PNG, PAGE.margin, PAGE.margin, { height: logoHeight, width: (AADIONE_LOGO_SIZE.width / AADIONE_LOGO_SIZE.height) * logoHeight });
+  doc.image(layout.logo.png, PAGE.margin, PAGE.margin, logoBox(layout.logo, 44, 190));
   const right = { width: width - 200, align: 'right' as const };
   layout.t.draw(header.title, PAGE.margin + 200, PAGE.margin, { size: 16, bold: true, ...right });
   header.lines.slice(0, 2).forEach((line, i) => {

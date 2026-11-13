@@ -17,6 +17,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useEntryState } from "@/lib/scrollMemory";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PaymentMethod, type CursorPage, type DeliveryAgentDto } from "@shared";
 import { formatPaise } from "@shared/money";
@@ -107,11 +108,16 @@ export default function OrdersPage() {
   // open tab is derived, so a link's ?tab= is honoured once the mode is known.
   const tabs = visibleAdminOrderTabs(manualPayments);
   const badgeTabs = orderBadgeTabs(manualPayments);
-  const [requestedTab, setTab] = useState<string>(() => params.get("tab") ?? "PROCESSING");
+  // Tab, search and opened orders are kept per history entry, so Back to this
+  // page shows the same rows the remembered scroll position belongs to.
+  const [requestedTab, setTab] = useEntryState<string>("tab", params.get("tab") ?? "PROCESSING");
   const tab: V2AdminOrderTab = resolveAdminOrderTab(requestedTab, manualPayments);
-  const [search, setSearch] = useState(() => params.get("search") ?? "");
+  const [search, setSearch] = useEntryState("search", params.get("search") ?? "");
   const [error, setError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedIds, setExpandedIds] = useEntryState<string[]>("expanded", []);
+  const expanded: ReadonlySet<string> = new Set(expandedIds);
+  const setExpanded = (change: (current: ReadonlySet<string>) => ReadonlySet<string>) =>
+    setExpandedIds((ids) => [...change(new Set(ids))]);
 
   const queryClient = useQueryClient();
   const markOrderRead = useMarkOrderRead();

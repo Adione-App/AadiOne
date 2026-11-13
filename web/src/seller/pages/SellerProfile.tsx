@@ -49,6 +49,7 @@ import { useSellerAuth } from '../sellerAuth';
 import { CheckState, SkeletonBlock } from '../sellerUi';
 import StoreLocationPanel from '../StoreLocationPanel';
 import { SellerDisclosurePanel } from '@/components/SellerDisclosurePanel';
+import { SellerLegalLinks } from '../sellerLegal';
 import {
   DOCUMENT_TYPE_LABEL,
   DocumentNumber,
@@ -312,6 +313,9 @@ export default function SellerProfilePage() {
 
       {/* What customers see about this store, and its customer-care contact. */}
       <SellerDisclosurePanel client={sellerApi} path="/seller/disclosure" queryKey={['seller', 'disclosure']} canEdit audience="seller" />
+
+      {/* The published Seller Terms / Seller Privacy Policy (nothing while unpublished). */}
+      <SellerLegalLinks intro="Your terms with Aadione:" className="px-1" />
 
       {/* 1. Onboarding status */}
       <Panel title="Onboarding Status" action={<Pill tone={status.tone}>{status.label}</Pill>}>

@@ -20,9 +20,15 @@ import PrivacyPolicy from './pages/legal/PrivacyPolicy'
 import Terms from './pages/legal/Terms'
 import CancellationRefund from './pages/legal/CancellationRefund'
 import DeliveryPolicy from './pages/legal/DeliveryPolicy'
+import CookiePolicy from './pages/legal/CookiePolicy'
+import SellerTerms from './pages/legal/SellerTerms'
+import SellerPrivacy from './pages/legal/SellerPrivacy'
+import { useFaviconSync } from './lib/branding'
 import DeleteAccount from './pages/DeleteAccount'
 
 export default function App() {
+  // The tab icon follows the favicon published in Admin → Branding & Identity.
+  useFaviconSync()
   return (
     <div className="flex min-h-screen flex-col bg-white">
       <ScrollToTop />
@@ -45,13 +51,17 @@ export default function App() {
           <Route path="/terms-and-conditions" element={<Terms />} />
           <Route path="/cancellation-refund-policy" element={<CancellationRefund />} />
           <Route path="/delivery-policy" element={<DeliveryPolicy />} />
+          <Route path="/cookie-policy" element={<CookiePolicy />} />
+          <Route path="/seller-terms" element={<SellerTerms />} />
+          <Route path="/seller-privacy" element={<SellerPrivacy />} />
 
           <Route path="/delete-account" element={<DeleteAccount />} />
 
           {/* Short addresses people type or apps link to; the canonical pages keep their URLs. */}
           <Route path="/privacy" element={<Navigate to="/privacy-policy" replace />} />
           <Route path="/terms" element={<Navigate to="/terms-and-conditions" replace />} />
-          <Route path="/refund-policy" element={<Navigate to="/terms-and-conditions#cancelling-an-order" replace />} />
+          <Route path="/refund-policy" element={<Navigate to="/cancellation-refund-policy" replace />} />
+          <Route path="/shipping-policy" element={<Navigate to="/delivery-policy" replace />} />
           <Route path="/account-deletion" element={<Navigate to="/delete-account" replace />} />
 
           <Route path="*" element={<NotFound />} />

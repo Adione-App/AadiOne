@@ -660,7 +660,7 @@ function VerificationView({
               color={colors.textPrimary}
               style={styles.storeName}
             >
-              AdiOne
+              Aadione
             </AppText>
             <AppText
               variant="caption"

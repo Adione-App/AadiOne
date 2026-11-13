@@ -6,7 +6,9 @@
  * its product page, which has every section.)
  */
 
-import { Link, Navigate, useParams } from 'react-router-dom';
+import { Navigate, useParams } from 'react-router-dom';
+import { BackLink } from '@/components/BackLink';
+import { SELLER_PRODUCT_BACK_FROM } from '../sellerUi';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiRequestError } from '@/lib/api';
 import { EmptyState, ErrorBanner, Pill } from '@/components/ui';
@@ -33,11 +35,8 @@ export default function SellerListingDetailPage() {
     ]);
   useScrollToHash(query.isSuccess);
 
-  const back = (
-    <Link to="/seller/products" className="inline-flex items-center gap-1 text-sm font-medium text-gray-600 hover:text-gray-900">
-      <span aria-hidden="true">←</span> Products
-    </Link>
-  );
+  // Back to the list it was opened from, as it was (filters, scroll) — see BackLink.
+  const back = <BackLink to="/seller/products" label="Products" from={SELLER_PRODUCT_BACK_FROM} />;
 
   if (query.isPending) return <SkeletonBlock lines={5} label="Loading listing…" />;
   if (query.isError) {

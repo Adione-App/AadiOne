@@ -87,9 +87,12 @@ describe("publishing checklist, acceptance and seller disclosure", () => {
     }
   });
 
-  it("the publish dialog lets the admin choose whether customers must accept the new version", () => {
+  it("the publish dialog lets the admin choose whether customers (or sellers) must accept the new version", () => {
     assert.match(page, /Ask signed-in customers to accept this version in the app\./);
-    assert.match(page, /editor\.publish\.mutate\(slug === 'about' \? undefined : askAcceptance\)/);
+    assert.match(page, /Ask signed-in sellers to accept this version in the Seller Panel\./);
+    // Only the documents users accept (Privacy / Terms, Seller Terms / Seller Privacy) can ask.
+    assert.match(page, /const accepts = asksForAcceptance\(slug\);/);
+    assert.match(page, /editor\.publish\.mutate\(accepts \? askAcceptance : undefined\)/);
   });
 
   it("the seller disclosure panel edits only the customer-care contact and shows what is missing", () => {

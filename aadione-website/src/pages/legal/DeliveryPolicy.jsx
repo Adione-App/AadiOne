@@ -1,8 +1,16 @@
-import { Navigate } from 'react-router-dom'
+import PolicyPage from './PolicyPage'
 
-// Delivery area, charges and timing are part of the published Terms &
-// Conditions (one source, shared with the app). This address is kept and
-// leads there.
+// The Shipping & Delivery Policy once it is published (Admin → Legal &
+// Policies). Until then this address leads to the delivery section of the
+// published Terms (/terms-and-conditions#delivery-area-charges-and-timing).
 export default function DeliveryPolicy() {
-  return <Navigate to="/terms-and-conditions#delivery-area-charges-and-timing" replace />
+  return (
+    <PolicyPage
+      slug="shipping-policy"
+      title="Shipping & Delivery Policy"
+      description="Where and how Aadione delivers, delivery charges, delivery times and what to expect at your door."
+      path="/delivery-policy"
+      fallbackTo="/terms-and-conditions#delivery-area-charges-and-timing"
+    />
+  )
 }

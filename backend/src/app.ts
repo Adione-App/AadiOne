@@ -36,9 +36,10 @@ import { apiRouter } from './routes';
 /**
  * Public, read-only routes any website may fetch (see the CORS set-up below):
  * the legal pages and business details — NOT /legal/consent, which is a
- * signed-in customer's own record and keeps the CORS_ORIGINS allow-list.
+ * signed-in customer's own record and keeps the CORS_ORIGINS allow-list —
+ * and the published branding (GET /api/v1/branding).
  */
-export const PUBLIC_READ_PATH = /^\/api\/v1\/legal(?:\/(?!consent(?:\/|$))|$)/;
+export const PUBLIC_READ_PATH = /^\/api\/v1\/(?:legal(?:\/(?!consent(?:\/|$))|$)|branding\/?$)/;
 
 export function createApp(): Express {
   const app = express();

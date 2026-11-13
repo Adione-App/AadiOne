@@ -79,6 +79,9 @@ function useResource(path) {
 /** A published page (`data` null = not published yet, e.g. About before its first publish). */
 export const useInfoPage = (slug) => useResource(`/legal/${slug}`)
 
+/** The legal pages a reader can open now (GET /legal/pages) — e.g. footer links to published policies only. */
+export const useAvailablePages = () => useResource('/legal/pages')
+
 /** Business and contact details; every empty setting is null and must be hidden. */
 export const useBusinessInfo = () => useResource('/legal/business')
 

@@ -52,7 +52,7 @@ export default function RewardsScreen({
     if (!referralCode) return;
     try {
       await Share.share({
-        message: `Join me on AdiOne and get great deals on groceries and more.\n\nUse my referral code: ${referralCode}`,
+        message: `Join me on Aadione and get great deals on groceries and more.\n\nUse my referral code: ${referralCode}`,
       });
     } catch {
       // Share sheet dismissed/cancelled — nothing to recover from.
@@ -90,7 +90,7 @@ export default function RewardsScreen({
           </View>
 
           <AppText variant="h2" style={{ marginTop: spacing.md }}>
-            Invite your friends to AdiOne
+            Invite your friends to Aadione
           </AppText>
 
           <AppText variant="body" color={colors.textSecondary} style={{ marginTop: spacing.xs }}>

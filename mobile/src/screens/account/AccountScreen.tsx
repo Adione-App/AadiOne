@@ -19,7 +19,9 @@ import {
   LogOut,
   MapPin,
   Package,
+  RotateCcw,
   ShieldCheck,
+  Truck,
   UserRound,
   type LucideIcon,
 } from 'lucide-react-native';
@@ -27,6 +29,7 @@ import { formatIndianMobile } from '@shared/phone';
 import { colors, radius, spacing } from '@shared/theme';
 import { openLogin } from '@/lib/authGate';
 import { useAuth } from '@/lib/store';
+import { useInfoPage } from '@/lib/infoPages';
 import { useTabBarClearance } from '@/lib/tabBarVisibility';
 import { AppText, Button, NoticeStrip, Screen } from '@/components/ui';
 
@@ -75,7 +78,21 @@ function MenuCard({ items, onSelect }: { items: MenuItem[]; onSelect: (key: stri
   );
 }
 
+/** Customer policies listed only once an admin has published them (Legal & Policies). */
+const POLICY_MENU: MenuItem[] = [
+  { key: 'refund-policy', label: 'Refund & Cancellation', subtitle: 'Cancellations and refunds', icon: RotateCcw },
+  { key: 'shipping-policy', label: 'Shipping & Delivery', subtitle: 'Where and how we deliver', icon: Truck },
+];
+
+function useAboutMenu(): MenuItem[] {
+  const refund = useInfoPage('refund-policy');
+  const shipping = useInfoPage('shipping-policy');
+  const published = new Set([refund.data, shipping.data].filter((page) => page?.source === 'published').map((page) => page!.slug));
+  return [...ABOUT_MENU, ...POLICY_MENU.filter((item) => published.has(item.key as 'refund-policy' | 'shipping-policy'))];
+}
+
 export default function AccountScreen({ onSelect }: { onSelect: (key: string) => void }) {
+  const aboutMenu = useAboutMenu();
   const insets = useSafeAreaInsets();
   const tabBarClearance = useTabBarClearance();
   const user = useAuth((state) => state.user);
@@ -132,7 +149,7 @@ export default function AccountScreen({ onSelect }: { onSelect: (key: string) =>
             </View>
 
             <View style={{ marginLeft: spacing.base, flex: 1 }}>
-              <AppText variant="h3">{user.fullName ?? 'AdiOne customer'}</AppText>
+              <AppText variant="h3">{user.fullName ?? 'Aadione customer'}</AppText>
               <AppText variant="body" color={colors.textSecondary} style={{ marginTop: 2 }}>
                 {formatIndianMobile(user.mobile)}
               </AppText>
@@ -213,7 +230,7 @@ export default function AccountScreen({ onSelect }: { onSelect: (key: string) =>
         <AppText variant="overline" color={colors.textSecondary} style={styles.sectionLabel}>
           About
         </AppText>
-        <MenuCard items={ABOUT_MENU} onSelect={onSelect} />
+        <MenuCard items={aboutMenu} onSelect={onSelect} />
 
         {/* ==========================================================
             LOGOUT

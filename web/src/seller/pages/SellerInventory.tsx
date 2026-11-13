@@ -147,7 +147,7 @@ export default function SellerInventoryPage() {
                   <Link to={hrefOf(l)} className="flex items-start gap-3 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-brand-400">
                     <ProductImage src={l.imageUrl} alt={l.productName} size="h-14 w-14" />
                     <div className="min-w-0 flex-1">
-                      <p className="line-clamp-2 font-semibold leading-snug text-gray-900">{l.productName}</p>
+                      <p className="break-words font-semibold leading-snug text-gray-900">{l.productName}</p>
                       <div className="mt-1 flex flex-wrap gap-1.5">
                         <VisibilityPill reason={l.visibility.reason} />
                         {l.visibility.lowStock && <Pill tone="amber">Low stock</Pill>}
@@ -183,40 +183,36 @@ export default function SellerInventoryPage() {
             ))}
           </ul>
 
-          {/* md+: table */}
+          {/* md+: table sized to the page — stock, reserved and available share one cell. */}
           <Surface className="hidden overflow-hidden md:block">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[760px] text-sm">
+            <div>
+              <table className="w-full text-sm">
                 <caption className="sr-only">Inventory</caption>
                 <thead className="border-b border-gray-200 bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
                   <tr>
-                    <th scope="col" className="px-4 py-3">Product</th>
-                    <th scope="col" className="px-3 py-3 text-right">Stock</th>
-                    <th scope="col" className="px-3 py-3 text-right">Reserved</th>
-                    <th scope="col" className="px-3 py-3 text-right">Available</th>
-                    <th scope="col" className="px-3 py-3">Status</th>
-                    <th scope="col" className="px-3 py-3">Last updated</th>
-                    <th scope="col" className="px-4 py-3 text-right">Action</th>
+                    <th scope="col" className="px-3 py-2.5">Product</th>
+                    <th scope="col" className="px-2.5 py-2.5 text-center">Stock</th>
+                    <th scope="col" className="px-2.5 py-2.5">Status</th>
+                    <th scope="col" className="px-2.5 py-2.5">Last updated</th>
+                    <th scope="col" className="px-3 py-2.5 text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {visible.map((l) => (
                     <tr key={l.id} className="hover:bg-gray-50/60">
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-3">
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-start gap-3">
                           <ProductImage src={l.imageUrl} alt="" size="h-10 w-10" />
                           <div className="min-w-0">
-                            <Link to={hrefOf(l)} className="font-semibold text-gray-900 outline-none hover:text-brand-600 focus-visible:underline">
+                            <Link to={hrefOf(l)} className="break-words font-semibold leading-snug text-gray-900 outline-none hover:text-brand-600 focus-visible:underline">
                               {l.productName}
                             </Link>
-                            <p className="truncate text-xs text-gray-500">{[l.categoryName, l.variantName].filter(Boolean).join(' · ')}</p>
+                            <p className="break-words text-xs text-gray-500">{[l.categoryName, l.variantName].filter(Boolean).join(' · ')}</p>
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 py-3 text-right tabular-nums">{l.stockQty}</td>
-                      <td className="px-3 py-3 text-right tabular-nums">{l.reservedQty}</td>
-                      <td className="px-3 py-3 text-right">
-                        <div className="flex items-center justify-end gap-1">
+                      <td className="px-2.5 py-2.5 text-center">
+                        <div className="flex items-center justify-center gap-1">
                           <button
                             type="button"
                             aria-label={`Decrease stock of ${l.productName}`}
@@ -241,16 +237,19 @@ export default function SellerInventoryPage() {
                             +
                           </button>
                         </div>
+                        <span className="mt-0.5 block text-[11px] tabular-nums text-gray-500">
+                          {l.stockQty} stock · {l.reservedQty} reserved
+                        </span>
                       </td>
-                      <td className="px-3 py-3">
+                      <td className="px-2.5 py-2.5">
                         <div className="flex flex-wrap gap-1">
                           <VisibilityPill reason={l.visibility.reason} />
                           {l.visibility.lowStock && <Pill tone="amber">Low</Pill>}
                         </div>
                       </td>
-                      <td className="whitespace-nowrap px-3 py-3 text-xs text-gray-500">{shortDate.format(new Date(l.updatedAt))}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex justify-end gap-1">
+                      <td className="px-2.5 py-2.5 text-xs text-gray-500">{shortDate.format(new Date(l.updatedAt))}</td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex flex-wrap justify-end gap-1">
                           <Button variant="soft" onClick={() => setAdjusting(l.id)} className="min-h-9 px-3 text-xs">
                             Adjust
                           </Button>

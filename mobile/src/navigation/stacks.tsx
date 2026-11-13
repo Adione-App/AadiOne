@@ -626,6 +626,11 @@ export function AccountStack() {
                 });
               }
 
+              // Shown in the menu only once published (AccountScreen).
+              if (key === "refund-policy" || key === "shipping-policy") {
+                navigation.navigate("Legal", { slug: key });
+              }
+
               if (key === "wishlist") {
                 // Its own bottom tab now (see MainTabs) — not a screen
                 // inside AccountStack, so this hops up to the parent

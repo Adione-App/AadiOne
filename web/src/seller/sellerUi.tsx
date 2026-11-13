@@ -421,3 +421,10 @@ export function useScrollToHash(ready: boolean): void {
 
 export const linkClass =
   'inline-flex items-center gap-1 rounded-lg text-sm font-semibold text-brand-600 outline-none hover:text-brand-700 focus-visible:ring-2 focus-visible:ring-brand-400';
+
+/** Besides Products, the pages a product's "← Back" returns to with history Back (components/BackLink.tsx). */
+export const SELLER_PRODUCT_BACK_FROM = [
+  { path: '/seller/inventory', label: 'Inventory' },
+  { path: '/seller', label: 'Dashboard' },
+  { path: '/seller/notifications', label: 'Notifications' },
+] as const;

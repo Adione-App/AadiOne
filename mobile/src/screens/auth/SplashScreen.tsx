@@ -194,7 +194,7 @@ export default function SplashScreen({
               height: bagSize,
             }}
             resizeMode="contain"
-            accessibilityLabel="AdiOne grocery bag"
+            accessibilityLabel="Aadione grocery bag"
           />
 
           {/* ---------------------------------------------------------
@@ -209,7 +209,7 @@ export default function SplashScreen({
               marginTop: isSmallScreen ? -2 : 0,
             }}
             resizeMode="contain"
-            accessibilityLabel="AdiOne"
+            accessibilityLabel="Aadione"
           />
         </View>
 

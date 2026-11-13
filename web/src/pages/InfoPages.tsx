@@ -1,5 +1,7 @@
 /**
- * Information Pages — Privacy Policy, Terms & Conditions, About Aadione.
+ * Legal & Policies — the customer Privacy Policy, Terms, Refund & Cancellation,
+ * Shipping & Delivery and Cookie policies, the Seller Terms and Seller Privacy
+ * Policy, and About Aadione.
  *
  * Edit → Save draft → Preview → Publish, with version history and restore
  * (lib/infoPages.ts; server: content/info-page.service.ts). Customers — in the
@@ -24,9 +26,11 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  INFO_PAGE_AUDIENCE,
   INFO_PAGE_SLUGS,
   INFO_PAGE_TITLES,
   Permission,
+  asksForAcceptance,
   infoPageUnconfirmed,
   roleHasPermission,
   type InfoPageBlock,
@@ -36,6 +40,7 @@ import {
 } from '@shared';
 import { Button, Card, ErrorBanner, Field, Modal, Panel, Pill, Spinner, inputClass } from '@/components/ui';
 import { useAuth } from '@/lib/auth';
+import { apiAbsoluteUrl } from '@/lib/api';
 import { previewInfoPage, useInfoPageEditor } from '@/lib/infoPages';
 import { OWNER_FACTS, TECHNICAL_FACTS, type ChecklistItem } from '@/lib/legalChecklist';
 
@@ -47,8 +52,27 @@ const UNPUBLISHED_NOTE: Record<InfoPageSlug, string> = {
     'Customers currently see the OLD built-in privacy wording, written for the earlier single-shop service. It is out of date (it describes direct UPI payments and an anonymised 8-year record that the system does not keep). Publish the reviewed policy to replace it in the app, on the website and at the public link.',
   terms:
     'Customers currently see the OLD built-in terms, written for the earlier single-shop service and out of date (for example direct UPI payments). Publish the reviewed terms to replace them in the app, on the website and at the public link.',
+  'refund-policy':
+    'Not published yet. Until it is, the website\'s refund link points to the Refund sections of the Terms, and the app shows no separate refund policy. Keep it consistent with the Terms.',
+  'shipping-policy':
+    'Not published yet. Until it is, the website\'s delivery link points to the Delivery section of the Terms, and the app shows no separate delivery policy. Keep it consistent with the Terms.',
+  'cookie-policy': 'Not published yet — the website shows no Cookie Policy link until you publish.',
+  'seller-terms':
+    'Not published yet. Sellers are not shown Seller Terms in the Seller Panel, and are asked to accept them only once BOTH the Seller Terms and the Seller Privacy Policy are published.',
+  'seller-privacy':
+    'Not published yet. Sellers are asked to accept it only once BOTH the Seller Terms and the Seller Privacy Policy are published.',
   about: 'Not published yet — the app shows a short built-in introduction and the website shows no About text until you publish.',
 };
+
+const AUDIENCE_GROUPS: { label: string; audience: (typeof INFO_PAGE_AUDIENCE)[InfoPageSlug] }[] = [
+  { label: 'Customers', audience: 'customer' },
+  { label: 'Sellers', audience: 'seller' },
+  { label: 'Everyone', audience: 'general' },
+];
+
+/** The public web page of a page (or of one earlier version). */
+const publicPageUrl = (slug: InfoPageSlug, version?: number) =>
+  apiAbsoluteUrl(version ? `/legal/${slug}/versions/${version}/page` : `/legal/${slug}/page`);
 
 /** Dates the legal wording has to keep up with (verify each against the official Gazette before relying on it). */
 const LEGAL_CALENDAR: { date: string; text: string }[] = [
@@ -62,19 +86,24 @@ export default function InfoPagesPage() {
   const [slug, setSlug] = useState<InfoPageSlug>('privacy');
   return (
     <div className="space-y-5">
-      <nav aria-label="Information pages" className="flex flex-wrap gap-2">
-        {INFO_PAGE_SLUGS.map((option) => (
-          <button
-            key={option}
-            type="button"
-            onClick={() => setSlug(option)}
-            aria-pressed={slug === option}
-            className={`rounded-full border px-4 py-2 text-sm font-semibold ${
-              slug === option ? 'border-brand-500 bg-brand-500 text-white' : 'border-gray-200 bg-white text-gray-700 hover:border-brand-200'
-            }`}
-          >
-            {INFO_PAGE_TITLES[option]}
-          </button>
+      <nav aria-label="Legal documents and pages" className="space-y-2">
+        {AUDIENCE_GROUPS.map((group) => (
+          <div key={group.audience} className="flex flex-wrap items-center gap-2">
+            <span className="w-20 shrink-0 text-xs font-semibold uppercase tracking-wide text-gray-500">{group.label}</span>
+            {INFO_PAGE_SLUGS.filter((option) => INFO_PAGE_AUDIENCE[option] === group.audience).map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setSlug(option)}
+                aria-pressed={slug === option}
+                className={`rounded-full border px-4 py-2 text-sm font-semibold ${
+                  slug === option ? 'border-brand-500 bg-brand-500 text-white' : 'border-gray-200 bg-white text-gray-700 hover:border-brand-200'
+                }`}
+              >
+                {INFO_PAGE_TITLES[option]}
+              </button>
+            ))}
+          </div>
         ))}
       </nav>
       <PageEditor key={slug} slug={slug} />
@@ -91,8 +120,11 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [confirm, setConfirm] = useState<null | 'publish' | 'template' | 'discard' | { restore: string; revision: number }>(null);
-  // Privacy / Terms: ask signed-in customers to accept the new version (the first time always).
+  // Documents users accept (customer Privacy / Terms, Seller Terms / Privacy):
+  // ask signed-in users to accept the new version (the first time always).
   const [askAcceptance, setAskAcceptance] = useState(false);
+  const accepts = asksForAcceptance(slug);
+  const readers = INFO_PAGE_AUDIENCE[slug] === 'seller' ? 'sellers' : 'customers';
 
   if (doc.isLoading) return <Spinner />;
   if (doc.isError || !doc.data) return <ErrorBanner message={errorText(doc.error) ?? 'Could not load this page.'} />;
@@ -134,6 +166,12 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
                   {data.published.publishedBy ? ` by ${data.published.publishedBy}` : ''}
                   {data.published.restoredFromVersion ? ` · re-published text of version ${data.published.restoredFromVersion}` : ''}
                 </p>
+                <p className="break-all text-gray-500">
+                  Public page:{' '}
+                  <a href={publicPageUrl(slug)} target="_blank" rel="noopener noreferrer" className="font-medium text-brand-600 hover:underline">
+                    {publicPageUrl(slug)}
+                  </a>
+                </p>
               </>
             ) : (
               <p className={slug === 'about' ? 'text-gray-600' : 'rounded-xl bg-red-50 px-3 py-2 text-red-800'}>
@@ -169,7 +207,7 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
               </Button>
               <Button
                 onClick={() => {
-                  setAskAcceptance(slug !== 'about' && !data.acceptanceEverRequired);
+                  setAskAcceptance(accepts && !data.acceptanceEverRequired);
                   setConfirm('publish');
                 }}
                 disabled={!data.draft || dirty || busy}
@@ -226,14 +264,25 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
                     (published {dateTime(item.publishedAt)}
                     {item.publishedBy ? ` by ${item.publishedBy}` : ''}
                     {item.restoredFromVersion ? `; re-published text of version ${item.restoredFromVersion}` : ''}
-                    {item.requiresAcceptance ? '; customers asked to accept' : ''})
+                    {item.requiresAcceptance ? `; ${readers} asked to accept` : ''})
                   </span>
                 </span>
-                {canEdit ? (
-                  <Button variant="secondary" onClick={() => setConfirm({ restore: item.id, revision: item.revision })} disabled={busy}>
-                    Restore text to draft
-                  </Button>
-                ) : null}
+                <span className="flex flex-wrap items-center gap-2">
+                  {/* Earlier versions stay readable at their own public link (e.g. the version someone accepted). */}
+                  <a
+                    href={publicPageUrl(slug, item.revision)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm font-semibold text-brand-600 hover:underline"
+                  >
+                    View version {item.version}
+                  </a>
+                  {canEdit ? (
+                    <Button variant="secondary" onClick={() => setConfirm({ restore: item.id, revision: item.revision })} disabled={busy}>
+                      Restore text to draft
+                    </Button>
+                  ) : null}
+                </span>
               </li>
             ))}
           </ul>
@@ -250,15 +299,18 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
           footer={
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setConfirm(null)}>Cancel</Button>
-              <Button onClick={() => { setConfirm(null); editor.publish.mutate(slug === 'about' ? undefined : askAcceptance); }}>Publish now</Button>
+              <Button onClick={() => { setConfirm(null); editor.publish.mutate(accepts ? askAcceptance : undefined); }}>Publish now</Button>
             </div>
           }
         >
           <p className="text-sm text-gray-700">
-            Customers see it in the app, on the website and at the public page link within about a minute. Only this page is published — the other pages are
-            not changed. Make sure the wording has been reviewed and, for the Privacy Policy and Terms, approved by a qualified legal adviser.
+            {INFO_PAGE_AUDIENCE[slug] === 'seller'
+              ? 'Sellers see it in the Seller Panel and at the public page link within about a minute.'
+              : 'Readers see it in the app, on the website and at the public page link within about a minute.'}{' '}
+            Only this page is published — the other pages are not changed, and earlier versions stay readable. Make sure the wording has been reviewed and,
+            for every legal document, approved by a qualified legal adviser.
           </p>
-          {slug !== 'about' ? (
+          {accepts ? (
             <label className="mt-4 flex items-start gap-3 text-sm text-gray-700">
               <input
                 type="checkbox"
@@ -268,11 +320,16 @@ function PageEditor({ slug }: { slug: InfoPageSlug }) {
                 onChange={(e) => setAskAcceptance(e.target.checked)}
               />
               <span>
-                Ask signed-in customers to accept this version in the app.
+                {readers === 'sellers'
+                  ? 'Ask signed-in sellers to accept this version in the Seller Panel.'
+                  : 'Ask signed-in customers to accept this version in the app.'}
                 {data.acceptanceEverRequired
-                  ? ' Use it for significant changes; leave it off for corrections so customers are not asked again.'
-                  : ' The first published version is always accepted by customers once.'}
-                {' '}Customers are asked only when both the Privacy Policy and the Terms are published.
+                  ? ` Use it for significant changes; leave it off for corrections so ${readers} are not asked again.`
+                  : ` The first published version is always accepted by ${readers} once.`}
+                {' '}
+                {readers === 'sellers'
+                  ? 'Sellers are asked only when both the Seller Terms and the Seller Privacy Policy are published.'
+                  : 'Customers are asked only when both the Privacy Policy and the Terms are published.'}
               </span>
             </label>
           ) : null}

@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="AdiOne">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Aadione">
   <!--
-    AdiOne mark — the master definition. Every PNG size in this folder and in
+    Aadione mark — the master definition. Every PNG size in this folder and in
     mobile/assets is a rasterisation of exactly this geometry, so changing the
     brand colour or the letterform here and re-running the icon generator keeps
     the launcher icon, the favicon and the in-app mark identical.

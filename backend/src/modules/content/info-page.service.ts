@@ -53,7 +53,13 @@ import {
   resolveInfoPage,
   validateInfoPage,
   webHref,
+  asksForAcceptance,
+  INFO_PAGE_AUDIENCE,
+  INFO_PAGE_TITLES,
+  type AcceptanceSlug,
+  type InfoPageIndexEntryDto,
   type AdminInfoPageDto,
+  type InfoPageVersionSummaryDto,
   type BusinessInfoDto,
   type InfoPageContent,
   type InfoPageDto,
@@ -372,7 +378,8 @@ export async function getAdminInfoPage(slug: InfoPageSlug): Promise<AdminInfoPag
       ? { source: 'published', version: String(published.revision), lastUpdatedLabel: formatInfoPageDate(indiaDateOf(published.publishedAt ?? published.updatedAt)) }
       : { source: 'builtin', version: null, lastUpdatedLabel: formatInfoPageDate(BUILTIN_INFO_PAGES[slug]?.updatedAt) },
     nextVersion,
-    acceptanceEverRequired: rows.some((row) => row.status !== ContentDocumentStatus.DRAFT && storedContent(slug, row).requiresAcceptance === true),
+    acceptanceEverRequired:
+      asksForAcceptance(slug) && rows.some((row) => row.status !== ContentDocumentStatus.DRAFT && storedContent(slug, row).requiresAcceptance === true),
     missingRequired: missingRequired(slug, values),
     template: templateFor(slug),
     settings: settingsDto(slug, values),
@@ -493,9 +500,10 @@ export async function publishInfoPage(
   }
   const today = indiaDateOf(new Date());
   assertEffectiveDateInRange(content, today);
-  // Privacy / Terms: ask signed-in customers to accept this version? The
-  // admin decides; a page's FIRST acceptance always asks. Never for About.
-  const isLegal = slug !== 'about';
+  // Documents users accept (customer Privacy / Terms, Seller Terms / Seller
+  // Privacy): ask signed-in users to accept this version? The admin decides;
+  // a page's FIRST publication always asks. Never for the other pages.
+  const isLegal = asksForAcceptance(slug);
   const askedBefore =
     isLegal &&
     (await prisma.contentDocument.findMany({ where: { key, status: { not: ContentDocumentStatus.DRAFT } }, select: { content: true } })).some(
@@ -578,8 +586,8 @@ export interface LegalPageVersions {
   required: number;
 }
 
-/** Privacy or Terms: what is published and which version customers must have accepted; null while unpublished. */
-export async function legalPageVersions(slug: 'privacy' | 'terms'): Promise<LegalPageVersions | null> {
+/** A document users accept: what is published and which version they must have accepted; null while unpublished. */
+export async function legalPageVersions(slug: AcceptanceSlug): Promise<LegalPageVersions | null> {
   const rows = await prisma.contentDocument.findMany({
     where: { key: INFO_PAGE_KEYS[slug], status: { not: ContentDocumentStatus.DRAFT } },
     select: { id: true, revision: true, status: true, content: true },
@@ -590,4 +598,96 @@ export async function legalPageVersions(slug: 'privacy' | 'terms'): Promise<Lega
   const flagged = rows.filter((row) => (row.content as { requiresAcceptance?: unknown } | null)?.requiresAcceptance === true);
   const required = flagged.length > 0 ? flagged[flagged.length - 1]!.revision : rows[0]!.revision;
   return { current: { revision: current.revision, documentId: current.id }, required };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Earlier versions, public (GET /legal/:slug/versions[/:version])             */
+/* -------------------------------------------------------------------------- */
+
+/** Every published version of a page, newest first; empty while never published. */
+export async function listPublicInfoPageVersions(slug: InfoPageSlug): Promise<InfoPageVersionSummaryDto[]> {
+  const rows = await prisma.contentDocument.findMany({
+    where: { key: INFO_PAGE_KEYS[slug], status: { not: ContentDocumentStatus.DRAFT } },
+    orderBy: { revision: 'desc' },
+    select: { revision: true, status: true, publishedAt: true, content: true },
+  });
+  return rows.map((row) => {
+    const publishedOn = indiaDateOf(row.publishedAt ?? new Date());
+    const effective = effectiveDateAfter((row.content as { effectiveDate?: string } | null)?.effectiveDate, publishedOn);
+    return {
+      version: String(row.revision),
+      publishedAt: row.publishedAt?.toISOString() ?? null,
+      lastUpdatedLabel: formatInfoPageDate(publishedOn),
+      effectiveLabel: effective ? formatInfoPageDate(effective) : null,
+      isLatest: row.status === ContentDocumentStatus.PUBLISHED,
+    };
+  });
+}
+
+/**
+ * One published version — the latest or an earlier one, never a draft — so
+ * the exact text someone accepted stays readable after a newer version is
+ * published. Its business details are today's settings (as on every read).
+ */
+export async function getPublicInfoPageVersion(slug: InfoPageSlug, revision: number): Promise<InfoPageDto | null> {
+  const row = await prisma.contentDocument.findFirst({
+    where: { key: INFO_PAGE_KEYS[slug], revision, status: { not: ContentDocumentStatus.DRAFT } },
+  });
+  if (!row) return null;
+  const checked = validateInfoPage(row.content);
+  if (!checked.ok) return null;
+  const values = await infoPageValues();
+  return {
+    ...toPublicDto(slug, checked.content, values, {
+      revision: row.revision,
+      updatedAt: indiaDateOf(row.publishedAt ?? row.updatedAt),
+      publishedAt: row.publishedAt?.toISOString() ?? null,
+      source: 'published',
+    }),
+    isLatest: row.status === ContentDocumentStatus.PUBLISHED,
+  };
+}
+
+/** Pages a reader can open now: privacy and terms always (built-in wording), the others once published. */
+export async function availableInfoPageSlugs(): Promise<InfoPageSlug[]> {
+  const rows = await prisma.contentDocument.findMany({
+    where: { key: { in: Object.values(INFO_PAGE_KEYS) }, status: ContentDocumentStatus.PUBLISHED },
+    select: { key: true },
+  });
+  const published = new Set(rows.map((row) => row.key));
+  return (Object.keys(INFO_PAGE_KEYS) as InfoPageSlug[]).filter((slug) => published.has(INFO_PAGE_KEYS[slug]) || BUILTIN_INFO_PAGES[slug] !== undefined);
+}
+
+/** GET /legal/pages — every page a reader can open now, with its version and date. */
+export async function listAvailableInfoPages(): Promise<InfoPageIndexEntryDto[]> {
+  const rows = await prisma.contentDocument.findMany({
+    where: { key: { in: Object.values(INFO_PAGE_KEYS) }, status: ContentDocumentStatus.PUBLISHED },
+    select: { key: true, revision: true, publishedAt: true, content: true },
+  });
+  const byKey = new Map(rows.map((row) => [row.key, row]));
+  const entries: InfoPageIndexEntryDto[] = [];
+  for (const slug of Object.keys(INFO_PAGE_KEYS) as InfoPageSlug[]) {
+    const row = byKey.get(INFO_PAGE_KEYS[slug]);
+    if (row) {
+      const title = (row.content as { title?: unknown } | null)?.title;
+      entries.push({
+        slug,
+        title: typeof title === 'string' && title.trim() && !title.includes('{{') ? title.trim() : INFO_PAGE_TITLES[slug],
+        audience: INFO_PAGE_AUDIENCE[slug],
+        version: String(row.revision),
+        lastUpdatedLabel: formatInfoPageDate(indiaDateOf(row.publishedAt ?? new Date())),
+        source: 'published',
+      });
+    } else if (BUILTIN_INFO_PAGES[slug]) {
+      entries.push({
+        slug,
+        title: INFO_PAGE_TITLES[slug],
+        audience: INFO_PAGE_AUDIENCE[slug],
+        version: null,
+        lastUpdatedLabel: formatInfoPageDate(BUILTIN_INFO_PAGES[slug]!.updatedAt),
+        source: 'builtin',
+      });
+    }
+  }
+  return entries;
 }

@@ -22,6 +22,13 @@
  *   POST   /content/home-layout/publish  CATALOG_WRITE  draft → next published revision
  *   POST   /content/home-layout/restore/:id  CATALOG_WRITE  an earlier revision → draft
  *   POST   /content/home-layout/background-image  CATALOG_WRITE  process an uploaded image
+ *   GET    /branding                     CONFIG_READ    Branding & Identity: slots, draft, history
+ *   POST   /branding/assets/:slot        CONFIG_WRITE   attach an upload (purpose "branding") to the draft
+ *   POST   /branding/assets/:slot/default CONFIG_WRITE  back to the built-in artwork (draft)
+ *   POST   /branding/assets/:slot/reuse  CONFIG_WRITE   an earlier file of the slot (draft)
+ *   POST   /branding/publish             CONFIG_WRITE   all, or the chosen, changed slots
+ *   POST   /branding/restore/:id         CONFIG_WRITE   an earlier revision → draft
+ *   DELETE /branding/draft               CONFIG_WRITE
  *
  * Every image goes through the shared pipeline (uploaded-image.service.ts):
  * validated, resized, stored as WebP; the raw upload is deleted.
@@ -66,11 +73,17 @@ import {
   PRODUCT_SHELF_SCOPE_MAX,
   PRODUCT_SHELF_SOURCES,
   PRODUCT_SHELF_VIEW_ALL_TYPES,
+  BRAND_ASSET_SLOTS,
   INFO_PAGE_SLUGS,
   Permission,
+  roleHasPermission,
+  ErrorCode,
   type BannerBackground,
+  type BrandAssetSlot,
   type InfoPageSlug,
 } from '../../shared';
+import { AppError } from '../../common/errors';
+import * as branding from '../content/branding.service';
 import * as homeLayout from '../content/home-layout.service';
 import * as infoPages from '../content/info-page.service';
 import { asyncHandler, created, ok } from '../../common/response';
@@ -109,6 +122,10 @@ adminContentRouter.post(
       .strict(),
   }),
   asyncHandler(async (req: Request, res: Response) => {
+    // Brand assets are an owner-level setting, not catalogue work.
+    if (req.body.purpose === 'branding' && !roleHasPermission(requireUser(req).role, Permission.CONFIG_WRITE)) {
+      throw new AppError(ErrorCode.FORBIDDEN, { message: 'Only an Admin can change the branding.' });
+    }
     ok(res, await createAdminUploadTarget(req.body));
   }),
 );
@@ -609,5 +626,78 @@ adminContentRouter.post(
   validate({ params: infoPageParams.extend({ id: uuid }) }),
   asyncHandler(async (req: Request, res: Response) => {
     ok(res, await infoPages.restoreInfoPageRevision(slugOf(req), req.params['id'] as string, requireUser(req).id));
+  }),
+);
+
+/* -------------------------------------------------------------------------- */
+/* Branding & Identity (content/branding.service.ts)                           */
+/* -------------------------------------------------------------------------- */
+
+const brandSlotParams = z.object({ slot: z.enum(BRAND_ASSET_SLOTS) });
+const brandSlotOf = (req: Request) => req.params['slot'] as BrandAssetSlot;
+
+adminContentRouter.get(
+  '/branding',
+  requirePermission(Permission.CONFIG_READ),
+  asyncHandler(async (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    ok(res, await branding.getAdminBranding());
+  }),
+);
+
+adminContentRouter.post(
+  '/branding/assets/:slot',
+  requirePermission(Permission.CONFIG_WRITE),
+  validate({ params: brandSlotParams, body: z.object({ key, fileName: z.string().trim().max(200).optional() }).strict() }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await branding.attachBrandAsset(brandSlotOf(req), req.body.key, req.body.fileName, requireUser(req).id));
+  }),
+);
+
+adminContentRouter.post(
+  '/branding/assets/:slot/default',
+  requirePermission(Permission.CONFIG_WRITE),
+  validate({ params: brandSlotParams }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await branding.resetBrandAsset(brandSlotOf(req), requireUser(req).id));
+  }),
+);
+
+adminContentRouter.post(
+  '/branding/assets/:slot/reuse',
+  requirePermission(Permission.CONFIG_WRITE),
+  validate({ params: brandSlotParams, body: z.object({ revision: z.number().int().positive() }).strict() }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await branding.reuseBrandAsset(brandSlotOf(req), req.body.revision, requireUser(req).id));
+  }),
+);
+
+adminContentRouter.post(
+  '/branding/publish',
+  requirePermission(Permission.CONFIG_WRITE),
+  validate({
+    body: z
+      .object({ basedOnRevision: z.number().int().min(0), slots: z.array(z.enum(BRAND_ASSET_SLOTS)).min(1).max(BRAND_ASSET_SLOTS.length).optional() })
+      .strict(),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await branding.publishBranding(req.body.basedOnRevision, req.body.slots, requireUser(req).id));
+  }),
+);
+
+adminContentRouter.post(
+  '/branding/restore/:id',
+  requirePermission(Permission.CONFIG_WRITE),
+  validate({ params: z.object({ id: uuid }) }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await branding.restoreBrandingRevision(req.params['id'] as string, requireUser(req).id));
+  }),
+);
+
+adminContentRouter.delete(
+  '/branding/draft',
+  requirePermission(Permission.CONFIG_WRITE),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await branding.discardBrandingDraft(requireUser(req).id));
   }),
 );

@@ -32,7 +32,7 @@ export function renderFinanceReportPdf(data: FinanceReportData, options: { compr
     },
     options.compress ?? true,
   );
-  const layout = new Layout(doc, `Financial overview · ${scopeText(data)} · ${o.period.label} (${periodText(data)})`, options.trace);
+  const layout = new Layout(doc, `Financial overview · ${scopeText(data)} · ${o.period.label} (${periodText(data)})`, options.trace, data.issuer.logo ?? undefined);
   const money = layout.money;
   firstPageHeader(doc, layout, {
     title: 'Financial Overview',

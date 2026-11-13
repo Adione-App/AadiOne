@@ -61,6 +61,7 @@ export function renderStatementPdf(
     doc,
     `Seller settlement statement · ${data.seller.storeName} · ${date(data.settlement.periodStart)} – ${date(data.settlement.periodEnd)}`,
     options.trace,
+    data.issuer.logo ?? undefined,
   );
   const m = layout.money;
   const s = data.settlement;

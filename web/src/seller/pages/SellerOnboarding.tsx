@@ -23,7 +23,7 @@
 import { useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { SellerType, isFoodSellerType, type SellerLifecycleDto } from '@shared';
-import { AadioneWordmark } from '@/components/PartnerLogin';
+import { BrandLogo } from '@/components/BrandLogo';
 import { Button, ErrorBanner, Field, Icon, Modal, Panel, Pill, inputClass, type IconName, type Tone } from '@/components/ui';
 import {
   DOCUMENT_TYPE_LABEL,
@@ -142,7 +142,7 @@ function Shell({ sellerName, children }: { sellerName: string | null; children: 
       <header className="sticky top-0 z-30 border-b border-gray-200 bg-white">
         <div className="mx-auto flex max-w-4xl items-center gap-3 px-4 py-3 sm:px-6">
           <div className="min-w-0 flex-1">
-            <AadioneWordmark className="text-2xl" />
+            <BrandLogo use="seller" className="h-8" wordmarkClassName="text-2xl" />
             <p className="truncate text-xs font-medium text-gray-500">
               Seller onboarding{sellerName ? ` · ${sellerName}` : ''}
               {user?.fullName ? ` · ${user.fullName}` : ''}

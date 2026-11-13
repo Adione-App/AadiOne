@@ -1,8 +1,17 @@
-import { Navigate } from 'react-router-dom'
+import PolicyPage from './PolicyPage'
 
-// Cancellations, refunds and returns are part of the published Terms &
-// Conditions (one source, shared with the app). This address is kept — it may
-// be registered with payment and app-store partners — and leads there.
+// The Refund & Cancellation Policy once it is published (Admin → Legal &
+// Policies). Until then this address — which may be registered with payment
+// and app-store partners — leads to the cancellation and refund sections of
+// the published Terms (/terms-and-conditions#cancelling-an-order).
 export default function CancellationRefund() {
-  return <Navigate to="/terms-and-conditions#cancelling-an-order" replace />
+  return (
+    <PolicyPage
+      slug="refund-policy"
+      title="Refund & Cancellation Policy"
+      description="How to cancel an Aadione order, when you are refunded and how refunds reach you."
+      path="/cancellation-refund-policy"
+      fallbackTo="/terms-and-conditions#cancelling-an-order"
+    />
+  )
 }

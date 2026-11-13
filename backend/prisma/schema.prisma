@@ -489,6 +489,7 @@ model User {
   notifications      Notification[]
   deviceTokens       DeviceToken[]
   legalConsents      LegalConsent[]
+  legalAcceptances   LegalAcceptance[]
   couponRedemptions  CouponRedemption[]
   stockLedgerEntries StockLedger[]
   statusChanges      OrderStatusHistory[]
@@ -2278,6 +2279,8 @@ model ContentDocument {
   createdAt         DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt         DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
 
+
+  acceptances LegalAcceptance[]
   @@index([key, status, revision])
   @@map("content_documents")
 }
@@ -2911,6 +2914,31 @@ model RefundCorrection {
 /// A signed-in customer's explicit acceptance of the published Privacy Policy
 /// and Terms (never inferred from signing in). Append-only: a new acceptance
 /// adds a row; history is never changed. No IP / device identifiers.
+/// A user's explicit acceptance of one published legal document that asks
+/// for it (Seller Terms / Seller Privacy Policy in the Seller Panel).
+/// Append-only; migration 20261112120000_v2_legal_acceptances.
+model LegalAcceptance {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  /// The seller account it was accepted for (seller documents).
+  sellerId    String?  @map("seller_id") @db.Uuid
+  /// content_documents key, e.g. "legal_seller_terms".
+  documentKey String   @map("document_key") @db.VarChar(60)
+  /// The published version accepted.
+  revision    Int
+  documentId  String   @map("document_id") @db.Uuid
+  /// ANDROID | IOS | WEB
+  source      String   @db.VarChar(16)
+  appVersion  String?  @map("app_version") @db.VarChar(20)
+  acceptedAt  DateTime @default(now()) @map("accepted_at") @db.Timestamptz(3)
+
+  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  document ContentDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+
+  @@index([userId, documentKey, acceptedAt])
+  @@map("legal_acceptances")
+}
+
 model LegalConsent {
   id                String   @id @default(uuid()) @db.Uuid
   userId            String   @map("user_id") @db.Uuid

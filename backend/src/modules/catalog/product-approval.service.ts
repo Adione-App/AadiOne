@@ -641,7 +641,7 @@ export async function changeOwnProductStatus(
   // ARCHIVED = disabled by AdiOne (admin moderation): the seller can't lift it.
   if (product.status === ProductStatus.ARCHIVED) {
     throw new AppError(ErrorCode.FORBIDDEN, {
-      message: 'AdiOne has disabled this product. It can’t be shown or hidden until AdiOne enables it again.',
+      message: 'Aadione has disabled this product. It can’t be shown or hidden until Aadione enables it again.',
       internalMessage: `seller ${sellerId} tried to change admin-disabled product ${productId}`,
     });
   }

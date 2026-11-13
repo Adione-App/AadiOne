@@ -45,7 +45,7 @@ export const PRIVACY_POLICY: LegalDocument = {
     {
       heading: 'Who we are',
       body: [
-        `AdiOne is a local grocery delivery service operated by ${PLACEHOLDERS.BUSINESS_NAME}, ${PLACEHOLDERS.BUSINESS_ADDRESS}.`,
+        `Aadione is a local grocery delivery service operated by ${PLACEHOLDERS.BUSINESS_NAME}, ${PLACEHOLDERS.BUSINESS_ADDRESS}.`,
         `This policy explains what personal information we collect, why we collect it, and what you can do about it. If anything here is unclear, write to ${PLACEHOLDERS.SUPPORT_EMAIL} or call ${PLACEHOLDERS.SUPPORT_PHONE}.`,
       ],
     },
@@ -124,7 +124,7 @@ export const PRIVACY_POLICY: LegalDocument = {
     {
       heading: 'Children',
       body: [
-        'AdiOne is not intended for children under 18. We do not knowingly collect information from them.',
+        'Aadione is not intended for children under 18. We do not knowingly collect information from them.',
       ],
     },
     {
@@ -144,7 +144,7 @@ export const TERMS_AND_CONDITIONS: LegalDocument = {
     {
       heading: 'Agreement',
       body: [
-        `By using AdiOne you agree to these terms. The service is operated by ${PLACEHOLDERS.BUSINESS_NAME}.`,
+        `By using Aadione you agree to these terms. The service is operated by ${PLACEHOLDERS.BUSINESS_NAME}.`,
       ],
     },
     {

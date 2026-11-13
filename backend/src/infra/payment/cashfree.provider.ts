@@ -275,7 +275,7 @@ export class CashfreeProvider implements PaymentProvider {
           ...(email.length >= 3 && email.length <= 100 ? { customer_email: email } : {}),
         },
         ...(input.expiresAt ? { order_expiry_time: toCashfreeTime(input.expiresAt) } : {}),
-        order_note: `AdiOne order ${input.orderNumber}`.slice(0, 200),
+        order_note: `Aadione order ${input.orderNumber}`.slice(0, 200),
         // Lets anyone looking at the Cashfree dashboard find the AdiOne order.
         order_tags: {
           adione_order_id: input.orderId,

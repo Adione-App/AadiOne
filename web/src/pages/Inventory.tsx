@@ -154,77 +154,125 @@ export default function InventoryPage() {
         <EmptyPanel icon="inventory" title="No listings found" hint="Try clearing your filters." />
       ) : (
         <>
-          <Surface className="overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[920px] text-sm">
-                <caption className="sr-only">Marketplace inventory</caption>
-                <thead className="border-b border-gray-200 bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
-                  <tr>
-                    <th scope="col" className="px-4 py-3">Product</th>
-                    <th scope="col" className="px-3 py-3">Seller</th>
-                    <th scope="col" className="px-3 py-3 text-right">Stock</th>
-                    <th scope="col" className="px-3 py-3 text-right">Reserved</th>
-                    <th scope="col" className="px-3 py-3 text-right">Available</th>
-                    <th scope="col" className="px-3 py-3">Status</th>
-                    <th scope="col" className="px-3 py-3">Updated</th>
-                    <th scope="col" className="px-4 py-3 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {inventory.data.items.map((row) => (
-                    <tr key={row.listingId} className="hover:bg-gray-50/60">
-                      <td className="px-4 py-3">
-                        <div className="flex min-w-[12rem] items-center gap-3">
-                          <Thumb src={row.product.imageUrl} alt={row.product.name} />
-                          <div className="min-w-0">
-                            <p className="line-clamp-2 font-semibold text-gray-900">{row.product.name}</p>
-                            <p className="truncate text-xs text-gray-500">{[row.product.variantName, row.product.category].filter(Boolean).join(' · ')}</p>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-3 py-3">
+          {/* Below xl: one card per listing — every figure and action, nothing scrolls sideways. */}
+          <ul aria-label="Marketplace inventory" className="grid gap-3 md:grid-cols-2 xl:hidden">
+            {inventory.data.items.map((row) => (
+              <li key={row.listingId} className="min-w-0">
+                <Surface className="space-y-3 p-3.5">
+                  <InventoryProduct row={row} />
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-2.5 text-sm">
+                    <div className="min-w-0">
+                      <dt className="text-xs text-gray-500">Seller</dt>
+                      <dd className="break-words">
                         <SellerLink seller={row.seller} tab="products" />
-                      </td>
-                      {row.stock === 'MADE_TO_ORDER' ? (
-                        // Food made to order has no stock count — nothing to total.
-                        <td colSpan={3} className="px-3 py-3 text-right text-gray-500">
-                          Made to order
-                        </td>
-                      ) : (
-                        <>
-                          <td className="px-3 py-3 text-right tabular-nums">{row.stockQty}</td>
-                          <td className="px-3 py-3 text-right tabular-nums">{row.reservedQty}</td>
-                          <td className={`px-3 py-3 text-right font-semibold tabular-nums ${row.stock === 'OUT' ? 'text-danger-600' : row.stock === 'LOW' ? 'text-warn-500' : 'text-gray-900'}`}>
-                            {row.availableQty}
-                            <span className="block text-[11px] font-normal text-gray-400">low at {row.lowStockThreshold}</span>
-                          </td>
-                        </>
-                      )}
-                      <td className="px-3 py-3">
-                        <div className="flex flex-col items-start gap-1">
-                          <StockBadge state={row.stock} />
-                          {row.visibilityReason !== 'VISIBLE' && row.visibilityReason !== 'OUT_OF_STOCK' && <VisibilityBadge reason={row.visibilityReason} />}
-                        </div>
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-3 text-xs text-gray-500">{shortDate.format(new Date(row.updatedAt))}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex justify-end gap-1">
-                          <Button variant="ghost" className="min-h-9 px-3 text-xs" onClick={() => setHistory(row)}>
-                            History
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                      </dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-xs text-gray-500">Stock</dt>
+                      <dd>
+                        <InventoryStock row={row} />
+                      </dd>
+                    </div>
+                  </dl>
+                  <InventoryBadges row={row} />
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-2.5">
+                    <span className="text-xs text-gray-500">Updated {shortDate.format(new Date(row.updatedAt))}</span>
+                    <Button variant="ghost" className="min-h-9 px-3 text-xs" onClick={() => setHistory(row)}>
+                      History
+                    </Button>
+                  </div>
+                </Surface>
+              </li>
+            ))}
+          </ul>
+
+          {/* xl+: a compact table sized to the page — names wrap; stock, reserved
+              and available share one cell. */}
+          <Surface className="hidden overflow-hidden xl:block">
+            <table className="w-full text-sm">
+              <caption className="sr-only">Marketplace inventory</caption>
+              <thead className="border-b border-gray-200 bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <tr>
+                  <th scope="col" className="px-3 py-2.5">Product</th>
+                  <th scope="col" className="px-2.5 py-2.5">Seller</th>
+                  <th scope="col" className="px-2.5 py-2.5">Stock</th>
+                  <th scope="col" className="px-2.5 py-2.5">Status</th>
+                  <th scope="col" className="px-2.5 py-2.5">Updated</th>
+                  <th scope="col" className="px-3 py-2.5 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {inventory.data.items.map((row) => (
+                  <tr key={row.listingId} className="hover:bg-gray-50/60">
+                    <td className="px-3 py-2.5">
+                      <InventoryProduct row={row} />
+                    </td>
+                    <td className="px-2.5 py-2.5">
+                      <SellerLink seller={row.seller} tab="products" />
+                    </td>
+                    <td className="px-2.5 py-2.5">
+                      <InventoryStock row={row} />
+                    </td>
+                    <td className="px-2.5 py-2.5">
+                      <InventoryBadges row={row} stacked />
+                    </td>
+                    <td className="px-2.5 py-2.5 text-xs text-gray-500">{shortDate.format(new Date(row.updatedAt))}</td>
+                    <td className="px-3 py-2.5 text-right">
+                      <Button variant="ghost" className="min-h-9 px-3 text-xs" onClick={() => setHistory(row)}>
+                        History
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </Surface>
           <Pager page={page} pageSize={PAGE_SIZE} total={inventory.data.total} onPage={(next) => update({ page: String(next) })} />
         </>
       )}
 
       {history && <HistoryModal row={history} onClose={() => setHistory(null)} />}
+    </div>
+  );
+}
+
+/* Row pieces shared by the table (xl+) and the cards (below xl). */
+
+function InventoryProduct({ row }: { row: MarketplaceInventoryRow }) {
+  return (
+    <div className="flex min-w-0 items-start gap-3">
+      <Thumb src={row.product.imageUrl} alt={row.product.name} />
+      <div className="min-w-0">
+        <p className="break-words font-semibold leading-snug text-gray-900">{row.product.name}</p>
+        <p className="break-words text-xs text-gray-500">{[row.product.variantName, row.product.category].filter(Boolean).join(' · ')}</p>
+      </div>
+    </div>
+  );
+}
+
+/** Available (coloured by stock state), then stock · reserved and the low-stock level. */
+function InventoryStock({ row }: { row: MarketplaceInventoryRow }) {
+  // Food made to order has no stock count — nothing to total.
+  if (row.stock === 'MADE_TO_ORDER') return <span className="text-gray-500">Made to order</span>;
+  const tone = row.stock === 'OUT' ? 'text-danger-600' : row.stock === 'LOW' ? 'text-warn-500' : 'text-gray-900';
+  return (
+    <div className="tabular-nums">
+      <p className={tone}>
+        <span className="font-semibold">{row.availableQty}</span> available
+      </p>
+      <p className="text-xs text-gray-500">
+        {row.stockQty} stock · {row.reservedQty} reserved
+      </p>
+      <p className="text-[11px] text-gray-400">low at {row.lowStockThreshold}</p>
+    </div>
+  );
+}
+
+function InventoryBadges({ row, stacked = false }: { row: MarketplaceInventoryRow; stacked?: boolean }) {
+  return (
+    <div className={stacked ? 'flex flex-col items-start gap-1' : 'flex flex-wrap items-center gap-1.5'}>
+      <StockBadge state={row.stock} />
+      {row.visibilityReason !== 'VISIBLE' && row.visibilityReason !== 'OUT_OF_STOCK' && <VisibilityBadge reason={row.visibilityReason} />}
     </div>
   );
 }

@@ -35,6 +35,7 @@ export * from './product-import';
 export * from './home-layout';
 export * from './home-builder';
 export * from './info-pages';
+export * from './branding';
 
 /* business helpers (pure functions) */
 export * from './money';

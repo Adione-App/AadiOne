@@ -20,6 +20,8 @@
 
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { BackLink } from '@/components/BackLink';
+import { SELLER_PRODUCT_BACK_FROM } from '../sellerUi';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isFoodSellerType, type SellerProductDto } from '@shared';
 import { ApiRequestError } from '@/lib/api';
@@ -93,11 +95,8 @@ export default function SellerProductDetailPage() {
   });
   useScrollToHash(query.isSuccess);
 
-  const back = (
-    <Link to="/seller/products" className="inline-flex items-center gap-1 text-sm font-medium text-gray-600 hover:text-gray-900">
-      <span aria-hidden="true">←</span> Products
-    </Link>
-  );
+  // Back to the list it was opened from, as it was (filters, scroll) — see BackLink.
+  const back = <BackLink to="/seller/products" label="Products" from={SELLER_PRODUCT_BACK_FROM} />;
 
   if (query.isPending) return <SkeletonBlock lines={5} label="Loading product…" />;
   if (query.isError) {

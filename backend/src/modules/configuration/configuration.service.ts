@@ -22,6 +22,7 @@ import {
   PUBLIC_CONFIG_KEYS,
   type ConfigValues,
   type PublicConfig,
+  homeMainCategoriesProblem,
   validateAppUpdatePolicy,
 } from '@shared';
 import type { Prisma } from '@prisma/client';
@@ -394,6 +395,11 @@ function validateValue(key: keyof ConfigValues, value: unknown): void {
       if (typeof path !== 'string' || !CATEGORY_PATH_PATTERN.test(path)) fail('each entry must be a top-level category path such as "grocery"');
     }
     if (new Set(paths).size !== paths.length) fail('a category can be listed only once');
+  }
+
+  if (key === ConfigKey.HOME_MAIN_CATEGORIES) {
+    const problem = homeMainCategoriesProblem(value);
+    if (problem) fail(problem);
   }
 
   // The full app-update rules (versions, store links) — the same check as the

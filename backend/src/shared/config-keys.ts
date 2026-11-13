@@ -14,6 +14,7 @@
 
 import { CodPolicy, OrderStatus } from "./enums";
 import { AppUpdateMode, type AppUpdatePolicy } from "./app-version";
+import type { HomeMainCategoriesConfig } from "./home-categories";
 
 export const ConfigKey = {
   /* serviceability */
@@ -111,6 +112,7 @@ export const ConfigKey = {
 
   /* customer home page */
   HOME_CATEGORY_ORDER: "HOME_CATEGORY_ORDER",
+  HOME_MAIN_CATEGORIES: "HOME_MAIN_CATEGORIES",
 
   /* mobile app updates */
   APP_UPDATE_POLICY: "APP_UPDATE_POLICY",
@@ -274,11 +276,19 @@ export interface ConfigValues {
   SOCIAL_LINKEDIN_URL: string;
 
   /**
-   * Top-level category paths (slugs, e.g. "grocery") the customer Home page
-   * shows first, in this order. Every other live top category follows
-   * automatically, so a new category never needs this list to appear.
+   * LEGACY — superseded by HOME_MAIN_CATEGORIES. Top-level category paths
+   * (slugs, e.g. "grocery") the customer Home page shows first, in this
+   * order. Home reads it only until HOME_MAIN_CATEGORIES is first saved;
+   * saving that rewrites this list (its featured categories, in order), so
+   * an older server still finds a sensible order.
    */
   HOME_CATEGORY_ORDER: string[];
+  /**
+   * Which main categories the customer Home page shows, in what order, and
+   * which are featured (home-categories.ts). `{}` until an admin first saves
+   * it. Managed from Admin → Banners & Cards → Home page main categories.
+   */
+  HOME_MAIN_CATEGORIES: HomeMainCategoriesConfig | Record<string, never>;
   /** Optional / mandatory app updates per platform (app-version.ts). Managed from Admin → App Updates. */
   APP_UPDATE_POLICY: AppUpdatePolicy;
 }
@@ -381,6 +391,8 @@ export const CONFIG_DEFAULTS: ConfigValues = {
   SOCIAL_LINKEDIN_URL: "",
 
   HOME_CATEGORY_ORDER: [],
+  // Not arranged yet: Home keeps today's order (HOME_CATEGORY_ORDER first, then the rest), everything shown.
+  HOME_MAIN_CATEGORIES: {},
 
   // Off until an admin turns it on: a missing or unreadable policy never
   // locks anyone out. The Android link is the official listing of this app's
@@ -596,7 +608,10 @@ export const CONFIG_DESCRIPTIONS: Readonly<Record<ConfigKey, string>> = {
     'Marketing copy for delivery speed (e.g. "in 30 minutes"). Per-order ETA is always computed separately.',
 
   HOME_CATEGORY_ORDER:
-    "Top categories (by path) the customer Home page shows first, in order. Other categories follow automatically. Managed from Admin → Banners → Home page category order.",
+    "Legacy: top categories (by path) the customer Home page showed first. Used only until Home page main categories is first saved, which keeps it in step.",
+
+  HOME_MAIN_CATEGORIES:
+    "Main categories on the customer Home page: order, hidden, featured and whether new categories show automatically. Managed from Admin → Banners & Cards → Home page main categories.",
 
   APP_UPDATE_POLICY:
     "Optional / mandatory mobile app updates per platform: latest and minimum supported versions, store links and the update message. Managed from Admin → App Updates.",

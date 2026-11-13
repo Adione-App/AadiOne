@@ -1,32 +1,10 @@
 /**
  * Pure selection rules behind the Home feed (getHomeFeed). No I/O, so they are
  * unit-tested directly. Nothing here knows a category, product or seller by
- * name: order comes from the admin's HOME_CATEGORY_ORDER and from the
+ * name: order comes from the admin's Home page main categories
+ * (shared/home-categories.ts `arrangeMainCategories`) and from the
  * catalogue's own ranking.
  */
-
-/**
- * Top categories in Home order: the admin's preferred paths first, in the
- * order listed, then every other category in its existing order. A preferred
- * path with no live category is skipped, so a stale entry never leaves a gap.
- */
-export function orderByPreference<T>(
-  items: readonly T[],
-  pathOf: (item: T) => string,
-  preferred: readonly string[] | null | undefined,
-): { ordered: T[]; featured: T[] } {
-  const byPath = new Map(items.map((item) => [pathOf(item), item]));
-  const featured: T[] = [];
-  const seen = new Set<string>();
-  for (const path of preferred ?? []) {
-    const item = byPath.get(path);
-    if (!item || seen.has(path)) continue;
-    seen.add(path);
-    featured.push(item);
-  }
-  const rest = items.filter((item) => !seen.has(pathOf(item)));
-  return { ordered: [...featured, ...rest], featured };
-}
 
 /**
  * The products each Home rail shows, from every rail's ranked candidates (in

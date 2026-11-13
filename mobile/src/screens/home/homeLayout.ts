@@ -14,6 +14,10 @@
  *   - category grids are refilled from their placement (automatic or chosen
  *     categories, count, rows, columns, tile style), with hidden categories
  *     left out and display names applied — each placement on its own;
+ *   - a main category hidden in "Home page main categories" (the server
+ *     leaves it out of `categories`, sends it in `hiddenCategories`) is never
+ *     a tile, not even when a grid chose it; its subcategories still are,
+ *     exactly as before (subcategory sections keep their own settings);
  *   - the food banners become a carousel of at most N cards, or the standard
  *     food banner when none is live;
  *   - an engine section this file does not know is kept (before the footer),
@@ -153,9 +157,6 @@ export interface HomeLayoutResult {
   sections: LaidOutSection[];
 }
 
-/** The engine's own priority shelves (homeEngine.ts) — they count as featured. */
-const PRIORITY_TITLES = ["grocery", "vegetables & fruits"];
-
 const NEUTRAL_FRAME: SectionFrame = { group: null, background: "none", spacing: "normal" };
 
 /** Latest products: default heading and count (HOME_SECTION_INFO.recently_added). */
@@ -198,23 +199,39 @@ function groupOf(section: HomeSection, featured: (categoryId: string) => boolean
 }
 
 interface CategoryIndex {
-  /** Top categories in Home order, then every subcategory: path → category and parent. */
+  /** Every main category (shown, then hidden) and every subcategory: path → category and parent. */
   byPath: Map<string, { category: CategoryDto; parent: CategoryDto | null }>;
+  /** The main categories Home shows, in Home order. */
   tops: CategoryDto[];
+  /** Main categories whose subcategories the subcategory sections use: the shown ones, then the hidden ones. */
+  parents: CategoryDto[];
+  /** Main categories hidden from Home (ids): never a tile. */
+  hiddenTops: Set<string>;
   styles: Map<string, CategoryStyleConfig>;
   language: "en" | "hi";
 }
 
 function indexCategories(feed: HomeFeedDto, styles: readonly CategoryStyleConfig[], language: "en" | "hi"): CategoryIndex {
+  const hidden = feed.hiddenCategories ?? [];
+  const parents = [...feed.categories, ...hidden];
   const byPath = new Map<string, { category: CategoryDto; parent: CategoryDto | null }>();
-  for (const top of feed.categories) {
+  for (const top of parents) {
     byPath.set(pathOf(top), { category: top, parent: null });
     for (const child of top.children ?? []) byPath.set(pathOf(child, top), { category: child, parent: top });
   }
-  return { byPath, tops: feed.categories, styles: new Map(styles.map((style) => [style.path, style])), language };
+  return {
+    byPath,
+    tops: feed.categories,
+    parents,
+    hiddenTops: new Set(hidden.map((top) => top.id)),
+    styles: new Map(styles.map((style) => [style.path, style])),
+    language,
+  };
 }
 
 function tileOf(index: CategoryIndex, category: CategoryDto, parent: CategoryDto | null): CategoryTile | null {
+  // A main category hidden from Home is never a main-category tile (its subcategories are unaffected).
+  if (!parent && index.hiddenTops.has(category.id)) return null;
   const style = index.styles.get(pathOf(category, parent));
   // A hidden parent hides its subcategories too.
   if (style?.hidden || (parent && index.styles.get(pathOf(parent))?.hidden)) return null;
@@ -224,7 +241,7 @@ function tileOf(index: CategoryIndex, category: CategoryDto, parent: CategoryDto
 
 /** Subcategories taking turns between their parents (as the engine's own explore grid). */
 function spreadChildren(index: CategoryIndex, limit: number, skip: Set<string>): CategoryTile[] {
-  const lists = index.tops.map((top) => (top.children ?? []).map((child) => ({ child, top })));
+  const lists = index.parents.map((top) => (top.children ?? []).map((child) => ({ child, top })));
   const picked: CategoryTile[] = [];
   for (let round = 0; picked.length < limit; round += 1) {
     let any = false;
@@ -268,7 +285,7 @@ function placementTiles(key: CategoryPlacementKey, config: CategoryPlacementConf
   if (key === "home_more") {
     return take([
       ...index.tops.map((top) => ({ category: top, parent: null })),
-      ...index.tops.flatMap((top) => (top.children ?? []).map((child) => ({ category: child, parent: top }))),
+      ...index.parents.flatMap((top) => (top.children ?? []).map((child) => ({ category: child, parent: top }))),
     ]);
   }
   return take(index.tops.map((top) => ({ category: top, parent: null })));
@@ -294,7 +311,7 @@ function categorySectionTiles(config: HomeCategorySectionConfig, index: Category
   if (config.level === "sub") return spreadChildren(index, limit, own);
   const candidates = [
     ...index.tops.map((top) => ({ category: top, parent: null as CategoryDto | null })),
-    ...(config.level === "any" ? index.tops.flatMap((top) => (top.children ?? []).map((child) => ({ category: child, parent: top }))) : []),
+    ...(config.level === "any" ? index.parents.flatMap((top) => (top.children ?? []).map((child) => ({ category: child, parent: top }))) : []),
   ];
   const tiles: CategoryTile[] = [];
   for (const { category, parent } of candidates) {
@@ -439,8 +456,7 @@ export function applyHomeLayout({
   const featuredIds = new Set(
     (feed.featuredCategoryIds ?? []).length > 0 ? feed.featuredCategoryIds! : feed.categoryRails.map((rail) => rail.categoryId),
   );
-  const railTitle = new Map(feed.categoryRails.map((rail) => [rail.categoryId, rail.title.trim().toLowerCase()]));
-  const featured = (categoryId: string) => featuredIds.has(categoryId) || PRIORITY_TITLES.includes(railTitle.get(categoryId) ?? "");
+  const featured = (categoryId: string) => featuredIds.has(categoryId);
 
   const banners = homeBanners(feed);
   const byGroup = new Map<HomeSectionKey, HomeSection[]>();

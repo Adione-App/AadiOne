@@ -1194,16 +1194,27 @@ export interface HomeFeedDto {
    */
   categoryBanners?: { categoryId: string; banners: BannerDto[] }[];
   /**
-   * Top categories (merged by path, so their representative ids) in Home
-   * order: the admin's HOME_CATEGORY_ORDER first, then every other live top
-   * category. Children carry their own order.
+   * The main categories Home shows (merged by path, so their representative
+   * ids), in the admin's Home order (HOME_MAIN_CATEGORIES — Admin Panel →
+   * Banners & Cards → Home page main categories); a category not arranged
+   * yet follows the others. Hidden ones are not here. Children carry their
+   * own order.
    */
   categories: CategoryDto[];
   /**
-   * The categories the admin placed first on Home (HOME_CATEGORY_ORDER), in
-   * that order — Home shows their shelves among the main shopping sections
-   * and the rest of the categories further down. Empty when none are set.
+   * Main categories the admin hid from Home, with their subcategories, in
+   * Home order. Never drawn as a main-category tile or shelf; listed only so
+   * Home's subcategory sections (Explore subcategories, category sections,
+   * More categories) still find their subcategories as before.
    * Optional: absent from servers older than it.
+   */
+  hiddenCategories?: CategoryDto[];
+  /**
+   * The main categories the admin marked Featured, in Home order — Home
+   * shows their shelves among the main shopping sections and the other
+   * categories' shelves further down. Empty when none are (then every shelf
+   * shows among the main sections). Optional: absent from servers older
+   * than it.
    */
   featuredCategoryIds?: string[];
   rails: {
@@ -1212,8 +1223,8 @@ export interface HomeFeedDto {
     products: ProductSummaryDto[];
   }[];
   /**
-   * One rail per top-level category with in-stock products, in the same order
-   * as `categories`, so a newly added category gets its own visible shelf on
+   * One rail per main category Home shows (never a hidden one) with in-stock
+   * products, in the same order as `categories`, so a newly added category gets its own visible shelf on
    * Home. Its products are spread across the category's subcategories: one
    * from each before a second from any (see getHomeFeed).
    */

@@ -1,45 +1,19 @@
 /**
- * Home feed selection rules (src/modules/catalog/home-selection.ts): admin
- * category order, subcategory-balanced shelves, rail de-duplication and the
- * paced (bounded-concurrency) shelf queries.
+ * Home feed selection rules (src/modules/catalog/home-selection.ts):
+ * subcategory-balanced shelves, rail de-duplication and the paced
+ * (bounded-concurrency) shelf queries. The admin's category order is
+ * tests/unit/home-categories.test.ts.
  */
 
 import { describe, expect, it } from 'vitest';
 import {
   balanceBySubcategory,
   mapWithConcurrency,
-  orderByPreference,
   pickRailProducts,
   subcategoryOf,
 } from '../../src/modules/catalog/home-selection';
 
 const row = (id: string, path: string) => ({ id, path });
-
-describe('orderByPreference', () => {
-  const items = ['grocery', 'men', 'women', 'toys', 'kitchen'];
-
-  it('puts the admin-listed paths first, in that order, then everything else in its own order', () => {
-    const { ordered, featured } = orderByPreference(items, (path) => path, ['toys', 'grocery']);
-    expect(featured).toEqual(['toys', 'grocery']);
-    expect(ordered).toEqual(['toys', 'grocery', 'men', 'women', 'kitchen']);
-  });
-
-  it('skips listed paths that no longer exist and repeated entries', () => {
-    const { ordered, featured } = orderByPreference(items, (path) => path, ['gone', 'women', 'women']);
-    expect(featured).toEqual(['women']);
-    expect(ordered).toEqual(['women', 'grocery', 'men', 'toys', 'kitchen']);
-  });
-
-  it('keeps the existing order when nothing is listed (or the setting is missing)', () => {
-    expect(orderByPreference(items, (path) => path, []).ordered).toEqual(items);
-    expect(orderByPreference(items, (path) => path, undefined).featured).toEqual([]);
-  });
-
-  it('places a category that is new tomorrow after the listed ones automatically', () => {
-    const { ordered } = orderByPreference([...items, 'pet-care'], (path) => path, ['kitchen']);
-    expect(ordered).toEqual(['kitchen', 'grocery', 'men', 'women', 'toys', 'pet-care']);
-  });
-});
 
 describe('subcategoryOf', () => {
   it('maps a product path to its subcategory under the top path', () => {

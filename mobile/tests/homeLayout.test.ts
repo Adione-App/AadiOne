@@ -63,7 +63,7 @@ const shelf = (key: string, title: string): HomeSection => ({ kind: "shelf", key
 const feed: HomeFeedDto = {
   banners: [],
   categories: tops,
-  featuredCategoryIds: [snacks.id],
+  featuredCategoryIds: [grocery.id, snacks.id],
   rails: [],
   categoryRails: [
     { categoryId: grocery.id, title: "Grocery", products: [] },
@@ -78,7 +78,7 @@ function engineSections(foodSlides = 0): HomeSection[] {
     { kind: "banners", key: "banners:top", slides: [slide("top1"), slide("top2")] },
     { kind: "categoryGrid", key: "grid:top", title: "Top Categories", categories: tops, columns: 4, viewAll: { type: "allCategories" } },
     ...(foodSlides ? [{ kind: "banners", key: "banners:food", slides: Array.from({ length: foodSlides }, (_, i) => slide(`food${i}`)) } as HomeSection] : []),
-    shelf(`category:${grocery.id}`, "Grocery"), // priority title → featured
+    shelf(`category:${grocery.id}`, "Grocery"), // featuredCategoryIds → featured
     shelf(`category:${snacks.id}`, "Snacks"), // featuredCategoryIds → featured
     { kind: "categoryGrid", key: "grid:explore", title: "Explore Subcategories", categories: [rice, chips, soap], columns: 5, viewAll: { type: "allCategories" } },
     shelf(`category:${care.id}`, "Personal Care"), // other shelf
@@ -156,7 +156,7 @@ describe("applyHomeLayout — the admin's choices", () => {
     assert.equal(sections[0]!.kind === "shelf" && sections[0]!.title, "Bestsellers");
     assert.deepEqual(sections[0]!.frame, { group: "top_picks", background: "peach", spacing: "relaxed" });
     assert.equal(keys(sections).includes("offers"), false);
-    // Featured shelves (Grocery by priority, Snacks by featuredCategoryIds) are hidden; the other shelf stays.
+    // Featured shelves (Grocery and Snacks, by featuredCategoryIds) are hidden; the other shelf stays.
     assert.equal(keys(sections).includes(`category:${grocery.id}`), false);
     assert.equal(keys(sections).includes(`category:${snacks.id}`), false);
     assert.equal(keys(sections).includes(`category:${care.id}`), true);
@@ -263,5 +263,63 @@ describe("applyHomeLayout — latest products and the Food section destination",
     const bottom = result.sections.find((s) => s.key === "banners:bottom");
     assert.ok(bottom && bottom.kind === "banners");
     assert.equal(bottom.slides[0]!.action.type, "food");
+  });
+});
+
+describe("applyHomeLayout — Home page main categories (hidden / featured from the server)", () => {
+  // The admin hid Snacks and featured only Personal Care: the server leaves
+  // Snacks out of `categories` (and its shelf out of `categoryRails`) and
+  // sends it in `hiddenCategories`.
+  const arrangedFeed = {
+    ...feed,
+    categories: [care, grocery],
+    hiddenCategories: [snacks],
+    featuredCategoryIds: [care.id],
+    categoryRails: [
+      { categoryId: care.id, title: "Personal Care", products: [] },
+      { categoryId: grocery.id, title: "Grocery", products: [] },
+    ],
+  } as unknown as HomeFeedDto;
+  const arrangedSections = (): HomeSection[] => [
+    { kind: "categoryGrid", key: "grid:top", title: "Top Categories", categories: [care, grocery], columns: 4, viewAll: { type: "allCategories" } },
+    shelf(`category:${care.id}`, "Personal Care"),
+    { kind: "categoryGrid", key: "grid:explore", title: "Explore Subcategories", categories: [soap, rice, chips], columns: 5, viewAll: { type: "allCategories" } },
+    shelf(`category:${grocery.id}`, "Grocery"),
+    { kind: "footer", key: "footer" },
+  ];
+
+  it("main-category tiles follow the server's order and leave the hidden one out", () => {
+    const { sections } = applyHomeLayout({ sections: arrangedSections(), feed: arrangedFeed, layout: defaults() });
+    assert.deepEqual(grid(sections, "grid:top").tiles.map((t) => t.label), ["Personal Care", "Grocery"]);
+    assert.equal(keys(sections).includes(`category:${snacks.id}`), false);
+  });
+
+  it("a hidden main category is never a tile, not even when a grid chose it by hand", () => {
+    const layout = edit((l) => {
+      l.categoryPlacements.home_top = { ...l.categoryPlacements.home_top, mode: "manual", paths: ["snacks", "grocery"] };
+    });
+    const { sections } = applyHomeLayout({ sections: arrangedSections(), feed: arrangedFeed, layout });
+    assert.deepEqual(grid(sections, "grid:top").tiles.map((t) => t.label), ["Grocery"]);
+  });
+
+  it("its subcategories still reach the subcategory sections, exactly as before it was hidden", () => {
+    const { sections } = applyHomeLayout({ sections: arrangedSections(), feed: arrangedFeed, layout: defaults() });
+    assert.ok(grid(sections, "grid:explore").tiles.map((t) => t.label).includes("Chips"));
+    const chosen = edit((l) => {
+      l.categoryPlacements.home_explore = { ...l.categoryPlacements.home_explore, mode: "manual", paths: ["snacks/chips", "grocery/rice"] };
+    });
+    assert.deepEqual(grid(applyHomeLayout({ sections: arrangedSections(), feed: arrangedFeed, layout: chosen }).sections, "grid:explore").tiles.map((t) => t.label), ["Chips", "Rice"]);
+  });
+
+  it("featured comes only from featuredCategoryIds — no category is featured by its name", () => {
+    const { sections } = applyHomeLayout({ sections: arrangedSections(), feed: arrangedFeed, layout: defaults() });
+    const groupOfShelf = (id: string) => sections.find((s) => s.key === `category:${id}`)?.frame.group;
+    assert.equal(groupOfShelf(care.id), "featured_shelves");
+    assert.equal(groupOfShelf(grocery.id), "more_shelves");
+  });
+
+  it("the Categories page is not affected by Home's hidden main categories", () => {
+    const page = arrangeCategoriesPage(tops, defaults());
+    assert.deepEqual(page.categories.map((c) => c.name), ["Grocery", "Snacks", "Personal Care"]);
   });
 });

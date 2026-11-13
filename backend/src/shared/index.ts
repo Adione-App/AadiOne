@@ -33,6 +33,7 @@ export * from './app-version';
 export * from './dto';
 export * from './product-import';
 export * from './home-layout';
+export * from './home-categories';
 export * from './home-builder';
 export * from './info-pages';
 export * from './branding';

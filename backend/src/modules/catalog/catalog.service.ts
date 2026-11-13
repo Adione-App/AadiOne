@@ -39,11 +39,11 @@ import { prisma } from "../../infra/db/prisma";
 import { searchProductIds } from "../../infra/search";
 import { marketplaceSearchScope } from "./product-search-scope";
 import * as configService from "../configuration/configuration.service";
-import { ConfigKey, optionGroupsOf, optionValuesOf } from "../../shared";
+import { ConfigKey, arrangeMainCategories, optionGroupsOf, optionValuesOf, readHomeMainCategories } from "../../shared";
 import * as repository from "./catalog.repository";
 import { MARKETPLACE_SELLER_WHERE, type HydratedProduct, type ProductSort } from "./catalog.repository";
 import { HOME_TOP_PLACEMENT, listActiveBanners, listActiveBannersByPlacement } from "../banners/banner.service";
-import { balanceBySubcategory, mapWithConcurrency, orderByPreference, pickRailProducts } from "./home-selection";
+import { balanceBySubcategory, mapWithConcurrency, pickRailProducts } from "./home-selection";
 import { hasStockToSell, sellableQty } from "../inventory/stock-rules";
 import { acceptingSellerIds, allStoreStatuses, statusOf, type StoreStatus } from "../sellers/store-availability";
 
@@ -727,8 +727,9 @@ async function hydrateHomeProducts(ids: readonly string[]): Promise<Map<string, 
  * database sit in different regions, so every sequential query costs a full
  * network round trip):
  *   1. everything independent, at once: shared context, the category tree,
- *      Home order, banners, the category map and EVERY rail's ranked
- *      candidates (each rail is its own query; none depends on another);
+ *      the Home main categories (order, hidden, featured), banners, the
+ *      category map and EVERY rail's ranked candidates (each rail is its own
+ *      query; none depends on another);
  *   2. the category shelves' candidates (they need the Home category order),
  *      a few at a time;
  *   3. one hydration of every product any rail or shelf shows.
@@ -743,10 +744,10 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
   // ranking, de-duplication and sizes work exactly as before).
   const statuses = await allStoreStatuses();
   const openSellerIds = acceptingSellerIds(statuses);
-  const [context, groups, preferredOrder, topBanners, sectionBannerMap, railCandidates, categoryById] = await Promise.all([
+  const [context, groups, homeCategoryConfig, topBanners, sectionBannerMap, railCandidates, categoryById] = await Promise.all([
     mappingContext(statuses),
     marketplaceCategoryGroups(),
-    configService.get(ConfigKey.HOME_CATEGORY_ORDER),
+    configService.getMany([ConfigKey.HOME_MAIN_CATEGORIES, ConfigKey.HOME_CATEGORY_ORDER]),
     listActiveBanners(HOME_TOP_PLACEMENT),
     listActiveBannersByPlacement([...HOME_SECTION_PLACEMENTS, HOME_BANNER_PLACEMENTS.CATEGORY]),
     Promise.all(RAILS.map((rail) => repository.listRailProductIds(rail.key, RAIL_CANDIDATE_LIMIT, openSellerIds))),
@@ -754,17 +755,27 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
   ]);
 
   /*
-   * Top categories in Home order: the admin's HOME_CATEGORY_ORDER first, then
-   * every other live top category in its usual order — so a category created
-   * tomorrow shows up without anyone touching this list. (The config map can
-   * briefly predate this key after a deploy, hence the fallback.)
+   * Main categories in the admin's Home order (HOME_MAIN_CATEGORIES; until
+   * it is first saved, the earlier HOME_CATEGORY_ORDER list first, then the
+   * rest). A category the admin has not arranged yet — created tomorrow —
+   * follows the others, shown or hidden by the admin's rule for new ones, so
+   * nobody has to register it. A hidden category gets no tile and no shelf
+   * (and costs no shelf query); it stays in the catalogue, search and the
+   * Categories tab. It is sent apart (`hiddenCategories`) only so Home's
+   * subcategory sections keep finding its subcategories exactly as before.
+   * (The config map can briefly predate these keys after a deploy, hence the
+   * fallbacks.)
    */
-  const { ordered: topLevel, featured } = orderByPreference(
+  const arranged = arrangeMainCategories(
     categoryLevel(groups, null, true, false),
     (entry) => entry.group.path,
-    preferredOrder ?? [],
+    readHomeMainCategories(homeCategoryConfig.HOME_MAIN_CATEGORIES),
+    homeCategoryConfig.HOME_CATEGORY_ORDER ?? [],
   );
+  const topLevel = arranged.filter((entry) => entry.visible).map((entry) => entry.item);
+  const featured = arranged.filter((entry) => entry.featured).map((entry) => entry.item);
   const categories = topLevel.map((entry) => entry.dto);
+  const hiddenCategories = arranged.filter((entry) => !entry.visible).map((entry) => entry.item.dto);
 
   /*
    * Each rail is ranked independently (popularity, recency, discount, …).
@@ -854,6 +865,7 @@ export async function getHomeFeed(): Promise<HomeFeedDto> {
     sectionBanners,
     categoryBanners,
     categories,
+    hiddenCategories,
     featuredCategoryIds: featured.map((entry) => entry.group.rep.id),
     rails: rails.filter((rail) => rail.products.length > 0),
     categoryRails,

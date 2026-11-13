@@ -198,7 +198,7 @@ export const HOME_SECTION_INFO: Record<HomeSectionKey, HomeSectionInfo> = {
   },
   featured_shelves: {
     label: 'Featured category shelves',
-    hint: 'Product shelves of the categories placed first in "Home page category order" (Banners page).',
+    hint: 'Product shelves of the main categories marked Featured in "Home page main categories" (Banners & Cards page), in that order.',
     titleEditable: false,
     countLimits: null,
     categoryPlacement: null,
@@ -214,7 +214,7 @@ export const HOME_SECTION_INFO: Record<HomeSectionKey, HomeSectionInfo> = {
   },
   more_shelves: {
     label: 'Other category shelves',
-    hint: 'Product shelves of every other category.',
+    hint: 'Product shelves of every other main category shown on Home, in the "Home page main categories" order.',
     titleEditable: false,
     countLimits: null,
     categoryPlacement: null,

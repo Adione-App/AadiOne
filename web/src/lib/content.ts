@@ -9,12 +9,12 @@
 import { useQuery } from '@tanstack/react-query';
 import {
   BANNER_PLACEMENTS,
-  ConfigKey,
   bannerPlacementInfo,
   type AdminBannerDto,
+  type AdminHomeMainCategoriesDto,
   type BannerLayoutDto,
   type BannerStatusDto,
-  type CategoryDto,
+  type SaveHomeMainCategoriesInput,
 } from '@shared';
 import { api } from './api';
 import { uploadProductImage, type PresignedUpload } from './upload';
@@ -63,30 +63,25 @@ export function placementLabel(placement: string): string {
 
 export const bannerKeys = { all: ['admin', 'banners'] as const };
 
-/* Home page category order ------------------------------------------------ */
+/* Home page main categories ----------------------------------------------- */
 
-/** The admin's Home category order (top-level category paths), from GET /admin/config. */
-export function useHomeCategoryOrder() {
+export const homeMainCategoriesKey = ['admin', 'home-main-categories'] as const;
+
+/**
+ * Every live main category (with or without products) in Home order, with
+ * its visibility — GET /admin/content/home-categories (config
+ * HOME_MAIN_CATEGORIES). New categories appear here by themselves.
+ */
+export function useHomeMainCategories() {
   return useQuery({
-    queryKey: ['config'],
-    queryFn: () => api.get<{ key: string; value: unknown }[]>('/admin/config'),
-    select: (entries): string[] => {
-      const value = entries.find((entry) => entry.key === ConfigKey.HOME_CATEGORY_ORDER)?.value;
-      return Array.isArray(value) ? value.filter((path): path is string => typeof path === 'string') : [];
-    },
+    queryKey: homeMainCategoriesKey,
+    queryFn: () => api.get<AdminHomeMainCategoriesDto>('/admin/content/home-categories'),
   });
 }
 
-export function saveHomeCategoryOrder(paths: string[]) {
-  return api.patch('/admin/config', { key: ConfigKey.HOME_CATEGORY_ORDER, value: paths });
-}
-
-/** The live top-level categories customers see (merged across sellers; slug = path). */
-export function useCustomerTopCategories() {
-  return useQuery({
-    queryKey: ['admin', 'customer-top-categories'],
-    queryFn: () => api.get<CategoryDto[]>('/categories'),
-  });
+/** Saves the whole arrangement; refused (CONTENT_CHANGED) when someone saved meanwhile. */
+export function saveHomeMainCategories(input: SaveHomeMainCategoriesInput) {
+  return api.put<AdminHomeMainCategoriesDto>('/admin/content/home-categories', input);
 }
 
 export function useAdminBanners() {

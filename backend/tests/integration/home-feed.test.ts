@@ -3,8 +3,10 @@
  *
  *   - category shelves spread across subcategories (merged across sellers),
  *     deterministic, in-stock only;
- *   - the admin's Home category order (HOME_CATEGORY_ORDER), with every other
- *     category — including a new one — following automatically;
+ *   - the admin's Home page main categories (HOME_MAIN_CATEGORIES, GET/PUT
+ *     /admin/content/home-categories): order, hidden, featured, new
+ *     categories discovered automatically — and, until first saved, the
+ *     legacy HOME_CATEGORY_ORDER, with every other category following;
  *   - admin banner placements (food / above a category shelf / explore /
  *     bottom), never inventing or misplacing one;
  *   - the Top Picks rail;
@@ -21,10 +23,11 @@ import {
   ProductStatus,
   UnitType,
   UserRole,
+  type AdminHomeMainCategoriesDto,
   type HomeFeedDto,
   type ProductSummaryDto,
 } from '../../src/shared';
-import { api, bearer, expectSuccess, loginAs } from '../helpers/api';
+import { api, bearer, expectError, expectSuccess, loginAs } from '../helpers/api';
 import { prisma, truncateAll } from '../helpers/db';
 import { cache } from '../../src/infra/cache';
 import { hashPassword } from '../../src/common/crypto';
@@ -41,6 +44,7 @@ const as = (token: string) => ({
   get: (p: string) => api().get(`/api/v1${p}`).set('Authorization', bearer(token)),
   post: (p: string, body: object = {}) => api().post(`/api/v1${p}`).set('Authorization', bearer(token)).send(body),
   patch: (p: string, body: object) => api().patch(`/api/v1${p}`).set('Authorization', bearer(token)).send(body),
+  put: (p: string, body: object) => api().put(`/api/v1${p}`).set('Authorization', bearer(token)).send(body),
 });
 
 async function loginAdmin(): Promise<string> {
@@ -261,6 +265,235 @@ describe('Home category order (HOME_CATEGORY_ORDER)', () => {
       await as(admin).patch('/admin/config', { key: ConfigKey.HOME_CATEGORY_ORDER, value }).expect(400);
     }
     expect(await configService.get(ConfigKey.HOME_CATEGORY_ORDER)).toEqual([]);
+  });
+});
+
+describe('Home page main categories (HOME_MAIN_CATEGORIES)', () => {
+  const PATH = '/admin/content/home-categories';
+  const list = async (token: string) => expectSuccess<AdminHomeMainCategoriesDto>((await as(token).get(PATH).expect(200)).body).data;
+  const save = (token: string, body: object) => as(token).put(PATH, body);
+  const saved = async (token: string, body: object) => expectSuccess<AdminHomeMainCategoriesDto>((await save(token, body).expect(200)).body).data;
+  const storedConfig = async () =>
+    (await prisma.configuration.findFirst({ where: { key: ConfigKey.HOME_MAIN_CATEGORIES, sellerId: null } }))?.value ?? null;
+
+  it('lists every live main category — empty ones too — in Home order, before anything is saved', async () => {
+    const c = await seedCatalogue();
+    const admin = await loginAdmin();
+    await as(admin).patch('/admin/config', { key: ConfigKey.HOME_CATEGORY_ORDER, value: ['toys'] }).expect(200);
+
+    const data = await list(admin);
+    expect(data.updatedAt).toBeNull();
+    expect(data.newCategoriesVisible).toBe(true);
+    // The legacy "shown first" list leads (and counts as featured), the rest follow; nothing is hidden.
+    expect(data.categories.map((cat) => [cat.path, cat.visible, cat.featured])).toEqual([
+      ['toys', true, true],
+      ['grocery', true, false],
+      ['fashion', true, false],
+      ['nothing-yet', true, false],
+    ]);
+    const grocery = data.categories.find((cat) => cat.path === 'grocery')!;
+    expect(grocery).toMatchObject({ id: c.groceryA, name: 'Grocery', sellerCount: 2 });
+    expect(grocery.productCount).toBeGreaterThan(0);
+    expect(data.categories.find((cat) => cat.path === 'nothing-yet')).toMatchObject({ id: c.emptyTop, productCount: 0 });
+    // Merged across sellers: one entry per path.
+    expect(new Set(data.categories.map((cat) => cat.path)).size).toBe(data.categories.length);
+  });
+
+  it('hides, reorders and features — Home follows exactly, and the saved order survives a re-read and a cache flush', async () => {
+    const c = await seedCatalogue();
+    const admin = await loginAdmin();
+
+    const first = await saved(admin, {
+      order: ['toys', 'nothing-yet', 'fashion', 'grocery'],
+      hidden: ['fashion'],
+      featured: ['toys'],
+      newCategoriesVisible: true,
+      basedOnUpdatedAt: null,
+    });
+    expect(first.updatedAt).not.toBeNull();
+    expect(first.updatedBy).toBe('Admin');
+
+    let feed = await home();
+    // Fashion is hidden: no tile, no shelf. The empty category has nothing to show.
+    expect(feed.categories.map((cat) => cat.slug)).toEqual(['toys', 'grocery']);
+    expect(feed.categoryRails.map((rail) => rail.categoryId)).toEqual([c.toys, c.groceryA]);
+    expect(feed.featuredCategoryIds).toEqual([c.toys]);
+    // …but its subcategories still reach Home's subcategory sections, unchanged.
+    expect(feed.hiddenCategories?.map((cat) => [cat.slug, cat.children?.map((child) => child.slug)])).toEqual([['fashion', ['shirts']]]);
+
+    // Persisted: a fresh read (with the config cache flushed) gives the same arrangement.
+    await configService.invalidateAll();
+    await cache.clear();
+    const again = await list(admin);
+    expect(again.categories.map((cat) => [cat.path, cat.visible, cat.featured, cat.isNew])).toEqual([
+      ['toys', true, true, false],
+      ['nothing-yet', true, false, false],
+      ['fashion', false, false, false],
+      ['grocery', true, false, false],
+    ]);
+    expect(again.updatedAt).toBe(first.updatedAt);
+    expect((await home()).categories.map((cat) => cat.slug)).toEqual(['toys', 'grocery']);
+    // The legacy key is kept in step (what an older server would read): the featured ones, in order.
+    expect(await configService.get(ConfigKey.HOME_CATEGORY_ORDER)).toEqual(['toys']);
+    expect(await prisma.auditLog.count({ where: { action: 'home_main_categories.update' } })).toBe(1);
+
+    // Hiding never touches the catalogue: the category, its products and the Categories tab are unchanged.
+    expect(await prisma.category.findUnique({ where: { id: c.fashion } })).toMatchObject({ isActive: true, deletedAt: null });
+    const categoriesTab = expectSuccess<{ slug: string }[]>((await api().get('/api/v1/categories').expect(200)).body).data;
+    expect(categoriesTab.map((cat) => cat.slug)).toContain('fashion');
+    const byCategory = JSON.stringify((await api().get(`/api/v1/products?categoryId=${c.fashion}`).expect(200)).body);
+    for (const p of c.products.shirts) expect(byCategory).toContain(p.productId);
+
+    // Show it again and move it to the top: it comes back exactly there.
+    await saved(admin, {
+      order: ['fashion', 'toys', 'nothing-yet', 'grocery'],
+      hidden: [],
+      featured: ['toys', 'fashion'],
+      newCategoriesVisible: true,
+      basedOnUpdatedAt: first.updatedAt,
+    });
+    feed = await home();
+    expect(feed.categories.map((cat) => cat.slug)).toEqual(['fashion', 'toys', 'grocery']);
+    expect(feed.categoryRails.map((rail) => rail.categoryId)).toEqual([c.fashion, c.toys, c.groceryA]);
+    // Featured follows the Home order, not the order the list was sent in.
+    expect(feed.featuredCategoryIds).toEqual([c.fashion, c.toys]);
+    expect(feed.hiddenCategories).toEqual([]);
+  });
+
+  it('discovers a category created later, places it after the arranged ones and never rewrites what was saved', async () => {
+    const c = await seedCatalogue();
+    const admin = await loginAdmin();
+    const body = { order: ['grocery', 'toys', 'fashion', 'nothing-yet'], hidden: ['toys'], featured: [], newCategoriesVisible: true, basedOnUpdatedAt: null };
+    const first = await saved(admin, body);
+    const before = await storedConfig();
+
+    const kitchen = await category(c.sellerB, 'Kitchen', 'kitchen');
+    await product(c.sellerB, kitchen);
+    invalidateCategoryCache();
+
+    let data = await list(admin);
+    expect(data.categories.map((cat) => [cat.path, cat.visible, cat.isNew])).toEqual([
+      ['grocery', true, false],
+      ['toys', false, false],
+      ['fashion', true, false],
+      ['nothing-yet', true, false],
+      ['kitchen', true, true],
+    ]);
+    expect((await home()).categories.map((cat) => cat.slug)).toEqual(['grocery', 'fashion', 'kitchen']);
+    // Reading (admin list, Home) wrote nothing.
+    expect(await storedConfig()).toEqual(before);
+    expect(data.updatedAt).toBe(first.updatedAt);
+
+    // With new categories hidden until reviewed, the same category stays off Home.
+    const second = await saved(admin, { ...body, newCategoriesVisible: false, basedOnUpdatedAt: first.updatedAt });
+    expect(second.categories.find((cat) => cat.path === 'kitchen')).toMatchObject({ visible: false, isNew: true });
+    expect((await home()).categories.map((cat) => cat.slug)).toEqual(['grocery', 'fashion']);
+
+    // Arranging it (saving it into the list) makes it a regular entry.
+    data = await saved(admin, { ...body, order: ['kitchen', ...body.order], newCategoriesVisible: false, basedOnUpdatedAt: second.updatedAt });
+    expect(data.categories[0]).toMatchObject({ path: 'kitchen', visible: true, isNew: false });
+    expect((await home()).categories.map((cat) => cat.slug)).toEqual(['kitchen', 'grocery', 'fashion']);
+  });
+
+  it('keeps a saved category while it is away, restores it in place, and handles deleted categories', async () => {
+    const c = await seedCatalogue();
+    const admin = await loginAdmin();
+    const first = await saved(admin, {
+      order: ['fashion', 'toys', 'grocery', 'nothing-yet'],
+      hidden: ['nothing-yet'],
+      featured: ['toys'],
+      newCategoriesVisible: true,
+      basedOnUpdatedAt: null,
+    });
+
+    // The only seller with Toys pauses it.
+    await prisma.category.update({ where: { id: c.toys }, data: { isActive: false } });
+    invalidateCategoryCache();
+    let data = await list(admin);
+    expect(data.categories.map((cat) => cat.path)).toEqual(['fashion', 'grocery', 'nothing-yet']);
+    expect(data.unavailable).toEqual([{ path: 'toys', visible: true, featured: true }]);
+    let feed = await home();
+    expect(feed.categories.map((cat) => cat.slug)).toEqual(['fashion', 'grocery']);
+    expect(feed.featuredCategoryIds).toEqual([]);
+
+    // Saving while it is away keeps it (the screen sends it back); an unknown path is refused.
+    const second = await saved(admin, {
+      order: ['grocery', 'fashion', 'nothing-yet', 'toys'],
+      hidden: ['nothing-yet'],
+      featured: ['toys'],
+      newCategoriesVisible: true,
+      basedOnUpdatedAt: first.updatedAt,
+    });
+    expect(second.unavailable).toEqual([{ path: 'toys', visible: true, featured: true }]);
+    expect(
+      expectError(
+        (await save(admin, { order: ['grocery', 'made-up'], hidden: [], featured: [], newCategoriesVisible: true, basedOnUpdatedAt: second.updatedAt }).expect(400)).body,
+      ).code,
+    ).toBe('VALIDATION_ERROR');
+
+    // It comes back: in its saved place, still featured.
+    await prisma.category.update({ where: { id: c.toys }, data: { isActive: true } });
+    invalidateCategoryCache();
+    data = await list(admin);
+    expect(data.unavailable).toEqual([]);
+    expect(data.categories.map((cat) => cat.path)).toEqual(['grocery', 'fashion', 'nothing-yet', 'toys']);
+    feed = await home();
+    expect(feed.categories.map((cat) => cat.slug)).toEqual(['grocery', 'fashion', 'toys']);
+    expect(feed.featuredCategoryIds).toEqual([c.toys]);
+
+    // A deleted category is never live: it is not listed, only remembered as saved.
+    await prisma.category.update({ where: { id: c.emptyTop }, data: { deletedAt: new Date() } });
+    invalidateCategoryCache();
+    data = await list(admin);
+    expect(data.categories.map((cat) => cat.path)).not.toContain('nothing-yet');
+    expect(data.unavailable).toEqual([{ path: 'nothing-yet', visible: false, featured: false }]);
+  });
+
+  it('refuses a stale screen, malformed arrangements and a bad value through the generic config route', async () => {
+    await seedCatalogue();
+    const admin = await loginAdmin();
+    const body = { order: ['grocery', 'toys', 'fashion'], hidden: [], featured: [], newCategoriesVisible: true, basedOnUpdatedAt: null };
+    const first = await saved(admin, body);
+
+    // Another admin saved meanwhile: the old screen's save is refused, nothing changes.
+    expect(expectError((await save(admin, { ...body, order: ['toys', 'grocery', 'fashion'], basedOnUpdatedAt: null }).expect(409)).body).code).toBe('CONTENT_CHANGED');
+    expect((await list(admin)).categories.slice(0, 3).map((cat) => cat.path)).toEqual(['grocery', 'toys', 'fashion']);
+
+    for (const bad of [
+      { ...body, hidden: ['nothing-yet'] }, // hidden, not in order
+      { ...body, hidden: ['toys'], featured: ['toys'] }, // featured and hidden
+      { ...body, order: ['grocery', 'grocery'] },
+      { ...body, order: ['grocery/rice'] },
+      { ...body, extra: true },
+      { ...body, newCategoriesVisible: 'yes' },
+    ]) {
+      await save(admin, { ...bad, basedOnUpdatedAt: first.updatedAt }).expect(400);
+    }
+    await as(admin)
+      .patch('/admin/config', { key: ConfigKey.HOME_MAIN_CATEGORIES, value: { order: ['grocery'], hidden: ['toys'], featured: [], newCategoriesVisible: true } })
+      .expect(400);
+    expect(await prisma.auditLog.count({ where: { action: 'home_main_categories.update' } })).toBe(1);
+  });
+
+  it('is admin-only: no token, a customer or a seller cannot read or change it', async () => {
+    await seedCatalogue();
+    const body = { order: ['grocery'], hidden: [], featured: [], newCategoriesVisible: true, basedOnUpdatedAt: null };
+    await api().get(`/api/v1${PATH}`).expect(401);
+    await api().put(`/api/v1${PATH}`).send(body).expect(401);
+
+    const customer = (await loginAs(CUSTOMER)).accessToken;
+    await as(customer).get(PATH).expect(403);
+    await as(customer).put(PATH, body).expect(403);
+
+    const ownerMobile = '9400000813';
+    const owner = await prisma.user.create({ data: { mobile: ownerMobile, fullName: 'Owner', role: UserRole.SELLER_OWNER } });
+    await prisma.sellerStaff.create({ data: { sellerId: await seller('Owner Store'), userId: owner.id, role: 'OWNER', isActive: true } });
+    await otpService.clearOtpState(ownerMobile);
+    const sellerToken = (await loginAs(ownerMobile)).accessToken;
+    await as(sellerToken).get(PATH).expect(403);
+    await as(sellerToken).put(PATH, body).expect(403);
+
+    expect(await storedConfig()).toBeNull();
   });
 });
 

@@ -15,6 +15,8 @@
  *   GET    /content/home-layout          CATALOG_READ   published, draft, history
  *   GET    /content/home-layout/preview  CATALOG_READ   the draft as customers would get it
  *   GET    /content/category-options     CATALOG_READ   live categories merged by path
+ *   GET    /content/home-categories      CATALOG_READ   Home page main categories: every live one, in Home order
+ *   PUT    /content/home-categories      CATALOG_WRITE  save their order / visibility / featured (basedOnUpdatedAt)
  *   GET    /content/product-options      CATALOG_READ   products for the shelves' picker (search, paged)
  *   POST   /content/home-layout/shelf-preview  CATALOG_READ  one shelf's products right now (nothing stored)
  *   PUT    /content/home-layout/draft    CATALOG_WRITE  save the draft
@@ -60,6 +62,9 @@ import {
   HOME_GRADIENT_DIRECTIONS,
   HOME_OVERLAY_OPACITY_MAX,
   HOME_CUSTOM_SECTION_MAX,
+  HOME_FEATURED_CATEGORY_MAX,
+  HOME_MAIN_CATEGORY_MAX,
+  MAIN_CATEGORY_PATH_PATTERN,
   HOME_REPEATABLE_SECTION_KINDS,
   HOME_SECTION_ID_PATTERN,
   HOME_SECTION_KEYS,
@@ -85,6 +90,7 @@ import {
 import { AppError } from '../../common/errors';
 import * as branding from '../content/branding.service';
 import * as homeLayout from '../content/home-layout.service';
+import * as homeCategories from '../content/home-categories.service';
 import * as infoPages from '../content/info-page.service';
 import { asyncHandler, created, ok } from '../../common/response';
 import { validate, validatedQuery } from '../../middleware/validate';
@@ -508,6 +514,37 @@ adminContentRouter.get(
   requirePermission(Permission.CATALOG_READ),
   asyncHandler(async (_req: Request, res: Response) => {
     ok(res, await homeLayout.listCategoryOptions());
+  }),
+);
+
+/* Home page main categories ------------------------------------------------ */
+
+const mainCategoryPath = z.string().regex(MAIN_CATEGORY_PATH_PATTERN, 'Use a main category path such as "grocery"');
+
+adminContentRouter.get(
+  '/content/home-categories',
+  requirePermission(Permission.CATALOG_READ),
+  asyncHandler(async (_req: Request, res: Response) => {
+    ok(res, await homeCategories.getAdminHomeMainCategories());
+  }),
+);
+
+adminContentRouter.put(
+  '/content/home-categories',
+  requirePermission(Permission.CATALOG_WRITE),
+  validate({
+    body: z
+      .object({
+        order: z.array(mainCategoryPath).max(HOME_MAIN_CATEGORY_MAX),
+        hidden: z.array(mainCategoryPath).max(HOME_MAIN_CATEGORY_MAX),
+        featured: z.array(mainCategoryPath).max(HOME_FEATURED_CATEGORY_MAX),
+        newCategoriesVisible: z.boolean(),
+        basedOnUpdatedAt: z.string().datetime().nullable(),
+      })
+      .strict(),
+  }),
+  asyncHandler(async (req: Request, res: Response) => {
+    ok(res, await homeCategories.saveHomeMainCategories(req.body, requireUser(req).id));
   }),
 );
 

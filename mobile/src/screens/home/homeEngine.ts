@@ -6,9 +6,12 @@
  * (banner slot, category grid, category shelf, discovery rail) — never by a
  * category, product, seller or banner name:
  *
- *   - which top categories come first is the admin's HOME_CATEGORY_ORDER
- *     (the server sends `categories` in that order and names the featured
- *     ones in `featuredCategoryIds`); every other category follows by itself;
+ *   - which main categories show, and in what order, is the admin's Home
+ *     page main categories (the server sends `categories` in that order,
+ *     without the hidden ones, and names the featured ones in
+ *     `featuredCategoryIds`); a category not arranged yet follows by itself;
+ *   - a hidden main category's subcategories (`hiddenCategories`) still feed
+ *     the subcategory grids, exactly as before it was hidden;
  *   - every banner is an admin banner from the feed (HOME_BANNER_PLACEMENTS),
  *     and an empty placement shows nothing;
  *   - a category added tomorrow gets a tile and a shelf because the server
@@ -292,6 +295,10 @@ export function buildHomeSections(input: HomeLayoutInput): HomeSection[] {
 
   const topCategories = feed.categories.slice(0, TOP_CATEGORY_TILES);
 
+  // Subcategory grids draw from every main category's subcategories, hidden
+  // main categories included (they are hidden as main categories only).
+  const withSubcategories = [...feed.categories, ...(feed.hiddenCategories ?? [])];
+
   if (topCategories.length > 0) {
     sections.push({
       kind: "categoryGrid",
@@ -347,23 +354,9 @@ export function buildHomeSections(input: HomeLayoutInput): HomeSection[] {
     }
   };
 
-  // Keep Grocery and Vegetables & Fruits together at the top of category shelves.
-  // All remaining categories retain the order supplied by the backend.
-  const priorityTitles = ["Grocery", "Vegetables & Fruits"];
-
-  const priorityRails = priorityTitles
-    .map((title) =>
-      feed.categoryRails.find(
-        (rail) => rail.title.trim().toLowerCase() === title.toLowerCase(),
-      ),
-    )
-    .filter((rail): rail is (typeof feed.categoryRails)[number] =>
-      Boolean(rail),
-    );
-
-  const priorityIds = new Set(priorityRails.map((rail) => rail.categoryId));
-
-  // No admin order (or an older server): every category shelf is a main one.
+  // Shelves come in the server's order — the admin's Home page main
+  // categories order. Nothing is pinned by name.
+  // No featured category (or an older server): every category shelf is a main one.
   const featuredIds = feed.featuredCategoryIds ?? [];
 
   const featured = new Set(
@@ -372,14 +365,8 @@ export function buildHomeSections(input: HomeLayoutInput): HomeSection[] {
       : feed.categoryRails.map((rail) => rail.categoryId),
   );
 
-  // Show Grocery first, then Vegetables & Fruits immediately after it.
-  for (const rail of priorityRails) {
-    categoryShelf(rail);
-  }
-
-  // Show the remaining featured shelves in their original backend order.
   for (const rail of feed.categoryRails) {
-    if (featured.has(rail.categoryId) && !priorityIds.has(rail.categoryId)) {
+    if (featured.has(rail.categoryId)) {
       categoryShelf(rail);
     }
   }
@@ -392,7 +379,7 @@ export function buildHomeSections(input: HomeLayoutInput): HomeSection[] {
   );
 
   const explore = spreadSubcategories(
-    feed.categories,
+    withSubcategories,
     EXPLORE_SUBCATEGORY_TILES,
   );
 
@@ -407,9 +394,9 @@ export function buildHomeSections(input: HomeLayoutInput): HomeSection[] {
     });
   }
 
-  // Remaining non-featured shelves keep their original order.
+  // Remaining non-featured shelves keep the server's order.
   for (const rail of feed.categoryRails) {
-    if (!featured.has(rail.categoryId) && !priorityIds.has(rail.categoryId)) {
+    if (!featured.has(rail.categoryId)) {
       categoryShelf(rail);
     }
   }
@@ -422,7 +409,7 @@ export function buildHomeSections(input: HomeLayoutInput): HomeSection[] {
 
   const more = [
     ...feed.categories.slice(TOP_CATEGORY_TILES),
-    ...feed.categories.flatMap((category) => category.children ?? []),
+    ...withSubcategories.flatMap((category) => category.children ?? []),
   ]
     .filter((category) => !onGrid.has(category.id))
     .slice(0, MORE_CATEGORY_TILES);

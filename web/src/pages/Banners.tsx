@@ -11,12 +11,12 @@
  * validated tap target picked from the live catalogue. A placement with
  * nothing live shows nothing. Images are stored as optimised WebP.
  *
- * Also here: the Home page category order (config HOME_CATEGORY_ORDER) —
- * which top categories Home shows first. Every other category follows
- * automatically.
+ * Also here: the Home page main categories (config HOME_MAIN_CATEGORIES,
+ * homeMainCategories.tsx) — which main categories Home shows, in what order.
+ * New categories are listed automatically.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   BANNER_PLACEMENTS,
@@ -40,14 +40,12 @@ import {
   deleteBanner,
   placementLabel,
   reorderBanners,
-  saveHomeCategoryOrder,
   updateBanner,
   uploadAdminImage,
   useAdminBanners,
-  useCustomerTopCategories,
-  useHomeCategoryOrder,
   type BannerFields,
 } from '@/lib/content';
+import { HomeMainCategories } from './homeMainCategories';
 import { ACTION_LABEL, LayoutControls, actionNeedsTarget, PhonePreview, TargetPicker, VISIBILITY_LABEL, fromLocalInput, toLocalInput } from './bannerEditor';
 
 type Notice = { ok: boolean; text: string };
@@ -126,7 +124,7 @@ export default function BannersPage() {
         </p>
       )}
 
-      <HomeCategoryOrder canEdit={canEdit} onNotice={setNotice} />
+      <HomeMainCategories canEdit={canEdit} onNotice={setNotice} />
 
       {canEdit && (
         <div className="flex justify-end">
@@ -505,137 +503,5 @@ function BannerModal({ editing, onClose, onSaved }: { editing: Editing; onClose:
         </div>
       </div>
     </Modal>
-  );
-}
-
-/**
- * Home page category order — which top categories the customer Home page
- * shows first (config HOME_CATEGORY_ORDER, a list of category paths). Listed
- * categories get their shelves among the main shopping sections, in this
- * order; every other live category follows automatically further down, so a
- * new category never has to be added here to appear.
- */
-function HomeCategoryOrder({ canEdit, onNotice }: { canEdit: boolean; onNotice: (notice: Notice) => void }) {
-  const queryClient = useQueryClient();
-  const saved = useHomeCategoryOrder();
-  const categories = useCustomerTopCategories();
-  const [draft, setDraft] = useState<string[] | null>(null);
-
-  // Start from the saved order once it arrives; a save re-reads it.
-  useEffect(() => {
-    if (saved.data && draft === null) setDraft(saved.data);
-  }, [saved.data, draft]);
-
-  const byPath = useMemo(() => new Map((categories.data ?? []).map((category) => [category.slug, category])), [categories.data]);
-  const order = draft ?? saved.data ?? [];
-  const listed = order.filter((path) => byPath.has(path));
-  const stale = order.filter((path) => !byPath.has(path));
-  const others = (categories.data ?? []).filter((category) => !order.includes(category.slug));
-  const dirty = JSON.stringify(order) !== JSON.stringify(saved.data ?? []);
-
-  const save = useMutation({
-    mutationFn: () => saveHomeCategoryOrder(listed),
-    onSuccess: async () => {
-      onNotice({ ok: true, text: 'Home category order saved. The app shows it on its next Home refresh.' });
-      setDraft(null);
-      await queryClient.invalidateQueries({ queryKey: ['config'] });
-    },
-    onError: (error) => onNotice({ ok: false, text: adminErrorMessage(error) }),
-  });
-
-  const move = (index: number, by: -1 | 1) => {
-    const next = [...listed];
-    const [item] = next.splice(index, 1);
-    next.splice(index + by, 0, item!);
-    setDraft(next);
-  };
-
-  return (
-    <Surface className="p-3.5">
-      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-base font-semibold text-gray-900">Home page category order</h2>
-        <span className="text-xs text-gray-500">Categories not listed follow automatically</span>
-      </div>
-      <p className="mb-3 text-sm text-gray-600">
-        Choose which top categories the customer Home page shows first, in order (for example groceries, then fruits &amp;
-        vegetables). Every other category — including ones sellers add later — appears further down by itself.
-      </p>
-
-      {saved.isPending || categories.isPending ? (
-        <Spinner label="Loading categories…" />
-      ) : saved.isError || categories.isError ? (
-        <ErrorBanner message={adminErrorMessage(saved.error ?? categories.error)} />
-      ) : (
-        <div className="grid gap-4 md:grid-cols-2">
-          <div>
-            <h3 className="mb-2 text-sm font-semibold text-gray-800">Shown first ({listed.length})</h3>
-            {listed.length === 0 ? (
-              <p className="rounded-xl border border-dashed border-gray-200 px-3 py-4 text-sm text-gray-500">
-                None — Home shows every category in its default order.
-              </p>
-            ) : (
-              <ol className="space-y-2" aria-label="Categories shown first on Home">
-                {listed.map((path, index) => (
-                  <li key={path} className="flex items-center gap-2 rounded-xl border border-gray-100 px-3 py-2 text-sm">
-                    <span className="w-5 text-right text-xs font-semibold text-gray-400">{index + 1}</span>
-                    <span className="min-w-0 flex-1 truncate font-medium text-gray-900">{byPath.get(path)?.name ?? path}</span>
-                    {canEdit && (
-                      <>
-                        <Button variant="ghost" disabled={index === 0} onClick={() => move(index, -1)}>
-                          <span aria-hidden="true">↑</span>
-                          <span className="sr-only">Move {byPath.get(path)?.name ?? path} up</span>
-                        </Button>
-                        <Button variant="ghost" disabled={index === listed.length - 1} onClick={() => move(index, 1)}>
-                          <span aria-hidden="true">↓</span>
-                          <span className="sr-only">Move {byPath.get(path)?.name ?? path} down</span>
-                        </Button>
-                        <Button variant="ghost" onClick={() => setDraft(listed.filter((p) => p !== path))}>
-                          Remove<span className="sr-only"> {byPath.get(path)?.name ?? path}</span>
-                        </Button>
-                      </>
-                    )}
-                  </li>
-                ))}
-              </ol>
-            )}
-            {stale.length > 0 && (
-              <p className="mt-2 text-xs text-gray-500">
-                {stale.length} saved {stale.length === 1 ? 'entry has' : 'entries have'} no live category right now and {stale.length === 1 ? 'is' : 'are'} skipped; saving removes {stale.length === 1 ? 'it' : 'them'}.
-              </p>
-            )}
-          </div>
-          <div>
-            <h3 className="mb-2 text-sm font-semibold text-gray-800">Other categories (automatic)</h3>
-            {others.length === 0 ? (
-              <p className="text-sm text-gray-500">Every live category is listed.</p>
-            ) : (
-              <ul className="space-y-2" aria-label="Other categories">
-                {others.map((category) => (
-                  <li key={category.id} className="flex items-center gap-2 rounded-xl border border-gray-100 px-3 py-2 text-sm">
-                    <span className="min-w-0 flex-1 truncate text-gray-700">{category.name}</span>
-                    {canEdit && (
-                      <Button variant="secondary" onClick={() => setDraft([...listed, category.slug])}>
-                        Add<span className="sr-only"> {category.name} to the categories shown first</span>
-                      </Button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      )}
-
-      {canEdit && (
-        <div className="mt-3 flex justify-end gap-2">
-          <Button variant="secondary" disabled={!dirty || save.isPending} onClick={() => setDraft(saved.data ?? [])}>
-            Reset
-          </Button>
-          <Button disabled={(!dirty && stale.length === 0) || save.isPending} onClick={() => save.mutate()}>
-            {save.isPending ? 'Saving…' : 'Save order'}
-          </Button>
-        </div>
-      )}
-    </Surface>
   );
 }

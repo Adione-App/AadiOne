@@ -555,13 +555,14 @@ export default function ConfigPage() {
     return <Spinner label="Loading settings…" />;
   }
 
-  // The Home category order has its own editor (Banners → Home page category order).
-  // Managed elsewhere: Banners → Home page category order and App Updates on
+  // The Home page main categories have their own editor (Banners & Cards → Home page main categories).
+  // Managed elsewhere: Banners & Cards → Home page main categories and App Updates on
   // their own pages; the app's availability, hours, mode, timezone, main
   // location and default radius in the Aadione App Availability sections at
   // the top of this page (GlobalAvailability.tsx) — never twice.
   const OWN_PAGE_KEYS = new Set([
     "HOME_CATEGORY_ORDER",
+    "HOME_MAIN_CATEGORIES",
     "APP_UPDATE_POLICY",
     "ORDERING_ENABLED",
     "ORDERING_PAUSED_MESSAGE",

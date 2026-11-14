@@ -30,6 +30,7 @@ import { useOrderSocket } from '@/lib/socket';
 import { orderAlertsKey, useMarkOrderRead, useOrderAlerts } from '@/lib/orderAlerts';
 import { announce, dismissedKey, popupsOf, prune, readIds, seenKey, writeIds } from '@/lib/orderAlertState';
 import { Icon } from './ui';
+import { confirmLeave } from '@/lib/unsavedChanges';
 
 /** Cards on screen at once; the rest wait behind "+N more". */
 const MAX_CARDS = 4;
@@ -216,7 +217,12 @@ export function OrderAlerts({ userId }: { userId: string }) {
     setDismissed([]);
     writeIds(dismissedKey(userId), []);
   };
+  /** Opens the orders page — after asking, when a page has unsaved work (e.g. a policy being edited). */
+  const go = (to: string) => {
+    if (confirmLeave()) navigate(to);
+  };
   const view = (alert: AdminOrderAlertDto) => {
+    if (!confirmLeave()) return;
     markRead.mutate(alert.orderId);
     navigate(
       `/orders?tab=${adminOrderTabOf(alert.orderStatus)}&search=${encodeURIComponent(alert.orderNumber)}&open=${alert.orderId}`,
@@ -235,7 +241,7 @@ export function OrderAlerts({ userId }: { userId: string }) {
       {shown.length > 1 && (
         <button
           type="button"
-          onClick={() => navigate('/orders?tab=PROCESSING')}
+          onClick={() => go('/orders?tab=PROCESSING')}
           className="pointer-events-auto shrink-0 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-lg sm:hidden"
         >
           +{shown.length - 1} more new order{shown.length - 1 === 1 ? '' : 's'}
@@ -244,7 +250,7 @@ export function OrderAlerts({ userId }: { userId: string }) {
       {shown.length > MAX_CARDS && (
         <button
           type="button"
-          onClick={() => navigate('/orders?tab=PROCESSING')}
+          onClick={() => go('/orders?tab=PROCESSING')}
           className="pointer-events-auto hidden shrink-0 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-lg sm:block"
         >
           +{shown.length - MAX_CARDS} more new order{shown.length - MAX_CARDS === 1 ? '' : 's'}

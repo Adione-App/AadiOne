@@ -5,11 +5,19 @@
  * Legal & Policies.
  *
  * Each page is one `content_documents` key (draft → publish → archive, like
- * the Home layout). The content is STRUCTURED PLAIN TEXT — headings,
- * paragraphs and bullet lists — never HTML: nothing an admin types is ever
- * interpreted as markup, in the app, on the website or on the public web page.
- * Email addresses, web addresses and phone numbers in the text are turned into
- * links by the readers (infoTextSegments), never by markup in the text.
+ * the Home layout). The content is STRUCTURED TEXT — sections with a heading,
+ * then paragraphs, bullet and numbered lists and sub-headings — never HTML:
+ * nothing an admin types is ever interpreted as markup, in the app, on the
+ * website or on the public web page. Bold, italic, underline and links the
+ * admin adds in the document editor are stored as formatted pieces of text
+ * (InfoTextRun) beside the plain wording; links are checked (infoLinkHref:
+ * https:, http:, mailto:, tel: only). Email addresses, web addresses and phone
+ * numbers in the text are also turned into links by the readers
+ * (infoTextSegments), never by markup in the text.
+ *
+ * Every document saved before formatting existed is valid as it is — the
+ * format only gained optional fields and block types — so nothing was
+ * migrated, and every earlier version reads exactly as it was published.
  *
  * Business and contact details are never typed into the text. A page names
  * them as {{TOKENS}} that are filled from Admin Configuration each time the
@@ -104,9 +112,41 @@ export function isInfoPageSlug(value: string): value is InfoPageSlug {
   return (INFO_PAGE_SLUGS as readonly string[]).includes(value);
 }
 
+/**
+ * A piece of formatted text — what a paragraph or list point is made of when
+ * the admin used bold, italic, underline or a link (the Admin Panel's document
+ * editor). Text only, never markup: readers draw the formatting themselves.
+ */
+export interface InfoTextRun {
+  text: string;
+  bold?: true;
+  italic?: true;
+  underline?: true;
+  /** A link the admin added — https:, http:, mailto: or tel: only (infoLinkHref, checked on save and on every read). */
+  href?: string;
+}
+
+/**
+ * One block of a section. `text` / `items` are ALWAYS the plain wording (what
+ * tokens, «TO CONFIRM» notes and limits are checked on, and what older
+ * readers show). `runs` / `itemRuns` are present only when the wording has
+ * formatting; they join up to exactly the plain text.
+ *
+ * Headings: the section heading is the editor's "Heading 1"; a `subheading`
+ * block is "Heading 2" (level 2) or "Heading 3" (level 3) inside a section.
+ */
 export type InfoPageBlock =
-  | { type: 'paragraph'; text: string }
-  | { type: 'bullets'; items: string[] };
+  | { type: 'paragraph'; text: string; runs?: InfoTextRun[] }
+  | { type: 'bullets'; items: string[]; itemRuns?: InfoTextRun[][] }
+  | { type: 'numbered'; items: string[]; itemRuns?: InfoTextRun[][] }
+  | { type: 'subheading'; level: 2 | 3; text: string };
+
+/**
+ * The plain blocks every reader has always understood — the wire format's
+ * `blocks`, for app versions released before formatting existed
+ * (infoPagePlainBlocks).
+ */
+export type InfoPagePlainBlock = { type: 'paragraph'; text: string } | { type: 'bullets'; items: string[] };
 
 export interface InfoPageSection {
   heading: string;
@@ -137,10 +177,15 @@ export const INFO_PAGE_LIMITS = {
   title: 120,
   sections: 60,
   heading: 160,
-  blocksPerSection: 40,
+  /** Paragraphs, lists and sub-headings in one section. */
+  blocksPerSection: 80,
   paragraph: 3000,
   bulletItems: 40,
   bulletItem: 1000,
+  /** Differently formatted pieces in one paragraph or point. */
+  runs: 400,
+  /** One link address. */
+  link: 500,
   /** How far ahead a "takes effect" date may be. */
   effectiveDaysAhead: 730,
   /** Whole document, as JSON. */
@@ -223,6 +268,109 @@ export function infoPageTokensIn(text: string): string[] {
   return [...text.matchAll(TOKEN_PATTERN)].map((match) => match[1]!);
 }
 
+const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+
+/**
+ * A link an admin added, as a safe address — or null. Only web addresses
+ * (https:/http:, "adione.in" becomes https://adione.in/), email addresses
+ * (mailto:) and phone numbers (tel:) are links; javascript:, data: and every
+ * other scheme are refused, and so is a {{TOKEN}} inside an address.
+ */
+export function infoLinkHref(value: string): string | null {
+  const address = value.trim();
+  if (!address || address.length > INFO_PAGE_LIMITS.link || address.includes('{{')) return null;
+  // A phone number, as people write it ("+91 90000 00001", "tel:0294-2412345").
+  const isTel = /^tel:/i.test(address);
+  const number = (isTel ? address.slice('tel:'.length) : address).replace(/[\s\-().]/g, '');
+  if (/^\+?\d{6,15}$/.test(number)) return `tel:${number}`;
+  if (isTel || /\s/.test(address)) return null;
+  if (/^mailto:/i.test(address)) {
+    const email = address.slice('mailto:'.length);
+    return EMAIL_PATTERN.test(email) ? `mailto:${email}` : null;
+  }
+  if (EMAIL_PATTERN.test(address)) return `mailto:${address}`;
+  // Any other scheme ("javascript:", "data:", "ftp:" …) is never a link.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(address) && !/^https?:\/\//i.test(address)) return null;
+  return webHref(address);
+}
+
+type RunFormat = Omit<InfoTextRun, 'text'>;
+const formatOf = (run: Partial<InfoTextRun>): RunFormat => ({
+  ...(run.bold ? { bold: true as const } : {}),
+  ...(run.italic ? { italic: true as const } : {}),
+  ...(run.underline ? { underline: true as const } : {}),
+  ...(run.href ? { href: run.href } : {}),
+});
+const sameFormat = (a: RunFormat, b: RunFormat) => a.bold === b.bold && a.italic === b.italic && a.underline === b.underline && a.href === b.href;
+const hasFormat = (format: RunFormat) => Boolean(format.bold || format.italic || format.underline || format.href);
+
+/**
+ * Checks and tidies the formatted pieces of one paragraph or point: unknown
+ * fields dropped, links checked, the whole trimmed, neighbours with the same
+ * formatting merged, and a {{TOKEN}} kept in ONE piece (it takes the
+ * formatting of its first character, so it can always be filled). Returns the
+ * plain text and the pieces — `runs` undefined when nothing is formatted — or
+ * null after recording a problem.
+ */
+function normalizeRuns(
+  field: string,
+  value: unknown,
+  add: (field: string, message: string) => void,
+): { text: string; runs?: InfoTextRun[] } | null {
+  if (!Array.isArray(value) || value.length > INFO_PAGE_LIMITS.runs) {
+    add(field, `must be a list of at most ${INFO_PAGE_LIMITS.runs} formatted pieces`);
+    return null;
+  }
+  // One entry per character (code unit), with its formatting.
+  const chars: { char: string; format: RunFormat }[] = [];
+  let valid = true;
+  value.forEach((raw, r) => {
+    const run = (raw ?? {}) as Record<string, unknown>;
+    if (typeof run['text'] !== 'string') {
+      add(`${field}.${r}.text`, 'must be text');
+      valid = false;
+      return;
+    }
+    let href: string | undefined;
+    if (run['href'] !== undefined) {
+      const safe = typeof run['href'] === 'string' ? infoLinkHref(run['href']) : null;
+      if (!safe) {
+        add(`${field}.${r}.href`, 'a link must be a web address (https://…), an email address or a phone number');
+        valid = false;
+        return;
+      }
+      href = safe;
+    }
+    const format = formatOf({ bold: run['bold'] === true || undefined, italic: run['italic'] === true || undefined, underline: run['underline'] === true || undefined, href });
+    for (const char of run['text']) {
+      // Split surrogate pairs keep their formatting together.
+      for (let i = 0; i < char.length; i += 1) chars.push({ char: char[i]!, format });
+    }
+  });
+  if (!valid) return null;
+
+  // Trim the whole, as plain text is trimmed.
+  const joined = chars.map((c) => c.char).join('');
+  const lead = joined.length - joined.trimStart().length;
+  const trail = joined.length - joined.trimEnd().length;
+  const kept = chars.slice(lead, chars.length - trail);
+  const text = kept.map((c) => c.char).join('');
+
+  // A token takes the formatting of its first character.
+  for (const match of text.matchAll(TOKEN_PATTERN)) {
+    const start = match.index ?? 0;
+    for (let i = start + 1; i < start + match[0].length; i += 1) kept[i]!.format = kept[start]!.format;
+  }
+
+  const runs: InfoTextRun[] = [];
+  for (const { char, format } of kept) {
+    const last = runs[runs.length - 1];
+    if (last && sameFormat(formatOf(last), format)) last.text += char;
+    else runs.push({ text: char, ...format });
+  }
+  return runs.some((run) => hasFormat(formatOf(run))) ? { text, runs } : { text };
+}
+
 export function isValidInfoPageDate(value: string): boolean {
   if (!DATE_PATTERN.test(value)) return false;
   const date = new Date(`${value}T00:00:00Z`);
@@ -287,24 +435,46 @@ export function validateInfoPage(input: unknown): { ok: true; content: InfoPageC
           const block = (rawBlock ?? {}) as Record<string, unknown>;
           const field = `sections.${s}.blocks.${b}`;
           if (block['type'] === 'paragraph') {
-            const text = checkText(`${field}.text`, block['text'], INFO_PAGE_LIMITS.paragraph, false);
-            if (text) blocks.push({ type: 'paragraph', text });
-          } else if (block['type'] === 'bullets') {
+            // Formatted: the pieces are the source of truth and the plain text is derived from them.
+            const rich = block['runs'] !== undefined ? normalizeRuns(`${field}.runs`, block['runs'], add) : null;
+            const text = checkText(`${field}.text`, rich ? rich.text : block['text'], INFO_PAGE_LIMITS.paragraph, false);
+            if (text) blocks.push(rich?.runs ? { type: 'paragraph', text, runs: rich.runs } : { type: 'paragraph', text });
+          } else if (block['type'] === 'bullets' || block['type'] === 'numbered') {
+            const type = block['type'];
             const rawItems = block['items'];
             if (!Array.isArray(rawItems) || rawItems.length > INFO_PAGE_LIMITS.bulletItems) {
               add(`${field}.items`, `must be a list of at most ${INFO_PAGE_LIMITS.bulletItems} points`);
               return;
             }
-            const items = rawItems
-              .map((item, i) => checkText(`${field}.items.${i}`, item, INFO_PAGE_LIMITS.bulletItem, false))
-              .filter((item) => item.length > 0);
-            if (items.length > 0) blocks.push({ type: 'bullets', items });
+            const rawItemRuns = block['itemRuns'];
+            if (rawItemRuns !== undefined && (!Array.isArray(rawItemRuns) || rawItemRuns.length !== rawItems.length)) {
+              add(`${field}.itemRuns`, 'must have one entry per point');
+              return;
+            }
+            const items: string[] = [];
+            const itemRuns: InfoTextRun[][] = [];
+            let formatted = false;
+            rawItems.forEach((item, i) => {
+              const raw = Array.isArray(rawItemRuns) ? rawItemRuns[i] : undefined;
+              const rich = raw !== undefined && raw !== null ? normalizeRuns(`${field}.itemRuns.${i}`, raw, add) : null;
+              const text = checkText(`${field}.items.${i}`, rich ? rich.text : item, INFO_PAGE_LIMITS.bulletItem, false);
+              if (!text) return;
+              items.push(text);
+              itemRuns.push(rich?.runs ?? [{ text }]);
+              if (rich?.runs) formatted = true;
+            });
+            if (items.length > 0) blocks.push(formatted ? { type, items, itemRuns } : { type, items });
+          } else if (block['type'] === 'subheading') {
+            const level = block['level'] === 2 || block['level'] === 3 ? block['level'] : null;
+            if (level === null) add(`${field}.level`, 'must be 2 or 3');
+            const text = checkText(`${field}.text`, block['text'], INFO_PAGE_LIMITS.heading, false);
+            if (text && level !== null) blocks.push({ type: 'subheading', level, text });
           } else {
-            add(`${field}.type`, 'must be a paragraph or a bullet list');
+            add(`${field}.type`, 'must be a paragraph, a list or a sub-heading');
           }
         });
       }
-      if (blocks.length === 0) add(`sections.${s}`, 'needs at least one paragraph or point');
+      if (!blocks.some((block) => block.type !== 'subheading')) add(`sections.${s}`, 'needs at least one paragraph or point');
       sections.push({ heading, blocks });
     });
   }
@@ -322,12 +492,17 @@ export interface InfoPageUnconfirmedItem {
   text: string;
 }
 
+/** The plain wording of a block (one entry per paragraph, point or sub-heading). */
+function blockTexts(block: InfoPageBlock): string[] {
+  return block.type === 'bullets' || block.type === 'numbered' ? block.items : [block.text];
+}
+
 /** Wording still marked «TO CONFIRM» (publishing is refused while any remains). */
 export function infoPageUnconfirmed(content: InfoPageContent): InfoPageUnconfirmedItem[] {
   const found: InfoPageUnconfirmedItem[] = [];
   if (content.title.includes(INFO_PAGE_UNCONFIRMED_MARKER)) found.push({ section: 'Title', text: content.title });
   for (const section of content.sections) {
-    const texts = [section.heading, ...section.blocks.flatMap((block) => (block.type === 'paragraph' ? [block.text] : block.items))];
+    const texts = [section.heading, ...section.blocks.flatMap(blockTexts)];
     for (const text of texts) if (text.includes(INFO_PAGE_UNCONFIRMED_MARKER)) found.push({ section: section.heading, text });
   }
   return found;
@@ -366,30 +541,124 @@ export function resolveInfoPage(content: InfoPageContent, values: InfoPageValues
     return complete ? filled : null;
   };
 
+  /** A formatted piece's tokens filled (only called once its whole text is known to be complete). */
+  const fillRuns = (runs: InfoTextRun[]): InfoTextRun[] =>
+    runs.map((run) => ({ ...run, text: run.text.replace(TOKEN_PATTERN, (_match, token: string) => valueOf(token) ?? '') }));
+  /** A heading's tokens filled; a missing one leaves the heading without it. */
+  const fillHeading = (text: string): string =>
+    text.replace(TOKEN_PATTERN, (_match, token: string) => valueOf(token) ?? '').replace(/\s{2,}/g, ' ').trim();
+
   const sections: InfoPageSection[] = [];
   for (const section of content.sections) {
     const blocks: InfoPageBlock[] = [];
     for (const block of section.blocks) {
       if (block.type === 'paragraph') {
         const text = fill(block.text);
-        if (text !== null) blocks.push({ type: 'paragraph', text });
+        if (text !== null) blocks.push(block.runs ? { type: 'paragraph', text, runs: fillRuns(block.runs) } : { type: 'paragraph', text });
+      } else if (block.type === 'bullets' || block.type === 'numbered') {
+        const items: string[] = [];
+        const itemRuns: InfoTextRun[][] = [];
+        block.items.forEach((item, i) => {
+          const text = fill(item);
+          if (text === null) return;
+          items.push(text);
+          if (block.itemRuns) itemRuns.push(fillRuns(block.itemRuns[i] ?? [{ text: item }]));
+        });
+        if (items.length > 0) blocks.push(block.itemRuns ? { type: block.type, items, itemRuns } : { type: block.type, items });
       } else {
-        const items = block.items.map(fill).filter((item): item is string => item !== null);
-        if (items.length > 0) blocks.push({ type: 'bullets', items });
+        const text = fillHeading(block.text);
+        if (text) blocks.push({ type: 'subheading', level: block.level, text });
       }
     }
-    if (blocks.length === 0) continue;
-    const heading = section.heading.replace(TOKEN_PATTERN, (_match, token: string) => valueOf(token) ?? '').replace(/\s{2,}/g, ' ').trim();
-    sections.push({ heading, blocks });
+    // A section left with nothing to read (sub-headings alone) goes too.
+    if (!blocks.some((block) => block.type !== 'subheading')) continue;
+    sections.push({ heading: fillHeading(section.heading), blocks });
   }
 
   const title = content.title.replace(TOKEN_PATTERN, (_match, token: string) => valueOf(token) ?? '').trim();
   return { title, effectiveDate: content.effectiveDate, sections, missing: [...missing] };
 }
 
+/* -------------------------------------------------------------------------- */
+/* Formatting for readers                                                      */
+/* -------------------------------------------------------------------------- */
+
+/** How a link's address reads as text: the email, the number, or the web address without "https://". */
+function linkAddressText(href: string): string {
+  if (href.startsWith('mailto:')) return href.slice('mailto:'.length);
+  if (href.startsWith('tel:')) return href.slice('tel:'.length);
+  return href.replace(/^https?:\/\//, '').replace(/\/$/, '');
+}
+
+/**
+ * Formatted wording as plain text, for readers without formatting: a link
+ * whose words do not already show its address gets it in brackets
+ * ("our website (https://adione.in/)"), so nothing is lost — older readers
+ * make the address itself a link.
+ */
+export function infoPlainText(text: string, runs?: readonly InfoTextRun[]): string {
+  if (!runs) return text;
+  return runs
+    .map((run) => {
+      if (!run.href) return run.text;
+      const address = linkAddressText(run.href);
+      const shown = run.text.replace(/\s+/g, '').toLowerCase().includes(address.replace(/\s+/g, '').toLowerCase());
+      return shown ? run.text : `${run.text} (${run.href.startsWith('http') ? run.href : address})`;
+    })
+    .join('');
+}
+
+/**
+ * The blocks as older readers understand them (the wire format's `blocks`):
+ * formatting dropped (links kept as addresses), a numbered list as numbered
+ * paragraphs ("1. …"), a sub-heading as a paragraph.
+ */
+export function infoPagePlainBlocks(blocks: readonly InfoPageBlock[]): InfoPagePlainBlock[] {
+  return blocks.flatMap((block): InfoPagePlainBlock[] => {
+    switch (block.type) {
+      case 'paragraph':
+        return [{ type: 'paragraph', text: infoPlainText(block.text, block.runs) }];
+      case 'bullets':
+        return [{ type: 'bullets', items: block.items.map((item, i) => infoPlainText(item, block.itemRuns?.[i])) }];
+      case 'numbered':
+        return block.items.map((item, i) => ({ type: 'paragraph' as const, text: `${i + 1}. ${infoPlainText(item, block.itemRuns?.[i])}` }));
+      case 'subheading':
+        return [{ type: 'paragraph', text: block.text }];
+    }
+  });
+}
+
 /** One section's blocks as plain lines (bullets prefixed) — for app versions that only read `body`. */
-export function infoPageBodyLines(section: InfoPageSection): string[] {
-  return section.blocks.flatMap((block) => (block.type === 'paragraph' ? [block.text] : block.items.map((item) => `• ${item}`)));
+export function infoPageBodyLines(section: Pick<InfoPageSection, 'blocks'>): string[] {
+  return infoPagePlainBlocks(section.blocks).flatMap((block) => (block.type === 'paragraph' ? [block.text] : block.items.map((item) => `• ${item}`)));
+}
+
+/** A run of text as a reader draws it: its formatting, and a link (made by the admin, or an address found in the text). */
+export interface InfoRichSegment extends InfoTextSegment {
+  bold?: true;
+  italic?: true;
+  underline?: true;
+}
+
+/**
+ * A paragraph's or point's wording as segments to draw. Formatted pieces keep
+ * their bold / italic / underline; a piece the admin linked is one link
+ * (re-checked: only https:, http:, mailto: and tel: ever become links); in
+ * the other pieces, email addresses, web addresses and phone numbers are made
+ * links exactly as in plain text (infoTextSegments).
+ */
+export function infoRichSegments(text: string, runs?: readonly InfoTextRun[]): InfoRichSegment[] {
+  const source = runs && runs.length > 0 ? runs : [{ text }];
+  return source.flatMap((run): InfoRichSegment[] => {
+    const format: Omit<InfoRichSegment, 'text' | 'href'> = {
+      ...(run.bold ? { bold: true as const } : {}),
+      ...(run.italic ? { italic: true as const } : {}),
+      ...(run.underline ? { underline: true as const } : {}),
+    };
+    const href = run.href ? infoLinkHref(run.href) : null;
+    if (href) return [{ text: run.text, href, ...format }];
+    return infoTextSegments(run.text).map((segment) => ({ ...segment, ...format }));
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -531,8 +800,12 @@ export function infoSectionAnchors(headings: readonly string[]): string[] {
 
 /**
  * GET /legal/:slug — the same JSON for the app, the website and the public
- * HTML page. `sections[].body` is what app versions before the structured
- * format read (plain lines); `blocks` is the structured form.
+ * HTML page. Three forms of each section, newest first:
+ *   - `rich`   the full wording: sub-headings, bullet and numbered lists,
+ *              bold / italic / underline and links (readers since Nov 2026);
+ *   - `blocks` the same wording as plain paragraphs and bullet lists
+ *              (infoPagePlainBlocks), for app versions released before;
+ *   - `body`   plain lines, for app versions before the structured format.
  * `source`: "published" (an admin-published revision) or "builtin" (nothing
  * published yet — the wording the app had before).
  */
@@ -553,7 +826,14 @@ export interface InfoPageDto {
   effectiveLabel: string | null;
   revision: number;
   source: 'published' | 'builtin';
-  sections: { id: string; heading: string; body: string[]; blocks: InfoPageBlock[] }[];
+  sections: {
+    id: string;
+    heading: string;
+    body: string[];
+    blocks: InfoPagePlainBlock[];
+    /** Absent from servers older than the document editor — read `blocks` then. */
+    rich?: InfoPageBlock[];
+  }[];
   /**
    * GET /legal/:slug/versions/:version only: false for an earlier version
    * (kept readable — e.g. the version someone accepted), true for the latest.

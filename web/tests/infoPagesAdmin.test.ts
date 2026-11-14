@@ -40,28 +40,57 @@ describe("editor rules (shared)", () => {
   });
 });
 
-describe("Information Pages screen", () => {
+describe("Legal & Policies editor screen", () => {
   const page = read("src/pages/InfoPages.tsx");
+  const editor = read("src/components/PolicyDocumentEditor.tsx");
+  const has = (source: string, text: string) => assert.ok(source.includes(text), text);
 
-  it("version and Last updated come from the server; no version or backdatable date is typed", () => {
+  it("is one document editor with the compact toolbar — no per-block textareas or reorder buttons", () => {
+    has(page, "<PolicyDocumentEditor ref={documentRef}");
+    assert.doesNotMatch(page, /<textarea/);
+    assert.doesNotMatch(page, /\+ Paragraph|\+ Bullet list|\+ Add section|Move section/);
+    for (const label of ["Normal text", "Heading 1 (section)", "Heading 2", "Heading 3", 'label="Bold"', 'label="Italic"', 'label="Underline"', 'label="Bullet list"', 'label="Numbered list"', "Add link", 'label="Undo"', 'label="Redo"']) {
+      has(editor, label);
+    }
+  });
+
+  it("the editor schema holds only what a policy stores, and is loaded only when a policy is opened", () => {
+    has(editor, "Heading.extend({ content: 'text*', marks: '' }).configure({ levels: [1, 2, 3] })");
+    has(editor, "ListItem.extend({ content: 'paragraph' })");
+    for (const off of ["blockquote: false", "code: false", "codeBlock: false", "horizontalRule: false", "strike: false"]) has(editor, off);
+    has(editor, "isAllowedUri: (url: string) => infoLinkHref(url) !== null");
+    has(page, "lazy(() => import('@/components/PolicyDocumentEditor'))");
+  });
+
+  it("keeps Save draft, Preview and Publish at the top; publishing still confirms and shows what blocks it", () => {
+    for (const label of ["Save draft", "Preview", "Publish now", "Before publishing:", "Not yet:"]) has(page, label);
+    has(page, "disabled={!data.draft || dirty || busy}");
+    has(page, "disabled={blockers.length > 0}");
+    has(page, "const accepts = asksForAcceptance(slug);");
+    has(page, "editor.publish.mutate(accepts ? askAcceptance : undefined");
+    has(page, "Ask signed-in {readers} to accept this version.");
+  });
+
+  it("checks the page as the server does before saving or previewing, and says what to fix in plain words", () => {
+    has(page, "const check = currentCheck();");
+    has(page, "Fix {problems.length === 1 ? 'this' : 'these'} first:");
+  });
+
+  it("folds the effective date, business details, version history and discard into Advanced settings", () => {
+    has(page, "Advanced settings");
+    has(page, 'label="Takes effect on (optional)"');
+    has(page, "documentRef.current?.insertText(`{{${token}}}`)");
+    has(page, "Version history{versions > 0");
+    has(page, "Discard draft");
+  });
+
+  it("version and Last updated still come from the server; the history shows who published and restored text", () => {
     assert.doesNotMatch(page, /label="Version"/);
-    assert.match(page, /label="Takes effect on \(optional\)"/);
-    assert.match(page, /Version \{data\.nextVersion\}/);
-    assert.match(page, /Last updated \{data\.published\.lastUpdatedLabel\}/);
-    assert.match(page, /Saving a draft never changes the public date/);
-  });
-
-  it("shows who published, the draft's saver, unresolved items and the restore rule", () => {
-    assert.match(page, /data\.published\.publishedBy/);
-    assert.match(page, /data\.draft\.updatedBy/);
-    assert.match(page, /<UnconfirmedPanel items=\{unconfirmed\} \/>/);
-    assert.match(page, /re-published text of version/);
-    assert.match(page, /keeps its own date in the history/);
-  });
-
-  it("warns that the outdated built-in wording is live until a legal page is published", () => {
-    assert.match(page, /Customers currently see the OLD built-in privacy wording/);
-    assert.match(page, /Only this page is published/);
+    has(page, "Becomes version ${data.nextVersion}, last updated today");
+    has(page, "last updated {data.published.lastUpdatedLabel}");
+    has(page, "item.publishedBy");
+    has(page, "data.draft.updatedBy");
+    has(page, "text of version ${item.restoredFromVersion}");
   });
 });
 
@@ -74,31 +103,41 @@ describe("Configuration", () => {
   });
 });
 
-describe("publishing checklist, acceptance and seller disclosure", () => {
-  const page = read("src/pages/InfoPages.tsx");
-  const checklist = read("src/lib/legalChecklist.ts");
+// The publishing checklist (lib/legalChecklist.ts) was removed with the
+// simplified Legal & Policies screen (2e960b4); acceptance is covered above.
+describe("seller disclosure", () => {
   const disclosure = read("src/components/SellerDisclosurePanel.tsx");
-
-  it("separates proprietor facts from technical facts, and never marks an unverified one as verified", () => {
-    assert.match(page, /<PublishingChecklist settings=\{data\.settings\} \/>/);
-    for (const label of ["Minimum customer age", "Jurisdiction", "Refund timelines", "Doorstep waiting time"]) assert.match(checklist, new RegExp(label));
-    for (const open of ["Application server region", "Database backup retention", "Application log retention", "Payment and order record retention"]) {
-      assert.match(checklist, new RegExp(`label: '${open}[^']*', status: 'open'`));
-    }
-  });
-
-  it("the publish dialog lets the admin choose whether customers (or sellers) must accept the new version", () => {
-    assert.match(page, /Ask signed-in customers to accept this version in the app\./);
-    assert.match(page, /Ask signed-in sellers to accept this version in the Seller Panel\./);
-    // Only the documents users accept (Privacy / Terms, Seller Terms / Seller Privacy) can ask.
-    assert.match(page, /const accepts = asksForAcceptance\(slug\);/);
-    assert.match(page, /editor\.publish\.mutate\(accepts \? askAcceptance : undefined\)/);
-  });
 
   it("the seller disclosure panel edits only the customer-care contact and shows what is missing", () => {
     assert.match(disclosure, /customerCarePhone: phone\.trim\(\) \|\| null, customerCareEmail: email\.trim\(\) \|\| null/);
     assert.match(disclosure, /data\.gaps\.map/);
     assert.match(read("src/pages/SellerDetail.tsx"), /path=\{`\/admin\/sellers\/\$\{seller\.id\}\/disclosure`\}/);
     assert.match(read("src/seller/pages/SellerProfile.tsx"), /path="\/seller\/disclosure"/);
+  });
+});
+
+describe("unsaved changes are protected everywhere a policy editor can be left", () => {
+  const guard = read("src/lib/unsavedChanges.ts");
+  const page = read("src/pages/InfoPages.tsx");
+  const has = (source: string, text: string) => assert.ok(source.includes(text), text);
+
+  it("reload / tab close, panel links, browser Back and Forward", () => {
+    has(guard, "window.addEventListener('beforeunload', warn)");
+    has(guard, "document.addEventListener('click', guardLinks, true)");
+    has(guard, "window.addEventListener('popstate', onPop)");
+    has(guard, "window.history.pushState({ ...((window.history.state as object | null) ?? {}), [GUARD_KEY]: lastPosition }, '', window.location.href)");
+    has(guard, "if (position.current >= from) return;");
+    has(page, "useUnsavedChangesGuard({ dirty, isDirty: () => dirtyRef.current, message: LEAVE_PROMPT })");
+    has(page, "if (changedNow) armLeaveGuard();");
+    has(page, "onKeyDownCapture={onEditorInput}");
+    has(page, "if (!confirmLeave()) return;");
+  });
+
+  it("Sign out, notifications and new-order alerts ask before leaving", () => {
+    has(read("src/App.tsx"), "if (!confirmLeave()) return;\n                    disconnectSocket();");
+    has(read("src/components/NotificationBell.tsx"), "if (destination && confirmLeave()) {");
+    const alerts = read("src/components/OrderAlerts.tsx");
+    has(alerts, "if (confirmLeave()) navigate(to);");
+    assert.doesNotMatch(alerts, /onClick=\{\(\) => navigate\(/);
   });
 });

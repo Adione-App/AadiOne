@@ -15,9 +15,12 @@ import {
   ConfigKey,
   CouponType,
   ErrorCode,
+  OrderStatus,
+  PaymentMethod,
   type BillDto,
   type ConfigValues,
 } from "../../shared";
+import { ordersRetainingCart } from "../orders/cart-retention";
 import { extractInclusiveTaxPaise, percentOfPaise } from "../../shared/money";
 import {
   resolveDeliveryFeePaise,
@@ -76,6 +79,16 @@ async function loadConfig(): Promise<PricingConfig> {
   ]);
 }
 
+/** The reason a coupon does not apply to an order below its minimum. */
+export function couponMinimumMessage(minOrderPaise: number): string {
+  return `This coupon needs a minimum order of ₹${Math.ceil(minOrderPaise / 100)}.`;
+}
+
+/** Items subtotal of priceable lines (what a coupon's minimum is checked against). */
+export function itemsSubtotalOf(items: readonly PriceableItem[]): number {
+  return items.reduce((sum, item) => sum + item.unitPricePaise * item.qty, 0);
+}
+
 export async function computeBill(input: PricingInput): Promise<PricingResult> {
   const config = await loadConfig();
 
@@ -105,7 +118,7 @@ export async function computeBill(input: PricingInput): Promise<PricingResult> {
   if (input.coupon) {
     if (itemsSubtotalPaise < input.coupon.minOrderPaise) {
       throw new AppError(ErrorCode.COUPON_MIN_ORDER_NOT_MET, {
-        message: `This coupon needs a minimum order of ₹${Math.ceil(input.coupon.minOrderPaise / 100)}.`,
+        message: couponMinimumMessage(input.coupon.minOrderPaise),
       });
     }
 
@@ -194,6 +207,33 @@ export async function minimumOrderShortfall(
 /* Coupons                                                                    */
 /* -------------------------------------------------------------------------- */
 
+export interface ResolveCouponOptions {
+  /**
+   * The cart and checkout-quote reads (and applying a code to the cart): a
+   * use held by the customer's OWN open checkout — an unpaid online order
+   * whose lines are still in this cart (orders/cart-retention.ts) — is not a
+   * use yet. That checkout is this same cart being paid for: its payment may
+   * still fail, and "Pay again" reuses it or replaces it (the replaced one
+   * gives the use back first — orders/open-checkout.ts). Without this, the
+   * coupon vanished from the cart the moment a payment failed.
+   *
+   * Never set by order placement: there the open checkout has already been
+   * reused or released, and the use is claimed under the coupon's row lock.
+   */
+  ownOpenCheckoutIsNotAUse?: boolean;
+}
+
+/** How many of these redemptions belong to the customer's own open checkout. */
+async function usesHeldByOpenCheckout(
+  redemptions: readonly { orderId: string; order: { status: string; paymentMethod: string } }[],
+): Promise<number> {
+  const pending = redemptions
+    .filter((r) => r.order.status === OrderStatus.PENDING_PAYMENT && r.order.paymentMethod === PaymentMethod.ONLINE)
+    .map((r) => r.orderId);
+  if (pending.length === 0) return 0;
+  return (await ordersRetainingCart(pending)).size;
+}
+
 /**
  * Validates a coupon for a user.
  *
@@ -204,6 +244,7 @@ export async function minimumOrderShortfall(
 export async function resolveCoupon(
   code: string,
   userId: string,
+  options: ResolveCouponOptions = {},
 ): Promise<ResolvedCoupon> {
   const enabled = await configService.get(ConfigKey.FEATURE_COUPONS_ENABLED);
   if (!enabled) {
@@ -232,17 +273,21 @@ export async function resolveCoupon(
     throw new AppError(ErrorCode.COUPON_EXPIRED);
   }
 
+  // A use given back by a cancellation (coupon-release.ts) no longer counts.
+  const redemptions = await prisma.couponRedemption.findMany({
+    where: { couponId: coupon.id, userId, releasedAt: null },
+    select: { orderId: true, order: { select: { status: true, paymentMethod: true } } },
+  });
+  const heldByOpenCheckout = options.ownOpenCheckoutIsNotAUse ? await usesHeldByOpenCheckout(redemptions) : 0;
+
   if (
     coupon.usageLimitTotal !== null &&
-    coupon.usedCount >= coupon.usageLimitTotal
+    coupon.usedCount - heldByOpenCheckout >= coupon.usageLimitTotal
   ) {
     throw new AppError(ErrorCode.COUPON_LIMIT_REACHED);
   }
 
-  // A use given back by a cancellation (coupon-release.ts) no longer counts.
-  const usedByUser = await prisma.couponRedemption.count({
-    where: { couponId: coupon.id, userId, releasedAt: null },
-  });
+  const usedByUser = redemptions.length - heldByOpenCheckout;
   if (usedByUser >= coupon.usageLimitPerUser) {
     throw new AppError(ErrorCode.COUPON_LIMIT_REACHED, {
       message: "You have already used this coupon.",

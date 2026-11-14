@@ -47,6 +47,7 @@ import { BrandLogo } from '@/components/BrandLogo';
 import { useFaviconSync } from '@/lib/branding';
 import SellerApp from '@/seller/SellerApp';
 import { ScrollMemory } from '@/lib/scrollMemory';
+import { confirmLeave } from '@/lib/unsavedChanges';
 
 type NavSection = 'MAIN' | 'MARKETPLACE' | 'USERS' | 'FINANCE' | 'GROWTH' | 'SETTINGS' | 'SYSTEM';
 
@@ -413,6 +414,8 @@ function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
               <div className="absolute right-0 z-20 mt-2 w-44 overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg">
                 <button
                   onClick={() => {
+                    // A page with unsaved work (e.g. a policy being edited) asks first.
+                    if (!confirmLeave()) return;
                     disconnectSocket();
                     void logout();
                   }}

@@ -36,6 +36,19 @@ describe("page display rules", () => {
     assert.deepEqual(sectionBlocks({ body: ["Line"], blocks: [] }), [{ type: "paragraph", text: "Line" }]);
   });
 
+  it("prefers the formatted blocks (sub-headings, numbered lists, bold, links) when the server sends them", () => {
+    const rich = [
+      { type: "subheading" as const, level: 2 as const, text: "Steps" },
+      { type: "numbered" as const, items: ["Write to us"], itemRuns: [[{ text: "Write", bold: true as const }, { text: " to us" }]] },
+    ];
+    const blocks = [{ type: "paragraph" as const, text: "Steps" }, { type: "paragraph" as const, text: "1. Write to us" }];
+    assert.deepEqual(sectionBlocks({ body: ["Steps", "1. Write to us"], blocks, rich }), rich);
+    assert.deepEqual(sectionBlocks({ body: [], blocks }), blocks);
+    const view = read("src/components/InfoPageView.tsx");
+    assert.match(view, /infoRichSegments\(text, runs\)/);
+    assert.match(view, /block\.type === 'numbered' \?/);
+  });
+
   it("contact rows exist only for configured values, each with the right link", () => {
     const info: BusinessInfoDto = {
       tradeName: "Aadione",

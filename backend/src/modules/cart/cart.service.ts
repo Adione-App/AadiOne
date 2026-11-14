@@ -334,6 +334,10 @@ export interface CartContext {
   codPolicies: { productName: string; resolvedPolicy: CodPolicy }[];
   availableListingIds: string[];
   couponCode: string | null;
+  /** The applied coupon, validated for this cart (null when none applies). The checkout quote prices it. */
+  coupon: pricingService.ResolvedCoupon | null;
+  /** The cart's coupon was taken off on this read: `minOrderPaise` set when the cart is below its minimum. */
+  couponDropped: { code: string; minOrderPaise: number | null } | null;
 }
 
 /**
@@ -354,13 +358,29 @@ export async function getCart(
 
   let couponCode = cart.couponCode;
   let coupon: pricingService.ResolvedCoupon | null = null;
+  let couponDropped: CartContext["couponDropped"] = null;
 
   if (couponCode) {
+    let reason: string | null = null;
     try {
-      coupon = await pricingService.resolveCoupon(couponCode, userId);
+      // The customer's own unpaid checkout of this cart is not a use yet
+      // (a failed payment must not take the coupon off the cart).
+      coupon = await pricingService.resolveCoupon(couponCode, userId, { ownOpenCheckoutIsNotAUse: true });
+      // Below the coupon's minimum (the available lines only, as the bill):
+      // it no longer applies. Dropped like an expired one — never left on
+      // the cart where pricing would refuse it and the cart could not load.
+      if (pricingService.itemsSubtotalOf(priceable) < coupon.minOrderPaise) {
+        reason = `Coupon ${couponCode} was removed. ${pricingService.couponMinimumMessage(coupon.minOrderPaise)}`;
+        couponDropped = { code: couponCode, minOrderPaise: coupon.minOrderPaise };
+        coupon = null;
+      }
     } catch {
       // A coupon that has since expired or hit its limit is dropped with a
       // notice rather than blocking the whole cart from loading.
+      reason = `Coupon ${couponCode} is no longer valid and was removed.`;
+      couponDropped = { code: couponCode, minOrderPaise: null };
+    }
+    if (reason) {
       await prisma.cart.update({
         where: { id: cart.id },
         data: { couponCode: null },
@@ -369,7 +389,7 @@ export async function getCart(
         type: "COUPON_REMOVED",
         variantId: null,
         productName: null,
-        message: `Coupon ${couponCode} is no longer valid and was removed.`,
+        message: reason,
       });
       couponCode = null;
     }
@@ -440,6 +460,8 @@ export async function getCart(
       codPolicies,
       availableListingIds,
       couponCode,
+      coupon,
+      couponDropped,
     },
   };
 }
@@ -661,7 +683,7 @@ export async function applyCoupon(
 ): Promise<CartDto> {
   // Validate before storing, so an invalid code is rejected immediately rather
   // than silently dropped at the next cart read.
-  const coupon = await pricingService.resolveCoupon(code, userId);
+  const coupon = await pricingService.resolveCoupon(code, userId, { ownOpenCheckoutIsNotAUse: true });
 
   const cart = await getOrCreateCart(userId);
   await prisma.cart.update({
@@ -669,7 +691,16 @@ export async function applyCoupon(
     data: { couponCode: coupon.code },
   });
 
-  return (await getCart(userId, { distanceKm })).dto;
+  // The cart read checks the coupon's minimum against the lines that can be
+  // ordered now. Below it, that read has already taken the code off again:
+  // refuse with the reason (nothing stays applied, the cart keeps loading).
+  const { dto, context } = await getCart(userId, { distanceKm });
+  if (context.couponDropped?.code === coupon.code && context.couponDropped.minOrderPaise !== null) {
+    throw new AppError(ErrorCode.COUPON_MIN_ORDER_NOT_MET, {
+      message: pricingService.couponMinimumMessage(context.couponDropped.minOrderPaise),
+    });
+  }
+  return dto;
 }
 
 export async function removeCoupon(

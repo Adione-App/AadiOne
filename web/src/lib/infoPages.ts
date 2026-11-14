@@ -8,7 +8,7 @@
  * limits and validation are the shared ones (@shared info-pages.ts).
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AdminInfoPageDto, InfoPageContent, InfoPagePreviewDto, InfoPageSlug } from '@shared';
 import { api } from './api';
@@ -38,40 +38,18 @@ export function startingContent(doc: AdminInfoPageDto | undefined): InfoPageCont
 export const basedOnRevision = (doc: AdminInfoPageDto | undefined) => doc?.draft?.basedOnRevision ?? doc?.published?.revision ?? 0;
 
 /**
- * The working copy: edits stay in the browser until "Save draft". `dirty` =
- * unsaved edits. When the server's document changes (save, publish, restore,
- * discard), the working copy reloads from it.
+ * The server side of the policy editor: the document (draft, published,
+ * history) and its actions. The text being edited lives in the document
+ * editor (pages/InfoPages.tsx); `serverContent` is what it starts from —
+ * the draft, else the published page — and Save sends the editor's page.
  */
 export function useInfoPageEditor(slug: InfoPageSlug) {
   const queryClient = useQueryClient();
   const doc = useAdminInfoPage(slug);
   const serverContent = useMemo(() => startingContent(doc.data), [doc.data]);
-  const [content, setContent] = useState<InfoPageContent | null>(serverContent);
-  const [dirty, setDirty] = useState(false);
-
-  useEffect(() => {
-    setContent(serverContent);
-    setDirty(false);
-  }, [serverContent]);
-
-  const update = useCallback((change: (draft: InfoPageContent) => void) => {
-    setContent((current) => {
-      if (!current) return current;
-      const next = structuredClone(current);
-      change(next);
-      return next;
-    });
-    setDirty(true);
-  }, []);
-
-  /** Replaces the working copy (e.g. with the Aadione template); still unsaved. */
-  const replace = useCallback((next: InfoPageContent) => {
-    setContent(structuredClone(next));
-    setDirty(true);
-  }, []);
 
   const apply = (next: AdminInfoPageDto) => queryClient.setQueryData(infoPageKeys.page(slug), next);
-  const save = useMutation({ mutationFn: () => saveDraft(slug, content!), onSuccess: apply });
+  const save = useMutation({ mutationFn: (content: InfoPageContent) => saveDraft(slug, content), onSuccess: apply });
   const discard = useMutation({ mutationFn: () => discardDraft(slug), onSuccess: apply });
   const publish = useMutation({
     mutationFn: (requireAcceptance?: boolean) => publishPage(slug, basedOnRevision(doc.data), requireAcceptance),
@@ -80,5 +58,5 @@ export function useInfoPageEditor(slug: InfoPageSlug) {
   const restore = useMutation({ mutationFn: (id: string) => restoreRevision(slug, id), onSuccess: apply });
   const reload = () => queryClient.invalidateQueries({ queryKey: infoPageKeys.page(slug) });
 
-  return { doc, content, dirty, update, replace, save, discard, publish, restore, reload };
+  return { doc, serverContent, save, discard, publish, restore, reload };
 }

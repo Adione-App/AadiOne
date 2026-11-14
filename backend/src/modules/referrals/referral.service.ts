@@ -20,7 +20,8 @@
  *     (not application logic) is the real concurrency guarantee.
  */
 
-import { ErrorCode, type ReferralAdminStatsDto, type ReferralSummaryDto } from '../../shared';
+import { ErrorCode, OrderStatus, PaymentMethod, type ReferralAdminStatsDto, type ReferralSummaryDto } from '../../shared';
+import { ordersRetainingCart } from '../orders/cart-retention';
 import * as configKeys from '../../shared/config-keys';
 import { prisma, runInTransaction, type Tx } from '../../infra/db/prisma';
 import { AppError } from '../../common/errors';
@@ -153,9 +154,24 @@ export async function tryRewardForOrder(
 /* Customer-facing reads                                                     */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The customer's reward coupons. A use held by their own open checkout — an
+ * unpaid online order still in their cart, whose payment may yet fail — is
+ * not shown as USED: checkout keeps the coupon applied for that retry
+ * (pricing.service `ownOpenCheckoutIsNotAUse`), and the Rewards page says the
+ * same. Paid, it reads USED; cancelled or failed, the use is given back.
+ */
 export async function getMyCoupons(userId: string) {
   const rows = await repository.listMyCoupons(userId);
-  return rows.map((row) => rewardCouponToDto(row));
+  const pending = rows.flatMap((row) =>
+    row.redemptions
+      .filter((r) => r.order.status === OrderStatus.PENDING_PAYMENT && r.order.paymentMethod === PaymentMethod.ONLINE)
+      .map((r) => r.orderId),
+  );
+  const openCheckouts = pending.length > 0 ? await ordersRetainingCart(pending) : new Set<string>();
+  return rows.map((row) =>
+    rewardCouponToDto({ ...row, redemptions: row.redemptions.filter((r) => !openCheckouts.has(r.orderId)) }),
+  );
 }
 
 export async function getMySummary(userId: string): Promise<ReferralSummaryDto> {

@@ -6,36 +6,44 @@
  * Two views (both in the URL, so a refresh or Back keeps your place):
  *   - the list: Customers / Sellers / Everyone tabs, one card per policy with
  *     its status, last-updated date and Edit;
- *   - the editor (?edit=<slug>): title, optional "takes effect" date and the
- *     sections (headings, paragraphs, bullet lists), with Save draft,
- *     Preview, Publish and Version history.
+ *   - the editor (?edit=<slug>): the policy's title and ONE document to type
+ *     into, like a word processor (components/PolicyDocumentEditor.tsx):
+ *     Heading 1 starts a section, Heading 2 / 3 are sub-headings, with bold,
+ *     italic, underline, bullet and numbered lists, links, undo / redo.
+ *     Save draft, Preview and Publish sit at the top; the "takes effect"
+ *     date, business-detail placeholders, version history and discarding
+ *     the draft are folded into Advanced settings.
  *
- * Same server as before (lib/infoPages.ts; content/info-page.service.ts):
- * customers — in the app, on the website and at the public link — only ever
- * see the published version; a draft never changes it, publishing asks for
- * confirmation, and every earlier version stays in the history. Version and
- * "Last updated" are set by the server when publishing.
+ * Same server and storage as before (lib/infoPages.ts;
+ * content/info-page.service.ts): the document is converted to the shared
+ * structured page (lib/policyDocument.ts) — text and formatted pieces, never
+ * HTML — and checked exactly as the server checks it before saving, with any
+ * problem said in plain words. Customers — in the app, on the website and at
+ * the public link — only ever see the published version; a draft never
+ * changes it, publishing asks for confirmation, and every earlier version
+ * stays in the history. Version and "Last updated" are set by the server.
  *
- * The text is plain text only (never HTML). Business and contact details are
- * {{SETTING}} placeholders filled from Configuration each time the page is
- * shown (a line whose setting is empty is left out). The server still refuses
- * to publish a page with a «TO CONFIRM» note or a required setting empty; the
- * editor says so in one line next to Publish.
+ * Business and contact details are {{SETTING}} placeholders filled from
+ * Configuration each time the page is shown (a line whose setting is empty is
+ * left out). The server still refuses to publish a page with a «TO CONFIRM»
+ * note or a required setting empty; the editor highlights the notes and says
+ * so in one line next to Publish.
  *
  * Reading needs Configuration access; editing and publishing need
  * Configuration write access (the server enforces both).
  */
 
-import { useEffect, useState } from 'react';
+import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   INFO_PAGE_AUDIENCE,
+  INFO_PAGE_LIMITS,
   INFO_PAGE_SLUGS,
   INFO_PAGE_TITLES,
-  INFO_PAGE_UNCONFIRMED_MARKER,
   Permission,
   asksForAcceptance,
   infoPageUnconfirmed,
+  infoRichSegments,
   roleHasPermission,
   type AdminInfoPageDto,
   type InfoPageAudience,
@@ -44,11 +52,18 @@ import {
   type InfoPagePreviewDto,
   type InfoPageSettingDto,
   type InfoPageSlug,
+  type InfoTextRun,
 } from '@shared';
 import { Button, Card, ErrorBanner, Field, Modal, Pill, Spinner, Surface, inputClass } from '@/components/ui';
+import type { PolicyEditorHandle } from '@/components/PolicyDocumentEditor';
 import { useAuth } from '@/lib/auth';
 import { apiAbsoluteUrl } from '@/lib/api';
 import { previewInfoPage, useAdminInfoPage, useInfoPageEditor } from '@/lib/infoPages';
+import { confirmLeave, useUnsavedChangesGuard } from '@/lib/unsavedChanges';
+import { BLANK_DOC, checkPolicy, contentToDoc, docToContent, samePage, type DocNode, type PolicyCheck, type PolicyMeta } from '@/lib/policyDocument';
+
+/** The document editor is downloaded only when a policy is opened. */
+const PolicyDocumentEditor = lazy(() => import('@/components/PolicyDocumentEditor'));
 
 const errorText = (error: unknown): string | null => (error instanceof Error ? error.message : error ? 'Something went wrong.' : null);
 const shortDate = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
@@ -68,6 +83,8 @@ const publicPageUrl = (slug: InfoPageSlug, version?: number) =>
   apiAbsoluteUrl(version ? `/legal/${slug}/versions/${version}/page` : `/legal/${slug}/page`);
 
 const LEAVE_PROMPT = 'You have unsaved changes to this policy. Leave without saving?';
+/** Keys that move around or select without changing the text (they do not arm the leave guard). */
+const NON_EDITING_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown', 'Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Escape', 'Tab', 'F5', 'F12']);
 
 function useCanEdit(): boolean {
   const role = useAuth((state) => state.user?.role);
@@ -168,10 +185,116 @@ function PolicyCard({ slug, onEdit }: { slug: InfoPageSlug; onEdit: () => void }
 
 type Confirm = null | 'publish' | 'discard' | 'history' | { restore: string; revision: number };
 
+/** The page's settings besides its text (title, "takes effect" date, and what the server keeps on it). */
+const metaOf = (content: InfoPageContent): PolicyMeta => {
+  const { sections: _sections, ...meta } = content;
+  return meta;
+};
+
 function PolicyEditor({ slug, onBack }: { slug: InfoPageSlug; onBack: () => void }) {
   const canEdit = useCanEdit();
   const editor = useInfoPageEditor(slug);
-  const { doc, content, dirty } = editor;
+  const { doc, serverContent } = editor;
+  const documentRef = useRef<PolicyEditorHandle>(null);
+
+  // What the document editor shows (null: this policy has no text yet), and a
+  // counter that makes it show `initialDoc` again (restore, discard, publish).
+  const [initialDoc, setInitialDoc] = useState<DocNode | null>(() => (serverContent ? contentToDoc(serverContent) : null));
+  const [resetKey, setResetKey] = useState(0);
+  const [meta, setMeta] = useState<PolicyMeta>(() => (serverContent ? metaOf(serverContent) : { title: INFO_PAGE_TITLES[slug], effectiveDate: '' }));
+  const metaRef = useRef(meta);
+  metaRef.current = meta;
+
+  // Unsaved edits = the editor's page differs from `baseline` (the page last
+  // loaded or saved). Compared as pages, not counted as keystrokes: the
+  // editor's own tidying (e.g. the empty line it keeps after a final list) is
+  // not a change, and undoing back to the saved text is not unsaved. The ref
+  // is read by effects and callbacks; `edits` counts changes, so a save that
+  // finishes after more typing leaves the page marked unsaved.
+  const [dirty, setDirtyState] = useState(false);
+  const dirtyRef = useRef(false);
+  const edits = useRef(0);
+  const baseline = useRef<InfoPageContent | null>(serverContent);
+  const setDirty = (value: boolean) => {
+    dirtyRef.current = value;
+    setDirtyState(value);
+  };
+
+  /** The editor's page as it is now, checked like the server checks it. */
+  const currentCheck = useCallback((): PolicyCheck | null => {
+    const now = documentRef.current?.getDoc() ?? initialDoc;
+    return now ? checkPolicy(now, metaRef.current) : null;
+  }, [initialDoc]);
+  const currentContent = useCallback((): InfoPageContent | null => {
+    const now = documentRef.current?.getDoc() ?? initialDoc;
+    return now ? docToContent(now, metaRef.current) : null;
+  }, [initialDoc]);
+
+  // «TO CONFIRM» notes still in the text, and — once saving was refused — what is
+  // still wrong, both kept up to date while typing (shortly after each pause).
+  const [unconfirmed, setUnconfirmed] = useState(0);
+  const [problems, setProblems] = useState<string[] | null>(null);
+  const problemsShown = useRef(false);
+  problemsShown.current = problems !== null;
+  // Leaving with unsaved changes asks first — reload / tab close, links,
+  // browser Back and Forward, Sign out, notifications (lib/unsavedChanges.ts).
+  // The guard is armed on the first real edit (typing, paste, toolbar, a
+  // settings field — see onEditorInput), not by the editor's own tidying on open.
+  const { arm: armLeaveGuard } = useUnsavedChangesGuard({ dirty, isDirty: () => dirtyRef.current, message: LEAVE_PROMPT });
+
+  const timer = useRef<number | undefined>(undefined);
+  const refreshChecks = useCallback(() => {
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => {
+      const content = currentContent();
+      const changedNow = !samePage(content, baseline.current);
+      dirtyRef.current = changedNow;
+      setDirtyState(changedNow);
+      // Any change not caught as input (e.g. a placeholder inserted from Advanced settings).
+      if (changedNow) armLeaveGuard();
+      setUnconfirmed(content ? infoPageUnconfirmed(content).length : 0);
+      if (problemsShown.current) {
+        const check = currentCheck();
+        setProblems(check && !check.ok ? check.problems : null);
+      }
+    }, 350);
+  }, [currentCheck, currentContent, armLeaveGuard]);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+
+  const changed = useCallback(() => {
+    edits.current += 1;
+    // Guard leaving at once; whether anything really changed is settled after the pause.
+    dirtyRef.current = true;
+    refreshChecks();
+  }, [refreshChecks]);
+
+  /** The admin's own input in the document (keys that edit, paste, cut, drop, toolbar): arm the Back / Forward guard at once. */
+  const onEditorInput = (event: { type: string; key?: string; ctrlKey?: boolean; metaKey?: boolean; target: EventTarget }) => {
+    if (!canEdit) return;
+    if (event.type === 'keydown' && !event.ctrlKey && !event.metaKey && event.key && NON_EDITING_KEYS.has(event.key)) return;
+    if (event.type === 'click' && !(event.target instanceof Element && event.target.closest('[role=toolbar] button, [role=toolbar] select'))) return;
+    armLeaveGuard();
+  };
+
+  // The server's page changed (loaded, saved, published, restored, discarded).
+  // Unsaved typing is never replaced; the page just saved from this editor is
+  // not reloaded either (the cursor and undo history stay).
+  useEffect(() => {
+    if (dirtyRef.current) return;
+    baseline.current = serverContent;
+    if (!serverContent) {
+      setInitialDoc(null);
+      return;
+    }
+    const now = documentRef.current ? docToContent(documentRef.current.getDoc(), metaRef.current) : null;
+    if (now && samePage(now, serverContent)) return;
+    setMeta(metaOf(serverContent));
+    setInitialDoc(contentToDoc(serverContent));
+    setResetKey((key) => key + 1);
+    setProblems(null);
+    setUnconfirmed(infoPageUnconfirmed(serverContent).length);
+  }, [serverContent]);
+
   const [preview, setPreview] = useState<InfoPagePreviewDto | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -183,33 +306,8 @@ function PolicyEditor({ slug, onBack }: { slug: InfoPageSlug; onBack: () => void
   const accepts = asksForAcceptance(slug);
   const readers = INFO_PAGE_AUDIENCE[slug] === 'seller' ? 'sellers' : 'customers';
 
-  // Leaving with unsaved changes asks first: reloading or closing the tab, and
-  // following a link inside the panel (<BrowserRouter> has no navigation
-  // blocker, so link clicks are checked before the router sees them).
-  useEffect(() => {
-    if (!dirty) return;
-    const warn = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = '';
-    };
-    const guardLinks = (event: MouseEvent) => {
-      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
-      if (!link || link.getAttribute('target') === '_blank') return;
-      if (window.confirm(LEAVE_PROMPT)) return;
-      event.preventDefault();
-      event.stopPropagation();
-    };
-    window.addEventListener('beforeunload', warn);
-    document.addEventListener('click', guardLinks, true);
-    return () => {
-      window.removeEventListener('beforeunload', warn);
-      document.removeEventListener('click', guardLinks, true);
-    };
-  }, [dirty]);
-
   const back = () => {
-    if (dirty && !window.confirm(LEAVE_PROMPT)) return;
+    if (!confirmLeave()) return;
     onBack();
   };
 
@@ -225,16 +323,44 @@ function PolicyEditor({ slug, onBack }: { slug: InfoPageSlug; onBack: () => void
 
   const busy = editor.save.isPending || editor.discard.isPending || editor.publish.isPending || editor.restore.isPending;
   const actionError = errorText(editor.save.error ?? editor.discard.error ?? editor.publish.error ?? editor.restore.error);
-  const unconfirmed = content ? infoPageUnconfirmed(content) : [];
   const blockers = [
-    ...(unconfirmed.length > 0 ? [`replace ${unconfirmed.length} «TO CONFIRM» note${unconfirmed.length === 1 ? '' : 's'} (highlighted below)`] : []),
+    ...(unconfirmed > 0 ? [`replace ${unconfirmed} «TO CONFIRM» note${unconfirmed === 1 ? '' : 's'} (highlighted in yellow)`] : []),
     ...(data.missingRequired.length > 0 && slug !== 'about' ? [`fill in Configuration: ${data.missingRequired.join(', ')}`] : []),
   ];
 
   // A success note for the last action; a failed action clears it (its error shows instead).
   const done = (text: string) => ({ onSuccess: () => setNotice(text), onError: () => setNotice(null) });
 
+  /** The page to save or preview, or null after showing what to fix first. */
+  function checkedForSending(): InfoPageContent | null {
+    const check = currentCheck();
+    if (!check) return null;
+    if (!check.ok) {
+      setProblems(check.problems);
+      setNotice(null);
+      return null;
+    }
+    setProblems(null);
+    return check.content;
+  }
+
+  function saveDraft() {
+    const content = checkedForSending();
+    if (!content) return;
+    const sentAt = edits.current;
+    editor.save.mutate(content, {
+      onSuccess: () => {
+        baseline.current = content;
+        // Typing during the save keeps the page unsaved.
+        if (edits.current === sentAt) setDirty(false);
+        setNotice('Draft saved. The published policy has not changed.');
+      },
+      onError: () => setNotice(null),
+    });
+  }
+
   async function runPreview() {
+    const content = checkedForSending();
     if (!content) return;
     setPreviewing(true);
     setPreviewError(null);
@@ -246,6 +372,24 @@ function PolicyEditor({ slug, onBack }: { slug: InfoPageSlug; onBack: () => void
       setPreviewing(false);
     }
   }
+
+  /** Starts a policy that has no text yet (still unsaved). */
+  function start(content: InfoPageContent | null) {
+    setMeta(content ? metaOf(content) : { title: INFO_PAGE_TITLES[slug], effectiveDate: '' });
+    setInitialDoc(content ? contentToDoc(content) : BLANK_DOC);
+    setUnconfirmed(content ? infoPageUnconfirmed(content).length : 0);
+    // Nothing is saved yet, so the new page is an unsaved change.
+    baseline.current = null;
+    edits.current += 1;
+    setDirty(true);
+    armLeaveGuard();
+  }
+
+  const updateMeta = (change: Partial<PolicyMeta>) => {
+    setMeta((current) => ({ ...current, ...change }));
+    armLeaveGuard(); // the title or "takes effect" date: a real edit
+    changed();
+  };
 
   return (
     <div className="space-y-4">
@@ -260,10 +404,7 @@ function PolicyEditor({ slug, onBack }: { slug: InfoPageSlug; onBack: () => void
               {data.published ? (
                 <>
                   Live: version {data.published.version} · last updated {data.published.lastUpdatedLabel}
-                  {data.published.effectiveDate ? ` · takes effect ${data.published.effectiveDate}` : ''} ·{' '}
-                  <a href={publicPageUrl(slug)} target="_blank" rel="noopener noreferrer" className="font-medium text-brand-600 hover:underline">
-                    View public page
-                  </a>
+                  {data.published.effectiveDate ? ` · takes effect ${data.published.effectiveDate}` : ''}
                 </>
               ) : data.live.source === 'builtin' ? (
                 `Not published yet — ${readers} see the built-in text${data.live.lastUpdatedLabel ? ` (dated ${data.live.lastUpdatedLabel})` : ''}.`
@@ -275,24 +416,16 @@ function PolicyEditor({ slug, onBack }: { slug: InfoPageSlug; onBack: () => void
               <p className="text-sm text-gray-500">
                 Draft saved {dateTime(data.draft.updatedAt)}
                 {data.draft.updatedBy ? ` by ${data.draft.updatedBy}` : ''} — not visible to {readers} until published.
-                {canEdit ? (
-                  <>
-                    {' '}
-                    <button type="button" className="font-semibold text-gray-600 underline hover:text-danger-500" onClick={() => setConfirm('discard')} disabled={busy}>
-                      Discard draft
-                    </button>
-                  </>
-                ) : null}
               </p>
             ) : null}
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex w-full flex-wrap gap-2 sm:w-auto">
             {canEdit ? (
-              <Button variant="secondary" onClick={() => editor.save.mutate(undefined, done('Draft saved. The published policy has not changed.'))} disabled={!content || !dirty || busy}>
+              <Button variant="secondary" onClick={saveDraft} disabled={!initialDoc || !dirty || busy}>
                 {editor.save.isPending ? 'Saving…' : 'Save draft'}
               </Button>
             ) : null}
-            <Button variant="secondary" onClick={() => void runPreview()} disabled={!content || previewing || !canEdit}>
+            <Button variant="secondary" onClick={() => void runPreview()} disabled={!initialDoc || previewing || !canEdit}>
               {previewing ? 'Preparing…' : 'Preview'}
             </Button>
             {canEdit ? (
@@ -307,16 +440,23 @@ function PolicyEditor({ slug, onBack }: { slug: InfoPageSlug; onBack: () => void
                 Publish
               </Button>
             ) : null}
-            <Button variant="ghost" onClick={() => setConfirm('history')}>
-              Version history
-            </Button>
           </div>
         </div>
 
         <div className="mt-3 space-y-2 empty:hidden">
           {dirty ? <p className="text-sm font-medium text-amber-700">You have unsaved changes — save the draft before publishing.</p> : null}
-          {canEdit && content && blockers.length > 0 ? (
+          {canEdit && initialDoc && blockers.length > 0 ? (
             <p className="rounded-xl bg-warn-50 px-3 py-2 text-sm text-amber-800">Before publishing: {blockers.join('; ')}.</p>
+          ) : null}
+          {problems && problems.length > 0 ? (
+            <div role="alert" className="rounded-xl bg-danger-50 px-3 py-2 text-sm text-danger-600">
+              <p className="font-semibold">Fix {problems.length === 1 ? 'this' : 'these'} first:</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                {problems.map((problem) => (
+                  <li key={problem}>{problem}</li>
+                ))}
+              </ul>
+            </div>
           ) : null}
           {notice && !dirty ? <p role="status" className="rounded-xl bg-brand-50 px-3 py-2 text-sm font-medium text-brand-700">{notice}</p> : null}
           <ErrorBanner message={actionError} />
@@ -325,21 +465,63 @@ function PolicyEditor({ slug, onBack }: { slug: InfoPageSlug; onBack: () => void
         </div>
       </Card>
 
-      {content ? (
-        <>
-          <Placeholders settings={data.settings} />
-          <ContentEditor content={content} canEdit={canEdit} update={editor.update} />
-        </>
+      {initialDoc ? (
+        <Surface className="px-4 pt-4 sm:px-6 sm:pt-6">
+          <label htmlFor="policy-title" className="sr-only">
+            Policy title
+          </label>
+          <input
+            id="policy-title"
+            value={meta.title}
+            readOnly={!canEdit}
+            maxLength={INFO_PAGE_LIMITS.title}
+            placeholder="Policy title"
+            onChange={(event) => updateMeta({ title: event.target.value })}
+            className="w-full border-0 bg-transparent p-0 text-xl font-bold text-gray-900 placeholder:text-gray-300 focus:outline-none focus:ring-0 sm:text-3xl"
+          />
+          {canEdit ? (
+            <p className="mt-1 text-xs text-gray-500">
+              Type as in a normal document. Start each part with <span className="font-semibold">Heading 1</span> — it becomes a section in the
+              policy&apos;s contents.
+            </p>
+          ) : null}
+          <Suspense fallback={<div className="py-10"><Spinner label="Opening the editor…" /></div>}>
+            <div
+              className="mt-2"
+              onKeyDownCapture={onEditorInput}
+              onPasteCapture={onEditorInput}
+              onCutCapture={onEditorInput}
+              onDropCapture={onEditorInput}
+              onClickCapture={onEditorInput}
+              onChangeCapture={onEditorInput}
+            >
+              <PolicyDocumentEditor ref={documentRef} initialDoc={initialDoc} resetKey={resetKey} editable={canEdit} onChange={changed} />
+            </div>
+          </Suspense>
+        </Surface>
       ) : (
         <Card>
-          <p className="text-sm text-gray-600">This policy has no text yet.{canEdit ? ' Start from the Aadione template, edit it, then save, preview and publish.' : ''}</p>
+          <p className="text-sm text-gray-600">This policy has no text yet.{canEdit ? ' Start from the Aadione template or a blank page, then save, preview and publish.' : ''}</p>
           {canEdit ? (
-            <div className="mt-3">
-              <Button onClick={() => editor.replace(data.template)}>Start from the Aadione template</Button>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button onClick={() => start(data.template)}>Start from the Aadione template</Button>
+              <Button variant="secondary" onClick={() => start(null)}>Start with a blank page</Button>
             </div>
           ) : null}
         </Card>
       )}
+
+      <AdvancedSettings
+        slug={slug}
+        data={data}
+        canEdit={canEdit}
+        busy={busy}
+        effectiveDate={meta.effectiveDate}
+        onEffectiveDate={initialDoc ? (effectiveDate) => updateMeta({ effectiveDate }) : null}
+        onInsert={initialDoc && canEdit ? (token) => documentRef.current?.insertText(`{{${token}}}`) : null}
+        onHistory={() => setConfirm('history')}
+        onDiscard={() => setConfirm('discard')}
+      />
 
       {preview ? <PreviewModal preview={preview} onClose={() => setPreview(null)} /> : null}
 
@@ -409,11 +591,21 @@ function PolicyEditor({ slug, onBack }: { slug: InfoPageSlug; onBack: () => void
           footer={
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setConfirm(null)}>Cancel</Button>
-              <Button variant="danger" onClick={() => { setConfirm(null); editor.discard.mutate(undefined, done('Draft discarded.')); }}>Discard</Button>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  setConfirm(null);
+                  // The editor then shows the published policy again.
+                  setDirty(false);
+                  editor.discard.mutate(undefined, done('Draft discarded.'));
+                }}
+              >
+                Discard
+              </Button>
             </div>
           }
         >
-          <p className="text-sm text-gray-700">The unpublished changes are deleted. The published version is not affected.</p>
+          <p className="text-sm text-gray-700">The unpublished changes (saved and unsaved) are deleted. The published version is not affected.</p>
         </Modal>
       ) : null}
 
@@ -424,15 +616,22 @@ function PolicyEditor({ slug, onBack }: { slug: InfoPageSlug; onBack: () => void
           footer={
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setConfirm(null)}>Cancel</Button>
-              <Button onClick={() => { const id = confirm.restore; setConfirm(null); editor.restore.mutate(id, done(`Version ${confirm.revision} restored to the draft. Publish to make it live.`)); }}>
+              <Button
+                onClick={() => {
+                  const id = confirm.restore;
+                  setConfirm(null);
+                  setDirty(false);
+                  editor.restore.mutate(id, done(`Version ${confirm.revision} restored to the draft. Publish to make it live.`));
+                }}
+              >
                 Restore
               </Button>
             </div>
           }
         >
           <p className="text-sm text-gray-700">
-            Its text becomes the draft (replacing any current draft); {readers} keep seeing the live version until you publish. Publishing it creates version{' '}
-            {data.nextVersion}.
+            Its text becomes the draft (replacing any current draft{dirty ? ' and your unsaved changes' : ''}); {readers} keep seeing the live version until you publish.
+            Publishing it creates version {data.nextVersion}.
           </p>
         </Modal>
       ) : null}
@@ -440,20 +639,92 @@ function PolicyEditor({ slug, onBack }: { slug: InfoPageSlug; onBack: () => void
   );
 }
 
-/** Business placeholders: click to copy, paste into the text; filled from Configuration when shown. */
-function Placeholders({ settings }: { settings: InfoPageSettingDto[] }) {
-  const [copied, setCopied] = useState<string | null>(null);
-  const copy = (token: string) => {
-    void navigator.clipboard?.writeText(`{{${token}}}`).then(() => setCopied(token)).catch(() => undefined);
-  };
+/**
+ * Less-used settings, folded away: the "takes effect" date, business-detail
+ * placeholders, version history, the public link and discarding the draft.
+ */
+function AdvancedSettings({
+  slug,
+  data,
+  canEdit,
+  busy,
+  effectiveDate,
+  onEffectiveDate,
+  onInsert,
+  onHistory,
+  onDiscard,
+}: {
+  slug: InfoPageSlug;
+  data: AdminInfoPageDto;
+  canEdit: boolean;
+  busy: boolean;
+  effectiveDate: string;
+  onEffectiveDate: ((value: string) => void) | null;
+  onInsert: ((token: string) => void) | null;
+  onHistory: () => void;
+  onDiscard: () => void;
+}) {
+  const versions = (data.published ? 1 : 0) + data.history.length;
   return (
     <Surface className="px-4 py-3">
       <details>
-        <summary className="cursor-pointer text-sm font-semibold text-gray-900">
-          Business details placeholders <span className="font-normal text-gray-500">— name, legal name, email, phone, address…</span>
+        <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold text-gray-900">
+          Advanced settings
+          <span className="ml-2 font-normal text-gray-500">— effective date, business details, version history</span>
         </summary>
-      <div className="mb-2 mt-2 flex flex-wrap items-baseline justify-between gap-2">
-        <p className="text-xs text-gray-500">Click to copy, then paste into the text. Filled in automatically when the policy is shown; a line whose value is empty is left out.</p>
+        <div className="space-y-5 pb-2 pt-3">
+          {onEffectiveDate ? (
+            <div className="max-w-sm">
+              <Field label="Takes effect on (optional)" hint="Leave empty to apply from publication. Only a future date is shown to readers.">
+                <div className="flex gap-2">
+                  <input
+                    type="date"
+                    className={inputClass}
+                    value={effectiveDate}
+                    disabled={!canEdit}
+                    onChange={(event) => onEffectiveDate(event.target.value)}
+                  />
+                  {effectiveDate && canEdit ? <Button variant="ghost" onClick={() => onEffectiveDate('')}>Clear</Button> : null}
+                </div>
+              </Field>
+            </div>
+          ) : null}
+
+          <Placeholders settings={data.settings} onInsert={onInsert} />
+
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+            <Button variant="secondary" onClick={onHistory}>
+              Version history{versions > 0 ? ` (${versions})` : ''}
+            </Button>
+            {data.published ? (
+              <a href={publicPageUrl(slug)} target="_blank" rel="noopener noreferrer" className="font-semibold text-brand-600 hover:underline">
+                View public page
+              </a>
+            ) : null}
+            {canEdit && data.draft ? (
+              <button type="button" className="font-semibold text-gray-600 underline hover:text-danger-500" onClick={onDiscard} disabled={busy}>
+                Discard draft
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </details>
+    </Surface>
+  );
+}
+
+/** Business placeholders: inserted at the cursor, filled from Configuration each time the policy is shown. */
+function Placeholders({ settings, onInsert }: { settings: InfoPageSettingDto[]; onInsert: ((token: string) => void) | null }) {
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+        <div>
+          <p className="text-sm font-medium text-gray-700">Business details</p>
+          <p className="text-xs text-gray-500">
+            {onInsert ? 'Click one to insert it where the cursor is in the text. ' : ''}
+            Filled in automatically when the policy is shown; a line whose value is empty is left out.
+          </p>
+        </div>
         <Link to="/settings" className="text-sm font-semibold text-brand-600 hover:underline">
           Edit values in Configuration
         </Link>
@@ -463,20 +734,20 @@ function Placeholders({ settings }: { settings: InfoPageSettingDto[] }) {
           <button
             key={setting.token}
             type="button"
-            onClick={() => copy(setting.token)}
-            title={`{{${setting.token}}}`}
-            className={`rounded-lg border px-2.5 py-1 text-xs ${
+            disabled={!onInsert}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => onInsert?.(setting.token)}
+            title={`Inserts {{${setting.token}}}`}
+            className={`rounded-lg border px-2.5 py-1.5 text-xs disabled:cursor-default ${
               setting.filled ? 'border-brand-200 bg-brand-50 text-brand-700' : setting.required ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-gray-200 bg-gray-50 text-gray-500'
             }`}
           >
             {setting.label}
             {setting.filled ? '' : ' — empty'}
-            {copied === setting.token ? ' ✓ copied' : ''}
           </button>
         ))}
       </div>
-      </details>
-    </Surface>
+    </div>
   );
 }
 
@@ -529,127 +800,39 @@ function VersionHistory({
   );
 }
 
-function move<T>(list: T[], index: number, delta: number): void {
-  const target = index + delta;
-  if (target < 0 || target >= list.length) return;
-  const [item] = list.splice(index, 1);
-  list.splice(target, 0, item!);
-}
-
-const hasMarker = (text: string) => text.includes(INFO_PAGE_UNCONFIRMED_MARKER);
-
-function ContentEditor({
-  content,
-  canEdit,
-  update,
-}: {
-  content: InfoPageContent;
-  canEdit: boolean;
-  update: (change: (draft: InfoPageContent) => void) => void;
-}) {
+/** Wording with its bold / italic / underline, links and line breaks (text only — React escapes it). */
+function RichText({ text, runs }: { text: string; runs?: InfoTextRun[] }) {
   return (
-    <Card>
-      <fieldset disabled={!canEdit} className="space-y-4">
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Policy title" required>
-            <input className={inputClass} value={content.title} maxLength={120} onChange={(e) => update((d) => { d.title = e.target.value; })} />
-          </Field>
-          <Field label="Effective date (optional)" hint="Leave empty to apply from publication. Only a future date is shown.">
-            <div className="flex gap-2">
-              <input type="date" className={inputClass} value={content.effectiveDate} onChange={(e) => update((d) => { d.effectiveDate = e.target.value; })} />
-              {content.effectiveDate ? <Button variant="ghost" onClick={() => update((d) => { d.effectiveDate = ''; })}>Clear</Button> : null}
-            </div>
-          </Field>
-        </div>
-
-        {content.sections.map((section, s) => (
-          <section key={s} className="rounded-2xl border border-gray-200 p-3 sm:p-4" aria-label={`Section ${s + 1}`}>
-            <div className="flex flex-wrap items-end gap-1">
-              <div className="min-w-[12rem] flex-1">
-                <Field label={`Section ${s + 1} heading`} required>
-                  <input
-                    className={`${inputClass} ${hasMarker(section.heading) ? 'ring-2 ring-amber-300' : ''}`}
-                    value={section.heading}
-                    maxLength={160}
-                    onChange={(e) => update((d) => { d.sections[s]!.heading = e.target.value; })}
-                  />
-                </Field>
-              </div>
-              <Button variant="ghost" onClick={() => update((d) => move(d.sections, s, -1))} disabled={s === 0} aria-label={`Move section ${s + 1} up`}>↑</Button>
-              <Button variant="ghost" onClick={() => update((d) => move(d.sections, s, 1))} disabled={s === content.sections.length - 1} aria-label={`Move section ${s + 1} down`}>↓</Button>
-              <Button variant="ghost" onClick={() => update((d) => { d.sections.splice(s, 1); })} aria-label={`Remove section ${s + 1}`}>Remove</Button>
-            </div>
-            <div className="mt-3 space-y-2">
-              {section.blocks.map((block, b) => (
-                <BlockEditor
-                  key={b}
-                  block={block}
-                  first={b === 0}
-                  last={b === section.blocks.length - 1}
-                  onChange={(next) => update((d) => { d.sections[s]!.blocks[b] = next; })}
-                  onMove={(delta) => update((d) => move(d.sections[s]!.blocks, b, delta))}
-                  onRemove={() => update((d) => { d.sections[s]!.blocks.splice(b, 1); })}
-                />
-              ))}
-              {canEdit ? (
-                <div className="flex flex-wrap gap-2">
-                  <Button variant="soft" onClick={() => update((d) => { d.sections[s]!.blocks.push({ type: 'paragraph', text: '' }); })}>+ Paragraph</Button>
-                  <Button variant="soft" onClick={() => update((d) => { d.sections[s]!.blocks.push({ type: 'bullets', items: [''] }); })}>+ Bullet list</Button>
-                </div>
-              ) : null}
-            </div>
-          </section>
-        ))}
-        {canEdit ? (
-          <Button variant="soft" onClick={() => update((d) => { d.sections.push({ heading: '', blocks: [{ type: 'paragraph', text: '' }] }); })}>+ Add section</Button>
-        ) : null}
-      </fieldset>
-    </Card>
+    <>
+      {infoRichSegments(text, runs).map((segment, i) => {
+        let node: ReactNode = segment.text.split('\n').flatMap((line, l) => (l === 0 ? [line] : [<br key={l} />, line]));
+        if (segment.underline) node = <u>{node}</u>;
+        if (segment.italic) node = <em>{node}</em>;
+        if (segment.bold) node = <strong>{node}</strong>;
+        return segment.href ? (
+          <a key={i} href={segment.href} target="_blank" rel="noopener noreferrer">
+            {node}
+          </a>
+        ) : (
+          <Fragment key={i}>{node}</Fragment>
+        );
+      })}
+    </>
   );
 }
 
-function BlockEditor({
-  block,
-  first,
-  last,
-  onChange,
-  onMove,
-  onRemove,
-}: {
-  block: InfoPageBlock;
-  first: boolean;
-  last: boolean;
-  onChange: (next: InfoPageBlock) => void;
-  onMove: (delta: number) => void;
-  onRemove: () => void;
-}) {
-  const isList = block.type === 'bullets';
-  const value = isList ? block.items.join('\n') : block.text;
-  return (
-    <div className={`rounded-xl bg-gray-50 p-2.5 ${hasMarker(value) ? 'ring-2 ring-amber-300' : ''}`}>
-      <div className="mb-1.5 flex flex-wrap items-center gap-1 text-xs">
-        <select
-          className="rounded-lg border border-gray-200 bg-white px-2 py-1"
-          value={block.type}
-          aria-label="Block type"
-          onChange={(e) => onChange(e.target.value === 'bullets' ? { type: 'bullets', items: value.split('\n') } : { type: 'paragraph', text: value })}
-        >
-          <option value="paragraph">Paragraph</option>
-          <option value="bullets">Bullet list (one point per line)</option>
-        </select>
-        <span className="flex-1" />
-        <Button variant="ghost" onClick={() => onMove(-1)} disabled={first} aria-label="Move up">↑</Button>
-        <Button variant="ghost" onClick={() => onMove(1)} disabled={last} aria-label="Move down">↓</Button>
-        <Button variant="ghost" onClick={onRemove}>Remove</Button>
-      </div>
-      <textarea
-        className={`${inputClass} min-h-24`}
-        value={value}
-        aria-label={isList ? 'Bullet points, one per line' : 'Paragraph text'}
-        onChange={(e) => onChange(isList ? { type: 'bullets', items: e.target.value.split('\n') } : { type: 'paragraph', text: e.target.value })}
-      />
-    </div>
-  );
+function PreviewBlock({ block }: { block: InfoPageBlock }) {
+  switch (block.type) {
+    case 'paragraph':
+      return <p><RichText text={block.text} runs={block.runs} /></p>;
+    case 'subheading':
+      return block.level === 2 ? <h2>{block.text}</h2> : <h3>{block.text}</h3>;
+    case 'bullets':
+    case 'numbered': {
+      const items = block.items.map((item, i) => <li key={i}><RichText text={item} runs={block.itemRuns?.[i]} /></li>);
+      return block.type === 'numbered' ? <ol>{items}</ol> : <ul>{items}</ul>;
+    }
+  }
 }
 
 function PreviewModal({ preview, onClose }: { preview: InfoPagePreviewDto; onClose: () => void }) {
@@ -657,25 +840,21 @@ function PreviewModal({ preview, onClose }: { preview: InfoPagePreviewDto; onClo
   return (
     <Modal
       title={`Preview — ${page.title}`}
-      subtitle={`As readers would see it if published now (version ${preview.onPublish.version}, last updated ${preview.onPublish.lastUpdatedLabel}${preview.onPublish.effectiveLabel ? `, takes effect ${preview.onPublish.effectiveLabel}` : ''}). Not public.`}
+      subtitle={`As readers would see it if published now (version ${preview.onPublish.version}, last updated ${preview.onPublish.lastUpdatedLabel}${preview.onPublish.effectiveLabel ? `, takes effect ${preview.onPublish.effectiveLabel}` : ''}). Business details are filled from Configuration. Not public.`}
       onClose={onClose}
       wide
     >
       <div className="space-y-3">
         {page.missing.length > 0 ? <p className="text-xs text-gray-500">Lines using these empty settings are hidden: {page.missing.join(', ')}.</p> : null}
-        <article className="rounded-2xl border border-gray-200 p-5 text-sm leading-6 text-gray-800">
+        <article className="policy-doc policy-preview min-h-0 rounded-2xl border border-gray-200 px-5 py-5">
           {page.sections.map((section, s) => (
-            <section key={s} className="mb-4">
-              <h3 className="mb-1 text-base font-semibold text-brand-700">{section.heading}</h3>
-              {section.blocks.map((block, b) =>
-                block.type === 'paragraph' ? (
-                  <p key={b} className="my-1.5 whitespace-pre-line">{block.text}</p>
-                ) : (
-                  <ul key={b} className="my-1.5 list-disc pl-5">
-                    {block.items.map((item, i) => <li key={i}>{item}</li>)}
-                  </ul>
-                ),
-              )}
+            <section key={s}>
+              <h1>{section.heading}</h1>
+              {section.blocks.map((block, b) => (
+                <div key={b} className="mt-3">
+                  <PreviewBlock block={block} />
+                </div>
+              ))}
             </section>
           ))}
         </article>

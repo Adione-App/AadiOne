@@ -117,7 +117,7 @@ describe("Legal & Policies", () => {
 
   it("the editor shows the public URL and a link to every earlier version", () => {
     const editor = read("src/pages/InfoPages.tsx");
-    assert.match(editor, /Public page:/);
+    assert.match(editor, /View public page/);
     assert.match(editor, /href=\{publicPageUrl\(slug, item\.revision\)\}/);
   });
 

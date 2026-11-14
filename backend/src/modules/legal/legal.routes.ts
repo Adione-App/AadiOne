@@ -20,8 +20,9 @@
  * Public and read-only: no admin data, drafts or settings beyond what the
  * published page itself shows, readable from any website (app.ts allows any
  * origin, without credentials, for GET /legal/*). Every value is escaped
- * before it goes into the HTML — page content is plain text, never markup;
- * the only links are mailto:/tel:/https: ones made by infoTextSegments.
+ * before it goes into the HTML — page content is text, never markup (its
+ * formatting is drawn here with a fixed set of tags); the only links are
+ * mailto:/tel:/https:/http: ones, re-checked by infoRichSegments.
  *
  * Responses may be cached for a minute (the server's own copy is dropped the
  * moment an admin publishes), so a publish reaches every reader within ~1 min.
@@ -35,10 +36,12 @@ import {
   UserRole,
   INFO_PAGE_AUDIENCE,
   INFO_PAGE_TITLES,
-  infoTextSegments,
+  infoRichSegments,
   isInfoPageSlug,
   telHref,
   type BusinessInfoDto,
+  type InfoPageBlock,
+  type InfoTextRun,
   type InfoPageDto,
   type InfoPageSlug,
 } from '../../shared';
@@ -75,15 +78,40 @@ const escapeHtml = (text: string): string =>
       ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char,
   );
 
-/** Text with its email addresses, web addresses and phone numbers as links (all escaped). */
-const linkedText = (text: string): string =>
-  infoTextSegments(text)
-    .map((segment) =>
-      segment.href
-        ? `<a href="${escapeHtml(segment.href)}"${segment.href.startsWith('http') ? ' rel="noopener noreferrer"' : ''}>${escapeHtml(segment.text)}</a>`
-        : escapeHtml(segment.text),
-    )
+/**
+ * Wording with its formatting (bold, italic, underline), the admin's links and
+ * the email addresses, web addresses and phone numbers in it as links. Every
+ * piece of text and every address is escaped; the only tags are the ones
+ * written here, and links are only ever https:/http:/mailto:/tel:
+ * (infoRichSegments re-checks each one).
+ */
+const richText = (text: string, runs?: readonly InfoTextRun[]): string =>
+  infoRichSegments(text, runs)
+    .map((segment) => {
+      let html = escapeHtml(segment.text).replace(/\n/g, '<br>');
+      if (segment.underline) html = `<u>${html}</u>`;
+      if (segment.italic) html = `<em>${html}</em>`;
+      if (segment.bold) html = `<strong>${html}</strong>`;
+      return segment.href
+        ? `<a href="${escapeHtml(segment.href)}"${segment.href.startsWith('http') ? ' rel="noopener noreferrer"' : ''}>${html}</a>`
+        : html;
+    })
     .join('');
+
+/** One block as HTML: the section heading is <h2>, so sub-headings are <h3> (Heading 2) and <h4> (Heading 3). */
+function blockHtml(block: InfoPageBlock): string {
+  switch (block.type) {
+    case 'paragraph':
+      return `<p>${richText(block.text, block.runs)}</p>`;
+    case 'bullets':
+    case 'numbered': {
+      const tag = block.type === 'numbered' ? 'ol' : 'ul';
+      return `<${tag}>${block.items.map((item, i) => `<li>${richText(item, block.itemRuns?.[i])}</li>`).join('')}</${tag}>`;
+    }
+    case 'subheading':
+      return block.level === 2 ? `<h3>${escapeHtml(block.text)}</h3>` : `<h4>${escapeHtml(block.text)}</h4>`;
+  }
+}
 
 const META_DESCRIPTIONS: Record<InfoPageSlug, string> = {
   privacy: 'What personal information Aadione collects, why, who it is shared with, how long it is kept and how to exercise your rights.',
@@ -116,13 +144,7 @@ export function renderInfoPageHtml(page: InfoPageDto, business: BusinessInfoDto,
     .map(
       (section) =>
         `<section id="${escapeHtml(section.id)}"><h2>${escapeHtml(section.heading)}</h2>` +
-        section.blocks
-          .map((block) =>
-            block.type === 'paragraph'
-              ? `<p>${linkedText(block.text)}</p>`
-              : `<ul>${block.items.map((item) => `<li>${linkedText(item)}</li>`).join('')}</ul>`,
-          )
-          .join('') +
+        ((section.rich ?? section.blocks) as InfoPageBlock[]).map(blockHtml).join('') +
         '</section>',
     )
     .join('');
@@ -165,8 +187,10 @@ ${page.isLatest === false ? '<meta name="robots" content="noindex">' : ''}
   .toc ol{margin:0;padding-left:1.25rem;columns:2 16rem;column-gap:2rem}
   .toc li{margin:.15rem 0;break-inside:avoid}
   h2{font-size:1.2rem;line-height:1.35;margin:2.25rem 0 .5rem;scroll-margin-top:1rem}
+  h3{font-size:1.05rem;line-height:1.4;margin:1.5rem 0 .4rem}
+  h4{font-size:1rem;line-height:1.4;margin:1.25rem 0 .35rem;color:var(--muted)}
   p{margin:.65rem 0}
-  ul{margin:.65rem 0;padding-left:1.3rem}
+  ul,ol{margin:.65rem 0;padding-left:1.3rem}
   li{margin:.35rem 0}
   a{color:var(--brand)}
   footer{margin-top:3rem;padding-top:1.25rem;padding-bottom:2.5rem;border-top:1px solid var(--line);color:var(--muted);font-size:.9rem}

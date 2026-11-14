@@ -1,31 +1,63 @@
-import { useEffect } from 'react'
+import { Fragment, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { AlertTriangle, RotateCw } from 'lucide-react'
 import Container from './Container'
-import { infoTextSegments } from '../shared/info-pages'
+import { infoRichSegments } from '../shared/info-pages'
 import { infoPageHtmlUrl, useInfoPage } from '../lib/publicApi'
 import { legalNav } from '../config/site'
 
 /**
  * One published information page (Privacy Policy, Terms & Conditions, About)
  * as the API serves it — the very same text, "Last updated" date and version
- * the Aadione app shows. Plain text only: links are made solely for email
- * addresses, phone numbers and web addresses (shared infoTextSegments).
+ * the Aadione app shows. Text only, never markup: the formatting an admin
+ * added (sub-headings, numbered lists, bold, italic, underline) is drawn here,
+ * and links are only ever https:, mailto: and tel: — the admin's own links
+ * and the addresses found in the text (shared infoRichSegments).
  *
  * Long pages get a contents list (sticky on desktop) with an anchor per
  * section, so other pages can link to e.g. /terms-and-conditions#refunds.
  */
 
-export function LinkedText({ text }) {
-  return infoTextSegments(text).map((segment, i) =>
-    segment.href ? (
+/** Formatted wording: bold, italic, underline, links and line breaks. */
+export function RichText({ text, runs }) {
+  return infoRichSegments(text, runs).map((segment, i) => {
+    let node = segment.text.split('\n').flatMap((line, l) => (l === 0 ? [line] : [<br key={l} />, line]))
+    if (segment.underline) node = <u>{node}</u>
+    if (segment.italic) node = <em>{node}</em>
+    if (segment.bold) node = <strong>{node}</strong>
+    return segment.href ? (
       <a key={i} href={segment.href} {...(segment.href.startsWith('http') ? { rel: 'noopener noreferrer', target: '_blank' } : {})}>
-        {segment.text}
+        {node}
       </a>
     ) : (
-      <span key={i}>{segment.text}</span>
-    ),
-  )
+      <Fragment key={i}>{node}</Fragment>
+    )
+  })
+}
+
+/** One block: the section heading is <h2>, so sub-headings are <h3> (Heading 2) and <h4> (Heading 3). */
+function Block({ block }) {
+  switch (block.type) {
+    case 'paragraph':
+      return (
+        <p>
+          <RichText text={block.text} runs={block.runs} />
+        </p>
+      )
+    case 'subheading':
+      return block.level === 2 ? <h3>{block.text}</h3> : <h4>{block.text}</h4>
+    case 'bullets':
+    case 'numbered': {
+      const items = block.items.map((item, i) => (
+        <li key={i}>
+          <RichText text={item} runs={block.itemRuns?.[i]} />
+        </li>
+      ))
+      return block.type === 'numbered' ? <ol>{items}</ol> : <ul>{items}</ul>
+    }
+    default:
+      return null
+  }
 }
 
 export function PageMeta({ page }) {
@@ -46,21 +78,10 @@ export function PageSections({ page }) {
   return page.sections.map((section) => (
     <section key={section.id} id={section.id} aria-labelledby={`${section.id}-title`} className="scroll-mt-28">
       <h2 id={`${section.id}-title`}>{section.heading}</h2>
-      {section.blocks.map((block, b) =>
-        block.type === 'paragraph' ? (
-          <p key={b}>
-            <LinkedText text={block.text} />
-          </p>
-        ) : (
-          <ul key={b}>
-            {block.items.map((item, i) => (
-              <li key={i}>
-                <LinkedText text={item} />
-              </li>
-            ))}
-          </ul>
-        ),
-      )}
+      {/* The formatted blocks, or the plain ones from an older API. */}
+      {(section.rich ?? section.blocks).map((block, b) => (
+        <Block key={b} block={block} />
+      ))}
     </section>
   ))
 }

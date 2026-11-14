@@ -50,6 +50,15 @@ textarea:focus-visible,
 .prose-legal ul {
   @apply mb-4 ml-5 list-disc space-y-2 text-ink-light/90;
 }
+.prose-legal ol {
+  @apply mb-4 ml-5 list-decimal space-y-2 text-ink-light/90;
+}
+.prose-legal h4 {
+  @apply mt-5 mb-2 text-base font-semibold text-ink;
+}
+.prose-legal strong {
+  @apply font-semibold text-ink;
+}
 .prose-legal a {
   @apply text-leaf-700 underline underline-offset-2 hover:text-leaf-800;
 }

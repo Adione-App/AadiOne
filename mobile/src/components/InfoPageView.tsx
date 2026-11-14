@@ -1,8 +1,9 @@
 /**
  * One information page (Privacy Policy, Terms & Conditions, About Aadione),
- * drawn natively from the server's structured blocks: headings, paragraphs
- * and bullet lists. Plain text only — nothing in a page is ever treated as
- * markup. Email addresses, phone numbers and web addresses in the text are
+ * drawn natively from the server's structured blocks: headings, sub-headings,
+ * paragraphs, bullet and numbered lists, with the bold / italic / underline
+ * and links an admin added. Text only — nothing in a page is ever treated as
+ * markup; links are only ever mailto:, tel: and https: (shared infoRichSegments). Email addresses, phone numbers and web addresses in the text are
  * tappable (shared infoTextSegments: only mailto:, tel:, wa.me and https:
  * links are ever made).
  *
@@ -11,7 +12,7 @@
  */
 
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
-import { infoTextSegments, type InfoPageDto } from '@shared';
+import { infoRichSegments, infoTextSegments, type InfoPageBlock, type InfoPageDto, type InfoTextRun } from '@shared';
 import { colors, palette, radius, spacing } from '@shared/theme';
 import { infoPageEffectiveNotice, infoPageMeta, sectionBlocks, type ContactRow } from '@/lib/infoPageFormat';
 import { Bone, SkeletonGroup, useSkeletonPulse } from './Skeleton';
@@ -40,6 +41,51 @@ export function LinkedText({ text, style }: { text: string; style?: object }) {
       )}
     </Text>
   );
+}
+
+/** Formatted wording: bold, italic, underline, the admin's links and the addresses found in the text. */
+export function RichText({ text, runs, style }: { text: string; runs?: InfoTextRun[]; style?: object }) {
+  return (
+    <Text style={[BODY, style]}>
+      {infoRichSegments(text, runs).map((segment, i) => {
+        const format = [segment.bold && styles.bold, segment.italic && styles.italic, segment.underline && styles.underline];
+        return segment.href ? (
+          <Text key={i} style={[...format, styles.link]} accessibilityRole="link" onPress={() => openLink(segment.href!)} suppressHighlighting={false}>
+            {segment.text}
+          </Text>
+        ) : (
+          <Text key={i} style={format}>
+            {segment.text}
+          </Text>
+        );
+      })}
+    </Text>
+  );
+}
+
+function Block({ block }: { block: InfoPageBlock }) {
+  switch (block.type) {
+    case 'paragraph':
+      return <RichText text={block.text} runs={block.runs} style={styles.paragraph} />;
+    case 'subheading':
+      return (
+        <Text style={block.level === 2 ? styles.subheading : styles.minorHeading} accessibilityRole="header">
+          {block.text}
+        </Text>
+      );
+    case 'bullets':
+    case 'numbered':
+      return (
+        <View style={styles.list}>
+          {block.items.map((item, i) => (
+            <View key={i} style={styles.bulletRow}>
+              {block.type === 'numbered' ? <Text style={[BODY, styles.number]}>{i + 1}.</Text> : <View style={styles.bullet} />}
+              <RichText text={item} runs={block.itemRuns?.[i]} style={styles.bulletText} />
+            </View>
+          ))}
+        </View>
+      );
+  }
 }
 
 /** Title, "Last updated … · Version …" and, for wording published in advance, when it takes effect. */
@@ -75,20 +121,9 @@ export function InfoPageSections({ page }: { page: Pick<InfoPageDto, 'sections'>
           <Text style={styles.sectionHeading} accessibilityRole="header">
             {section.heading}
           </Text>
-          {sectionBlocks(section).map((block, b) =>
-            block.type === 'paragraph' ? (
-              <LinkedText key={b} text={block.text} style={styles.paragraph} />
-            ) : (
-              <View key={b} style={styles.list}>
-                {block.items.map((item, i) => (
-                  <View key={i} style={styles.bulletRow}>
-                    <View style={styles.bullet} />
-                    <LinkedText text={item} style={styles.bulletText} />
-                  </View>
-                ))}
-              </View>
-            ),
-          )}
+          {sectionBlocks(section).map((block, b) => (
+            <Block key={b} block={block} />
+          ))}
         </View>
       ))}
     </>
@@ -162,6 +197,12 @@ const styles = StyleSheet.create({
   // Centred on the first line of body text (line height 26).
   bullet: { width: 5, height: 5, borderRadius: radius.circle, backgroundColor: palette.grey500, marginTop: 11 },
   bulletText: { flex: 1, flexShrink: 1 },
+  number: { minWidth: 22, color: palette.grey600 },
+  subheading: { marginTop: spacing.lg, fontSize: 17, lineHeight: 24, fontWeight: '600', color: colors.textPrimary },
+  minorHeading: { marginTop: spacing.md, fontSize: 16, lineHeight: 23, fontWeight: '600', color: palette.grey700 },
+  bold: { fontWeight: '700' },
+  italic: { fontStyle: 'italic' },
+  underline: { textDecorationLine: 'underline' },
   link: { color: colors.primaryDark, textDecorationLine: 'underline' },
   contactCard: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: spacing.base },
   contactRow: { paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider },

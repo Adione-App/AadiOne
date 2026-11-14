@@ -11,6 +11,7 @@ import {
   webHref,
   whatsappHref,
   type BusinessInfoDto,
+  type InfoPageBlock,
   type InfoPageDto,
 } from '../shared/info-pages';
 
@@ -28,10 +29,13 @@ export function infoPageEffectiveNotice(page: Partial<Pick<InfoPageDto, 'effecti
 }
 
 /**
- * The page's structured blocks, or — from a server older than this app —
- * its plain lines as paragraphs.
+ * The page's blocks, newest form first: the formatted ones (`rich`:
+ * sub-headings, numbered lists, bold / italic / underline, links), else the
+ * plain structured ones, else — from a server older than both — its plain
+ * lines as paragraphs.
  */
-export function sectionBlocks(section: Pick<InfoPageDto['sections'][number], 'body' | 'blocks'>): InfoPageDto['sections'][number]['blocks'] {
+export function sectionBlocks(section: Pick<InfoPageDto['sections'][number], 'body' | 'blocks' | 'rich'>): InfoPageBlock[] {
+  if (Array.isArray(section.rich) && section.rich.length > 0) return section.rich;
   if (Array.isArray(section.blocks) && section.blocks.length > 0) return section.blocks;
   return (section.body ?? []).map((text) => ({ type: 'paragraph' as const, text }));
 }

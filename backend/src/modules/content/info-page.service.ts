@@ -47,6 +47,7 @@ import {
   formatPaise,
   indiaDateOf,
   infoPageBodyLines,
+  infoPagePlainBlocks,
   infoPageUnconfirmed,
   infoPageUnmetRequirements,
   infoSectionAnchors,
@@ -243,7 +244,14 @@ function toPublicDto(
     effectiveLabel: effectiveDate ? formatInfoPageDate(effectiveDate) : null,
     revision: meta.revision,
     source: meta.source,
-    sections: page.sections.map((section, s) => ({ id: anchors[s]!, heading: section.heading, body: infoPageBodyLines(section), blocks: section.blocks })),
+    sections: page.sections.map((section, s) => ({
+      id: anchors[s]!,
+      heading: section.heading,
+      body: infoPageBodyLines(section),
+      // Released app versions read `blocks` (plain paragraphs and bullets); newer readers read `rich`.
+      blocks: infoPagePlainBlocks(section.blocks),
+      rich: section.blocks,
+    })),
   };
 }
 

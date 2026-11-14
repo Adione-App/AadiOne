@@ -434,3 +434,109 @@ describe('the shared rules', () => {
     expect(infoTextSegments('javascript:alert(1) and order 123456789012')).toEqual([{ text: 'javascript:alert(1) and order 123456789012' }]);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* The document editor's formatting                                            */
+/* -------------------------------------------------------------------------- */
+
+describe('formatted text from the document editor', () => {
+  /** What the editor sends: sub-headings, a numbered list, bold / italic / underline and a link. */
+  const FORMATTED: InfoPageContent = {
+    title: 'Privacy Policy',
+    effectiveDate: '',
+    sections: [
+      {
+        heading: 'Who we are',
+        blocks: [
+          {
+            type: 'paragraph',
+            text: '{{BUSINESS_TRADE_NAME}} is run by {{BUSINESS_LEGAL_NAME}}. Read our terms.',
+            runs: [
+              { text: '{{BUSINESS_TRADE_NAME}}', bold: true },
+              { text: ' is run by ' },
+              { text: '{{BUSINESS_LEGAL_NAME}}', italic: true },
+              { text: '. Read ' },
+              { text: 'our terms', underline: true, href: 'https://adione.in/terms-and-conditions' },
+              { text: '.' },
+            ],
+          },
+          { type: 'subheading', level: 2, text: 'Complaints <b>&</b> grievances' },
+          { type: 'numbered', items: ['Write to the officer', 'We reply in 48 hours'], itemRuns: [[{ text: 'Write', bold: true }, { text: ' to the officer' }], [{ text: 'We reply in 48 hours' }]] },
+          { type: 'subheading', level: 3, text: 'Escalation' },
+          { type: 'bullets', items: ['Officer: {{GRIEVANCE_OFFICER_NAME}}'] },
+        ],
+      },
+    ],
+  };
+
+  it('saves, reloads with every format intact, publishes, and serves rich + plain forms; the HTML page draws it safely', async () => {
+    const admin = await adminToken();
+    await fillRequiredSettings();
+    const saved = await api().put('/api/v1/admin/content/pages/privacy/draft').set('Authorization', admin).send({ content: FORMATTED }).expect(200);
+    expect(expectSuccess<AdminInfoPageDto>(saved.body).data.draft!.content).toEqual(FORMATTED);
+    // A fresh read (as after a reload) returns the same document.
+    const reloaded = await api().get('/api/v1/admin/content/pages/privacy').set('Authorization', admin).expect(200);
+    expect(expectSuccess<AdminInfoPageDto>(reloaded.body).data.draft!.content).toEqual(FORMATTED);
+
+    // Preview fills the settings inside the formatted pieces.
+    const preview = expectSuccess<InfoPagePreviewDto>(
+      (await api().post('/api/v1/admin/content/pages/privacy/preview').set('Authorization', admin).send({ content: FORMATTED }).expect(200)).body,
+    ).data;
+    expect((preview.page.sections[0]!.blocks[0] as { runs: unknown[] }).runs.slice(0, 3)).toEqual([{ text: 'Aadione', bold: true }, { text: ' is run by ' }, { text: 'Test Proprietor', italic: true }]);
+
+    await api().post('/api/v1/admin/content/pages/privacy/publish').set('Authorization', admin).send({ basedOnRevision: 0 }).expect(200);
+    const page = await publicPage('privacy');
+    const [section] = page.sections;
+    expect(section!.id).toBe('who-we-are');
+    expect(section!.rich![2]).toEqual(FORMATTED.sections[0]!.blocks[2]);
+    // Released app versions read `blocks`: plain paragraphs and bullets only, nothing lost.
+    expect(section!.blocks).toEqual([
+      { type: 'paragraph', text: 'Aadione is run by Test Proprietor. Read our terms (https://adione.in/terms-and-conditions).' },
+      { type: 'paragraph', text: 'Complaints <b>&</b> grievances' },
+      { type: 'paragraph', text: '1. Write to the officer' },
+      { type: 'paragraph', text: '2. We reply in 48 hours' },
+      { type: 'paragraph', text: 'Escalation' },
+      { type: 'bullets', items: ['Officer: Test Proprietor'] },
+    ]);
+    expect(section!.body[2]).toBe('1. Write to the officer');
+
+    const html = (await api().get('/api/v1/legal/privacy/page').expect(200)).text;
+    expect(html).toContain('<strong>Aadione</strong> is run by <em>Test Proprietor</em>');
+    expect(html).toContain('<a href="https://adione.in/terms-and-conditions" rel="noopener noreferrer"><u>our terms</u></a>');
+    expect(html).toContain('<h3>Complaints &lt;b&gt;&amp;&lt;/b&gt; grievances</h3>');
+    expect(html).toContain('<ol><li><strong>Write</strong> to the officer</li><li>We reply in 48 hours</li></ol>');
+    expect(html).toContain('<h4>Escalation</h4>');
+    expect(html).not.toContain('<b>');
+  });
+
+  it('refuses a link that is not a web address, email or phone — nothing is stored', async () => {
+    const admin = await adminToken();
+    const bad = structuredClone(FORMATTED);
+    (bad.sections[0]!.blocks[0] as { runs: { href?: string }[] }).runs[4]!.href = 'javascript:alert(document.cookie)';
+    const refused = await api().put('/api/v1/admin/content/pages/privacy/draft').set('Authorization', admin).send({ content: bad });
+    expect(refused.status).toBe(400);
+    expect(expectError(refused.body).message).toMatch(/link must be a web address/);
+    expect(await prisma.contentDocument.count()).toBe(0);
+  });
+
+  it('an earlier plain version stays exactly as published after a formatted version replaces it', async () => {
+    const admin = await adminToken();
+    await fillRequiredSettings();
+    await api().put('/api/v1/admin/content/pages/privacy/draft').set('Authorization', admin).send({ content: PAGE }).expect(200);
+    await api().post('/api/v1/admin/content/pages/privacy/publish').set('Authorization', admin).send({ basedOnRevision: 0 }).expect(200);
+    const before = expectSuccess<InfoPageDto>((await api().get('/api/v1/legal/privacy/versions/1').expect(200)).body).data;
+
+    await api().put('/api/v1/admin/content/pages/privacy/draft').set('Authorization', admin).send({ content: FORMATTED }).expect(200);
+    await api().post('/api/v1/admin/content/pages/privacy/publish').set('Authorization', admin).send({ basedOnRevision: 1 }).expect(200);
+
+    const after = expectSuccess<InfoPageDto>((await api().get('/api/v1/legal/privacy/versions/1').expect(200)).body).data;
+    expect(after.sections).toEqual(before.sections);
+    expect(after.sections[0]!.rich).toEqual(after.sections[0]!.blocks); // plain text: both forms the same
+    expect(after.isLatest).toBe(false);
+    expect((await publicPage('privacy')).version).toBe('2');
+    // Restoring the plain version brings back exactly its text.
+    const history = expectSuccess<AdminInfoPageDto>((await api().get('/api/v1/admin/content/pages/privacy').set('Authorization', admin).expect(200)).body).data.history;
+    const restored = await api().post(`/api/v1/admin/content/pages/privacy/restore/${history[0]!.id}`).set('Authorization', admin).send({}).expect(200);
+    expect(expectSuccess<AdminInfoPageDto>(restored.body).data.draft!.content.sections).toEqual(PAGE.sections);
+  });
+});

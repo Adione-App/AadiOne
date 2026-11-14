@@ -280,11 +280,12 @@ export async function getCheckoutQuote(
   // Every read below is independent of the others except where noted, so
   // they run together. Run one after another (~30 round trips to a remote
   // database) they were the 2–4 s the app's Pay buttons waited on.
-  const [context, { dto: cartDto }, coupon, categories, config, deliveredCount, user] =
+  const [context, { dto: cartDto, context: cartContext }, explicitCoupon, categories, config, deliveredCount, user] =
     await Promise.all([
       buildCheckoutContext(userId, destination),
-      // Only its `changes` (lines revalidated since the cart was read) are
-      // used here; they don't depend on the delivery distance.
+      // Its `changes` (lines revalidated since the cart was read) and the
+      // coupon applied to the cart, validated by that read; neither depends
+      // on the delivery distance.
       cartService.getCart(userId),
       couponCode ? pricingService.resolveCoupon(couponCode, userId) : null,
       prisma.category.findMany({ where: { deletedAt: null } }),
@@ -305,14 +306,29 @@ export async function getCheckoutQuote(
   // is not estimated a second time. Listing prices come with the cart load.
   const serviceability = await sellerService.cartServiceability(context.delivery, itemCount);
 
+  const priceable = context.items.map((item) => ({
+    variantId: item.variantId,
+    qty: item.qty,
+    mrpPaise: item.mrpPaise,
+    unitPricePaise: item.pricePaise,
+    taxRateBp: item.taxRateBp,
+  }));
+
+  // The coupon: one named in the request (as before), otherwise the one
+  // applied to the cart — the same fallback order placement uses
+  // (`input.couponCode ?? cart.couponCode`), so the total shown here is the
+  // total the order is charged. The app sends only the destination: without
+  // this the screen showed no discount, and placing the order with that
+  // total was refused as PRICE_CHANGED. A cart coupon is never a reason to
+  // refuse the quote: one below its minimum is simply not applied (the
+  // cart read above has already taken it off with a notice).
+  let coupon = explicitCoupon;
+  if (!couponCode && cartContext.coupon && pricingService.itemsSubtotalOf(priceable) >= cartContext.coupon.minOrderPaise) {
+    coupon = cartContext.coupon;
+  }
+
   const { bill } = await pricingService.computeBill({
-    items: context.items.map((item) => ({
-      variantId: item.variantId,
-      qty: item.qty,
-      mrpPaise: item.mrpPaise,
-      unitPricePaise: item.pricePaise,
-      taxRateBp: item.taxRateBp,
-    })),
+    items: priceable,
     distanceKm: context.distanceKm,
     coupon,
   });

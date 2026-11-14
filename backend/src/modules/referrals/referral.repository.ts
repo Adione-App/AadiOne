@@ -133,14 +133,24 @@ export async function couponCodeExists(code: string, client: DbClient = prisma):
 
 export type CouponWithRedemptions = Coupon & { redemptions: { id: string; createdAt: Date }[] };
 
+/** With each use's order, so a use held by the customer's own unpaid checkout can be told apart (referral.service). */
+export type CouponWithRedemptionOrders = Coupon & {
+  redemptions: { id: string; createdAt: Date; orderId: string; order: { status: string; paymentMethod: string } }[];
+};
+
 export async function listMyCoupons(
   userId: string,
   client: DbClient = prisma,
-): Promise<CouponWithRedemptions[]> {
+): Promise<CouponWithRedemptionOrders[]> {
   return client.coupon.findMany({
     where: { issuedToUserId: userId },
     // A use given back by a cancellation is not a use (coupon-release.ts).
-    include: { redemptions: { where: { releasedAt: null }, select: { id: true, createdAt: true } } },
+    include: {
+      redemptions: {
+        where: { releasedAt: null },
+        select: { id: true, createdAt: true, orderId: true, order: { select: { status: true, paymentMethod: true } } },
+      },
+    },
     orderBy: { createdAt: 'desc' },
   });
 }

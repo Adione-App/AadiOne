@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from '@/components/ui';
+import { confirmLeave } from '@/lib/unsavedChanges';
 import {
   flattenNotificationPages,
   formatNotificationTime,
@@ -96,7 +97,8 @@ export function useOpenNotification(source: NotificationSource, beforeNavigate?:
           .finally(() => pendingReads.current.delete(item.id));
       }
       const destination = source.destination(item);
-      if (destination) {
+      // A page with unsaved work (e.g. a policy being edited) asks first.
+      if (destination && confirmLeave()) {
         beforeNavigate?.();
         navigate(destination);
       }

@@ -36,6 +36,7 @@ import {
 import { AppError } from '../../common/errors';
 import { moduleLogger } from '../../common/logger';
 import { prisma } from '../../infra/db/prisma';
+import { emitCatalogChanged } from '../../realtime/socket';
 import * as configRepository from '../configuration/configuration.repository';
 import * as configService from '../configuration/configuration.service';
 import { findMarketplaceCategories } from '../catalog/catalog.repository';
@@ -184,6 +185,8 @@ export async function saveHomeMainCategories(input: SaveHomeMainCategoriesInput,
   });
 
   await configService.invalidate(null);
+  // Connected apps re-ask for Home now (a hidden category's tile leaves at once).
+  emitCatalogChanged();
   log.info({ actorUserId, shown: next.order.length - next.hidden.length, hidden: next.hidden.length, featured: next.featured.length }, 'home main categories saved');
   return getAdminHomeMainCategories();
 }

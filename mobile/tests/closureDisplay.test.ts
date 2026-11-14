@@ -179,7 +179,7 @@ describe("4 + 5 + 6. app open: each store on its own", () => {
 
   it("products of a closed store: 'Store closed' with the server's sentence; its status and refusals are shown", () => {
     assert.deepEqual(notAddableLabel(true, false, SELLER_SENTENCE), { text: "Store closed", accessibilityLabel: SELLER_SENTENCE, tone: "danger" });
-    assert.equal(notAddableLabel(false, false, null).text, "Sold Out");
+    assert.equal(notAddableLabel(false, false, null).text, "Out of Stock");
     assert.equal(shownStoreClosedHint("Opens today at 10:00 AM.", false), "Opens today at 10:00 AM.");
     assert.equal(sellerStatusShown(false), true);
     assert.equal(deliveryNoticeCoveredByGlobal("STORE_CLOSED", false), false);

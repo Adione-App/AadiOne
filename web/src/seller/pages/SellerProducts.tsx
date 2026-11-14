@@ -34,7 +34,7 @@ import { useEntryState } from '@/lib/scrollMemory';
 import { useMutation } from '@tanstack/react-query';
 import { formatPaise } from '@shared/money';
 import { isFoodSellerType } from '@shared';
-import { smartSearch, type SearchField } from '@shared/search-match';
+import { smartSearch } from '@shared/search-match';
 import { Button, ErrorBanner, Icon, Modal, Pill, Surface, Toggle } from '@/components/ui';
 import {
   bulkProductAction,
@@ -51,6 +51,7 @@ import { ProductImage, StockStepper, VisibilityPill, hasOptionsToSubmit, shortDa
 import { ProductFormModal, StartSellingModal } from '../productForms';
 import { FoodItemModal } from '../foodItemForm';
 import { isHiddenBySeller, isOutOfStock, rowsOf, type ProductRow } from '../productRows';
+import { categoryOptions, inCategory, productRowSearchFields } from '../productSearch';
 import { ChipTabs, EmptyPanel, FilterSelect, LoadError, SearchBox, SkeletonList, linkClass, toast } from '../sellerUi';
 import { downloadTemplate } from '../importApi';
 
@@ -100,15 +101,6 @@ type Sort = (typeof SORTS)[number]['value'];
 
 const pick = <T extends string>(options: readonly { value: T }[], raw: string | null, fallback: T): T =>
   options.find((option) => option.value === raw)?.value ?? fallback;
-
-/** What Smart Search looks at on a row: its name, Hindi name and category path. */
-function productRowSearchFields(row: ProductRow): SearchField[] {
-  return [
-    { text: row.name, source: 'NAME' },
-    { text: row.nameHi, source: 'NAME_HI' },
-    { text: row.category, source: 'CATEGORY' },
-  ];
-}
 
 function matchesView(row: ProductRow, view: View): boolean {
   switch (view) {
@@ -210,6 +202,8 @@ export default function SellerProductsPage() {
   const stock = pick(STOCKS, params.get('stock'), 'ALL');
   const sort = pick(SORTS, params.get('sort'), 'UPDATED');
   const search = params.get('q') ?? '';
+  // A category id (top category or subcategory) — compared by id, never by name.
+  const category = params.get('category') ?? 'ALL';
   // Kept per history entry: Back from a product shows as many rows as before,
   // so the remembered scroll position lands on the same product.
   const [shown, setShown] = useEntryState('shown', PAGE);
@@ -295,13 +289,18 @@ export default function SellerProductsPage() {
   // Smart Search (shared/search-match.ts — the same rules as the customer
   // app): English, Hindi or Hinglish names, synonyms and typos. While
   // searching, the best match comes first unless a sort was chosen.
-  const filtered = rows.filter((row) => matchesApproval(row, approval) && matchesStock(row, stock));
+  const categories = useMemo(() => categoryOptions(rows), [rows]);
+  // A category the seller no longer has (stale link) filters nothing out.
+  const categoryOn = category !== 'ALL' && categories.some((option) => option.value === category);
+  const filtered = rows.filter(
+    (row) => matchesApproval(row, approval) && matchesStock(row, stock) && (!categoryOn || inCategory(row, category)),
+  );
   const narrowed = term ? smartSearch(filtered, term, productRowSearchFields) : filtered;
   const views = narrowed.filter((row) => matchesView(row, view));
   const visible = term && !params.get('sort') ? views : views.sort(compare(sort));
   const loading = products.isPending || listings.isPending;
   const error = products.error ?? listings.error;
-  const filtersOn = view !== 'ALL' || approval !== 'ALL' || stock !== 'ALL' || term !== '';
+  const filtersOn = view !== 'ALL' || approval !== 'ALL' || stock !== 'ALL' || categoryOn || term !== '';
   // "Select all eligible" covers the eligible products the current filters show.
   const eligibleShown = visible.filter(isReady).map((row) => row.productId!);
   const allEligibleChosen = eligibleShown.length > 0 && eligibleShown.every((id) => selected.has(id));
@@ -388,7 +387,7 @@ export default function SellerProductsPage() {
   // Taps keep counting while a batch is saving — never ignored.
   const saving = (row: ProductRow) => (row.listing ? stockBatch.busy(row.listing.id) : false);
   const toggling = (row: ProductRow) => toggle.isPending && toggle.variables?.key === row.key;
-  const clearAll = () => update({ view: null, approval: null, stock: null, q: null });
+  const clearAll = () => update({ view: null, approval: null, stock: null, category: null, q: null });
 
   return (
     <div className="space-y-4 pb-20 lg:pb-0">
@@ -457,7 +456,14 @@ export default function SellerProductsPage() {
           onChange={(next) => update({ view: next })}
           options={VIEWS.map((item) => ({ value: item.value, label: item.label, count: loading ? null : narrowed.filter((row) => matchesView(row, item.value)).length }))}
         />
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-[repeat(3,minmax(0,12rem))_auto] sm:items-end">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-[repeat(4,minmax(0,12rem))_auto] sm:items-end">
+          <FilterSelect
+            label="Category"
+            value={categoryOn ? category : 'ALL'}
+            options={[{ value: 'ALL', label: 'Any category' }, ...categories]}
+            onChange={(next) => update({ category: next })}
+            className="col-span-2 sm:col-span-1"
+          />
           <FilterSelect label="Approval" value={approval} options={APPROVALS} onChange={(next) => update({ approval: next })} />
           <FilterSelect label="Stock" value={stock} options={STOCKS} onChange={(next) => update({ stock: next })} />
           <FilterSelect label="Sort by" value={sort} options={SORTS} onChange={(next) => update({ sort: next })} className="col-span-2 sm:col-span-1" />

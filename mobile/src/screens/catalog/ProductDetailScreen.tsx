@@ -51,6 +51,8 @@ import {
   QuantityStepper,
 } from "@/components/ProductCard";
 import ProductGallery from "@/components/ProductGallery";
+import { OutOfStockLabel } from "@/components/OutOfStockLabel";
+import { OUT_OF_STOCK_LABEL } from "@/lib/stockLabel";
 import { ProductGridSkeleton } from "@/components/ProductCardSkeleton";
 
 export default function ProductDetailScreen({
@@ -302,7 +304,7 @@ export default function ProductDetailScreen({
                 backgroundColor: colors.primarySurface,
               }}
             >
-              <AppText variant="h3">Out of stock</AppText>
+              <AppText variant="h3">{OUT_OF_STOCK_LABEL}</AppText>
               <AppText
                 variant="body"
                 color={colors.textSecondary}
@@ -513,13 +515,18 @@ export default function ProductDetailScreen({
                 )
               ) : (
                 <View style={styles.footerUnavailable}>
-                  <AppText variant="bodyStrong" color={colors.textSecondary}>
-                    {storeClosed
-                      ? "Unavailable"
-                      : !outOfStock && needsChoice && !chosen
-                        ? `Select a ${optionWord}`
-                        : "Currently unavailable"}
-                  </AppText>
+                  {outOfStock ? (
+                    // The shared label (components/OutOfStockLabel.tsx): always "Out of Stock".
+                    <OutOfStockLabel size="large" />
+                  ) : (
+                    <AppText variant="bodyStrong" color={colors.textSecondary}>
+                      {storeClosed
+                        ? "Unavailable"
+                        : needsChoice && !chosen
+                          ? `Select a ${optionWord}`
+                          : "Currently unavailable"}
+                    </AppText>
+                  )}
                 </View>
               )}
             </ActionBarTransition>

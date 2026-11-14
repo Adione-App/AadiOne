@@ -46,6 +46,7 @@ import { AppError } from '../../common/errors';
 import { moduleLogger } from '../../common/logger';
 import { prisma } from '../../infra/db/prisma';
 import { cache } from '../../infra/cache';
+import { emitCatalogChanged } from '../../realtime/socket';
 import { storageKeyFromUrl } from '../../infra/storage';
 import { MARKETPLACE_SELLER_SQL, findPublishedProductIds, listProductOptions as queryProductOptions } from '../catalog/catalog.repository';
 import { resolveProductShelves } from '../catalog/catalog.service';
@@ -431,6 +432,8 @@ export async function publishHomeLayout(basedOnRevision: number, actorUserId: st
     await audit(tx, actorUserId, 'content.publish', draft.id, current ? { revision: current.revision } : null, { key: HOME_LAYOUT_KEY, revision: next });
   });
   await cache.delete(CACHE_KEY).catch((error: unknown) => log.warn({ err: error }, 'home layout cache not cleared — refreshes within a minute'));
+  // Connected apps re-ask now: a removed section or category tile leaves Home at once.
+  emitCatalogChanged();
   return getAdminHomeLayout();
 }
 

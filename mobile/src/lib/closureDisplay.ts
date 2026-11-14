@@ -23,6 +23,7 @@ import type { CartDto, CartItemDto } from "@shared";
 import type { DeliveryState } from "./deliveryArea";
 import { DEFAULT_CLOSED_MESSAGE } from "./platformAvailability";
 import { isCheckingLine, isOrderableLine, unavailableLabel } from "./cartAvailability";
+import { OUT_OF_STOCK_A11Y_LABEL, OUT_OF_STOCK_LABEL } from "./stockLabel";
 
 export interface GlobalOrdering {
   closed: boolean;
@@ -133,7 +134,8 @@ export function notAddableLabel(
   globalClosed: boolean,
   sellerMessage: string | null | undefined,
 ): { text: string; accessibilityLabel: string; tone: "danger" | "muted" } {
-  if (!storeClosed) return { text: "Sold Out", accessibilityLabel: "Sold out", tone: "muted" };
+  // The store is open, so nothing buyable means out of stock — the one shared wording.
+  if (!storeClosed) return { text: OUT_OF_STOCK_LABEL, accessibilityLabel: OUT_OF_STOCK_A11Y_LABEL, tone: "muted" };
   if (globalClosed) return { text: "Unavailable", accessibilityLabel: "Unavailable right now", tone: "muted" };
   return { text: "Store closed", accessibilityLabel: sellerMessage ?? "Store closed", tone: "danger" };
 }

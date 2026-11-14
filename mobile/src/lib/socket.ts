@@ -54,10 +54,13 @@ export function connectSocket(accessToken: string): void {
   // One of MY orders changed — placed after payment, moved on, delivered or
   // cancelled (server: emitOrderStatus, this user's room only).
   socket.on('order.status_changed', () => orderListener?.());
+  // Categories / the Home layout changed (server: emitCatalogChanged).
+  socket.on('catalog.changed', () => catalogListener?.());
   // Back after a drop: events may have been missed meanwhile — ask again.
   socket.io.on('reconnect', () => {
     availabilityListener?.();
     orderListener?.();
+    catalogListener?.();
   });
 }
 
@@ -76,6 +79,13 @@ let availabilityListener: (() => void) | null = null;
  */
 export function onStoreAvailabilityChanged(listener: (() => void) | null): void {
   availabilityListener = listener;
+}
+
+let catalogListener: (() => void) | null = null;
+
+/** App.tsx wires this to lib/catalogSync.ts (Home layout, feed, category tree). */
+export function onCatalogChanged(listener: (() => void) | null): void {
+  catalogListener = listener;
 }
 
 export function disconnectSocket(): void {

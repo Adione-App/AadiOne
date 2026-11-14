@@ -78,7 +78,8 @@ import { FoodCarousel } from "./sections/FoodCarousel";
 import { LatestProducts } from "./sections/LatestProducts";
 import { HomeHero, heroHeaderColor } from "./sections/HomeHero";
 import { applyHomeLayout, type LaidOutSection } from "./homeLayout";
-import { useHomeLayout, useHomeShelves } from "@/lib/homeLayoutQuery";
+import { FALLBACK_HOME_LAYOUT, useHomeLayoutQuery, useHomeShelves } from "@/lib/homeLayoutQuery";
+import { CATALOG_FOCUS_MIN_AGE_MS } from "@/lib/catalogSync";
 import { StoreSection } from "./sections/StoreSection";
 
 const NO_RESULTS: never[] = [];
@@ -247,6 +248,9 @@ export default function HomeScreen({
   }, [isFocused]);
 
   const feed = useHomeFeed();
+  // Home never unmounts: back on it after a while, ask again — a category or
+  // section removed meanwhile must not stay (lib/catalogSync.ts).
+  useRefreshOnFocus(feed, { minAgeMs: CATALOG_FOCUS_MIN_AGE_MS });
   // App-wide availability (server-decided: master switch, emergency, pauses,
   // holidays, hours). Closed = browse and fill the cart, no orders. An older
   // server without /availability: its master switch, as before. One answer
@@ -556,7 +560,9 @@ export default function HomeScreen({
 
   // The admin's published layout (Home Page Builder / Category Management):
   // order, visibility and style of the sections the engine built above.
-  const homeLayout = useHomeLayout();
+  const homeLayoutQuery = useHomeLayoutQuery();
+  useRefreshOnFocus(homeLayoutQuery, { minAgeMs: CATALOG_FOCUS_MIN_AGE_MS });
+  const homeLayout = homeLayoutQuery.data ?? FALLBACK_HOME_LAYOUT;
   // Products of the builder's added product shelves (resolved by the server, keyed by section id).
   const { shelves: homeShelves, loading: homeShelvesLoading } = useHomeShelves();
   const language = usePreferences((state) => state.language);

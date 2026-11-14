@@ -21,12 +21,18 @@ import {
 } from "@shared";
 import { api } from "./api";
 
-const FALLBACK_LAYOUT: HomeLayoutContent = resolveHomeLayout(DEFAULT_HOME_LAYOUT);
+/** The built-in defaults, used until a layout has been received. */
+export const FALLBACK_HOME_LAYOUT: HomeLayoutContent = resolveHomeLayout(DEFAULT_HOME_LAYOUT);
 
 export const homeLayoutQueryKey = ["content", "home-layout"] as const;
 
-export function useHomeLayout(): HomeLayoutContent {
-  const query = useQuery({
+/**
+ * The layout query itself — for a screen that also refreshes it when shown
+ * again (useRefreshOnFocus); `useHomeLayout` is the usual read. Also asked
+ * again on app resume and on the realtime `catalog.changed` (lib/catalogSync.ts).
+ */
+export function useHomeLayoutQuery() {
+  return useQuery({
     queryKey: homeLayoutQueryKey,
     queryFn: async () => resolveHomeLayout((await api.get<HomeLayoutDto>("/content/home-layout")).layout),
     // The server caches it for a minute; a few minutes here keeps Home from asking on every visit.
@@ -34,7 +40,10 @@ export function useHomeLayout(): HomeLayoutContent {
     gcTime: 7 * 24 * 60 * 60_000,
     retry: 1,
   });
-  return query.data ?? FALLBACK_LAYOUT;
+}
+
+export function useHomeLayout(): HomeLayoutContent {
+  return useHomeLayoutQuery().data ?? FALLBACK_HOME_LAYOUT;
 }
 
 export const homeShelvesQueryKey = ["content", "home-shelves"] as const;

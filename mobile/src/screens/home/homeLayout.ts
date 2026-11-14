@@ -18,6 +18,9 @@
  *     leaves it out of `categories`, sends it in `hiddenCategories`) is never
  *     a tile, not even when a grid chose it; its subcategories still are,
  *     exactly as before (subcategory sections keep their own settings);
+ *   - a main category hidden in Category Management (its style `hidden`)
+ *     leaves Home too: no tile, and no product shelf or shelf banners —
+ *     its subcategories are hidden with it (tileOf);
  *   - the food banners become a carousel of at most N cards, or the standard
  *     food banner when none is live;
  *   - an engine section this file does not know is kept (before the footer),
@@ -475,6 +478,11 @@ export function applyHomeLayout({
   }
 
   const index = indexCategories(feed, layout.categoryStyles, language);
+  // Main categories the admin hid in Category Management: like a category
+  // hidden in "Home page main categories", it leaves Home altogether — its
+  // tile (tileOf) AND its product shelf and the banners above that shelf —
+  // so no "Tea & Coffee" heading stays behind after its tile went.
+  const styleHiddenTops = new Set(index.parents.filter((top) => index.styles.get(pathOf(top))?.hidden).map((top) => top.id));
   const shownCategories = new Set<string>();
   const out: LaidOutSection[] = [];
 
@@ -550,6 +558,8 @@ export function applyHomeLayout({
     }
 
     for (const member of members) {
+      const shelfOf = member.key.match(/^(?:banners:)?category:(.+)$/)?.[1];
+      if (shelfOf && styleHiddenTops.has(shelfOf)) continue;
       if (member.kind === "categoryGrid") {
         const placementKey = GRID_PLACEMENT[member.key];
         if (!placementKey) continue;

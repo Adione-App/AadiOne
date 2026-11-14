@@ -168,6 +168,19 @@ export function emitStoreAvailabilityChanged(sellerId: string | null): void {
   io?.emit('store.availability_changed', { sellerId });
 }
 
+/**
+ * What customers browse changed shape — a category created, renamed, hidden,
+ * re-ordered, given a new image or deleted (any seller's, merged by path), the
+ * Home layout published, or the Home page main categories saved. Every
+ * connected app asks again for its Home layout, Home feed and category tree
+ * instead of keeping what it fetched at launch. Emitted only AFTER the change
+ * is committed (a refetch must see it). Carries no data — public, to every
+ * socket — and the server stays the authority: the app only re-asks.
+ */
+export function emitCatalogChanged(): void {
+  io?.emit('catalog.changed', {});
+}
+
 export function shutdownRealtime(): void {
   io?.close();
   io = null;

@@ -75,6 +75,7 @@ import {
 } from "@/lib/variantSelection";
 import { QuantityStepper } from "@/components/ProductCard";
 import { AppText, Button, NoticeStrip } from "@/components/ui";
+import { OUT_OF_STOCK_LABEL } from "@/lib/stockLabel";
 
 const OPEN_MS = 220;
 const CLOSE_MS = 180;
@@ -429,7 +430,7 @@ function SheetContent({
         {!source || !options ? (
           <Button label="Add to cart" onPress={() => undefined} disabled style={styles.action} />
         ) : variants.length === 0 ? (
-          <Button label={closedMessage ? "Unavailable" : "Sold out"} onPress={() => undefined} disabled style={styles.action} />
+          <Button label={closedMessage ? "Unavailable" : OUT_OF_STOCK_LABEL} onPress={() => undefined} disabled style={styles.action} />
         ) : !chosen ? (
           <Button
             label={`Select ${(missingGroup(options, picks) ?? "an option").toLowerCase()}`}

@@ -47,6 +47,8 @@ export interface ProductSearchHit {
   /** Higher is better; the thousands digit is the tier (8 exact name … 1 fuzzy). */
   rank: number;
   tier: number;
+  /** With `priority`: 1 when the product meets it (listed first), else 0. Without: always 1. */
+  priority: number;
 }
 
 export interface ProductSearchRequest {
@@ -58,8 +60,15 @@ export interface ProductSearchRequest {
    */
   where: Prisma.Sql;
   limit: number;
-  /** Keyset cursor: the last hit of the previous page. */
-  after?: { rank: number; productId: string } | null;
+  /**
+   * Optional predicate over `products p` that ranks ABOVE relevance: every
+   * product meeting it comes before every product that does not, each group
+   * best match first (customer search: in stock first, out of stock last).
+   * Absent: one group — relevance only (admin / seller searches, unchanged).
+   */
+  priority?: Prisma.Sql;
+  /** Keyset cursor: the last hit of the previous page (`priority` absent = 1). */
+  after?: { rank: number; productId: string; priority?: number | null } | null;
 }
 
 /** Score of an exact match of the product's own name — always the top band. */
@@ -205,12 +214,19 @@ export async function searchProductIds(request: ProductSearchRequest, client: Db
   const rankSql = Prisma.sql`(GREATEST(MAX(r.rank), CASE WHEN lower(btrim(p.name)) = ${query.rawLower} THEN ${EXACT_NAME_RANK}::float8 ELSE 0 END)
     + LEAST(GREATEST(p.popularity_score, 0), 1000000)::float8 / 100000000.0)`;
 
+  // The priority group (1 / 0) — a constant 1 without a priority predicate.
+  const prioritySql = request.priority ? Prisma.sql`(CASE WHEN ${request.priority} THEN 1 ELSE 0 END)` : Prisma.sql`1`;
+  const afterPriority = request.after?.priority === 0 ? 0 : 1;
   const after = request.after
-    ? Prisma.sql`HAVING (${rankSql} < ${request.after.rank}::float8
-        OR (${rankSql} = ${request.after.rank}::float8 AND r.product_id > ${request.after.productId}::uuid))`
+    ? request.priority
+      ? Prisma.sql`HAVING (${prioritySql} < ${afterPriority}
+          OR (${prioritySql} = ${afterPriority} AND (${rankSql} < ${request.after.rank}::float8
+            OR (${rankSql} = ${request.after.rank}::float8 AND r.product_id > ${request.after.productId}::uuid))))`
+      : Prisma.sql`HAVING (${rankSql} < ${request.after.rank}::float8
+          OR (${rankSql} = ${request.after.rank}::float8 AND r.product_id > ${request.after.productId}::uuid))`
     : Prisma.empty;
 
-  const rows = await client.$queryRaw<{ product_id: string; rank: number }[]>`
+  const rows = await client.$queryRaw<{ product_id: string; rank: number; priority: number }[]>`
     WITH probe AS MATERIALIZED (
       SELECT * FROM unnest(
         ${probes.map((p) => p.unit)}::int[],
@@ -256,18 +272,18 @@ export async function searchProductIds(request: ProductSearchRequest, client: Db
       FROM products p
       WHERE p.search_index_stale AND ${staleFilterSql(query)}
     )
-    SELECT r.product_id, ${rankSql} AS rank
+    SELECT r.product_id, ${rankSql} AS rank, ${prioritySql} AS priority
     FROM ranked r
     JOIN products p ON p.id = r.product_id
     WHERE ${request.where}
-    GROUP BY r.product_id, p.name, p.popularity_score
+    GROUP BY r.product_id, p.id, p.name, p.popularity_score
     ${after}
-    ORDER BY rank DESC, r.product_id ASC
+    ORDER BY priority DESC, rank DESC, r.product_id ASC
     LIMIT ${request.limit}`;
 
   return rows.map((row) => {
     const rank = Number(row.rank);
-    return { productId: row.product_id, rank, tier: Math.min(SEARCH_TIER.EXACT_NAME, Math.floor(rank / 1000)) };
+    return { productId: row.product_id, rank, tier: Math.min(SEARCH_TIER.EXACT_NAME, Math.floor(rank / 1000)), priority: Number(row.priority) };
   });
 }
 

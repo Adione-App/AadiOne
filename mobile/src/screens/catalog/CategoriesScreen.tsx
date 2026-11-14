@@ -46,7 +46,9 @@ import CategoryIcon from '@/components/CategoryIcon';
 import { buildCategoryTree, searchCategories } from './categorySections';
 import { PromoSlot } from '@/components/PromoBanner';
 import { usePreferences } from '@/lib/store';
-import { useHomeLayout } from '@/lib/homeLayoutQuery';
+import { FALLBACK_HOME_LAYOUT, useHomeLayoutQuery } from '@/lib/homeLayoutQuery';
+import { CATALOG_FOCUS_MIN_AGE_MS } from '@/lib/catalogSync';
+import { useRefreshOnFocus } from '@/lib/useRefreshOnFocus';
 import { useSystemBack } from '@/lib/useSystemBack';
 import { arrangeCategoriesPage } from '../home/homeLayout';
 
@@ -78,10 +80,15 @@ export default function CategoriesScreen({
   const tabBarClearance = useTabBarClearance();
   const { width } = useWindowDimensions();
   const categories = useCategories();
+  // The tab stays mounted once opened: shown again after a while, ask again,
+  // so a category deleted or hidden meanwhile leaves (lib/catalogSync.ts).
+  useRefreshOnFocus(categories, { minAgeMs: CATALOG_FOCUS_MIN_AGE_MS });
   // The admin's "Categories page" placement (Category Management): which main
   // categories, in which order, how many and how many per row — on its own,
   // whatever Home shows. Hidden categories and display names apply here too.
-  const homeLayout = useHomeLayout();
+  const homeLayoutQuery = useHomeLayoutQuery();
+  useRefreshOnFocus(homeLayoutQuery, { minAgeMs: CATALOG_FOCUS_MIN_AGE_MS });
+  const homeLayout = homeLayoutQuery.data ?? FALLBACK_HOME_LAYOUT;
   const language = usePreferences((state) => state.language);
   const arranged = useMemo(
     () => arrangeCategoriesPage(categories.data ?? [], homeLayout, language),

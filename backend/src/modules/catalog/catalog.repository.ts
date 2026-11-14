@@ -26,8 +26,16 @@ import { matchProductIds } from "../../infra/search";
 /** Most products one picker search narrows to (far above any real result list). */
 const SEARCH_MATCH_CAP = 500;
 
+/** SQL predicate on a `sellers` row aliased `alias`: a live marketplace seller — not a food seller (restaurant/cafe). */
+function marketplaceSellerSql(alias: string): Prisma.Sql {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(alias)) throw new Error(`invalid SQL alias ${alias}`);
+  return Prisma.raw(
+    `${alias}.deleted_at IS NULL AND ${alias}.is_active AND ${alias}.onboarding_status = 'APPROVED' AND ${alias}.seller_type NOT IN ('RESTAURANT', 'CAFE')`,
+  );
+}
+
 /** SQL predicate on `sellers s`: a live marketplace seller — not a food seller (restaurant/cafe). */
-export const MARKETPLACE_SELLER_SQL = Prisma.sql`s.deleted_at IS NULL AND s.is_active AND s.onboarding_status = 'APPROVED' AND s.seller_type NOT IN ('RESTAURANT', 'CAFE')`;
+export const MARKETPLACE_SELLER_SQL = marketplaceSellerSql('s');
 
 /** The same rule for Prisma `where` clauses on a listing's seller. */
 export const MARKETPLACE_SELLER_WHERE = {
@@ -221,13 +229,66 @@ export interface ListProductIdsInput {
   inStockOnly?: boolean;
   sort: ProductSort;
   limit: number;
-  cursor?: { sortValue: number; id: string } | null;
+  /**
+   * Ranking only (never a filter): the sellers taking orders now, so the stock
+   * group follows the offer the card shows (shownOfferInStockSql).
+   */
+  openSellerIds?: readonly string[] | null;
+  /** Keyset cursor: the last row of the previous page. `stockRank` absent (an older cursor) = the in-stock group. */
+  cursor?: { sortValue: number; id: string; stockRank?: number | null } | null;
 }
 
 export interface ProductIdRow {
   id: string;
   sortValue: number;
+  /** 1 = sellable stock now (in-stock group, listed first), 0 = out of stock (listed last). */
+  stockRank: number;
 }
+
+/**
+ * SQL predicate on a listing `sl` of variant `v`: it has sellable stock (on
+ * sale, stock − reserved > 0 — `hasStockToSellSql`, never raw stock) AND it
+ * can be the offer a customer is shown for that variant.
+ *
+ * The card shows ONE offer per variant (catalog.service `bestOffer`): a store
+ * taking orders now first, then in stock, then the cheapest. So a variant
+ * reads "Out of Stock" when every OPEN store's listing of it is out of stock —
+ * even if a closed store still has units; only when no store listing it is
+ * open does a closed store's stock count (the card then says "Store closed",
+ * not "Out of Stock"). This predicate is exactly that rule, so sorting and
+ * the label can never disagree.
+ *
+ *   openSellerIds  the sellers taking orders now (store-availability.ts
+ *                  acceptingSellerIds). null/undefined: availability not
+ *                  considered — any listing with stock counts.
+ *   sellerId       a store page: only that seller's listings are offers.
+ *
+ * Delivery eligibility plays no part here: it is decided for the whole
+ * platform (an eligible place is served by every live seller —
+ * seller.service evaluateLocation), so it never changes which offer is shown.
+ */
+export function shownOfferInStockSql(openSellerIds: readonly string[] | null | undefined, sellerId: string | null = null): Prisma.Sql {
+  const sellable = Prisma.sql`sl.is_available AND ${hasStockToSellSql('sl')}`;
+  if (openSellerIds === null || openSellerIds === undefined) return Prisma.sql`(${sellable})`;
+  const open = Prisma.sql`${[...openSellerIds]}::uuid[]`;
+  return Prisma.sql`(${sellable} AND (
+    sl.seller_id = ANY(${open})
+    OR NOT EXISTS (
+      SELECT 1 FROM seller_listings osl
+      JOIN sellers os ON os.id = osl.seller_id AND ${marketplaceSellerSql('os')}
+      WHERE osl.variant_id = v.id AND osl.seller_id = ANY(${open})
+        ${sellerId ? Prisma.sql`AND osl.seller_id = ${sellerId}::uuid` : Prisma.empty}
+    )
+  ))`;
+}
+
+/**
+ * The stock group of a product row `p` over its visible listings `sl`: 1 when
+ * any variant's shown offer has stock to sell (shownOfferInStockSql), else 0 —
+ * exactly when every card of it reads "Out of Stock". Low stock is still 1.
+ */
+const stockRankSql = (openSellerIds: readonly string[] | null | undefined, sellerId: string | null) =>
+  Prisma.sql`MAX(CASE WHEN ${shownOfferInStockSql(openSellerIds, sellerId)} THEN 1 ELSE 0 END)`;
 
 /**
  * Resolves an ordered page of product ids across every marketplace seller.
@@ -237,8 +298,17 @@ export interface ProductIdRow {
  * partial index `seller_listings_in_stock` only helps if the query is shaped
  * this way.
  *
- * Keyset pagination on (sortValue, id): stable while the catalogue is being
- * edited, unlike OFFSET which silently repeats or skips rows.
+ * Stock priority first: every product with stock to sell comes before every
+ * out-of-stock one, whatever the chosen sort (stockRankSql); the chosen
+ * sort orders each group, then the id (deterministic — no reshuffling between
+ * refreshes). A product that sells out moves to the end of its category on
+ * the next request, and back among the in-stock ones once restocked — it is
+ * computed live from the listings, so nothing has to be re-saved.
+ *
+ * Keyset pagination on (stockRank, sortValue, id): stable while the catalogue
+ * is being edited, unlike OFFSET which silently repeats or skips rows — and
+ * the group is part of the key, so a page boundary between the in-stock and
+ * the out-of-stock products never skips or repeats one.
  */
 export async function listProductIds(
   input: ListProductIdsInput,
@@ -279,14 +349,20 @@ export async function listProductIds(
   const ascending = input.sort === "PRICE_ASC";
   const direction = ascending ? Prisma.sql`ASC` : Prisma.sql`DESC`;
 
+  const STOCK_RANK_SQL = stockRankSql(input.openSellerIds, input.sellerId ?? null);
+  // After the cursor: a later stock group (in stock → out of stock), or the
+  // same group further along the chosen sort.
+  const cursorRank = input.cursor ? (input.cursor.stockRank === 0 ? 0 : 1) : 1;
   const cursorFilter = input.cursor
     ? ascending
-      ? Prisma.sql`HAVING (${sortValue}, p.id) > (${input.cursor.sortValue}, ${input.cursor.id}::uuid)`
-      : Prisma.sql`HAVING (${sortValue}, p.id) < (${input.cursor.sortValue}, ${input.cursor.id}::uuid)`
+      ? Prisma.sql`HAVING (${STOCK_RANK_SQL} < ${cursorRank}
+          OR (${STOCK_RANK_SQL} = ${cursorRank} AND (${sortValue}, p.id) > (${input.cursor.sortValue}, ${input.cursor.id}::uuid)))`
+      : Prisma.sql`HAVING (${STOCK_RANK_SQL} < ${cursorRank}
+          OR (${STOCK_RANK_SQL} = ${cursorRank} AND (${sortValue}, p.id) < (${input.cursor.sortValue}, ${input.cursor.id}::uuid)))`
     : Prisma.empty;
 
-  const rows = await client.$queryRaw<{ id: string; sort_value: number }[]>`
-    SELECT p.id, ${sortValue} AS sort_value
+  const rows = await client.$queryRaw<{ id: string; sort_value: number; stock_rank: number }[]>`
+    SELECT p.id, ${sortValue} AS sort_value, ${STOCK_RANK_SQL} AS stock_rank
     FROM products p
     ${LISTED_JOINS}
     WHERE ${PUBLIC_PRODUCT_SQL}
@@ -298,10 +374,10 @@ export async function listProductIds(
       ${stockFilter}
     GROUP BY p.id, p.popularity_score, p.created_at
     ${cursorFilter}
-    ORDER BY sort_value ${direction}, p.id ${direction}
+    ORDER BY stock_rank DESC, sort_value ${direction}, p.id ${direction}
     LIMIT ${input.limit}`;
 
-  return rows.map((row) => ({ id: row.id, sortValue: Number(row.sort_value) }));
+  return rows.map((row) => ({ id: row.id, sortValue: Number(row.sort_value), stockRank: Number(row.stock_rank) }));
 }
 
 /**

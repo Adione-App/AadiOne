@@ -27,7 +27,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { onSessionExpired } from "@/lib/api";
 import { retryInterruptedRestore, useAuth, useLocation } from "@/lib/store";
-import { onMyOrderChanged, onStoreAvailabilityChanged } from "@/lib/socket";
+import { onCatalogChanged, onMyOrderChanged, onStoreAvailabilityChanged } from "@/lib/socket";
+import { createCatalogRevalidator } from "@/lib/catalogSync";
 import { revalidateStoreAvailability, setAvailabilityQueryClient } from "@/lib/storeAvailability";
 import { GlobalOrderingProvider } from "@/lib/globalOrdering";
 import { refreshCurrentLocation } from "@/lib/locationService";
@@ -108,6 +109,12 @@ onStoreAvailabilityChanged(revalidateStoreAvailability);
 // An order of mine changed (paid and placed, moved on, ended): the order list
 // and Home's orders-in-progress carousel ask again — only those on screen refetch.
 onMyOrderChanged(() => void queryClient.invalidateQueries({ queryKey: keys.orders }));
+// Categories or the Home layout changed (an admin deleted / hid / re-ordered a
+// category or section, a seller removed one): Home, Categories and category
+// listings ask again — throttled, only what is on screen refetches
+// (lib/catalogSync.ts). Also run on app resume below.
+const revalidateCatalog = createCatalogRevalidator((queryKey) => void queryClient.invalidateQueries({ queryKey: [...queryKey] }));
+onCatalogChanged(revalidateCatalog);
 
 const asyncStoragePersister = createAsyncStoragePersister({
   storage: AsyncStorage,
@@ -352,6 +359,9 @@ export default function App() {
       // Stores may have opened or closed while the app was away (a cart kept
       // overnight): ask the server again for whatever is on screen.
       revalidateStoreAvailability();
+      // Categories / Home sections may have been added, hidden or deleted
+      // meanwhile (guests have no socket to hear it): ask again.
+      revalidateCatalog();
       // The customer may have moved while the app was away (Home in the
       // morning, the office later): read the phone's position again —
       // foreground only, never in the background, at most once a minute.
@@ -429,6 +439,13 @@ export default function App() {
               shouldDehydrateQuery: (query) => !isPrivateQueryKey(query.queryKey),
             },
           }}
+          // A restored entry keeps its old fetch time, so within its staleTime
+          // (categories 10 min, layout 5) a cold start would trust it and NOT
+          // ask again — a category deleted meanwhile would come back after a
+          // restart. Right after the restore (before any screen subscribes)
+          // the catalogue queries are marked stale: Home and Categories paint
+          // the saved copy, then ask the server (lib/catalogSync.ts).
+          onSuccess={revalidateCatalog}
         >
           <StatusBar style="dark" />
   

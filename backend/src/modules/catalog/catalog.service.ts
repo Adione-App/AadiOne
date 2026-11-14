@@ -36,6 +36,7 @@ import { resolveItemCodPolicy } from "../../shared/cod";
 import { AppError } from "../../common/errors";
 import { moduleLogger } from "../../common/logger";
 import { prisma } from "../../infra/db/prisma";
+import { emitCatalogChanged } from "../../realtime/socket";
 import { searchProductIds } from "../../infra/search";
 import { marketplaceSearchScope } from "./product-search-scope";
 import * as configService from "../configuration/configuration.service";
@@ -99,8 +100,16 @@ async function getCategoryMap(): Promise<Map<string, Category>> {
   }
 }
 
+/**
+ * A category changed (created, renamed, switched off, re-ordered, image,
+ * deleted — always called after the change is committed): drop the cached
+ * tree, and tell connected apps to ask again (realtime `catalog.changed`), so
+ * a deleted or hidden category leaves Home and the Categories tab at once
+ * instead of whenever the app happens to remount them.
+ */
 export function invalidateCategoryCache(): void {
   categoryCache = null;
+  emitCatalogChanged();
 }
 
 /** Leaf category first, then each ancestor up to the root. */
@@ -442,8 +451,9 @@ async function toDetailDto(
 
 export async function mapProducts(
   products: HydratedProduct[],
+  statuses?: ReadonlyMap<string, StoreStatus>,
 ): Promise<ProductSummaryDto[]> {
-  const context = await mappingContext();
+  const context = await mappingContext(statuses);
   return Promise.all(products.map((product) => toSummaryDto(product, context)));
 }
 
@@ -451,20 +461,27 @@ export async function mapProducts(
 /* Task 4.2 — listing and detail                                              */
 /* -------------------------------------------------------------------------- */
 
-function encodeCursor(sortValue: number, id: string): string {
-  return Buffer.from(`${sortValue}|${id}`).toString("base64url");
+/**
+ * An opaque page cursor: the last row's sort value and id — and, for the
+ * category / store listing, its stock group (1 in stock, 0 out of stock;
+ * catalog.repository listProductIds), so the next page continues in the
+ * right group.
+ */
+function encodeCursor(sortValue: number, id: string, stockRank?: number): string {
+  return Buffer.from(stockRank === undefined ? `${sortValue}|${id}` : `${sortValue}|${id}|${stockRank}`).toString("base64url");
 }
 
 function decodeCursor(
   cursor: string | null,
-): { sortValue: number; id: string } | null {
+): { sortValue: number; id: string; stockRank: number | null } | null {
   if (!cursor) return null;
   try {
-    const [sortValue, id] = Buffer.from(cursor, "base64url")
+    const [sortValue, id, stockRank] = Buffer.from(cursor, "base64url")
       .toString("utf8")
       .split("|");
     if (!id || sortValue === undefined) return null;
-    return { sortValue: Number(sortValue), id };
+    // A cursor from before stock groups (no third part) continues in the in-stock group.
+    return { sortValue: Number(sortValue), id, stockRank: stockRank === "0" ? 0 : stockRank === "1" ? 1 : null };
   } catch {
     // A malformed cursor returns the first page rather than a 500 — the app
     // may have kept one across a version upgrade.
@@ -489,9 +506,14 @@ export async function listProducts(
 ): Promise<CursorPage<ProductSummaryDto>> {
   // The narrower of the two wins: a subcategory inside a category.
   const targetCategoryId = input.subcategoryId ?? input.categoryId;
+  // One read of which stores take orders now, for both the stock grouping
+  // and the cards, so a product is sorted exactly as its card reads.
+  const [statuses, category] = await Promise.all([
+    allStoreStatuses(),
+    targetCategoryId ? repository.findCategoryById(targetCategoryId) : Promise.resolve(null),
+  ]);
   let categoryPath: string | null = null;
   if (targetCategoryId) {
-    const category = await repository.findCategoryById(targetCategoryId);
     if (!category) {
       throw new AppError(ErrorCode.NOT_FOUND, {
         message: "Category not found.",
@@ -505,6 +527,7 @@ export async function listProducts(
     brandId: input.brandId ?? null,
     sellerId: input.sellerId ?? null,
     inStockOnly: input.inStock ?? false,
+    openSellerIds: acceptingSellerIds(statuses),
     sort: input.sort ?? "POPULAR",
     // One extra row tells us whether another page exists without a COUNT.
     limit: input.limit + 1,
@@ -517,13 +540,13 @@ export async function listProducts(
   const products = await repository.hydrateProducts(page.map((row) => row.id), undefined, {
     sellerId: input.sellerId ?? null,
   });
-  const items = await mapProducts(products);
+  const items = await mapProducts(products, statuses);
   const last = page[page.length - 1];
 
   return {
     items,
     hasMore,
-    nextCursor: hasMore && last ? encodeCursor(last.sortValue, last.id) : null,
+    nextCursor: hasMore && last ? encodeCursor(last.sortValue, last.id, last.stockRank) : null,
   };
 }
 
@@ -580,18 +603,23 @@ export async function searchProducts(input: {
   inStock?: boolean;
 }): Promise<CursorPage<ProductSummaryDto>> {
   const cursor = decodeCursor(input.cursor ?? null);
+  const statuses = await allStoreStatuses();
 
   // Smart Search (infra/search): English, Hindi and Hinglish names,
   // synonyms, spelling variants and typos, ranked exact-first — over the
   // same customer visibility as the category listing. Restaurant menus are
-  // searched on /restaurants instead.
+  // searched on /restaurants instead. Like every customer listing, what can
+  // be bought now comes first: products with stock to sell (the same
+  // visibility, in stock), best match first, then the out-of-stock matches.
   const hits = await searchProductIds({
     query: input.term,
     where: marketplaceSearchScope({ inStockOnly: input.inStock ?? false }),
+    // In stock as the card reads it (the shown offer — an open store's first).
+    priority: marketplaceSearchScope({ shownInStockAmong: acceptingSellerIds(statuses) }),
     limit: input.limit + 1,
     after:
       cursor && Number.isFinite(cursor.sortValue) && UUID_PATTERN.test(cursor.id)
-        ? { rank: cursor.sortValue, productId: cursor.id }
+        ? { rank: cursor.sortValue, productId: cursor.id, priority: cursor.stockRank }
         : null,
   });
 
@@ -599,14 +627,14 @@ export async function searchProducts(input: {
   const page = hasMore ? hits.slice(0, input.limit) : hits;
 
   const products = await repository.hydrateProducts(page.map((hit) => hit.productId));
-  const items = await mapProducts(products);
+  const items = await mapProducts(products, statuses);
   const last = page[page.length - 1];
 
   return {
     items,
     hasMore,
     nextCursor:
-      hasMore && last ? encodeCursor(last.rank, last.productId) : null,
+      hasMore && last ? encodeCursor(last.rank, last.productId, last.priority) : null,
   };
 }
 

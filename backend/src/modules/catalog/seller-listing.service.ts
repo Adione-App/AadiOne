@@ -46,7 +46,7 @@ const LISTING_SELECT = {
           deletedAt: true,
           approvalStatus: true,
           submittedBySellerId: true,
-          category: { select: { id: true, name: true } },
+          category: { select: { id: true, name: true, parent: { select: { id: true, name: true } } } },
           images: { orderBy: { displayOrder: 'asc' }, take: 1, select: { url: true, thumbUrl: true } },
         },
       },
@@ -64,6 +64,9 @@ export type SellerListingInventoryDto = SellerListingDto & {
   productStatus: string;
   /** True when this seller submitted the product (its details/images are then the seller's). */
   ownProduct: boolean;
+  /** The top category above `categoryId` when it is a subcategory (search + category filter), else null. */
+  parentCategoryId: string | null;
+  parentCategoryName: string | null;
   imageUrl: string | null;
   visibility: ListingVisibility;
   updatedAt: string;
@@ -93,6 +96,8 @@ function toDto(listing: ListingRow): SellerListingInventoryDto {
     maxQtyPerOrder: listing.maxQtyPerOrder,
     productStatus: product.status,
     ownProduct: product.submittedBySellerId === listing.sellerId,
+    parentCategoryId: product.category.parent?.id ?? null,
+    parentCategoryName: product.category.parent?.name ?? null,
     imageUrl: product.images[0]?.thumbUrl ?? product.images[0]?.url ?? null,
     visibility: listingVisibility({
       store: listing.seller,
@@ -136,6 +141,8 @@ interface ListingSqlRow {
   p_submitted_by: string | null;
   c_id: string;
   c_name: string;
+  pc_id: string | null;
+  pc_name: string | null;
   img_url: string | null;
   img_thumb: string | null;
 }
@@ -153,12 +160,13 @@ async function loadListingRow(listingId: string): Promise<ListingRow | null> {
            v.variant_name AS v_variant_name, v.status::text AS v_status, v.deleted_at AS v_deleted_at,
            p.id AS p_id, p.name AS p_name, p.status::text AS p_status, p.deleted_at AS p_deleted_at,
            p.approval_status::text AS p_approval_status, p.submitted_by_seller_id AS p_submitted_by,
-           c.id AS c_id, c.name AS c_name, img.url AS img_url, img.thumb_url AS img_thumb
+           c.id AS c_id, c.name AS c_name, pc.id AS pc_id, pc.name AS pc_name, img.url AS img_url, img.thumb_url AS img_thumb
       FROM seller_listings l
       JOIN sellers s ON s.id = l.seller_id
       JOIN product_variants v ON v.id = l.variant_id
       JOIN products p ON p.id = v.product_id
       JOIN categories c ON c.id = p.category_id
+      LEFT JOIN categories pc ON pc.id = c.parent_id
       LEFT JOIN LATERAL (
         SELECT pi.url, pi.thumb_url FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.display_order ASC LIMIT 1
       ) img ON true
@@ -189,7 +197,7 @@ async function loadListingRow(listingId: string): Promise<ListingRow | null> {
         deletedAt: r.p_deleted_at,
         approvalStatus: r.p_approval_status,
         submittedBySellerId: r.p_submitted_by,
-        category: { id: r.c_id, name: r.c_name },
+        category: { id: r.c_id, name: r.c_name, parent: r.pc_id !== null ? { id: r.pc_id, name: r.pc_name! } : null },
         images: r.img_url !== null ? [{ url: r.img_url, thumbUrl: r.img_thumb }] : [],
       },
     },

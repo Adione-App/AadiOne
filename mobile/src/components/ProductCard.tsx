@@ -36,6 +36,7 @@ import { useVariantSheet } from "../lib/variantSheet";
 import { quantityLimitOf } from "../lib/quantityLimit";
 import { cardVariantsOf } from "../lib/cardVariant";
 import { notAddableLabel } from "../lib/closureDisplay";
+import { OutOfStockLabel } from "./OutOfStockLabel";
 import { useGlobalClosedNotice } from "../lib/globalOrdering";
 import { AppText } from "./ui";
 
@@ -400,17 +401,9 @@ function ProductCardImpl({
               <View style={styles.imagePlaceholder} />
             )}
 
-            {outOfStock && (
-              <View style={styles.outOfStockBadge}>
-                <AppText
-                  variant="overline"
-                  color={colors.textSecondary}
-                  style={styles.badgeText}
-                >
-                  Out of Stock
-                </AppText>
-              </View>
-            )}
+            {/* Out of stock: the image fades and the action slot below says
+                so (OutOfStockLabel) — no badge up here, where the wishlist
+                heart covered it and cut it to "Out of" / "Out". */}
           </View>
         </View>
 
@@ -446,7 +439,10 @@ function ProductCardImpl({
           <ActionBarTransition
             mode={notAddable ? "outOfStock" : qtyInCart > 0 ? "stepper" : "add"}
           >
-            {notAddable ? (
+            {notAddable && !storeClosed ? (
+              // Nothing buyable and the store is open: out of stock — the shared label.
+              <OutOfStockLabel />
+            ) : notAddable ? (
               <View
                 style={styles.floatingOutOfStock}
                 accessibilityLabel={notAddableText.accessibilityLabel}
@@ -860,24 +856,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
 
     justifyContent: "center",
-  },
-
-  outOfStockBadge: {
-    position: "absolute",
-
-    top: 0,
-
-    left: 0,
-
-    backgroundColor: colors.surfaceSunken,
-
-    paddingHorizontal: 8,
-
-    paddingVertical: 3,
-
-    borderRadius: radius.sm,
-
-    zIndex: 2,
   },
 
   badgeText: {

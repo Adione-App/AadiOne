@@ -2,7 +2,9 @@
  * GET /api/v1/content/home-layout — the PUBLISHED Home page layout (Admin
  * Panel → Home Page Builder / Category Display), or the built-in defaults
  * while nothing is published. Public, like the Home feed itself; drafts are
- * only ever reachable through the admin routes. Cacheable for a minute.
+ * only ever reachable through the admin routes. Revalidated on every
+ * request (no-cache + ETag); the server keeps its own copy for a minute and
+ * drops it the moment a new layout is published.
  */
 
 import { Router, type Request, type Response } from 'express';
@@ -32,7 +34,11 @@ brandingRouter.get(
 contentRouter.get(
   '/home-layout',
   asyncHandler(async (_req: Request, res: Response) => {
-    res.setHeader('Cache-Control', 'public, max-age=60');
+    // `no-cache`, not `max-age`: an HTTP cache (the phone's, or one in front
+    // of the API) must ask again every time — with the ETag that is a cheap
+    // 304 — so a section or category removed by a publish can never be
+    // served from an older copy. The server's own copy is dropped on publish.
+    res.setHeader('Cache-Control', 'no-cache');
     ok(res, await getPublishedHomeLayout());
   }),
 );

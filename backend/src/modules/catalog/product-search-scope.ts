@@ -19,13 +19,20 @@
  */
 
 import { Prisma } from '@prisma/client';
-import { MARKETPLACE_SELLER_SQL } from './catalog.repository';
+import { MARKETPLACE_SELLER_SQL, shownOfferInStockSql } from './catalog.repository';
 import { hasStockToSellSql } from '../inventory/stock-rules';
 
 const PUBLISHED = Prisma.sql`p.status = 'ACTIVE' AND p.deleted_at IS NULL AND p.approval_status = 'APPROVED'`;
 
 export interface MarketplaceScopeOptions {
   inStockOnly?: boolean;
+  /**
+   * Only products whose SHOWN offer has stock (catalog.repository
+   * shownOfferInStockSql, given the sellers taking orders now) — the
+   * products whose card does not read "Out of Stock". Customer search ranks
+   * these first.
+   */
+  shownInStockAmong?: readonly string[];
   /** The category and everything beneath it (materialised path). */
   categoryPath?: string | null;
   /** Only this seller's listings (a store page). */
@@ -43,6 +50,7 @@ export function marketplaceSearchScope(options: MarketplaceScopeOptions = {}): P
     JOIN sellers s ON s.id = sl.seller_id AND ${MARKETPLACE_SELLER_SQL}
     WHERE c.id = p.category_id AND c.is_active AND c.deleted_at IS NULL
       ${options.inStockOnly ? Prisma.sql`AND sl.is_available AND ${hasStockToSellSql('sl')}` : Prisma.empty}
+      ${options.shownInStockAmong ? Prisma.sql`AND ${shownOfferInStockSql(options.shownInStockAmong, options.sellerId ?? null)}` : Prisma.empty}
       ${options.sellerId ? Prisma.sql`AND sl.seller_id = ${options.sellerId}::uuid` : Prisma.empty}
       ${
         options.categoryPath

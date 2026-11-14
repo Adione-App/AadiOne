@@ -12,6 +12,7 @@
 import type { ListingVisibility, SellerListingInventory, SellerProductInventory } from './sellerApi';
 import { VISIBILITY, isEditable, reviewState } from './productUi';
 import type { Tone } from '@/components/ui';
+import { listingCategories, type CategoryRef } from './productSearch';
 
 export interface RowListing {
   id: string;
@@ -44,7 +45,16 @@ export interface ProductRow {
   name: string;
   /** The product's Hindi name, when it has one — searchable (Smart Search). */
   nameHi?: string | null;
+  /** Display text only ("Grocery › Drinks") — search and filters use `categories`. */
   category: string;
+  /**
+   * The canonical category path, top category first, then the subcategory
+   * (ids + names, as the catalogue stores them). Search indexes each name
+   * separately — exactly like the backend's product_search_terms — so
+   * "Drinks" finds every product in Grocery › Drinks; the category filter
+   * compares ids, never names.
+   */
+  categories: CategoryRef[];
   image: string | null;
   /**
    * For an own product with several sizes / variants: the stock of ALL of
@@ -147,6 +157,7 @@ export function rowsOf(products: SellerProductInventory[], listings: SellerListi
       name: p.name,
       nameHi: p.nameHi,
       category: [p.category.name, p.subcategory?.name].filter(Boolean).join(' › '),
+      categories: p.subcategory ? [p.category, p.subcategory] : [p.category],
       image: p.images[0]?.thumbUrl ?? p.images[0]?.url ?? null,
       listing: productListing(p, listingUpdatedAt),
       variantCount: Math.max(1, (p.variants ?? []).length),
@@ -175,6 +186,7 @@ export function rowsOf(products: SellerProductInventory[], listings: SellerListi
       href: `/seller/listings/${l.id}`,
       name: l.productName,
       category: [l.categoryName, l.variantName].filter(Boolean).join(' · '),
+      categories: listingCategories(l),
       image: l.imageUrl,
       listing: l,
       variantCount: 1,

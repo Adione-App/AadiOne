@@ -18,6 +18,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Button, Modal, Pill, Surface } from '@/components/ui';
 import { sellerErrorMessage, type SellerListingInventory } from '../sellerApi';
 import { useRefreshInventory, useSellerListings, useStockBatcher } from '../sellerQueries';
+import { listingCategories } from '../productSearch';
 import { ProductImage, StockStepper, VisibilityPill, shortDate } from '../productUi';
 import { InventoryPanel, StockHistory } from '../productSections';
 import { ChipTabs, EmptyPanel, LoadError, SearchBox, SkeletonList } from '../sellerUi';
@@ -82,7 +83,8 @@ export default function SellerInventoryPage() {
       term
         ? smartSearch(all, term, (l) => [
             { text: l.productName, source: 'NAME' },
-            { text: l.categoryName, source: 'CATEGORY' },
+            // Subcategory and its top category, each its own field (like the backend index).
+            ...listingCategories(l).map((c) => ({ text: c.name, source: 'CATEGORY' as const })),
           ])
         : all,
     [all, term],

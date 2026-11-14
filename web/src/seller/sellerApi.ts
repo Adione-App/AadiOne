@@ -546,6 +546,9 @@ export interface SellerListingInventory {
   maxQtyPerOrder: number;
   productStatus: string;
   ownProduct: boolean;
+  /** The top category when `categoryId` is a subcategory; null for a top category. */
+  parentCategoryId?: string | null;
+  parentCategoryName?: string | null;
   imageUrl: string | null;
   visibility: ListingVisibility;
   updatedAt: string;
